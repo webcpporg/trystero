@@ -35,12 +35,29 @@
  */
 namespace webcpp::trystero::native {
 
-/** An Asio timer whose waits are allocated in the room's resource. */
+/**
+ * An Asio timer whose waits are allocated in the room's resource.
+ *
+ * @see "The native backend", in the guide.
+ */
 class timer : public trystero::backend::timer {
 public:
+    /**
+     * Constructs a timer, not started.
+     *
+     * @param ex The executor it fires on.
+     * @param memory The room's resource, which each wait is allocated in; it must outlive the
+     * timer's pending waits.
+     */
     timer(const boost::asio::any_io_executor& ex, std::pmr::memory_resource* memory)
         : timer_(ex), memory_(memory) {}
 
+    /**
+     * Calls `fire` on the executor once `delay` has passed, in place of a pending expiry.
+     *
+     * @param delay How long to wait.
+     * @param fire What to call when the timer expires; never called once it is cancelled.
+     */
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
         timer_.expires_after(delay);
         timer_.async_wait(boost::asio::bind_allocator(
@@ -52,6 +69,7 @@ public:
             }));
     }
 
+    /** Cancels the pending expiry, if any, whose handler is then never called. */
     void cancel() override { timer_.cancel(); }
 
 private:
@@ -64,8 +82,12 @@ private:
 // remain.
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
-/** What a native backend makes its peer connections with, beside the room's
- * `room_config::ice_servers`. */
+/**
+ * What a native backend makes its peer connections with, beside the room's
+ * `room_config::ice_servers`.
+ *
+ * @see "The native backend", in the guide.
+ */
 struct backend_config {
     /**
      * The local address every peer connection binds to, as `"127.0.0.1"`; empty means every
@@ -77,7 +99,17 @@ struct backend_config {
     std::pmr::string bind_address = {};
 };
 
-/** The native factory: one per application, beside the executor it runs on. */
+/**
+ * The native factory: one per application, beside the executor it runs on.
+ *
+ * It makes each object in the memory resource the room gives it, `room_config::memory`: the
+ * WebSockets, peer connections, data channels, timers and sealers, their handlers, and the frames
+ * and texts they hand to the room. What libdatachannel and OpenSSL allocate stays theirs. Its
+ * peer connections need exceptions: without them (`WEBCPP_TRYSTERO_NO_EXCEPTIONS`) it does not
+ * exist.
+ *
+ * @see "The native backend", in the guide.
+ */
 class backend : public trystero::backend::factory {
 public:
     /**
@@ -85,6 +117,8 @@ public:
      *
      * @param ex The executor everything the backend reports runs on.
      * @param config What its peer connections are made with; the default binds them to no address.
+     * @throws std::exception A `boost::system::system_error` when OpenSSL cannot make the TLS
+     * context or load the system's certificate authorities.
      */
     explicit backend(boost::asio::any_io_executor ex, backend_config config = {})
         : ex_(std::move(ex)),
@@ -94,33 +128,75 @@ public:
         tls_.set_verify_mode(boost::asio::ssl::verify_peer);
     }
 
-    /** The TLS configuration of the relays' connections, for an application with authorities of its
-     * own. */
+    /**
+     * The TLS configuration of the relays' connections, for an application with authorities of its
+     * own.
+     *
+     * @return The context every `wss://` connection of the backend is made with.
+     */
     boost::asio::ssl::context& tls_context() { return tls_; }
 
+    /**
+     * Opens a WebSocket to a relay over Boost.Beast, with @ref connect_websocket.
+     *
+     * @param url The relay's `ws://` or `wss://` URL, read during the call.
+     * @param h What the WebSocket reports.
+     * @param memory The room's resource, which the WebSocket, its handlers and its queued texts are
+     * allocated in.
+     * @return The WebSocket.
+     */
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
         return connect_websocket(ex_, tls_, url, std::move(h), memory);
     }
 
+    /**
+     * Makes a peer connection of libdatachannel, bound to `backend_config::bind_address`.
+     *
+     * @param servers The STUN and TURN servers, read during the call.
+     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * texts are allocated in.
+     * @return The connection.
+     * @throws std::exception What libdatachannel throws when it cannot make the connection.
+     */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
         return peer_connection::create(ex_, servers, config_.bind_address, memory);
     }
 
+    /**
+     * Makes an Asio timer on the backend's executor.
+     *
+     * @param memory The room's resource, which the timer and its waits are allocated in.
+     * @return The timer, not started.
+     */
     std::shared_ptr<trystero::backend::timer> make_timer(
         std::pmr::memory_resource* memory) override {
         return std::allocate_shared<timer>(std::pmr::polymorphic_allocator<>(memory), ex_, memory);
     }
 
+    /**
+     * Makes a sealer over OpenSSL's AES-256-GCM.
+     *
+     * @param key The raw AES-256 key.
+     * @param memory The room's resource, which the sealer, its texts and its completions are
+     * allocated in.
+     * @return The sealer.
+     */
     std::shared_ptr<trystero::backend::sealer> make_sealer(
         std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
         return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), ex_, key,
                                             memory);
     }
 
+    /**
+     * Fills `out` from OpenSSL's random generator; the program aborts when it has no secure
+     * randomness.
+     *
+     * @param out The bytes to fill.
+     */
     void random(std::span<std::uint8_t> out) override {
         const auto size = static_cast<int>(out.size());
         if (RAND_bytes(out.data(), size) != 1) {  // lint-world: Trystero's randomness
@@ -128,11 +204,21 @@ public:
         }
     }
 
+    /**
+     * Seconds since the Unix epoch, from the system's wall clock.
+     *
+     * @return The current time, in whole seconds.
+     */
     std::int64_t unix_seconds() override {
         const auto now = std::chrono::system_clock::now();  // lint-world: Nostr's created_at
         return std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     }
 
+    /**
+     * Milliseconds from the standard library's steady clock.
+     *
+     * @return The current time, in milliseconds since the clock's epoch.
+     */
     double now_ms() override {
         const auto now = std::chrono::steady_clock::now();  // lint-world: Trystero's timing
         return std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();

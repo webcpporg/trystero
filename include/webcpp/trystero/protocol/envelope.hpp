@@ -20,23 +20,24 @@
 
 namespace webcpp::trystero::protocol {
 
-/**
- * The room envelope: every data channel message names the room it belongs to, so one connection can
- * serve several rooms of the same app.
- *
- * | Frame    | Bytes                                                        |
- * | room     | 1, token length (uint16 BE), token, action frame             |
- * | presence | 2, present (0 or 1), token length (uint16 BE), token         |
- */
+/** The largest action frame, Trystero's `maxActionFrameBytes`: 16 KiB. */
 inline constexpr std::size_t max_action_frame_bytes = std::size_t{16} * 1024;
+/** The longest room token a room frame may carry, in bytes. */
 inline constexpr std::size_t max_room_token_bytes = 128;
+/** The largest room frame, Trystero's `maxRoomFrameBytes`: an action frame in its envelope. */
 inline constexpr std::size_t max_room_frame_bytes =
     max_action_frame_bytes + 3 + max_room_token_bytes;
 
 /**
  * Starts a room frame in an empty buffer: the header for `token`, with room reserved for
- * `payload_size` more bytes. The action frame is then appended in place, so the frame is allocated
- * and written once.
+ * `payload_size` more bytes.
+ *
+ * The action frame is then appended in place, so the frame is allocated and written once.
+ *
+ * @param token The room's token, @ref room_token's.
+ * @param payload_size The size of the action frame that will follow.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame's header.
  */
 inline bytes begin_room_frame(
     std::string_view token, std::size_t payload_size,
@@ -50,6 +51,14 @@ inline bytes begin_room_frame(
     return out;
 }
 
+/**
+ * A room frame, Trystero's `wrapRoomFrame`: an action frame in the envelope of its room.
+ *
+ * @param token The room's token, @ref room_token's.
+ * @param payload The action frame.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame.
+ */
 inline bytes room_frame(std::string_view token, std::span<const std::uint8_t> payload,
                         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     auto out = begin_room_frame(token, payload.size(), memory);
@@ -57,6 +66,14 @@ inline bytes room_frame(std::string_view token, std::span<const std::uint8_t> pa
     return out;
 }
 
+/**
+ * A presence frame, Trystero's `wrapRoomPresenceFrame`: whether this peer is in a room.
+ *
+ * @param token The room's token, @ref room_token's.
+ * @param present Whether the peer joins (true) or leaves (false) the room.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame.
+ */
 inline bytes presence_frame(std::string_view token, bool present,
                             std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
@@ -69,16 +86,39 @@ inline bytes presence_frame(std::string_view token, bool present,
     return out;
 }
 
-/** A decoded envelope, as views into the frame. */
+/**
+ * A decoded room envelope, as views into the frame: every data channel message names the room it
+ * belongs to, so one connection can serve several rooms of the same app.
+ *
+ * | Frame    | Bytes                                                        |
+ * | room     | 1, token length (uint16 BE), token, action frame             |
+ * | presence | 2, present (0 or 1), token length (uint16 BE), token         |
+ *
+ * @see "The protocol", in the guide.
+ */
 struct envelope {
-    enum class kind { room, presence };
+    /** The kind of a frame, its first byte. */
+    enum class kind {
+        /** A room frame, 1: an action frame for the room. */
+        room,
+        /** A presence frame, 2: the peer joins or leaves the room. */
+        presence,
+    };
+    /** The frame's kind. */
     kind type = kind::room;
+    /** The token of the room the frame is for. */
     std::string_view token;
+    /** Whether the peer is in the room, for `kind::presence`. */
     bool present = false;
-    std::span<const std::uint8_t> payload;  // the action frame, for `kind::room`
+    /** The action frame, for `kind::room`. */
+    std::span<const std::uint8_t> payload;
 };
 
-/** The envelope of a frame, or nothing when the frame is malformed; Trystero drops the peer then.
+/**
+ * Decodes the envelope of a frame, with the checks of Trystero's `unwrapFrame`.
+ *
+ * @param frame A data channel message.
+ * @return The envelope, or nothing when the frame is malformed; Trystero drops the peer then.
  */
 inline std::optional<envelope> decode_envelope(std::span<const std::uint8_t> frame) {
     if (frame.size() < 3 || frame.size() > max_room_frame_bytes) {

@@ -42,25 +42,38 @@ namespace webcpp::trystero::detail {
  */
 struct incoming {  // NOLINT(bugprone-exception-escape)
 
+    /** Where a part of the message is in its buffer. */
     struct range {
+        /** The part's first byte, from the buffer's start. */
         std::size_t offset = 0;
+        /** The part's size in bytes. */
         std::size_t size = 0;
     };
 
+    /** The sender's id. */
     std::pmr::string peer = {};
+    /** The payload's format, which its frame carried. */
     protocol::payload_format format = protocol::payload_format::text;
+    /** The one buffer the message owns: its frame, or the payload its transfer assembled. */
     backend::bytes buffer = {};
+    /** Where the action's name is in the buffer. */
     range name_at = {};
+    /** Where the payload is in the buffer. */
     range payload_at = {};
-    range metadata_at = {};  // JSON text, or empty
+    /** Where the metadata, JSON text or empty, is in the buffer. */
+    range metadata_at = {};
+    /** The receiving room's JSON storage, which a JSON payload is parsed into. */
     boost::json::storage_ptr json = {};
 
+    /** The action's name, a view into the buffer. */
     [[nodiscard]] std::string_view name() const { return text(name_at); }
 
+    /** The payload, a view into the buffer. */
     [[nodiscard]] std::span<const std::uint8_t> payload() const {
         return std::span(buffer).subspan(payload_at.offset, payload_at.size);
     }
 
+    /** The metadata, a view into the buffer. */
     [[nodiscard]] std::string_view metadata() const { return text(metadata_at); }
 
     /** The payload as a buffer of its own, in the buffer's resource: the buffer itself when the
@@ -82,9 +95,10 @@ private:
 
 /** A payload to send: the bytes, and what keeps them alive while a transfer is in flight. */
 struct payload_ref {
+    /** The payload's bytes. */
     std::span<const std::uint8_t> data;
-    std::shared_ptr<const void>
-        owner;  // may be empty for a payload that travels inline, which is sent at once
+    /** What keeps the bytes alive; may be empty for a payload that travels inline, sent at once. */
+    std::shared_ptr<const void> owner;
 };
 
 /** What the wire sends through: one peer's data channel, which `detail::peer_link` is. */
@@ -92,6 +106,7 @@ class channel_link {
 public:
     /** Sends a room frame; false when the channel is no longer open. */
     virtual bool send(std::span<const std::uint8_t> room_frame) = 0;
+    /** The bytes the channel buffers, not yet sent; 0 once it ended. */
     [[nodiscard]] virtual std::size_t buffered_amount() const = 0;
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
      * it closes first. */
@@ -124,18 +139,22 @@ class action_wire : public std::enable_shared_from_this<action_wire> {
 public:
     /** How the wire reaches one peer's data channel, for as long as the channel is there. */
     struct link {
+        /** The peer's channel, gone once the peer is. */
         std::weak_ptr<channel_link> target;
 
+        /** Sends a room frame; false when the channel is gone or no longer open. */
         [[nodiscard]] bool send(std::span<const std::uint8_t> frame) const {
             const auto t = target.lock();
             return t && t->send(frame);
         }
 
+        /** The bytes the channel buffers; 0 when it is gone. */
         [[nodiscard]] std::size_t buffered_amount() const {
             const auto t = target.lock();
             return t ? t->buffered_amount() : std::size_t{0};
         }
 
+        /** Calls `done(true)` once the channel drained, `done(false)` if it is gone or closes. */
         void wait_drained(handler<void(bool)> done) const {
             if (const auto t = target.lock()) {
                 t->wait_drained(std::move(done));
@@ -145,14 +164,19 @@ public:
         }
     };
 
+    /** What the wire asks of its room. */
     struct callbacks {
+        /** The link to a peer, active or, with `include_pending`, still in its handshake. */
         handler<std::optional<link>(std::string_view peer, bool include_pending)> find_link;
         /** Views of the peers' ids, valid for the duration of the call. */
         handler<std::pmr::vector<std::string_view>(bool include_pending)> peers;
-        handler<bool(std::string_view peer, std::string_view name)>
-            may_receive;  // the handshake gate
+        /** Whether a peer's message of an action may be received now: the handshake gate. */
+        handler<bool(std::string_view peer, std::string_view name)> may_receive;
+        /** Whether an action has a receiver in the room: it was made, or it is internal. */
         handler<bool(std::string_view name)> has_receiver;
+        /** Hands a received message to the room. */
         handler<void(incoming&&)> deliver;
+        /** Drops a peer that broke the protocol, with the reason. */
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
     };
 
@@ -260,6 +284,7 @@ public:
     /** An action got a receiver: deliver what waited for it and accept its transfers. */
     void receiver_added() { drain(); }
 
+    /** Fails a peer's transfers with `reason` and forgets what it sent, once it is gone. */
     void clear_peer(std::string_view peer, boost::system::error_code reason) {
         if (const auto it = outgoing_.find(peer); it != outgoing_.end()) {
             auto transfers = std::move(it->second);

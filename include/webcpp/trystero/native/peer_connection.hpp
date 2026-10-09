@@ -38,9 +38,12 @@
 namespace webcpp::trystero::native {
 
 /**
- * A peer connection of libdatachannel, with its negotiation driven by the signaling: automatic
- * negotiation is off, so an offer or an answer exists only when `set_local_description` asks for
- * one, as in the browser.
+ * A peer connection of libdatachannel, the native `RTCPeerConnection`, with its negotiation driven
+ * by the signaling.
+ *
+ * Automatic negotiation is off, so an offer or an answer exists only when `set_local_description`
+ * asks for one, as in the browser. It exists only with exceptions: libdatachannel reports errors
+ * by throwing.
  *
  * | libdatachannel              | Here                                                            |
  * | events, on its own threads  | posted to the executor, through a weak reference                |
@@ -50,6 +53,8 @@ namespace webcpp::trystero::native {
  * Tip: the connection, its handlers and the texts it hands to the room are in the room's resource;
  * libdatachannel's own objects, and the `std::string` and `rtc::Description` its API takes and
  * returns, are libdatachannel's.
+ *
+ * @see "The native backend", in the guide.
  */
 class peer_connection : public backend::peer_connection,
                         public std::enable_shared_from_this<peer_connection> {
@@ -58,6 +63,7 @@ class peer_connection : public backend::peer_connection,
     };
 
 public:
+    /** What `set_local_description` completes with: an error, or the type and the SDP. */
     using description_handler =
         handler<void(backend::error_code, std::string_view, std::string_view)>;
 
@@ -76,6 +82,7 @@ public:
      * interface but the loopback.
      * @param memory The resource the connection, its handlers and its texts are allocated in.
      * @return The new connection.
+     * @throws std::exception What libdatachannel throws when it cannot make the connection.
      */
     static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex,
                                                    std::span<const backend::ice_server> servers,
@@ -105,6 +112,13 @@ public:
         return self;
     }
 
+    /**
+     * Constructs the wrapper; only `create` can, which then takes over the connection's events.
+     *
+     * @param ex The executor every handler of the connection runs on.
+     * @param pc libdatachannel's connection.
+     * @param memory The resource its handlers and its texts are allocated in.
+     */
     peer_connection(private_tag /*tag*/, boost::asio::any_io_executor ex,
                     std::shared_ptr<rtc::PeerConnection> pc, std::pmr::memory_resource* memory)
         : ex_(std::move(ex)),
@@ -113,21 +127,40 @@ public:
           json_(memory),
           pending_local_(memory) {}
 
+    /** Destroys the wrapper, which closes the connection without reporting the close. */
     ~peer_connection() override {
         pc_->resetCallbacks();
         pc_->close();
     }
 
-    /** The handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call. */
+    /**
+     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
+     * outlives the call.
+     *
+     * @param h The new handlers, kept in the connection's resource.
+     */
     void set_handlers(handlers h) override {
         h_ = std::allocate_shared<handlers>(allocator(), std::move(h));
     }
 
+    /**
+     * Opens a data channel.
+     *
+     * @param label The channel's label, read during the call.
+     * @return The channel, made in the connection's resource.
+     * @throws std::exception What libdatachannel throws when it cannot open the channel, as on a
+     * closed connection.
+     */
     std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
         return data_channel::create(ex_, pc_->createDataChannel(std::string(label)), memory_);
     }
 
+    /**
+     * Creates the offer or the answer the signaling state calls for and applies it.
+     *
+     * @param done Called on the executor with the description's type and SDP, or with
+     * `error::backend_failure` when libdatachannel refuses.
+     */
     void set_local_description(description_handler done) override {
         pending_local_.push_back(std::move(done));
         try {
@@ -141,6 +174,14 @@ public:
         }
     }
 
+    /**
+     * Applies the remote peer's offer or answer.
+     *
+     * @param type "offer" or "answer", read during the call.
+     * @param sdp The description's SDP, read during the call.
+     * @param done Called on the executor once it is applied, or with `error::backend_failure` when
+     * libdatachannel refuses it.
+     */
     void set_remote_description(std::string_view type, std::string_view sdp,
                                 handler<void(backend::error_code)> done) override {
         backend::error_code ec;
@@ -152,6 +193,13 @@ public:
         post([done = std::move(done), ec]() mutable { done(ec); });
     }
 
+    /**
+     * Adds a remote ICE candidate; the empty candidate that ends the remote gathering adds none.
+     *
+     * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
+     * @param done Called on the executor once it is added, or with `error::backend_failure` when
+     * the JSON has no candidate or libdatachannel refuses it.
+     */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
         backend::error_code ec;
@@ -178,12 +226,22 @@ public:
         post([done = std::move(done), ec]() mutable { done(ec); });
     }
 
+    /**
+     * Whether a remote description was applied.
+     *
+     * @return Whether libdatachannel's connection has a remote description.
+     */
     bool has_remote_description() const override { return pc_->remoteDescription().has_value(); }
 
+    /** Closes the connection and its channels. */
     void close() override { pc_->close(); }
 
-    /** libdatachannel's own `rtc::PeerConnection`: what media will be added to (the documentation's
-     * roadmap). */
+    /**
+     * libdatachannel's own `rtc::PeerConnection`, what media will be added to.
+     *
+     * @return The connection.
+     * @see "Roadmap", in the guide.
+     */
     const std::shared_ptr<rtc::PeerConnection>& native_handle() const { return pc_; }
 
 private:

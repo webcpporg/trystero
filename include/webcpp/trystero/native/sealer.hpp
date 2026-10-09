@@ -31,12 +31,16 @@ namespace webcpp::trystero::native {
 
 namespace detail {
 
+/** Frees an OpenSSL cipher context. */
 struct cipher_context_deleter {
+    /** Frees `c`. */
     void operator()(EVP_CIPHER_CTX* c) const { EVP_CIPHER_CTX_free(c); }
 };
 
+/** An OpenSSL cipher context, freed with its owner. */
 using cipher_context = std::unique_ptr<EVP_CIPHER_CTX, cipher_context_deleter>;
 
+/** The size of AES-GCM's authentication tag, which WebCrypto appends to the ciphertext. */
 inline constexpr std::size_t gcm_tag_size = 16;
 
 /** AES-256-GCM with a 16-byte IV, the ciphertext followed by its 16-byte tag: what WebCrypto's
@@ -84,19 +88,39 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
 }  // namespace detail
 
 /**
- * AES-GCM under one room key, through OpenSSL, in Trystero's sealed text form. It works
- * synchronously and posts each completion to the executor, as the backend's contract asks: a
- * handler never runs inside the call that started it. Its texts and completions are in the room's
- * resource; OpenSSL's cipher context is OpenSSL's.
+ * AES-GCM under one room key, through OpenSSL, in Trystero's sealed text form, what Trystero's
+ * `encrypt` and `decrypt` do with `crypto.subtle`.
+ *
+ * It works synchronously and posts each completion to the executor, as the backend's contract
+ * asks: a handler never runs inside the call that started it. Its texts and completions are in the
+ * room's resource; OpenSSL's cipher context is OpenSSL's. It needs no exceptions.
+ *
+ * @see "The native backend", in the guide.
  */
 class sealer : public backend::sealer {
 public:
+    /** What a seal or an open completes with: an error, or the text, a view valid for the call. */
     using done_handler = handler<void(backend::error_code, std::string_view)>;
 
+    /**
+     * Constructs a sealer under a room's key.
+     *
+     * @param ex The executor its completions are posted to.
+     * @param key The raw AES-256 key, `protocol::seal_key`'s.
+     * @param memory The room's resource, which its texts and its completions are allocated in; it
+     * must outlive the completions it posts.
+     */
     sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key,
            std::pmr::memory_resource* memory)
         : ex_(std::move(ex)), key_(key), memory_(memory) {}
 
+    /**
+     * Seals a text under a fresh IV from OpenSSL's random generator.
+     *
+     * @param plaintext The text, read during the call.
+     * @param done Called on the executor with the sealed text, or with `error::backend_failure`
+     * when OpenSSL fails.
+     */
     void seal(std::string_view plaintext, done_handler done) override {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
         if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) {  // lint-world: a seal's IV
@@ -114,6 +138,13 @@ public:
         complete(std::move(done), {}, protocol::format_sealed(iv, *cipher, memory_));
     }
 
+    /**
+     * Opens a sealed text.
+     *
+     * @param sealed The sealed text, read during the call.
+     * @param done Called on the executor with the plaintext, or with `error::wrong_password` when
+     * the text was sealed under another key or is not a sealed text.
+     */
     void open(std::string_view sealed, done_handler done) override {
         const auto parts = protocol::parse_sealed(sealed, memory_);
         const auto plain = parts && !parts->iv.empty()

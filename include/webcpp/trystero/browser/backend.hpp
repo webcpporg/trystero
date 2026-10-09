@@ -38,6 +38,7 @@
  */
 namespace webcpp::trystero::browser {
 
+/** A JavaScript value, embind's `emscripten::val`. */
 using emscripten::val;
 
 namespace detail {
@@ -71,18 +72,37 @@ inline void then(event_loop& loop, const val& promise, handler<void(bool, val)> 
 
 }  // namespace detail
 
+/**
+ * A timer over the page's `setTimeout`.
+ *
+ * @see "The browser backend", in the guide.
+ */
 class timer : public backend::timer {
 public:
+    /**
+     * Constructs a timer, not started, registered with the loop.
+     *
+     * @param loop The page's loop, which must outlive the timer.
+     * @param memory The room's resource, which the timer's registration and handler are allocated
+     * in.
+     */
     timer(event_loop& loop, std::pmr::memory_resource* memory)
         : loop_(loop),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
                         [this](int /*slot*/, const val& /*value*/) { on_fire(); }})) {}
 
+    /** Destroys the timer, which clears a pending `setTimeout`. */
     ~timer() override {
         cancel();
         loop_.remove(id_);
     }
 
+    /**
+     * Calls `fire` once `delay` has passed, through `setTimeout`, in place of a pending expiry.
+     *
+     * @param delay How long to wait.
+     * @param fire What to call when the timer expires; never called once it is cancelled.
+     */
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
         cancel();
         fire_ = std::move(fire);
@@ -90,6 +110,7 @@ public:
             loop_.handler(id_, 0), val(static_cast<double>(delay.count())), val::undefined());
     }
 
+    /** Clears the pending `setTimeout`, if any, whose handler is then never called. */
     void cancel() override {
         if (handle_.isUndefined()) {
             return;
@@ -114,8 +135,22 @@ private:
     handler<void()> fire_;
 };
 
+/**
+ * A WebSocket over the page's `WebSocket`.
+ *
+ * @see "The browser backend", in the guide.
+ */
 class websocket : public backend::websocket {
 public:
+    /**
+     * Opens a WebSocket to `url`.
+     *
+     * @param loop The page's loop, which must outlive the WebSocket.
+     * @param url The relay's URL, read during the call.
+     * @param h What the WebSocket reports.
+     * @param memory The room's resource, which the WebSocket's handlers, registration and received
+     * texts are allocated in.
+     */
     websocket(event_loop& loop, std::string_view url, handlers h, std::pmr::memory_resource* memory)
         : loop_(loop),
           memory_(memory),
@@ -129,6 +164,7 @@ public:
         socket_.set("onclose", loop_.handler(id_, 2));
     }
 
+    /** Destroys the WebSocket, which closes it without reporting the close. */
     ~websocket() override {
         loop_.remove(id_);
         for (const char* name : {"onopen", "onmessage", "onclose"}) {
@@ -137,12 +173,18 @@ public:
         socket_.call<void>("close");
     }
 
+    /**
+     * Sends a text message when the socket is open, its `readyState` 1; otherwise drops it.
+     *
+     * @param text The message, read during the call.
+     */
     void send(std::string_view text) override {
         if (socket_["readyState"].as<int>() == 1) {
             socket_.call<void>("send", loop_.text(text));
         }
     }
 
+    /** Closes the socket, which the handler `close` reports. */
     void close() override { socket_.call<void>("close"); }
 
 private:
@@ -173,8 +215,21 @@ private:
     val socket_ = val::undefined();
 };
 
+/**
+ * A data channel over the page's `RTCDataChannel`, its messages received as `ArrayBuffer`s.
+ *
+ * @see "The browser backend", in the guide.
+ */
 class data_channel : public backend::data_channel {
 public:
+    /**
+     * Wraps a channel of the page, and takes over its events.
+     *
+     * @param loop The page's loop, which must outlive the channel.
+     * @param channel The `RTCDataChannel`.
+     * @param memory The room's resource, which the channel's handlers, registration and received
+     * frames are allocated in.
+     */
     data_channel(event_loop& loop, val channel, std::pmr::memory_resource* memory)
         : loop_(loop),
           memory_(memory),
@@ -189,6 +244,7 @@ public:
         channel_.set("onbufferedamountlow", loop_.handler(id_, 3));
     }
 
+    /** Destroys the wrapper, which closes the channel without reporting the close. */
     ~data_channel() override {
         loop_.remove(id_);
         for (const char* name : {"onopen", "onmessage", "onclose", "onbufferedamountlow"}) {
@@ -197,27 +253,47 @@ public:
         channel_.call<void>("close");
     }
 
-    /** The handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call. */
+    /**
+     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
+     * outlives the call.
+     *
+     * @param h The new handlers, kept in the channel's resource.
+     */
     void set_handlers(handlers h) override {
         h_ = std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory_),
                                             std::move(h));
     }
 
+    /**
+     * Whether the channel is open.
+     *
+     * @return Whether its `readyState` is "open".
+     */
     [[nodiscard]] bool is_open() const override {
         return channel_["readyState"].strictlyEquals(val("open"));
     }
 
+    /**
+     * Sends a binary message, copied into a new `Uint8Array`, when the channel is open.
+     *
+     * @param frame The message, read during the call.
+     */
     void send(std::span<const std::uint8_t> frame) override {
         if (is_open()) {
             channel_.call<void>("send", detail::to_js(frame));
         }
     }
 
+    /**
+     * The bytes queued to send.
+     *
+     * @return Its `bufferedAmount`.
+     */
     [[nodiscard]] std::size_t buffered_amount() const override {
         return static_cast<std::size_t>(channel_["bufferedAmount"].as<double>());
     }
 
+    /** Closes the channel, which the handler `close` reports. */
     void close() override { channel_.call<void>("close"); }
 
 private:
@@ -256,9 +332,24 @@ private:
     std::shared_ptr<handlers> h_;
 };
 
+/**
+ * A peer connection over the page's `RTCPeerConnection`.
+ *
+ * The state it reports merges its `connectionState` and its `iceConnectionState`.
+ *
+ * @see "The browser backend", in the guide.
+ */
 class peer_connection : public backend::peer_connection,
                         public std::enable_shared_from_this<peer_connection> {
 public:
+    /**
+     * Makes an `RTCPeerConnection` with `servers` as its `iceServers`.
+     *
+     * @param loop The page's loop, which must outlive the connection.
+     * @param servers The STUN and TURN servers, read during the call.
+     * @param memory The room's resource, which the connection's handlers, registration, channels
+     * and texts are allocated in.
+     */
     peer_connection(event_loop& loop, std::span<const backend::ice_server> servers,
                     std::pmr::memory_resource* memory)
         : loop_(loop),
@@ -290,6 +381,7 @@ public:
         pc_.set("oniceconnectionstatechange", loop_.handler(id_, 2));
     }
 
+    /** Destroys the wrapper, which closes the connection without reporting the close. */
     ~peer_connection() override {
         loop_.remove(id_);
         for (const char* name : {
@@ -303,17 +395,34 @@ public:
         pc_.call<void>("close");
     }
 
-    /** The handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call. */
+    /**
+     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
+     * outlives the call.
+     *
+     * @param h The new handlers, kept in the connection's resource.
+     */
     void set_handlers(handlers h) override {
         h_ = std::allocate_shared<handlers>(allocator(), std::move(h));
     }
 
+    /**
+     * Opens a data channel with `createDataChannel()`.
+     *
+     * @param label The channel's label, read during the call.
+     * @return The channel, made in the connection's resource.
+     */
     std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
         return std::allocate_shared<data_channel>(
             allocator(), loop_, pc_.call<val>("createDataChannel", loop_.text(label)), memory_);
     }
 
+    /**
+     * Creates and applies the offer or the answer the signaling state calls for, with
+     * `setLocalDescription()`.
+     *
+     * @param done Called once the promise settles, with the `localDescription`'s type and SDP, or
+     * with `error::backend_failure` when it is rejected or the connection is gone.
+     */
     void set_local_description(
         handler<void(backend::error_code, std::string_view, std::string_view)> done) override {
         const std::weak_ptr<peer_connection> weak = shared_from_this();
@@ -333,6 +442,14 @@ public:
                      memory_);
     }
 
+    /**
+     * Applies the remote peer's offer or answer, with `setRemoteDescription()`.
+     *
+     * @param type "offer" or "answer", read during the call.
+     * @param sdp The description's SDP, read during the call.
+     * @param done Called once the promise settles, or with `error::backend_failure` when it is
+     * rejected.
+     */
     void set_remote_description(std::string_view type, std::string_view sdp,
                                 handler<void(backend::error_code)> done) override {
         val description = val::object();
@@ -347,6 +464,13 @@ public:
             memory_);
     }
 
+    /**
+     * Adds a remote ICE candidate, with `addIceCandidate()`.
+     *
+     * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
+     * @param done Called once the promise settles, or with `error::backend_failure` when it is
+     * rejected.
+     */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
         const val candidate = val::global("JSON").call<val>("parse", loop_.text(candidate_json));
@@ -359,12 +483,22 @@ public:
             memory_);
     }
 
+    /**
+     * Whether a remote description was applied.
+     *
+     * @return Whether its `remoteDescription` is not null.
+     */
     bool has_remote_description() const override { return !pc_["remoteDescription"].isNull(); }
 
+    /** Closes the connection and its channels. */
     void close() override { pc_.call<void>("close"); }
 
-    /** The browser's own `RTCPeerConnection`: what media will be added to (the documentation's
-     * roadmap). */
+    /**
+     * The browser's own `RTCPeerConnection`, what media will be added to.
+     *
+     * @return The connection.
+     * @see "Roadmap", in the guide.
+     */
     const val& native_handle() const { return pc_; }
 
 private:
@@ -427,17 +561,38 @@ private:
 };
 
 /**
- * AES-GCM through `crypto.subtle`, under a key imported once. The text is copied into JavaScript
- * during the call; an operation that arrives while the key is still being imported waits with a
- * copy of its text, in the room's resource.
+ * AES-GCM through `crypto.subtle`, under a key imported once, as Trystero's `encrypt` and `decrypt`
+ * do.
+ *
+ * The text is copied into JavaScript during the call; an operation that arrives while the key is
+ * still being imported waits with a copy of its text, in the room's resource. Without
+ * `crypto.subtle`, outside a secure context, every operation fails.
+ *
+ * @see "The browser backend", in the guide.
  */
 class sealer : public backend::sealer, public std::enable_shared_from_this<sealer> {
 public:
+    /** What a seal or an open completes with: an error, or the text, a view valid for the call. */
     using done_handler = handler<void(backend::error_code, std::string_view)>;
 
+    /**
+     * Constructs a sealer under a room's key, which it imports on its first operation.
+     *
+     * @param loop The page's loop, which must outlive the sealer's pending promises.
+     * @param key The raw AES-256 key, `protocol::seal_key`'s.
+     * @param memory The room's resource, which its texts, its waiting operations and its
+     * completions are allocated in.
+     */
     sealer(event_loop& loop, std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory)
         : loop_(loop), raw_key_(key), memory_(memory), waiting_(memory) {}
 
+    /**
+     * Seals a text under a fresh random IV, with `crypto.subtle.encrypt`.
+     *
+     * @param plaintext The text, read during the call.
+     * @param done Called with the sealed text, or with `error::backend_failure` when the key
+     * cannot be imported or the encryption fails.
+     */
     void seal(std::string_view plaintext, done_handler done) override {
         if (state_ == key_state::ready) {
             encrypt(plaintext, std::move(done));
@@ -454,6 +609,14 @@ public:
                       }});
     }
 
+    /**
+     * Opens a sealed text, with `crypto.subtle.decrypt`.
+     *
+     * @param sealed The sealed text, read during the call.
+     * @param done Called with the plaintext, or with `error::wrong_password` when the text was
+     * sealed under another key or is not a sealed text, and `error::backend_failure` when the key
+     * cannot be imported.
+     */
     void open(std::string_view sealed, done_handler done) override {
         if (state_ == key_state::ready) {
             decrypt(sealed, std::move(done));
@@ -574,11 +737,34 @@ private:
     std::pmr::deque<handler<void(sealer&, bool)>> waiting_;
 };
 
-/** The browser's factory: one per page, beside the page's `event_loop`. */
+/**
+ * The browser's factory: one per page, beside the page's `event_loop`.
+ *
+ * It makes each object in the memory resource the room gives it, `room_config::memory`: the
+ * objects, their handlers and registrations, and the frames and texts they hand to the room. What
+ * `emscripten::val` holds is in the JavaScript heap. It needs a secure context, where
+ * `crypto.subtle` exists.
+ *
+ * @see "The browser backend", in the guide.
+ */
 class backend : public trystero::backend::factory {
 public:
+    /**
+     * Constructs the page's backend.
+     *
+     * @param loop The page's loop, which must outlive the backend and every object it makes.
+     */
     explicit backend(event_loop& loop) : loop_(loop) {}
 
+    /**
+     * Opens a WebSocket to a relay, with the page's `WebSocket`.
+     *
+     * @param url The relay's URL, read during the call.
+     * @param h What the WebSocket reports.
+     * @param memory The room's resource, which the WebSocket, its handlers and its texts are
+     * allocated in.
+     * @return The WebSocket.
+     */
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
@@ -586,6 +772,14 @@ public:
                                                url, std::move(h), memory);
     }
 
+    /**
+     * Makes a peer connection, with the page's `RTCPeerConnection`.
+     *
+     * @param servers The STUN and TURN servers, read during the call.
+     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * texts are allocated in.
+     * @return The connection.
+     */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
@@ -593,18 +787,37 @@ public:
                                                      loop_, servers, memory);
     }
 
+    /**
+     * Makes a timer, over `setTimeout`.
+     *
+     * @param memory The room's resource, which the timer and its handler are allocated in.
+     * @return The timer, not started.
+     */
     std::shared_ptr<trystero::backend::timer> make_timer(
         std::pmr::memory_resource* memory) override {
         return std::allocate_shared<timer>(std::pmr::polymorphic_allocator<>(memory), loop_,
                                            memory);
     }
 
+    /**
+     * Makes a sealer, over `crypto.subtle`.
+     *
+     * @param key The raw AES-256 key.
+     * @param memory The room's resource, which the sealer, its texts and its completions are
+     * allocated in.
+     * @return The sealer.
+     */
     std::shared_ptr<trystero::backend::sealer> make_sealer(
         std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
         return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), loop_, key,
                                             memory);
     }
 
+    /**
+     * Fills `out` with the page's entropy, which Emscripten draws from `crypto.getRandomValues`.
+     *
+     * @param out The bytes to fill.
+     */
     void random(std::span<std::uint8_t> out) override {
         for (std::size_t at = 0; at < out.size(); at += 256) {
             // Each call fills at most 256 bytes.
@@ -613,11 +826,21 @@ public:
         }
     }
 
+    /**
+     * Seconds since the Unix epoch, from `Date.now()`.
+     *
+     * @return The current time, in whole seconds.
+     */
     std::int64_t unix_seconds() override {
         return static_cast<std::int64_t>(
             std::floor(val::global("Date").call<double>("now") / 1000));
     }
 
+    /**
+     * Milliseconds from `performance.now()`.
+     *
+     * @return The current time, in milliseconds since the page's time origin.
+     */
     double now_ms() override { return val::global("performance").call<double>("now"); }
 
 private:

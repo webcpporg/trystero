@@ -21,7 +21,9 @@
 
 namespace webcpp::trystero::protocol {
 
-/** Trystero 0.26's default Nostr relays, in its order: the order is part of the relay derivation.
+/**
+ * Trystero 0.26's default Nostr relays, its `defaultRelayUrls`, in its order: the order is part of
+ * the relay derivation.
  */
 inline constexpr std::array<std::string_view, 29> default_nostr_relays{
     "wss://0x-nostr-relay.fly.dev",
@@ -57,8 +59,14 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
 
 /**
  * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks
- * the same order. Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures
- * check it.
+ * the same order.
+ *
+ * Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
+ *
+ * @tparam Sequence A sequence with `size()` and random access, as `std::pmr::vector`.
+ * @param items The items, shuffled in the copy returned.
+ * @param seed The seed, @ref str_to_num of the app id for the relays.
+ * @return The items, shuffled.
  */
 template <class Sequence>
 Sequence shuffle(Sequence items, double seed) {
@@ -75,8 +83,14 @@ Sequence shuffle(Sequence items, double seed) {
 }
 
 /**
- * The relays an app uses when it names none: the defaults shuffled by the app id, the first
- * `redundancy` kept. The views are into `defaults`.
+ * The relays an app uses when it names none, Trystero's `getRelays`: the defaults shuffled by the
+ * app id, the first `redundancy` kept.
+ *
+ * @param app_id The application's id, whose @ref str_to_num seeds the shuffle.
+ * @param defaults The relays to choose from, @ref default_nostr_relays for a room.
+ * @param redundancy How many to keep.
+ * @param memory The resource the list is allocated in.
+ * @return The relays, as views into `defaults`.
  */
 inline std::pmr::vector<std::string_view> derive_relays(
     std::string_view app_id, std::span<const std::string_view> defaults, std::size_t redundancy,

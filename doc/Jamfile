@@ -1,0 +1,15 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+import webcpp ;
+
+webcpp.doc trystero : trystero.adoc ;
+
+# No single target builds every header: the reference parses them natively
+# with the native backend's target, which brings libdatachannel and OpenSSL,
+# and with Emscripten's own headers, searched after the host's, for the
+# browser backend's.
+webcpp.reference trystero : <library>/webcpp/trystero//native <library>/webcpp//emscripten-headers ;

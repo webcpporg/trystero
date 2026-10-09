@@ -1,0 +1,109 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+= trystero: serverless WebRTC rooms for {cpp}
+:toc: left
+:toclevels: 1
+:idprefix:
+:sectanchors:
+:example-caption!:
+:attribute-missing: warn
+
+trystero is a header-only port of https://github.com/dmotz/trystero[Trystero]
+0.26.0's serverless WebRTC rooms for {cpp}20, one of the libraries of
+https://github.com/webcpporg/webcpp[webcpp]. Peers find each other over
+public Nostr relays and exchange messages directly, over WebRTC data
+channels. The wire is Trystero's: a room joined from {cpp} and the same room
+joined from Trystero's JavaScript are one room.
+
+[#trystero-overview]
+== Overview
+
+What a room is, what an action is, and the two backends a room runs on.
+
+[#trystero-quick-start]
+== Quick start
+
+The smallest program that joins a room and exchanges a message.
+
+[#trystero-building]
+== Building
+
+How a b2 project uses trystero, natively and on emscripten, and the three
+libraries it needs besides Boost.
+
+[#trystero-usage]
+== Rooms and actions
+
+Joining a room, its peers and their events, actions and their transfers,
+pings, and leaving.
+
+[#trystero-allocation]
+== Allocation
+
+The memory resource of a room, what it allocates from it, and how long it
+must live.
+
+[#trystero-browser]
+== The browser backend
+
+The backend over the page's WebSockets, WebRTC and Web Crypto, through
+embind, and the event loop that runs a room's executor in the browser.
+
+[#trystero-native]
+== The native backend
+
+The backend over libdatachannel, Boost.Beast and OpenSSL, its
+configuration, and the exceptions it needs.
+
+[#trystero-protocol]
+== The protocol
+
+Trystero's wire, byte for byte: the topics, the Nostr events, the signals,
+the sealed envelope and the frames of an action.
+
+[#trystero-design]
+== Design
+
+How a room is built: the signaling over Nostr, the peer links, the actions'
+frames and the backend interface.
+
+[#trystero-guarantees]
+== Guarantees
+
+What trystero guarantees, numbered.
+
+[#trystero-testing]
+== Testing
+
+How trystero is tested, on which targets, with which commands, and where the
+test matrix is.
+
+[#reference]
+== Reference
+
+Every name trystero declares, in the namespace `webcpp::trystero` and those
+nested in it, from the Doc Comments of its headers.
+
+include::{reference}[leveloffset=+1]
+
+[appendix]
+[#trystero-differences]
+== Differences from Trystero
+
+Where trystero differs from Trystero 0.26.0, and why.
+
+[appendix]
+[#trystero-roadmap]
+== Roadmap
+
+What trystero does not port yet.
+
+[appendix]
+[#trystero-acknowledgements]
+== Acknowledgements
+
+Trystero, by Dan Motzenbecker, under the MIT license.

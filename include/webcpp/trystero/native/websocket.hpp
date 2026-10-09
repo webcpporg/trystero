@@ -41,10 +41,15 @@ namespace detail {
 
 // Its implicit move assignment may allocate: a std::pmr member copies when the two resources
 // differ, which bugprone-exception-escape, expecting every move assignment not to throw, reports.
+/** A WebSocket URL's parts, in the memory resource it was parsed into. */
 struct url_parts {  // NOLINT(bugprone-exception-escape)
+    /** Whether the scheme is `wss`. */
     bool secure = false;
+    /** The host, a name or an address. */
     std::pmr::string host;
+    /** The port, the scheme's default when the URL names none. */
     std::pmr::string port;
+    /** The path and the query, `/` when the URL has neither. */
     std::pmr::string target;
 };
 
@@ -94,12 +99,16 @@ inline std::optional<url_parts> parse_url(
 template <bool Secure>
 class websocket_session : public std::enable_shared_from_this<websocket_session<Secure>> {
 public:
+    /** Asio's TCP. */
     using tcp = boost::asio::ip::tcp;
+    /** The stream the WebSocket runs over: TLS over TCP for `wss`, TCP for `ws`. */
     using next_layer =
         std::conditional_t<Secure, boost::asio::ssl::stream<boost::beast::tcp_stream>,
                            boost::beast::tcp_stream>;
+    /** Beast's WebSocket stream. */
     using stream_type = boost::beast::websocket::stream<next_layer>;
 
+    /** A session, not started, for a parsed URL, in `memory`. */
     websocket_session(const boost::asio::any_io_executor& ex, boost::asio::ssl::context& tls,
                       url_parts url, backend::websocket::handlers h,
                       std::pmr::memory_resource* memory)
@@ -112,11 +121,13 @@ public:
               std::pmr::polymorphic_allocator<>(memory), std::move(h))),
           queue_(memory) {}
 
+    /** Starts the coroutine that connects, shakes hands and reads. */
     void start() {
         boost::asio::co_spawn(
             ex_, [self = this->shared_from_this()] { return self->run(); }, boost::asio::detached);
     }
 
+    /** Queues a text to write, when open and not closing; one write is in flight at a time. */
     void send(std::string_view text) {
         if (!open_ || closing_) {
             return;
@@ -130,6 +141,7 @@ public:
             boost::asio::detached);
     }
 
+    /** Closes with a WebSocket close frame, or drops a connection still being made. */
     void close() {
         if (closing_ || ended_) {
             return;
@@ -275,13 +287,17 @@ private:
 template <bool Secure>
 class websocket_handle : public backend::websocket {
 public:
+    /** A handle of a started session. */
     explicit websocket_handle(std::shared_ptr<websocket_session<Secure>> session)
         : session_(std::move(session)) {}
 
+    /** Abandons the session. */
     ~websocket_handle() override { session_->abandon(); }
 
+    /** Sends a text through the session. */
     void send(std::string_view text) override { session_->send(text); }
 
+    /** Closes the session. */
     void close() override { session_->close(); }
 
 private:
@@ -291,9 +307,21 @@ private:
 }  // namespace detail
 
 /**
- * Connects to a Nostr relay over Boost.Beast: `ws://` in the clear, `wss://` over TLS with `tls`,
- * which must outlive the connection and should verify peers. A URL it cannot parse reports a close,
- * as an unreachable relay does.
+ * Connects to a Nostr relay over Boost.Beast: `ws://` in the clear, `wss://` over TLS with `tls`.
+ *
+ * Writes are queued, one in flight at a time; a received message is handed over as a view of the
+ * read buffer. A URL it cannot parse reports a close, as an unreachable relay does. It needs no
+ * exceptions.
+ *
+ * @param ex The executor every handler runs on.
+ * @param tls The TLS context of `wss://`, which must outlive the connection and should verify
+ * peers.
+ * @param url The relay's URL, read during the call.
+ * @param h What the WebSocket reports.
+ * @param memory The room's resource, which the connection, its handlers and its queued texts are
+ * allocated in; Beast's stream state and the coroutines' frames are Asio's.
+ * @return The WebSocket; destroying it drops the connection without reporting it.
+ * @see "The native backend", in the guide.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(const boost::asio::any_io_executor& ex,
                                                              boost::asio::ssl::context& tls,

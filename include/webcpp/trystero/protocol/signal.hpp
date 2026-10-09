@@ -24,24 +24,40 @@
 
 namespace webcpp::trystero::protocol {
 
-/** AES-GCM IVs in Trystero are 16 bytes, not the usual 12. */
+/** The size of the IV Trystero's `encrypt` draws for AES-GCM: 16 bytes, not the usual 12. */
 inline constexpr std::size_t seal_iv_size = 16;
 
-/** The raw AES-GCM key of a room: SHA-256 of "<password>:<app>:<room>", the password empty when
- * there is none. */
+/**
+ * The raw AES-GCM key of a room, what Trystero's `genKey` imports: the SHA-256 of
+ * "<password>:<app>:<room>".
+ *
+ * @param password The room's password, empty when there is none.
+ * @param app_id The application's id.
+ * @param room_id The room's id.
+ * @return The AES-256 key.
+ */
 inline std::array<std::uint8_t, 32> seal_key(std::string_view password, std::string_view app_id,
                                              std::string_view room_id) {
     return sha256_of({password, ":", app_id, ":", room_id});
 }
 
-/** A sealed signal's parts: the IV and the ciphertext with its 16-byte tag. */
+/** A sealed signal's parts, as @ref parse_sealed reads them. */
 struct sealed_parts {
+    /** The IV, 16 bytes in what Trystero writes. */
     bytes iv;
+    /** The ciphertext, followed by its 16-byte tag. */
     bytes ciphertext;
 };
 
-/** The text form of a sealed signal: the IV's bytes in decimal joined by commas, "$", the
- * ciphertext in base64. */
+/**
+ * The text form of a sealed signal, what Trystero's `encrypt` returns: the IV's bytes in decimal
+ * joined by commas, "$", the ciphertext in base64.
+ *
+ * @param iv The IV.
+ * @param ciphertext The ciphertext with its tag, as `crypto.subtle.encrypt` returns it.
+ * @param memory The resource the text is allocated in.
+ * @return The text.
+ */
 inline std::pmr::string format_sealed(
     std::span<const std::uint8_t> iv, std::span<const std::uint8_t> ciphertext,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -58,6 +74,14 @@ inline std::pmr::string format_sealed(
     return out;
 }
 
+/**
+ * The parts of a sealed signal's text, as Trystero's `decrypt` splits it.
+ *
+ * @param text The text.
+ * @param memory The resource the parts are allocated in.
+ * @return The parts, or nothing when the text has no "$", an IV byte that is not a decimal number
+ * up to 255, or a ciphertext that is not base64.
+ */
 inline std::optional<sealed_parts> parse_sealed(
     std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const auto dollar = text.find('$');
@@ -85,27 +109,47 @@ inline std::optional<sealed_parts> parse_sealed(
 }
 
 /**
- * A message on a signaling topic, as views. With none of offer, answer and candidate it is an
- * announcement: the sender is in the room. Offer, answer and candidate hold sealed text; a
- * candidate's plaintext is the JSON of an `RTCIceCandidateInit`.
+ * A message on a signaling topic, the JSON object Trystero's signal handler reads, as views.
+ *
+ * With none of offer, answer and candidate it is an announcement: the sender is in the room. Offer,
+ * answer and candidate hold sealed text; a candidate's plaintext is the JSON of an
+ * `RTCIceCandidateInit`.
+ *
+ * @see "The protocol", in the guide.
  */
 struct signal_message {
+    /** The sender's id, `peerId`. */
     std::string_view peer_id = {};
+    /** The offer the message belongs to, `offerId`; empty in an announcement. */
     std::string_view offer_id = {};
+    /** The sealed SDP of an offer, `offer`. */
     std::string_view offer = {};
+    /** The sealed SDP of an answer, `answer`. */
     std::string_view answer = {};
+    /** A sealed ICE candidate, `candidate`. */
     std::string_view candidate = {};
+    /**
+     * Whether the sender's room is passive, `passive`: a Trystero room joined with `passive`
+     * announces only once it has seen a peer that is not passive.
+     */
     bool passive = false;
 
+    /**
+     * Whether the message is an announcement.
+     *
+     * @return Whether it holds none of offer, answer and candidate.
+     */
     [[nodiscard]] bool is_announcement() const {
         return offer.empty() && answer.empty() && candidate.empty();
     }
 };
 
 /**
- * The message a parsed signaling payload holds, as views into `document`, or nothing when Trystero
- * would ignore it: not an object, no peer id, or an offer, answer or candidate that is not a
- * non-empty string.
+ * The message a parsed signaling payload holds, as views into `document`.
+ *
+ * @param document The parsed payload, which the caller keeps alive while it reads the views.
+ * @return The message, or nothing when Trystero would ignore it: not an object, no peer id, or an
+ * offer, answer or candidate that is not a non-empty string.
  */
 inline std::optional<signal_message> read_signal(const boost::json::value& document) {
     const auto* object = document.if_object();
@@ -141,7 +185,13 @@ inline std::optional<signal_message> read_signal(const boost::json::value& docum
     return out;
 }
 
-/** The JSON text of a message; the optional `nonce` makes repeated announcements distinct events.
+/**
+ * The JSON text of a message, with its members in Trystero's order and the empty ones left out.
+ *
+ * @param m The message.
+ * @param nonce A random text, which makes repeated announcements distinct events; empty for none.
+ * @param memory The resource the text is allocated in.
+ * @return The text.
  */
 inline std::pmr::string write_signal(
     const signal_message& m, std::string_view nonce = {},
@@ -171,7 +221,17 @@ inline std::pmr::string write_signal(
     return out;
 }
 
-/** The password handshake's proof: hex SHA-256 of "<challenge>:<password>:<app>:<room>". */
+/**
+ * The password handshake's proof, Trystero's `hashChallenge`: the hexadecimal SHA-256 of
+ * "<challenge>:<password>:<app>:<room>".
+ *
+ * @param challenge The challenge the other peer sent.
+ * @param password The room's password.
+ * @param app_id The application's id.
+ * @param room_id The room's id.
+ * @param memory The resource the proof is allocated in.
+ * @return The proof, 64 hexadecimal digits.
+ */
 inline std::pmr::string handshake_proof(
     std::string_view challenge, std::string_view password, std::string_view app_id,
     std::string_view room_id,

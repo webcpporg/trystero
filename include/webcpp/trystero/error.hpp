@@ -17,29 +17,72 @@
 
 namespace webcpp::trystero {
 
-/** What an operation of the library completes with when it does not succeed. */
+/**
+ * What an operation of the library completes with when it does not succeed.
+ *
+ * Each value is one of the `Error`s Trystero rejects a promise with or reports to `onPeerError`,
+ * as a code of @ref error_category rather than a message: an operation completes with it, and
+ * `room::on_error` reports it with the peer it concerns.
+ *
+ * @see "Rooms and actions", in the guide.
+ */
 enum class error {
-    room_left = 1,        // the room was left while the operation was pending
-    no_such_peer,         // the target is not an active peer of the room
-    peer_disconnected,    // the peer went away before the operation finished
-    invalid_action_name,  // an action name must be 1 to 32 UTF-8 bytes without NUL
-    metadata_too_large,   // metadata must fit one frame
-    transfer_rejected,    // the receiver refused a transfer; the reason is logged
-    transfer_timed_out,   // the receiver neither accepted nor refused in time
-    channel_stalled,      // the data channel stopped draining
-    wrong_password,       // a peer's signal or handshake used another password
-    handshake_timed_out,  // a connected peer did not finish the handshake in time
-    handshake_failed,     // the handshake's messages were not what the protocol expects
-    backend_failure,      // the browser or the native stack refused an operation
+    /** The room was left while the operation was pending, Trystero's "room left". */
+    room_left = 1,
+    /** The target is not an active peer of the room, Trystero's "no active peer with id". */
+    no_such_peer,
+    /** The peer went away before the operation finished, Trystero's "peer disconnected". */
+    peer_disconnected,
+    /** The action's name is not 1 to 32 UTF-8 bytes without NUL, as Trystero requires. */
+    invalid_action_name,
+    /** The action's metadata does not fit one frame, Trystero's "action metadata is too large". */
+    metadata_too_large,
+    /** The receiver refused a transfer, or a received payload is not of the awaited type. */
+    transfer_rejected,
+    /** The receiver neither accepted nor refused a transfer in time. */
+    transfer_timed_out,
+    /** The data channel stopped draining while a transfer waited for it. */
+    channel_stalled,
+    /** A peer's signal or handshake used another password, Trystero's "incorrect password". */
+    wrong_password,
+    /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
+    handshake_timed_out,
+    /** The handshake's messages were not what the protocol expects. */
+    handshake_failed,
+    /** The browser or the native stack refused an operation. */
+    backend_failure,
 };
 
+/**
+ * The category of @ref error, named "webcpp.trystero", whose messages are fixed texts.
+ *
+ * A program reaches its one instance through @ref error_category.
+ */
 class error_category_impl final : public boost::system::error_category {
 public:
+    /**
+     * The category's name.
+     *
+     * @return "webcpp.trystero".
+     */
     const char* name() const noexcept override { return "webcpp.trystero"; }
 
+    /**
+     * The message of a value of @ref error, as a `std::string`.
+     *
+     * @param ev The value, an @ref error as an `int`.
+     * @return The message, or "unknown webcpp.trystero error" for a value @ref error does not name.
+     */
     std::string message(int ev) const override { return text(ev); }
 
-    /** The message without a `std::string`: a room logs through this form, which allocates nothing.
+    /**
+     * The message of a value of @ref error without a `std::string`.
+     *
+     * A room logs through this form, which allocates nothing: the messages are static texts, and
+     * the buffer is not used.
+     *
+     * @param ev The value, an @ref error as an `int`.
+     * @return The message, a static text.
      */
     const char* message(int ev, char* /*buffer*/, std::size_t /*length*/) const noexcept override {
         return text(ev);
@@ -66,17 +109,30 @@ private:
     }
 };
 
+/**
+ * The category of every @ref error code.
+ *
+ * @return The one instance of @ref error_category_impl.
+ */
 const inline boost::system::error_category& error_category() noexcept {
     static const error_category_impl category;
     return category;
 }
 
+/**
+ * An error code of @ref error_category, which `boost::system::error_code` finds by
+ * argument-dependent lookup.
+ *
+ * @param e The error.
+ * @return The code of `e`.
+ */
 inline boost::system::error_code make_error_code(error e) noexcept {
     return {static_cast<int>(e), error_category()};
 }
 
 }  // namespace webcpp::trystero
 
+/** Makes @ref webcpp::trystero::error convertible to `boost::system::error_code`. */
 template <>
 struct boost::system::is_error_code_enum<webcpp::trystero::error> : std::true_type {};
 

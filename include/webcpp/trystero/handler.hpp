@@ -25,7 +25,13 @@
  */
 namespace webcpp::trystero {
 
-/** A move-only callable of a signature; see the partial specialization. */
+/**
+ * A move-only callable of a signature, whose target is allocated through a memory resource; see the
+ * partial specialization `handler<R(Args...)>`.
+ *
+ * @tparam Signature A function type, `R(Args...)`.
+ * @see "Allocation", in the guide.
+ */
 template <class Signature>
 class handler;
 
@@ -33,9 +39,19 @@ class handler;
  * A move-only callable of the signature `R(Args...)`, which holds its target inline when the target
  * fits in three pointers and is nothrow-movable, and otherwise in storage of its allocator.
  *
+ * It replaces `std::function` wherever trystero keeps a handler (the backend's, the room's and
+ * its logger's sink), since `std::function` takes no allocator since C++17. A room gives each
+ * handler it keeps its `std::pmr::polymorphic_allocator<>`, over `room_config::memory`; one
+ * constructed from a callable alone uses the default resource. The resource must outlive the
+ * handler.
+ *
  * Tip: a move assignment carries the source's allocator with its target, as moving the target there
  * does; the allocator-extended move, which a `std::pmr` container uses, moves the target into
  * another resource when the two differ.
+ *
+ * @tparam R The result type.
+ * @tparam Args The parameter types.
+ * @see "Allocation", in the guide.
  */
 template <class R, class... Args>
 class handler<R(Args...)> {
@@ -43,15 +59,21 @@ public:
     /** What the handler allocates its target with when the target does not fit inline. */
     using allocator_type = std::pmr::polymorphic_allocator<>;
 
-    /** An empty handler, which must not be called. */
+    /** Constructs an empty handler, which must not be called. */
     handler() noexcept = default;
 
     // Implicit, as std::function's is: nullptr is passed where a handler is expected.
-    /** An empty handler, which must not be called. */
+    /** Constructs an empty handler, which must not be called, from `nullptr`. */
     handler(std::nullptr_t) noexcept {}  // NOLINT(misc-explicit-constructor)
 
     // Implicit, as std::function's is: a lambda is passed where a handler is expected.
-    /** A handler of `f`, allocated with the default resource when it does not fit inline. */
+    /**
+     * Constructs a handler of `f`, allocated with the default resource when it does not fit inline.
+     *
+     * @tparam F The callable's type, invocable with `Args...` and returning something convertible
+     * to `R`.
+     * @param f The callable, moved or copied into the handler.
+     */
     template <class F>
         requires(!std::is_same_v<std::remove_cvref_t<F>, handler> &&
                  std::is_invocable_r_v<R, std::decay_t<F>&, Args...> &&
@@ -59,7 +81,15 @@ public:
     handler(F&& f)  // NOLINT(misc-explicit-constructor)
         : handler(std::allocator_arg, allocator_type(), std::forward<F>(f)) {}
 
-    /** A handler of `f`, allocated with `allocator` when it does not fit inline. */
+    /**
+     * Constructs a handler of `f`, allocated with `allocator` when it does not fit inline.
+     *
+     * @tparam F The callable's type, invocable with `Args...` and returning something convertible
+     * to `R`.
+     * @param allocator What the target is allocated with, and what the handler keeps; its resource
+     * must outlive the handler.
+     * @param f The callable, moved or copied into the handler.
+     */
     template <class F>
         requires(!std::is_same_v<std::remove_cvref_t<F>, handler> &&
                  std::is_invocable_r_v<R, std::decay_t<F>&, Args...> &&
@@ -76,8 +106,13 @@ public:
         operations_ = &operations_of<target>;
     }
 
-    /** The handler of `other`'s target, moved into `allocator`'s resource when it differs from
-     * `other`'s. */
+    /**
+     * Constructs a handler of `other`'s target, moved into `allocator`'s resource when it differs
+     * from `other`'s: the allocator-extended move a `std::pmr` container uses.
+     *
+     * @param allocator What the handler keeps, and allocates the target with when it moves it.
+     * @param other The handler whose target is taken; it is left empty.
+     */
     handler(std::allocator_arg_t /*tag*/, allocator_type allocator, handler&& other)
         : resource_(allocator.resource()) {
         if (other.operations_ == nullptr) {
@@ -92,7 +127,11 @@ public:
         operations_ = std::exchange(other.operations_, nullptr);
     }
 
-    /** Takes `other`'s target and allocator; `other` is left empty. */
+    /**
+     * Constructs a handler of `other`'s target and allocator.
+     *
+     * @param other The handler whose target is taken; it is left empty.
+     */
     handler(handler&& other) noexcept : resource_(other.resource_) {
         if (other.operations_ != nullptr) {
             other.operations_->move(other.storage_.data(), storage_.data());
@@ -100,7 +139,12 @@ public:
         }
     }
 
-    /** Destroys the target, then takes `other`'s target and allocator; `other` is left empty. */
+    /**
+     * Destroys the target, then takes `other`'s target and allocator.
+     *
+     * @param other The handler whose target is taken; it is left empty.
+     * @return This handler.
+     */
     handler& operator=(handler&& other) noexcept {
         if (this != &other) {
             reset();
@@ -113,29 +157,51 @@ public:
         return *this;
     }
 
-    /** Destroys the target. */
+    /**
+     * Destroys the target, which leaves the handler empty.
+     *
+     * @return This handler.
+     */
     handler& operator=(std::nullptr_t) noexcept {
         reset();
         return *this;
     }
 
+    /** Not copyable: a handler owns its target, which may not be copyable. */
     handler(const handler&) = delete;
+
+    /** Not copy-assignable: a handler owns its target, which may not be copyable. */
     handler& operator=(const handler&) = delete;
 
+    /** Destroys the target, and gives its storage back to the allocator. */
     ~handler() { reset(); }
 
     // The parameters are the signature's, as std::function's call operator takes them, and are
     // forwarded to the target as they are.
-    /** Calls the target; the handler must not be empty. */
+    /**
+     * Calls the target.
+     *
+     * @param args The arguments, forwarded to the target.
+     * @return What the target returns, converted to `R`.
+     * @pre The handler is not empty.
+     */
     R operator()(Args... args) {  // NOLINT(performance-unnecessary-value-param)
         BOOST_ASSERT(operations_ != nullptr);
         return operations_->invoke(storage_.data(), std::forward<Args>(args)...);
     }
 
-    /** Whether the handler has a target. */
+    /**
+     * Whether the handler has a target.
+     *
+     * @return Whether it may be called.
+     */
     explicit operator bool() const noexcept { return operations_ != nullptr; }
 
-    /** The allocator the target is allocated with when it does not fit inline. */
+    /**
+     * The allocator the target is allocated with when it does not fit inline.
+     *
+     * @return The handler's allocator.
+     */
     [[nodiscard]] allocator_type get_allocator() const noexcept {
         return allocator_type(resource_);
     }

@@ -35,8 +35,10 @@ namespace webcpp::trystero::detail {
  */
 class logger {
 public:
+    /** Where the sentences go: `room_config::log`. */
     using sink = handler<void(std::string_view category, std::string_view text)>;
 
+    /** A logger without a sink, which composes nothing. */
     logger() noexcept = default;
 
     /** Moves `s` into `memory`, where the sentences are composed too; an empty `s` makes a logger
@@ -49,8 +51,10 @@ public:
         }
     }
 
+    /** Whether there is a sink. */
     explicit operator bool() const noexcept { return sink_ != nullptr; }
 
+    /** Composes a sentence of `parts` and hands it to the sink, when there is one. */
     template <class... Parts>
     void operator()(std::string_view category, const Parts&... parts) const {
         if (!sink_) {

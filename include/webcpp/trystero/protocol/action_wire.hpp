@@ -26,9 +26,26 @@
 namespace webcpp::trystero::protocol {
 
 /**
- * Trystero's action wire, version 2. A payload that fits one frame travels inline; a larger one is
- * offered, accepted by the receiver, then sent in chunks. Integers and float64 values are
- * big-endian, as `DataView` writes them.
+ * The format of an action's payload, the high four bits of a frame's second byte: how Trystero's
+ * `decodePayload` reads it.
+ *
+ * @see "The protocol", in the guide.
+ */
+enum class payload_format : std::uint8_t {
+    /** UTF-8 text, a JavaScript string. */
+    text = 0,
+    /** JSON text, any other JavaScript value. */
+    json = 1,
+    /** Raw bytes, an `ArrayBuffer` or a typed array. */
+    binary = 2,
+};
+
+/**
+ * The kind of an action frame, the low four bits of its second byte, in Trystero's action wire,
+ * version 2.
+ *
+ * A payload that fits one frame travels inline; a larger one is offered, accepted by the receiver,
+ * then sent in chunks. Integers and float64 values are big-endian, as `DataView` writes them.
  *
  * | Frame              | Bytes                                                                    |
  * | inline (kind 0)    | 2, kind or format << 4, name (32 bytes, NUL padded), metadata length     |
@@ -39,29 +56,44 @@ namespace webcpp::trystero::protocol {
  * | accepted (kind 3)  | 2, 3, transfer id (uint32)                                               |
  * | rejected (kind 4)  | 2, 4, transfer id (uint32), reason (UTF-8, at most 200 bytes)            |
  * | cancelled (kind 5) | 2, 5, transfer id (uint32)                                               |
+ *
+ * @see "The protocol", in the guide.
  */
-enum class payload_format : std::uint8_t { text = 0, json = 1, binary = 2 };
-
 enum class frame_kind : std::uint8_t {
+    /** A whole payload, Trystero's `inline`. */
     inline_payload = 0,
+    /** The offer of a transfer, Trystero's `offer`. */
     offer = 1,
+    /** A piece of a transfer's payload, Trystero's `chunk`. */
     chunk = 2,
+    /** The receiver accepts an offer, Trystero's `accepted`. */
     accepted = 3,
+    /** The receiver refuses an offer, Trystero's `rejected`. */
     rejected = 4,
+    /** The sender gives a transfer up, Trystero's `cancelled`. */
     cancelled = 5,
 };
 
+/** The version of the action wire, every frame's first byte, Trystero's `version`. */
 inline constexpr std::uint8_t action_wire_version = 2;
+/** The size of an inline frame's header, Trystero's `inlineHeaderSize`. */
 inline constexpr std::size_t inline_header_size = 36;
+/** The size of an offer's header, Trystero's `offerHeaderSize`. */
 inline constexpr std::size_t offer_header_size = 48;
+/** The size of an accepted, rejected or cancelled frame's header, `controlHeaderSize`. */
 inline constexpr std::size_t control_header_size = 6;
+/** The size of a chunk's header, Trystero's `chunkHeaderSize`. */
 inline constexpr std::size_t chunk_header_size = 14;
+/** The most payload bytes one chunk carries, Trystero's `chunkSize`. */
 inline constexpr std::size_t chunk_size = max_action_frame_bytes - chunk_header_size;
+/** The longest action name, in UTF-8 bytes. */
 inline constexpr std::size_t max_action_name_bytes = 32;
+/** The longest reason a rejected frame carries, in UTF-8 bytes. */
 inline constexpr std::size_t max_reject_reason_bytes = 200;
 
 namespace detail {
 
+/** Reads a big-endian uint32 at `at`. */
 inline std::uint32_t get_u32(std::span<const std::uint8_t> in, std::size_t at) {
     std::uint32_t v = 0;
     for (int i = 0; i < 4; ++i) {
@@ -70,6 +102,7 @@ inline std::uint32_t get_u32(std::span<const std::uint8_t> in, std::size_t at) {
     return v;
 }
 
+/** Reads a big-endian float64 at `at`. */
 inline double get_f64(std::span<const std::uint8_t> in, std::size_t at) {
     std::uint64_t bits = 0;
     for (int i = 0; i < 8; ++i) {
@@ -80,19 +113,32 @@ inline double get_f64(std::span<const std::uint8_t> in, std::size_t at) {
 
 }  // namespace detail
 
-/** Whether a name can name an action: 1 to 32 UTF-8 bytes and no NUL. */
+/**
+ * Whether a name can name an action, as Trystero's `makeAction` checks it: 1 to 32 UTF-8 bytes and
+ * no NUL.
+ *
+ * @param name The name.
+ * @return Whether it is valid.
+ */
 inline bool valid_action_name(std::string_view name) {
     return !name.empty() && name.size() <= max_action_name_bytes &&
            name.find('\0') == std::string_view::npos;
 }
 
-/** Whether a payload with this metadata travels inline rather than as an offer and chunks. */
+/**
+ * Whether a payload with this metadata travels inline rather than as an offer and chunks.
+ *
+ * @param metadata_size The metadata's size in bytes.
+ * @param payload_size The payload's size in bytes.
+ * @return Whether the inline frame fits @ref max_action_frame_bytes.
+ */
 inline bool fits_inline(std::size_t metadata_size, std::size_t payload_size) {
     return inline_header_size + metadata_size + payload_size <= max_action_frame_bytes;
 }
 
 namespace detail {
 
+/** Appends the header an inline frame and an offer share: version, kind and format, name. */
 inline void append_header(bytes& out, frame_kind kind, std::string_view name, payload_format format,
                           std::string_view metadata, std::size_t header_size) {
     const auto at = out.size();
@@ -105,6 +151,7 @@ inline void append_header(bytes& out, frame_kind kind, std::string_view name, pa
     out[at + 35] = static_cast<std::uint8_t>(metadata.size() & 0xffU);
 }
 
+/** Appends the header of a chunk or a transfer's answer: version, kind, transfer id. */
 inline void append_control(bytes& out, frame_kind kind, std::uint32_t id) {
     out.push_back(action_wire_version);
     out.push_back(static_cast<std::uint8_t>(kind));
@@ -116,8 +163,14 @@ inline void append_control(bytes& out, frame_kind kind, std::uint32_t id) {
 }  // namespace detail
 
 /**
- * Appends an inline frame to `out`, which may already hold a room envelope's header. `metadata` is
- * JSON text or empty. The caller checks the name and `fits_inline` first.
+ * Appends an inline frame to `out`, which may already hold a room envelope's header.
+ *
+ * @param out The buffer to append to.
+ * @param name The action's name.
+ * @param format The payload's format.
+ * @param metadata JSON text, or empty.
+ * @param payload The payload.
+ * @pre `valid_action_name(name)` and `fits_inline(metadata.size(), payload.size())`.
  */
 inline void append_inline(bytes& out, std::string_view name, payload_format format,
                           std::string_view metadata, std::span<const std::uint8_t> payload) {
@@ -128,7 +181,17 @@ inline void append_inline(bytes& out, std::string_view name, payload_format form
     out.insert(out.end(), payload.begin(), payload.end());
 }
 
-/** Appends an offer frame announcing `size` bytes under transfer `id`. */
+/**
+ * Appends an offer frame announcing `size` bytes under transfer `id`.
+ *
+ * @param out The buffer to append to.
+ * @param name The action's name.
+ * @param format The payload's format.
+ * @param metadata JSON text, or empty.
+ * @param id The transfer's id.
+ * @param size The payload's size in bytes.
+ * @pre `valid_action_name(name)`, and the metadata fits one frame after the offer's header.
+ */
 inline void append_offer(bytes& out, std::string_view name, payload_format format,
                          std::string_view metadata, std::uint32_t id, std::size_t size) {
     out.reserve(out.size() + offer_header_size + metadata.size());
@@ -144,6 +207,14 @@ inline void append_offer(bytes& out, std::string_view name, payload_format forma
     out.insert(out.end(), metadata.begin(), metadata.end());
 }
 
+/**
+ * Appends a chunk of transfer `id`.
+ *
+ * @param out The buffer to append to.
+ * @param id The transfer's id.
+ * @param offset Where `data` starts in the payload.
+ * @param data At most @ref chunk_size bytes of the payload.
+ */
 inline void append_chunk(bytes& out, std::uint32_t id, std::size_t offset,
                          std::span<const std::uint8_t> data) {
     out.reserve(out.size() + chunk_header_size + data.size());
@@ -155,14 +226,33 @@ inline void append_chunk(bytes& out, std::uint32_t id, std::size_t offset,
     out.insert(out.end(), data.begin(), data.end());
 }
 
+/**
+ * Appends the frame accepting transfer `id`.
+ *
+ * @param out The buffer to append to.
+ * @param id The transfer's id.
+ */
 inline void append_accepted(bytes& out, std::uint32_t id) {
     detail::append_control(out, frame_kind::accepted, id);
 }
 
+/**
+ * Appends the frame cancelling transfer `id`.
+ *
+ * @param out The buffer to append to.
+ * @param id The transfer's id.
+ */
 inline void append_cancelled(bytes& out, std::uint32_t id) {
     detail::append_control(out, frame_kind::cancelled, id);
 }
 
+/**
+ * Appends the frame rejecting transfer `id`.
+ *
+ * @param out The buffer to append to.
+ * @param id The transfer's id.
+ * @param reason Why, cut to @ref max_reject_reason_bytes.
+ */
 inline void append_rejected(bytes& out, std::uint32_t id, std::string_view reason) {
     if (reason.size() > max_reject_reason_bytes) {
         reason = reason.substr(0, max_reject_reason_bytes);
@@ -171,7 +261,16 @@ inline void append_rejected(bytes& out, std::uint32_t id, std::string_view reaso
     out.insert(out.end(), reason.begin(), reason.end());
 }
 
-/** The same frames, each in a buffer of its own. */
+/**
+ * An inline frame, in a buffer of its own.
+ *
+ * @param name The action's name.
+ * @param format The payload's format.
+ * @param metadata JSON text, or empty.
+ * @param payload The payload.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame, as @ref append_inline writes it.
+ */
 inline bytes encode_inline(std::string_view name, payload_format format, std::string_view metadata,
                            std::span<const std::uint8_t> payload,
                            std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -180,6 +279,17 @@ inline bytes encode_inline(std::string_view name, payload_format format, std::st
     return out;
 }
 
+/**
+ * An offer frame, in a buffer of its own.
+ *
+ * @param name The action's name.
+ * @param format The payload's format.
+ * @param metadata JSON text, or empty.
+ * @param id The transfer's id.
+ * @param size The payload's size in bytes.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame, as @ref append_offer writes it.
+ */
 inline bytes encode_offer(std::string_view name, payload_format format, std::string_view metadata,
                           std::uint32_t id, std::size_t size,
                           std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -188,6 +298,15 @@ inline bytes encode_offer(std::string_view name, payload_format format, std::str
     return out;
 }
 
+/**
+ * A chunk frame, in a buffer of its own.
+ *
+ * @param id The transfer's id.
+ * @param offset Where `data` starts in the payload.
+ * @param data At most @ref chunk_size bytes of the payload.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame, as @ref append_chunk writes it.
+ */
 inline bytes encode_chunk(std::uint32_t id, std::size_t offset, std::span<const std::uint8_t> data,
                           std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
@@ -195,6 +314,13 @@ inline bytes encode_chunk(std::uint32_t id, std::size_t offset, std::span<const 
     return out;
 }
 
+/**
+ * The frame accepting a transfer, in a buffer of its own.
+ *
+ * @param id The transfer's id.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame.
+ */
 inline bytes encode_accepted(std::uint32_t id,
                              std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
@@ -202,6 +328,13 @@ inline bytes encode_accepted(std::uint32_t id,
     return out;
 }
 
+/**
+ * The frame cancelling a transfer, in a buffer of its own.
+ *
+ * @param id The transfer's id.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame.
+ */
 inline bytes encode_cancelled(
     std::uint32_t id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
@@ -209,6 +342,14 @@ inline bytes encode_cancelled(
     return out;
 }
 
+/**
+ * The frame rejecting a transfer, in a buffer of its own.
+ *
+ * @param id The transfer's id.
+ * @param reason Why, cut to @ref max_reject_reason_bytes.
+ * @param memory The resource the frame is allocated in.
+ * @return The frame.
+ */
 inline bytes encode_rejected(std::uint32_t id, std::string_view reason,
                              std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
@@ -216,42 +357,70 @@ inline bytes encode_rejected(std::uint32_t id, std::string_view reason,
     return out;
 }
 
-/** A decoded inline frame or offer. Views point into the frame. */
+/**
+ * A decoded inline frame or offer, as views into the frame.
+ *
+ * @see "The protocol", in the guide.
+ */
 struct proposal {
+    /** `frame_kind::inline_payload` or `frame_kind::offer`. */
     frame_kind kind = frame_kind::inline_payload;
-    std::string_view name;  // up to the first NUL of the 32-byte field
+    /** The action's name, up to the first NUL of the 32-byte field. */
+    std::string_view name;
+    /** The payload's format. */
     payload_format format = payload_format::text;
-    std::string_view metadata;  // JSON text, or empty
-    std::uint32_t id = 0;       // offers only
-    std::size_t size = 0;       // payload size; for inline frames, the bytes that follow
-    std::span<const std::uint8_t> payload;  // inline frames only
+    /** The metadata, JSON text, or empty. */
+    std::string_view metadata;
+    /** The transfer's id; offers only. */
+    std::uint32_t id = 0;
+    /** The payload's size; for an inline frame, the bytes that follow the metadata. */
+    std::size_t size = 0;
+    /** The payload; inline frames only. */
+    std::span<const std::uint8_t> payload;
 };
 
+/** A decoded chunk, as a view into the frame. */
 struct chunk {
+    /** The transfer's id. */
     std::uint32_t id = 0;
+    /** Where the data starts in the payload, as the float64 the frame carries; NaN when absent. */
     double offset = 0;
+    /** The data. */
     std::span<const std::uint8_t> data;
 };
 
+/** A decoded accepted, rejected or cancelled frame, as a view into the frame. */
 struct control_message {
+    /** `frame_kind::accepted`, `frame_kind::rejected` or `frame_kind::cancelled`. */
     frame_kind kind = frame_kind::accepted;
+    /** The transfer's id. */
     std::uint32_t id = 0;
-    std::string_view reason;  // rejected only
+    /** Why the transfer was rejected; rejected frames only. */
+    std::string_view reason;
 };
 
+/** A decoded action frame: a proposal, a chunk or a transfer's answer. */
 using decoded_action = std::variant<proposal, chunk, control_message>;
 
-/** Why a frame cannot be decoded. Trystero drops the peer for any of these. */
+/** Why a frame cannot be decoded; Trystero drops the peer for any of these. */
 enum class wire_error {
+    /** Too short, too long, or a kind or a format that does not exist. */
     invalid_frame,
+    /** A version other than @ref action_wire_version. */
     incompatible_version,
+    /** A chunk or a transfer's answer of the wrong size. */
     invalid_control,
+    /** An inline frame or an offer shorter than its header. */
     invalid_header,
+    /** An empty name, metadata beyond the frame, or an offer of an impossible size or length. */
     invalid_proposal,
 };
 
+/** What @ref decode_action makes of a frame. */
 struct decode_result {
+    /** The decoded frame, or nothing when it cannot be decoded. */
     std::optional<decoded_action> frame;
+    /** Why the frame cannot be decoded; meaningful only without a frame. */
     wire_error error = wire_error::invalid_frame;
 };
 
@@ -335,7 +504,12 @@ inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, fra
 
 }  // namespace detail
 
-/** Decodes one action frame with exactly the checks Trystero's `handleData` makes. */
+/**
+ * Decodes one action frame with exactly the checks Trystero's `handleData` makes.
+ *
+ * @param bytes_in The action frame, out of its room envelope.
+ * @return The frame, as views into `bytes_in`, or why it cannot be decoded.
+ */
 inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
     decode_result result;
     if (bytes_in.size() < 2 || bytes_in.size() > max_action_frame_bytes) {

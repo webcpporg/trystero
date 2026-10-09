@@ -76,6 +76,7 @@ public:
         }
     }
 
+    /** Connects to every relay; each subscribes and announces once it opens. */
     void start() {
         for (std::size_t i = 0; i < relays_.size(); ++i) {
             connect(i);
@@ -105,8 +106,10 @@ public:
         }
     }
 
+    /** How many relays the strategy uses. */
     std::size_t relay_count() const { return relays_.size(); }
 
+    /** Stops announcing and reconnecting, closes each subscription and each connection. */
     void stop() {
         stopped_ = true;
         for (auto& r : relays_) {

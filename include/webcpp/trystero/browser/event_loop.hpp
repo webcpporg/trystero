@@ -31,35 +31,78 @@ namespace webcpp::trystero::browser {
 class event_loop;
 
 /**
- * An Asio executor over an `event_loop`: what it is given runs on the loop's io_context, and giving
- * it work while no JavaScript event is being handled schedules one `poll()` in a microtask. So
- * posted work runs without a polling loop and without the application calling `poll()` (the
- * documentation's chapter on the browser).
+ * An Asio executor over an `event_loop`: what it is given runs on the loop's io_context.
+ *
+ * Giving it work while no JavaScript event is being handled schedules one `poll()` in a microtask,
+ * so posted work runs without a polling loop and without the application calling `poll()`. A room
+ * in the browser is constructed with it, through `boost::asio::any_io_executor`.
+ *
+ * @see "The browser backend", in the guide.
  */
 class executor {
 public:
+    /**
+     * Constructs an executor of `loop`.
+     *
+     * @param loop The loop, which must outlive the executor and every copy of it.
+     */
     explicit executor(event_loop& loop) noexcept : loop_(&loop) {}
 
+    /**
+     * The execution context, the property Asio queries.
+     *
+     * @return The loop's io_context.
+     */
     [[nodiscard]] boost::asio::execution_context& query(
         boost::asio::execution::context_t /*context*/) const noexcept;
 
+    /**
+     * The blocking property, which Asio queries: `execute` never runs the work inside the call.
+     *
+     * @return `blocking.never`.
+     */
     static constexpr boost::asio::execution::blocking_t::never_t query(
         boost::asio::execution::blocking_t /*blocking*/) noexcept {
         return {};
     }
 
+    /**
+     * The executor with `blocking.never` required, which it already is.
+     *
+     * @return A copy of this executor.
+     */
     [[nodiscard]] executor require(
         boost::asio::execution::blocking_t::never_t /*never*/) const noexcept {
         return executor(*loop_);
     }
 
+    /**
+     * Posts `f` to the loop's io_context, and schedules a poll unless one is coming.
+     *
+     * @tparam F A nullary callable.
+     * @param f The work, allocated as its associated allocator says.
+     */
     template <class F>
     void execute(F&& f) const;
 
+    /**
+     * Whether two executors are of one loop.
+     *
+     * @param a An executor.
+     * @param b Another.
+     * @return Whether they run work on the same loop.
+     */
     friend bool operator==(const executor& a, const executor& b) noexcept {
         return a.loop_ == b.loop_;
     }
 
+    /**
+     * Whether two executors are of different loops.
+     *
+     * @param a An executor.
+     * @param b Another.
+     * @return Whether they run work on different loops.
+     */
     friend bool operator!=(const executor& a, const executor& b) noexcept {
         return a.loop_ != b.loop_;
     }
@@ -82,11 +125,21 @@ private:
  * Tip: a loop serves every room of the page, so the entries of its registrations are in the
  * resource it is constructed with; a registered callback stays in its own allocator's resource, a
  * room's for a room's object, until it is removed or, for a promise, until the promise settles.
+ *
+ * @see "The browser backend", in the guide.
  */
 class event_loop {
 public:
+    /** What a registration calls: with the slot the event came through, and the event. */
     using callback = handler<void(int slot, emscripten::val event)>;
 
+    /**
+     * Constructs a loop over `io`, which it keeps from running out of work.
+     *
+     * @param io The io_context the loop polls, which must outlive the loop.
+     * @param memory The resource the entries of the registrations are allocated in; it must
+     * outlive the loop.
+     */
     explicit event_loop(boost::asio::io_context& io,
                         std::pmr::memory_resource* memory = std::pmr::get_default_resource())
         : io_(io),
@@ -99,8 +152,13 @@ public:
     }
 
     /**
-     * A JavaScript string of UTF-8 text, decoded straight from the wasm memory the view points
-     * into: no std::string is made to carry it across, as `emscripten::val(std::string)` would.
+     * A JavaScript string of UTF-8 text, decoded by a `TextDecoder` straight from the wasm memory
+     * the view points into.
+     *
+     * No `std::string` is made to carry it across, as `emscripten::val(std::string)` would.
+     *
+     * @param utf8 The text, read during the call.
+     * @return The JavaScript string.
      */
     [[nodiscard]] emscripten::val text(std::string_view utf8) const {
         return decoder_.call<emscripten::val>(
@@ -108,8 +166,14 @@ public:
     }
 
     /**
-     * The UTF-8 bytes of a JavaScript string, copied straight into a string of `memory`: no
-     * std::string is made to carry them across, as `emscripten::val::as<std::string>()` would.
+     * The UTF-8 bytes of a JavaScript string, encoded by a `TextEncoder` and copied straight into a
+     * string of `memory`.
+     *
+     * No `std::string` is made to carry them across, as `emscripten::val::as<std::string>()` would.
+     *
+     * @param text The JavaScript string.
+     * @param memory The resource the copy is allocated in.
+     * @return The text.
      */
     std::pmr::string utf8(const emscripten::val& text, std::pmr::memory_resource* memory) const {
         const auto encoded = encoder_.call<emscripten::val>("encode", text);
@@ -120,18 +184,37 @@ public:
         return out;
     }
 
+    /** Not copyable: the page's functions name this loop by its address. */
     event_loop(const event_loop&) = delete;
+
+    /** Not copy-assignable: the page's functions name this loop by its address. */
     event_loop& operator=(const event_loop&) = delete;
 
+    /** Destroys the loop, and marks every handler it made as dead: their events are dropped. */
     ~event_loop() { token_.set("alive", false); }
 
+    /**
+     * The io_context the loop polls.
+     *
+     * @return The io_context it was constructed with.
+     */
     boost::asio::io_context& io() noexcept { return io_; }
 
+    /**
+     * An executor of this loop, what a room in the browser is constructed with.
+     *
+     * @return The executor.
+     */
     executor get_executor() noexcept { return executor(*this); }
 
     /**
-     * Registers `f`, which stays in its own allocator's resource (a room's, for a room's object);
-     * only the registration's entry is the loop's.
+     * Registers a callback, which JavaScript reaches through @ref handler.
+     *
+     * The callback stays in its own allocator's resource (a room's, for a room's object); only the
+     * registration's entry is the loop's.
+     *
+     * @param f The callback.
+     * @return The registration's id, which @ref handler and @ref remove take.
      */
     int add(callback f) {
         const int id = next_id_++;
@@ -140,9 +223,20 @@ public:
         return id;
     }
 
+    /**
+     * Removes a registration: an event for it from now on finds nothing.
+     *
+     * @param id The registration's id.
+     */
     void remove(int id) { callbacks_.erase(id); }
 
-    /** A JavaScript function of one argument that delivers it to registration `id`, slot `slot`. */
+    /**
+     * A JavaScript function of one argument that delivers it to registration `id`, slot `slot`.
+     *
+     * @param id The registration's id.
+     * @param slot A number the callback receives, which tells its events apart.
+     * @return The function, `trystero_dispatch` bound to this loop, `id` and `slot`.
+     */
     [[nodiscard]] emscripten::val handler(int id, int slot) const {
         return emscripten::val::module_property("trystero_dispatch")
             .call<emscripten::val>("bind", emscripten::val::null(), token_,
@@ -150,7 +244,13 @@ public:
                                    emscripten::val(id), emscripten::val(slot));
     }
 
-    /** Runs a registration's callback for a JavaScript event, then everything that became ready. */
+    /**
+     * Runs a registration's callback for a JavaScript event, then everything that became ready.
+     *
+     * @param id The registration's id; an unknown one runs nothing.
+     * @param slot The slot the event came through.
+     * @param event The event.
+     */
     void dispatch(int id, int slot, emscripten::val event) {
         ++depth_;
         if (id == poll_id) {
@@ -210,8 +310,18 @@ void executor::execute(F&& f) const {
     loop_->schedule_poll();
 }
 
-/** The one function JavaScript calls; `browser/src.hpp` exports it. Events for a destroyed loop are
- * dropped. */
+/**
+ * The one function JavaScript calls, `trystero_dispatch`, which `browser/src.hpp` exports.
+ *
+ * Events for a destroyed loop are dropped.
+ *
+ * @param token The loop's token, whose `alive` is false once the loop is destroyed.
+ * @param loop The loop's address, as a number.
+ * @param id The registration's id.
+ * @param slot The slot the event came through.
+ * @param event The event.
+ * @see "The browser backend", in the guide.
+ */
 inline void dispatch(const emscripten::val& token, std::uintptr_t loop, int id, int slot,
                      emscripten::val event) {
     if (!token["alive"].as<bool>()) {

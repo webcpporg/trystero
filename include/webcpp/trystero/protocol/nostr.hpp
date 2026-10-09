@@ -36,10 +36,16 @@
 
 namespace webcpp::trystero::protocol::nostr {
 
-/** The tag a Trystero event carries its topic in, and the event kind a topic maps to: 20000 to
- * 29999, ephemeral. */
+/** The tag a Trystero event carries its topic in, its `tag`: "x". */
 inline constexpr std::string_view topic_tag = "x";
 
+/**
+ * The event kind a topic maps to, Trystero's `topicToKind`: 20000 to 29999, ephemeral, so relays
+ * forward the events and keep none.
+ *
+ * @param topic The topic's name.
+ * @return 20000 plus `str_to_num(topic, 10000)`.
+ */
 inline int topic_kind(std::string_view topic) {
     return static_cast<int>(str_to_num(topic, 10000)) + 20000;
 }
@@ -79,6 +85,7 @@ inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey, std::int64
     return out;
 }
 
+/** `text` as a JSON string literal, quotes included, in `memory`. */
 inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource* memory) {
     std::pmr::string out(memory);
     out.reserve(text.size() + 8);
@@ -88,8 +95,18 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
 
 }  // namespace detail
 
-/** The id of an event: SHA-256 of the JSON array `[0, pubkey, created_at, kind, [["x", topic]],
- * content]`. */
+/**
+ * The id of a Trystero event, as NIP-01 defines it: the SHA-256 of the JSON array
+ * `[0, pubkey, created_at, kind, [["x", topic]], content]`.
+ *
+ * @param pubkey The signer's x-only public key, in hexadecimal.
+ * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param kind The event's kind, @ref topic_kind of its topic.
+ * @param topic The topic, the value of its tag "x".
+ * @param content The content.
+ * @param memory The resource the escaped topic and content are allocated in, during the call.
+ * @return The id.
+ */
 inline std::array<std::uint8_t, 32> event_id(
     std::string_view pubkey, std::int64_t created_at, int kind, std::string_view topic,
     std::string_view content,
@@ -99,7 +116,8 @@ inline std::array<std::uint8_t, 32> event_id(
 }
 
 /**
- * A BIP-340 key pair over libsecp256k1, the one key a peer signs every event with.
+ * A BIP-340 key pair over libsecp256k1, the one key a peer signs every event with, as Trystero's
+ * Nostr strategy does with its `pubkey`.
  *
  * Tip: its signing context is made in the resource it is given
  * (`secp256k1_context_preallocated_create`), where `secp256k1_context_create` would take it from
@@ -107,8 +125,15 @@ inline std::array<std::uint8_t, 32> event_id(
  */
 class signer {
 public:
-    /** Makes a key from 32 random bytes; nothing when they are not a valid secret key, which is
-     * negligibly rare. */
+    /**
+     * Makes a key from 32 random bytes.
+     *
+     * @param secret The secret key.
+     * @param memory The resource the signing context and the public key's text are allocated in;
+     * it must outlive the signer.
+     * @return The signer, or nothing when the bytes are not a valid secret key, which is
+     * negligibly rare.
+     */
     static std::optional<signer> from_secret(
         std::span<const std::uint8_t, 32> secret,
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -124,8 +149,20 @@ public:
         return s;
     }
 
+    /**
+     * The x-only public key, an event's `pubkey`.
+     *
+     * @return 64 lowercase hexadecimal digits, valid as long as the signer.
+     */
     [[nodiscard]] std::string_view pubkey() const { return pubkey_; }
 
+    /**
+     * Signs a message with BIP-340 Schnorr.
+     *
+     * @param message The 32 bytes to sign, an event id.
+     * @param aux 32 random bytes of auxiliary randomness.
+     * @return The 64-byte signature, an event's `sig`.
+     */
     [[nodiscard]] std::array<std::uint8_t, 64> sign(std::span<const std::uint8_t, 32> message,
                                                     std::span<const std::uint8_t, 32> aux) const {
         std::array<std::uint8_t, 64> sig{};
@@ -163,8 +200,16 @@ private:
     std::pmr::string pubkey_;
 };
 
-/** Whether a 64-byte signature over an event id verifies under an x-only public key; libsecp256k1's
- * static context. */
+/**
+ * Whether a BIP-340 signature over an event id verifies under an x-only public key.
+ *
+ * It uses libsecp256k1's static context, which allocates nothing.
+ *
+ * @param sig The signature.
+ * @param id The event id.
+ * @param pubkey The x-only public key.
+ * @return Whether the signature is valid; false too when the key is not a valid point.
+ */
 inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::uint8_t, 32> id,
                    std::span<const std::uint8_t, 32> pubkey) {
     secp256k1_xonly_pubkey key;
@@ -176,8 +221,19 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
 }
 
 /**
- * The client message publishing a signed event on a topic, `["EVENT", {...}]`, written once into
- * one buffer. The topic and the content are escaped once; the id is hashed over those same bytes.
+ * The client message publishing a signed event on a topic, `["EVENT", {...}]`, what Trystero's
+ * `createEvent` makes.
+ *
+ * It is written once into one buffer. The topic and the content are escaped once; the id is hashed
+ * over those same bytes.
+ *
+ * @param key The signer.
+ * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param topic The topic, the value of the event's tag "x".
+ * @param content The content, a signal's JSON text.
+ * @param aux 32 random bytes for the signature.
+ * @param memory The resource the message is allocated in.
+ * @return The message's JSON text.
  */
 inline std::pmr::string event_message(
     const signer& key, std::int64_t created_at, std::string_view topic, std::string_view content,
@@ -208,8 +264,16 @@ inline std::pmr::string event_message(
     return out;
 }
 
-/** The client message subscribing to topics: `["REQ", id, {"kinds": [...], "since": t, "#x":
- * [...]}]`. */
+/**
+ * The client message subscribing to topics, Trystero's `subscribe`: `["REQ", id, {"kinds": [...],
+ * "since": t, "#x": [...]}]`.
+ *
+ * @param subscription The subscription's id.
+ * @param topics The topics, whose kinds the filter lists once each, in increasing order.
+ * @param since The earliest `created_at` of the events wanted.
+ * @param memory The resource the message is allocated in.
+ * @return The message's JSON text.
+ */
 inline std::pmr::string subscribe_message(
     std::string_view subscription, std::span<const std::pmr::string> topics, std::int64_t since,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -241,6 +305,13 @@ inline std::pmr::string subscribe_message(
     return out;
 }
 
+/**
+ * The client message ending a subscription: `["CLOSE", id]`.
+ *
+ * @param subscription The subscription's id.
+ * @param memory The resource the message is allocated in.
+ * @return The message's JSON text.
+ */
 inline std::pmr::string close_message(
     std::string_view subscription,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -250,33 +321,53 @@ inline std::pmr::string close_message(
     return out;
 }
 
-/** What a relay sends, as views into the parsed message. Anything else is ignored. */
+/** A relay's `["EVENT", <subscription>, <event>]`: an event of a subscription, as views. */
 struct event {
+    /** The subscription's id. */
     std::string_view subscription;
+    /** The event's id. */
     std::string_view id;
-    std::string_view topic;  // the value of the first "x" tag; empty when there is none
+    /** The value of the event's first "x" tag; empty when there is none. */
+    std::string_view topic;
+    /** The event's content. */
     std::string_view content;
 };
 
+/** A relay's `["OK", <id>, <accepted>, <reason>]`: whether it took a published event, as views. */
 struct ok {
+    /** The event's id. */
     std::string_view id;
+    /** Whether the relay accepted the event. */
     bool accepted = false;
+    /** Why, as `"rate-limited: ..."` or `"blocked: ..."`; may be empty. */
     std::string_view reason;
 };
 
+/** A relay's `["EOSE", <subscription>]`: the stored events of a subscription were all sent. */
 struct eose {
+    /** The subscription's id. */
     std::string_view subscription;
 };
 
+/** A relay's `["CLOSED", <subscription>, <reason>]`: the relay ended a subscription. */
 struct closed {
+    /** The subscription's id. */
     std::string_view subscription;
+    /** Why. */
     std::string_view reason;
 };
 
+/** A relay's `["NOTICE", <text>]`: a message for humans. */
 struct notice {
+    /** The message. */
     std::string_view text;
 };
 
+/**
+ * What a relay sends, as views into the parsed message; anything else is ignored.
+ *
+ * @see "The protocol", in the guide.
+ */
 using relay_message = std::variant<event, ok, eose, closed, notice>;
 
 namespace detail {
@@ -316,8 +407,13 @@ inline std::optional<relay_message> read_event(const boost::json::array& array) 
 
 }  // namespace detail
 
-/** The message a parsed relay text holds, as views into `document`, which the caller keeps alive
- * while it reads them. */
+/**
+ * The message a parsed relay text holds, as views into `document`.
+ *
+ * @param document The parsed text, which the caller keeps alive while it reads the views.
+ * @return The message, or nothing when Trystero would ignore it: not an array, or not one of the
+ * messages of @ref relay_message.
+ */
 inline std::optional<relay_message> read_relay_message(const boost::json::value& document) {
     const auto* array = document.if_array();
     if (array == nullptr || array->empty() || !array->at(0).is_string()) {

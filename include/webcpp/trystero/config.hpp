@@ -7,8 +7,6 @@
 /**
  The configuration of trystero, which each of its headers includes first:
  whether trystero is built without exceptions.
-
- @see "Targets", in the guide.
 */
 #ifndef WEBCPP_TRYSTERO_CONFIG_HPP
 #define WEBCPP_TRYSTERO_CONFIG_HPP
@@ -30,7 +28,7 @@
  is defined, `native::data_channel`, `native::peer_connection` and
  `native::backend` do not exist, and the rest of trystero is unchanged.
 
- @see "Targets", in the guide.
+ @see "The native backend", in the guide.
 */
 #define WEBCPP_TRYSTERO_NO_EXCEPTIONS
 #undef WEBCPP_TRYSTERO_NO_EXCEPTIONS

@@ -37,14 +37,17 @@ namespace webcpp::trystero::detail {
  */
 class peer_link final : public std::enable_shared_from_this<peer_link>, public channel_link {
 public:
+    /** What the link reports to its room. */
     struct callbacks {
         /** An action frame: `action` is a view into `frame`, which the receiver may keep. */
         handler<void(std::string_view peer, backend::bytes&& frame,
                      std::span<const std::uint8_t> action)>
             frame;
+        /** The connection ended, with the reason; called once. */
         handler<void(std::string_view peer, std::string_view reason)> closed;
     };
 
+    /** A link over a connected peer's connection and data channel, in `memory`. */
     peer_link(backend::factory& factory, std::string_view peer, std::string_view token,
               std::shared_ptr<backend::peer_connection> pc,
               std::shared_ptr<backend::data_channel> channel, callbacks cb, logger log,
@@ -59,6 +62,7 @@ public:
           log_(std::move(log)),
           drain_waiters_(memory) {}
 
+    /** Takes over the channel's and the connection's events, and announces the room's presence. */
     void start() {
         const auto weak = weak_from_this();
         const std::pmr::polymorphic_allocator<> allocator(memory_);
@@ -112,6 +116,7 @@ public:
         send_presence(true);
     }
 
+    /** The peer's id. */
     std::string_view peer() const { return peer_; }
 
     /** Sends a room frame; false when the channel is no longer open. */
@@ -123,6 +128,7 @@ public:
         return true;
     }
 
+    /** The bytes the channel buffers; 0 once the link ended. */
     std::size_t buffered_amount() const override {
         return ended_ ? 0 : channel_->buffered_amount();
     }

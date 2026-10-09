@@ -29,9 +29,11 @@
 namespace webcpp::trystero::native {
 
 /**
- * A data channel of libdatachannel. Its events arrive on libdatachannel's threads; each is posted
- * to the executor and handled there, through a weak reference, so a late event for a destroyed
- * channel does nothing.
+ * A data channel of libdatachannel, the native `RTCDataChannel`.
+ *
+ * Its events arrive on libdatachannel's threads; each is posted to the executor and handled there,
+ * through a weak reference, so a late event for a destroyed channel does nothing. It exists only
+ * with exceptions: libdatachannel reports errors by throwing.
  *
  * Tip: a received message is copied once, out of libdatachannel's `std::vector<std::byte>` into the
  * backend's bytes, in the room's resource, on the executor: what runs on libdatachannel's threads
@@ -44,6 +46,14 @@ class data_channel : public backend::data_channel,
     };
 
 public:
+    /**
+     * Wraps a channel of libdatachannel, and takes over its events.
+     *
+     * @param ex The executor every handler of the channel runs on.
+     * @param channel libdatachannel's channel.
+     * @param memory The resource the wrapper, its handlers and its frames are allocated in.
+     * @return The channel.
+     */
     static std::shared_ptr<data_channel> create(boost::asio::any_io_executor ex,
                                                 std::shared_ptr<rtc::DataChannel> channel,
                                                 std::pmr::memory_resource* memory) {
@@ -54,10 +64,18 @@ public:
         return self;
     }
 
+    /**
+     * Constructs the wrapper; only `create` can, which then takes over the channel's events.
+     *
+     * @param ex The executor every handler of the channel runs on.
+     * @param channel libdatachannel's channel.
+     * @param memory The resource its handlers and its frames are allocated in.
+     */
     data_channel(private_tag /*tag*/, boost::asio::any_io_executor ex,
                  std::shared_ptr<rtc::DataChannel> channel, std::pmr::memory_resource* memory)
         : ex_(std::move(ex)), channel_(std::move(channel)), memory_(memory) {}
 
+    /** Destroys the wrapper, which closes the channel without reporting the close. */
     ~data_channel() override {
         channel_->resetCallbacks();
         // A channel whose connection is gone may refuse to close, which leaves nothing to do.
@@ -67,15 +85,30 @@ public:
         }
     }
 
-    /** The handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call. */
+    /**
+     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
+     * outlives the call.
+     *
+     * @param h The new handlers, kept in the channel's resource.
+     */
     void set_handlers(handlers h) override {
         h_ = std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory_),
                                             std::move(h));
     }
 
+    /**
+     * Whether the channel is open.
+     *
+     * @return libdatachannel's `isOpen()`.
+     */
     bool is_open() const override { return channel_->isOpen(); }
 
+    /**
+     * Sends a binary message; one the channel refuses, closed in between, is dropped, and its close
+     * event reports the close.
+     *
+     * @param frame The message, read during the call.
+     */
     void send(std::span<const std::uint8_t> frame) override {
         // A channel closed in between refuses the frame, and its close event reports it.
         try {
@@ -86,8 +119,14 @@ public:
         }
     }
 
+    /**
+     * The bytes queued to send.
+     *
+     * @return libdatachannel's `bufferedAmount()`.
+     */
     std::size_t buffered_amount() const override { return channel_->bufferedAmount(); }
 
+    /** Closes the channel, which the handler `close` reports; a refusal is ignored. */
     void close() override {
         // A channel whose connection is gone may refuse to close, which leaves nothing to do.
         try {

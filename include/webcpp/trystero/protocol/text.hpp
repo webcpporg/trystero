@@ -20,10 +20,15 @@
 
 namespace webcpp::trystero::protocol {
 
-/** Bytes, in the resource a room or the caller gives. */
+/** Bytes, in the memory resource a room or the caller gives. */
 using bytes = std::pmr::vector<std::uint8_t>;
 
-/** Appends lowercase hexadecimal of a byte sequence, Trystero's `toHex`. */
+/**
+ * Appends the lowercase hexadecimal of a byte sequence, Trystero's `toHex`.
+ *
+ * @param out The text to append to.
+ * @param data The bytes.
+ */
 inline void append_hex(std::pmr::string& out, std::span<const std::uint8_t> data) {
     static constexpr std::string_view digits = "0123456789abcdef";
     out.reserve(out.size() + (data.size() * 2));
@@ -33,6 +38,13 @@ inline void append_hex(std::pmr::string& out, std::span<const std::uint8_t> data
     }
 }
 
+/**
+ * The lowercase hexadecimal of a byte sequence, Trystero's `toHex`.
+ *
+ * @param data The bytes.
+ * @param memory The resource the text is allocated in.
+ * @return Two digits per byte.
+ */
 inline std::pmr::string to_hex(
     std::span<const std::uint8_t> data,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -41,7 +53,13 @@ inline std::pmr::string to_hex(
     return out;
 }
 
-/** Bytes of a hexadecimal text, or nothing when it is not hexadecimal of even length. */
+/**
+ * The bytes of a hexadecimal text, in either case.
+ *
+ * @param text The text.
+ * @param memory The resource the bytes are allocated in.
+ * @return The bytes, or nothing when the text is not hexadecimal of even length.
+ */
 inline std::optional<bytes> from_hex(
     std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     if (text.size() % 2 != 0) {
@@ -73,7 +91,12 @@ inline std::optional<bytes> from_hex(
     return out;
 }
 
-/** Appends standard base64 with padding, what `btoa` writes over binary text. */
+/**
+ * Appends standard base64 with padding, what `btoa` writes over binary text.
+ *
+ * @param out The text to append to.
+ * @param in The bytes.
+ */
 inline void append_base64(std::pmr::string& out, std::span<const std::uint8_t> in) {
     static constexpr std::string_view table =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -101,6 +124,13 @@ inline void append_base64(std::pmr::string& out, std::span<const std::uint8_t> i
     }
 }
 
+/**
+ * Standard base64 with padding, what `btoa` writes over binary text.
+ *
+ * @param in The bytes.
+ * @param memory The resource the text is allocated in.
+ * @return The text.
+ */
 inline std::pmr::string base64_encode(
     std::span<const std::uint8_t> in,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -109,7 +139,13 @@ inline std::pmr::string base64_encode(
     return out;
 }
 
-/** Bytes of a padded base64 text, what `atob` accepts, or nothing when it is not base64. */
+/**
+ * The bytes of a base64 text, padded or not, as `atob` reads it.
+ *
+ * @param in The text.
+ * @param memory The resource the bytes are allocated in.
+ * @return The bytes, or nothing when the text is not base64.
+ */
 inline std::optional<bytes> base64_decode(
     std::string_view in, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const auto value = [](char c) -> int {
@@ -156,9 +192,14 @@ inline std::optional<bytes> base64_decode(
 }
 
 /**
- * Sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
+ * The sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
+ *
  * Tip: Trystero derives Nostr kinds and the relay shuffle seed from it, so non-ASCII ids must count
  * as in JS.
+ *
+ * @param utf8 The text, in UTF-8.
+ * @return The sum of the code units of its UTF-16 form, a character above U+FFFF counting as its
+ * two surrogates.
  */
 inline double utf16_code_unit_sum(std::string_view utf8) {
     double sum = 0;

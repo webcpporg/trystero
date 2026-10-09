@@ -52,35 +52,100 @@
 
 namespace webcpp::trystero {
 
+/**
+ * A peer's id in a room, Trystero's `selfId` and the ids `getPeers` lists: 20 characters of
+ * `protocol::id_alphabet` unless the configuration names one.
+ *
+ * A room hands its ids out in its own resource.
+ */
 using peer_id = std::pmr::string;
+
+/**
+ * Binary data allocated with `std::allocator`, an action's binary payload when the user chose
+ * standard containers.
+ *
+ * A message received as `bytes` is a copy of the payload, allocated with `std::allocator`.
+ */
 using bytes = std::vector<std::uint8_t>;
-/** Binary data in a memory resource: a room decodes a binary payload into its own resource without
- * a copy. */
+
+/**
+ * Binary data in a memory resource, an action's binary payload in the room's resource.
+ *
+ * A message received as `pmr_bytes` is in `room_config::memory`, which must outlive the value:
+ * the buffer its transfer assembled, moved out without a copy, or a copy of its bytes when it
+ * arrived inline, in one frame.
+ *
+ * @see "Allocation", in the guide.
+ */
 using pmr_bytes = std::pmr::vector<std::uint8_t>;
 
-/** What an action carries when its type is not fixed: Trystero's text, JSON or binary payload. */
+/**
+ * What an action carries when its type is not fixed: Trystero's text, JSON or binary payload.
+ *
+ * A message received as `payload` holds the alternative of its format: a `std::string` for text,
+ * a `boost::json::value` for JSON, in the room's JSON storage, and `bytes` for binary data.
+ */
 using payload = std::variant<std::string, boost::json::value, bytes>;
 
-/** What a room is joined with; the room copies every part of it into `memory`. */
+/**
+ * What a room is joined with, the configuration Trystero's `joinRoom` takes.
+ *
+ * The room copies every part of it into `memory`. It is move-only, as its `log` is: pass it moved,
+ * or build it in place with designated initializers.
+ *
+ * @see "Rooms and actions", in the guide.
+ */
 struct room_config {
+    /** The application's id, Trystero's `appId`: rooms of different apps never meet. */
     std::pmr::string app_id = {};
-    /** Seals signals and adds a challenge to the handshake; peers with another password never join.
+    /**
+     * The room's password, Trystero's `password`: it seals the signals and adds a challenge to
+     * the handshake, so peers with another password never join; empty means none.
      */
     std::pmr::string password = {};
-    /** Nostr relays to use; empty means Trystero's defaults, derived from the app id. */
+    /**
+     * The Nostr relays to use, Trystero's `relayConfig.urls`; empty means Trystero's defaults,
+     * derived from the app id.
+     */
     std::pmr::vector<std::pmr::string> relay_urls = {};
+    /**
+     * How many of the default relays the derivation keeps, Trystero's `relayConfig.redundancy`;
+     * ignored when `relay_urls` names the relays.
+     */
     std::size_t relay_redundancy = 5;
-    /** STUN and TURN servers; empty means Trystero's defaults. */
+    /** The STUN and TURN servers; empty means Trystero's defaults, @ref default_ice_servers. */
     std::pmr::vector<backend::ice_server> ice_servers = {};
-    /** This peer's id in the room; empty means 20 random characters. */
+    /** This peer's id in the room, Trystero's `selfId`; empty means 20 random characters. */
     std::pmr::string self_id = {};
+    /**
+     * How long a connected peer has to finish the handshake before it is dropped, Trystero's
+     * `handshakeTimeoutMs`.
+     */
     std::chrono::milliseconds handshake_timeout{10'000};
+    /**
+     * The most bytes the room reserves at once for the transfers it receives, across peers,
+     * Trystero's `maxReceiveBytes`.
+     */
     std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
-    /** Diagnostics, by category; see detail::logger. The room moves the sink into `memory`. */
+    /**
+     * Where the room's diagnostics go: called with a category ("nostr", "signal", "webrtc",
+     * "room" or "action") and a sentence; empty means none, and then no text is composed.
+     *
+     * The room moves the sink into `memory`, and composes each sentence there.
+     */
     detail::logger::sink log = {};
     /**
      * The resource every allocation of the room goes through, from its construction to its
      * destruction; not null.
+     *
+     * The room allocates there itself and all it holds: the copy of this configuration, its
+     * peers, actions, queues, frames, transfers, negotiations and relays, its handlers, the text it
+     * composes for its log, the objects its backend makes for it, the context libsecp256k1 signs
+     * with and the JSON it parses and writes. A message an action's handler receives as a
+     * `std::pmr::string`, a `pmr_bytes` or a `boost::json::value` is there too; a completion
+     * handler is allocated as its own associated allocator says. What libdatachannel, OpenSSL and
+     * the browser's JavaScript allocate stays theirs. The room uses the resource from its executor
+     * only, so it need not be thread-safe when that executor runs on one thread.
      *
      * It must outlive the room, every value the room hands out (a `std::pmr::string`, a
      * `pmr_bytes`, a `boost::json::value`), and every operation the room leaves pending: on Asio,
@@ -89,28 +154,43 @@ struct room_config {
      * room's pending promises have settled. A room allocates and frees per event, so a resource
      * that reuses what is freed (a pool) suits a long-lived room, and a monotonic one only a
      * short-lived one.
+     *
+     * @see "Allocation", in the guide.
      */
     std::pmr::memory_resource* memory = std::pmr::get_default_resource();
 };
 
-/** Who sent a message, and the metadata it carried (JSON text, or empty), in the receiving room's
- * resource. */
+/**
+ * Who sent a message, and the metadata it carried, the second and third arguments of Trystero's
+ * action handler, in the receiving room's resource.
+ */
 struct message_info {
+    /** The sender's id. */
     peer_id from;
+    /** The metadata the sender passed, as JSON text, or empty when it passed none. */
     std::pmr::string metadata;
 };
 
 /**
- * Where an action goes: every active peer when `targets` is empty. `metadata` is JSON text, or
- * empty. Tip: it owns its strings because a completion token such as `asio::deferred` starts the
+ * Where an action's message goes and what it carries beside its payload, the target and the
+ * metadata of Trystero's `send`.
+ *
+ * Tip: it owns its strings because a completion token such as `asio::deferred` starts the
  * operation later, after the caller's views may be gone.
  */
 struct send_options {
+    /** The peers to send to; empty means every active peer. */
     std::pmr::vector<peer_id> targets = {};
+    /** The metadata, as JSON text, or empty for none. */
     std::pmr::string metadata = {};
 };
 
-/** Trystero's default STUN servers. */
+/**
+ * Trystero's default STUN servers, its `defaultIceServers`: Google's and Cloudflare's.
+ *
+ * @param memory The resource the list and its strings are allocated in.
+ * @return The servers, a room's when its configuration names none.
+ */
 inline std::pmr::vector<backend::ice_server> default_ice_servers(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::vector<backend::ice_server> out(memory);
@@ -135,10 +215,13 @@ namespace detail {
 
 /** A payload ready to send: its format, and its bytes kept alive by what owns them. */
 struct encoded_payload {
+    /** The payload's format, which its frame carries. */
     protocol::payload_format format = protocol::payload_format::text;
+    /** The payload's bytes and their owner. */
     payload_ref ref;
 };
 
+/** An encoded payload over the bytes `owner` holds, which it keeps alive. */
 template <class Owner>
 encoded_payload own(protocol::payload_format format, std::shared_ptr<const Owner> owner) {
     const auto data =
@@ -154,6 +237,7 @@ std::shared_ptr<const Owner> keep(std::pmr::memory_resource* memory, Args&&... a
                                        std::forward<Args>(args)...);
 }
 
+/** Bytes as text, a view of the same storage. */
 inline std::string_view as_text(std::span<const std::uint8_t> data) {
     return {reinterpret_cast<const char*>(data.data()), data.size()};
 }
@@ -180,14 +264,21 @@ inline std::string_view as_text(std::span<const std::uint8_t> data) {
 template <class T>
 struct payload_traits;
 
+/** How an action of `std::string`, Trystero's text payload, travels. */
 template <>
 struct payload_traits<std::string> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Keeps the text alive, moved into a shared object of the room's resource. */
     static encoded_payload encode(std::string v, std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::text, keep<std::string>(memory, std::move(v)));
     }
 
+    /**
+     * The message's payload as this type: a copy of the text, allocated with `std::allocator`;
+     * nothing for another format.
+     */
     static std::optional<std::string> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::text) {
             return std::nullopt;
@@ -196,14 +287,21 @@ struct payload_traits<std::string> {
     }
 };
 
+/** How an action of `std::pmr::string`, Trystero's text payload, travels. */
 template <>
 struct payload_traits<std::pmr::string> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Keeps the text alive, moved into a shared object of the room's resource. */
     static encoded_payload encode(std::pmr::string v, std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::text, keep<std::pmr::string>(memory, std::move(v)));
     }
 
+    /**
+     * The message's payload as this type: a copy of the text, in the room's resource; nothing for
+     * another format.
+     */
     static std::optional<std::pmr::string> decode(incoming& m, std::pmr::memory_resource* memory) {
         if (m.format != protocol::payload_format::text) {
             return std::nullopt;
@@ -212,14 +310,21 @@ struct payload_traits<std::pmr::string> {
     }
 };
 
+/** How an action of `std::string_view`, Trystero's text payload, travels. */
 template <>
 struct payload_traits<std::string_view> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = false;
 
+    /** Copies the viewed text once, into a shared string of the room's resource. */
     static encoded_payload encode(std::string_view v, std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::text, keep<std::pmr::string>(memory, v));
     }
 
+    /**
+     * The message's payload as this type: a view of the message, valid for the handler's call;
+     * nothing for another format.
+     */
     static std::optional<std::string_view> decode(incoming& m,
                                                   std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::text) {
@@ -229,16 +334,23 @@ struct payload_traits<std::string_view> {
     }
 };
 
+/** How an action of `boost::json::value`, Trystero's JSON payload, travels. */
 template <>
 struct payload_traits<boost::json::value> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Serializes the value once, into a shared string of the room's resource. */
     static encoded_payload encode(const boost::json::value& v, std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
         protocol::json::append_value(text, v);
         return own(protocol::payload_format::json, keep<std::pmr::string>(memory, std::move(text)));
     }
 
+    /**
+     * The message's payload as this type: the parsed text, in the room's JSON storage; nothing for
+     * another format or a text that does not parse.
+     */
     static std::optional<boost::json::value> decode(incoming& m,
                                                     std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::json) {
@@ -253,14 +365,21 @@ struct payload_traits<boost::json::value> {
     }
 };
 
+/** How an action of `trystero::bytes`, Trystero's binary payload, travels. */
 template <>
 struct payload_traits<bytes> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Keeps the bytes alive, moved into a shared object of the room's resource. */
     static encoded_payload encode(bytes v, std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::binary, keep<bytes>(memory, std::move(v)));
     }
 
+    /**
+     * The message's payload as this type: a copy of the bytes, allocated with `std::allocator`;
+     * nothing for another format.
+     */
     static std::optional<bytes> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
@@ -270,14 +389,21 @@ struct payload_traits<bytes> {
     }
 };
 
+/** How an action of `trystero::pmr_bytes`, Trystero's binary payload, travels. */
 template <>
 struct payload_traits<pmr_bytes> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Keeps the bytes alive, moved into a shared object of the room's resource. */
     static encoded_payload encode(pmr_bytes v, std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::binary, keep<pmr_bytes>(memory, std::move(v)));
     }
 
+    /**
+     * The message's payload as this type: the message's buffer, moved when the payload starts it,
+     * in the room's resource; nothing for another format.
+     */
     static std::optional<pmr_bytes> decode(incoming& m, std::pmr::memory_resource* memory) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
@@ -286,15 +412,22 @@ struct payload_traits<pmr_bytes> {
     }
 };
 
+/** How an action of `std::span<const std::uint8_t>`, Trystero's binary payload, travels. */
 template <>
 struct payload_traits<std::span<const std::uint8_t>> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = false;
 
+    /** Copies the viewed bytes once, into a shared buffer of the room's resource. */
     static encoded_payload encode(std::span<const std::uint8_t> v,
                                   std::pmr::memory_resource* memory) {
         return own(protocol::payload_format::binary, keep<pmr_bytes>(memory, v.begin(), v.end()));
     }
 
+    /**
+     * The message's payload as this type: a view of the message, valid for the handler's call;
+     * nothing for another format.
+     */
     static std::optional<std::span<const std::uint8_t>> decode(
         incoming& m, std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::binary) {
@@ -304,10 +437,13 @@ struct payload_traits<std::span<const std::uint8_t>> {
     }
 };
 
+/** How an action of `trystero::payload`, any of Trystero's payloads, travels. */
 template <>
 struct payload_traits<payload> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
+    /** Encodes the alternative the payload holds, as its own type does. */
     static encoded_payload encode(payload v, std::pmr::memory_resource* memory) {
         return std::visit(
             [memory](auto&& x) {
@@ -317,6 +453,10 @@ struct payload_traits<payload> {
             std::move(v));
     }
 
+    /**
+     * The message's payload as this type: the alternative of the message's format; nothing for
+     * another format.
+     */
     static std::optional<payload> decode(incoming& m, std::pmr::memory_resource* memory) {
         switch (m.format) {
             case protocol::payload_format::text:
@@ -346,16 +486,21 @@ struct payload_traits<payload> {
  */
 template <class Signature>
 struct completion {
+    /** The user's handler. */
     boost::asio::any_completion_handler<Signature> handler;
+    /** Whether the handler's associated executor is the room's. */
     bool on_room_executor = false;
 
+    /** The handler's associated allocator type. */
     using allocator_type =
         boost::asio::associated_allocator_t<boost::asio::any_completion_handler<Signature>>;
 
+    /** The handler's associated allocator, which Asio allocates what carries it with. */
     [[nodiscard]] allocator_type get_allocator() const noexcept {
         return boost::asio::get_associated_allocator(handler);
     }
 
+    /** Calls the handler once, with the completion's arguments. */
     template <class... Args>
     void operator()(Args&&... args) && {
         std::move(handler)(std::forward<Args>(args)...);
@@ -375,7 +520,9 @@ struct completion {
  */
 class room_impl : public std::enable_shared_from_this<room_impl> {
 public:
+    /** The executor every handler and completion of the room runs on. */
     using executor_type = boost::asio::any_io_executor;
+    /** What an action's `on_message` becomes: a handler of each received message. */
     using message_handler = handler<void(incoming&)>;
 
     /**
@@ -416,6 +563,7 @@ public:
         self_topic_ = protocol::peer_topic(config_.app_id, room_id_, config_.self_id, memory_);
     }
 
+    /** Joins: makes the sealer, the action wire, the signaling and the strategy, and starts it. */
     void start() {
         const auto weak = weak_from_this();
         sealer_ = factory_.make_sealer(
@@ -507,16 +655,22 @@ public:
         strategy_->start();
     }
 
+    /** The room's executor. */
     const executor_type& get_executor() const { return ex_; }
 
+    /** The room's resource, `room_config::memory`. */
     std::pmr::memory_resource* memory() const { return memory_; }
 
+    /** An allocator of the room's resource. */
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
+    /** This peer's id. */
     std::string_view self_id() const { return config_.self_id; }
 
+    /** The relays the room uses. */
     std::span<const std::pmr::string> relay_urls() const { return config_.relay_urls; }
 
+    /** The ids of the peers whose handshake completed, in the room's resource. */
     std::pmr::vector<peer_id> active_peers() const {
         std::pmr::vector<peer_id> out(memory_);
         for (const auto& [id, p] : peers_) {
@@ -527,12 +681,15 @@ public:
         return out;
     }
 
+    /** Sets the handler of each peer that becomes active. */
     void on_peer_join(handler<void(std::string_view)> f) { on_join_ = keep_handler(std::move(f)); }
 
+    /** Sets the handler of each active peer that leaves. */
     void on_peer_leave(handler<void(std::string_view)> f) {
         on_leave_ = keep_handler(std::move(f));
     }
 
+    /** Sets the handler of each problem with a peer that the room handled itself. */
     void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
         on_error_ = keep_handler(std::move(f));
     }
@@ -547,6 +704,7 @@ public:
         }
     }
 
+    /** Sets an action's handler, and posts it every message that queued while it had none. */
     void set_action_handler(std::string_view name, message_handler handler) {
         auto& slot = slot_for(name);
         slot.handler = keep_handler(std::move(handler));
@@ -556,6 +714,7 @@ public:
         }
     }
 
+    /** Completes with an action's next message: a queued one at once, else the next to arrive. */
     void receive(std::string_view name,
                  completion<void(boost::system::error_code, incoming)> handler) {
         if (left_) {
@@ -572,6 +731,7 @@ public:
         slot.receivers.push_back(std::move(handler));
     }
 
+    /** Sends an action's payload through the wire, and completes once every target has it. */
     void send(std::string_view name, encoded_payload payload, const send_options& options,
               completion<void(boost::system::error_code)> handler) {
         if (left_) {
@@ -591,6 +751,7 @@ public:
                         }));
     }
 
+    /** Sends `\@_ping` to an active peer, and completes with the time until its `\@_pong`. */
     void ping(std::string_view peer,
               completion<void(boost::system::error_code, std::chrono::milliseconds)> handler) {
         const auto it = peers_.find(peer);
@@ -605,6 +766,7 @@ public:
         send_internal("@_ping", it->first);
     }
 
+    /** Says `\@_leave` to every peer, then closes everything after Trystero's 99 ms. */
     void leave(completion<void(boost::system::error_code)> handler) {
         if (left_) {
             complete(std::move(handler), boost::system::error_code{});
@@ -984,7 +1146,7 @@ private:
         } else if (name == "@_leave") {
             remove_peer(m.peer, "peer left the room", true);
         } else if (name.starts_with("@_")) {
-            // Media and renegotiation actions: not implemented yet (the documentation's roadmap).
+            // Media and renegotiation actions: not implemented yet (doc: #trystero-roadmap).
         } else if (const auto it = actions_.find(name); it != actions_.end()) {
             auto& slot = it->second;
             if (slot.handler) {
@@ -1098,64 +1260,136 @@ template <class T>
 class action;
 
 /**
- * A room joined over Trystero's Nostr strategy. Constructing it joins; `async_leave` leaves with
- * Trystero's farewell, and destroying it leaves at once.
+ * A room joined over Trystero's Nostr strategy, what Trystero's `joinRoom` returns.
+ *
+ * Constructing it joins; `async_leave` leaves with Trystero's farewell, and destroying it leaves at
+ * once. Its peers meet over the relays, connect over WebRTC and exchange the messages of the
+ * actions it makes, wire compatible with Trystero's JavaScript.
  *
  * Tip: every handler the room calls, and every completion, runs on the executor it was constructed
  * with. The views a handler receives are valid for the duration of the call. Every allocation of
  * the room goes through `room_config::memory`; a completion handler is allocated as its own
  * associated allocator says. Destroying the room leaves operations pending on its executor, which
  * free into that resource: it must outlive them (see `room_config::memory`).
+ *
+ * @see "Rooms and actions", in the guide.
  */
 class room {
 public:
+    /** The executor every handler and completion of the room runs on. */
     using executor_type = boost::asio::any_io_executor;
 
+    /**
+     * Joins a room: connects to the relays and announces this peer on the room's topic.
+     *
+     * @param ex The executor every handler and completion of the room runs on.
+     * @param factory The backend, which must outlive the room.
+     * @param config What the room is joined with, copied into `config.memory`.
+     * @param room_id The room's id, Trystero's `roomId`, read during the call.
+     * @pre `config.memory` is not null.
+     */
     room(executor_type ex, backend::factory& factory, room_config config, std::string_view room_id)
         : impl_(make(std::move(ex), factory, std::move(config), room_id)) {
         impl_->start();
     }
 
+    /** Not copyable: a room is one membership. */
     room(const room&) = delete;
+
+    /** Not copy-assignable: a room is one membership. */
     room& operator=(const room&) = delete;
+
+    /**
+     * Takes the membership of the room moved from, which may then only be destroyed or assigned.
+     */
     room(room&&) noexcept = default;
+
+    /**
+     * Takes the membership of the room moved from, which may then only be destroyed or assigned.
+     *
+     * The membership this room held is released as it is, without the farewell its destructor
+     * would send.
+     *
+     * @return This room.
+     */
     room& operator=(room&&) noexcept = default;
 
     // Leaving sends each peer Trystero's farewell, whose frames are allocated in the room's
     // resource: a resource that fails then ends the program, as in any destructor.
+    /**
+     * Leaves at once, without the farewell's grace period: every peer is told, every connection is
+     * closed, and every pending operation completes with `error::room_left`.
+     */
     ~room() {  // NOLINT(bugprone-exception-escape)
         if (impl_) {
             impl_->abandon();
         }
     }
 
+    /**
+     * The executor the room was constructed with.
+     *
+     * @return The executor every handler and completion of the room runs on.
+     */
     [[nodiscard]] const executor_type& get_executor() const { return impl_->get_executor(); }
 
+    /**
+     * This peer's id in the room, Trystero's `selfId`.
+     *
+     * @return The id, valid as long as the room.
+     */
     [[nodiscard]] std::string_view self_id() const { return impl_->self_id(); }
 
-    /** The Nostr relays this room uses, derived from the app id unless the configuration named
-     * them. */
+    /**
+     * The Nostr relays this room uses, derived from the app id unless the configuration named
+     * them.
+     *
+     * @return The relays' URLs, valid as long as the room.
+     */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const {
         return impl_->relay_urls();
     }
 
-    /** The peers whose handshake completed, in the room's resource. */
+    /**
+     * The peers whose handshake completed, Trystero's `getPeers`.
+     *
+     * @return Their ids, in the room's resource.
+     */
     [[nodiscard]] std::pmr::vector<peer_id> peers() const { return impl_->active_peers(); }
 
+    /**
+     * Sets what is called with each peer that joins, once its handshake completes, Trystero's
+     * `onPeerJoin`.
+     *
+     * @tparam F A callable with a `std::string_view`, the peer's id, valid for the call.
+     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     */
     template <class F>
         requires std::is_invocable_v<F&, std::string_view>
     void on_peer_join(F&& f) {
         impl_->on_peer_join(impl_->bind<void(std::string_view)>(std::forward<F>(f)));
     }
 
+    /**
+     * Sets what is called with each joined peer that leaves, Trystero's `onPeerLeave`.
+     *
+     * @tparam F A callable with a `std::string_view`, the peer's id, valid for the call.
+     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     */
     template <class F>
         requires std::is_invocable_v<F&, std::string_view>
     void on_peer_leave(F&& f) {
         impl_->on_peer_leave(impl_->bind<void(std::string_view)>(std::forward<F>(f)));
     }
 
-    /** Problems with one peer that the room handled itself: a wrong password, a timed-out
-     * handshake. */
+    /**
+     * Sets what is called with each problem with one peer that the room handled itself, as a
+     * wrong password or a timed-out handshake, Trystero's `onPeerError`.
+     *
+     * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
+     * for the call.
+     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     */
     template <class F>
         requires std::is_invocable_v<F&, std::string_view, boost::system::error_code,
                                      std::string_view>
@@ -1165,13 +1399,34 @@ public:
                 std::forward<F>(f)));
     }
 
-    /** An action of this room; `T` is one of the types detail::payload_traits lists. */
+    /**
+     * Makes an action of this room, Trystero's `makeAction`: a named channel of messages.
+     *
+     * Frames of the action that arrived before it was made, which the room keeps for a while (64
+     * per peer, for 120 s), are delivered to it.
+     *
+     * @tparam T The type of its messages: `std::string`, `std::pmr::string`, `std::string_view`,
+     * `boost::json::value`, @ref bytes, @ref pmr_bytes, `std::span<const std::uint8_t>`, or
+     * @ref payload for any of Trystero's formats.
+     * @param name The action's name, 1 to 32 UTF-8 bytes without NUL; with another, every send
+     * fails with `error::invalid_action_name`.
+     * @return The action.
+     */
     template <class T>
     action<T> make_action(std::string_view name);
 
     /**
-     * Measures the round trip to a peer. Completes with `(error_code, std::chrono::milliseconds)`.
-     * The id is copied at the call, so a deferred operation does not depend on the caller's string.
+     * Measures the round trip to a peer, Trystero's `ping`.
+     *
+     * Completes with `(error_code, std::chrono::milliseconds)`: the time from sending `\@_ping`
+     * to receiving its `\@_pong`, or `error::no_such_peer` when the peer is not active,
+     * `error::peer_disconnected` when it leaves first, and `error::room_left`.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code, milliseconds)`.
+     * @param peer The peer's id, copied at the call, so a deferred operation does not depend on
+     * the caller's string.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
      */
     template <class CompletionToken>
     auto async_ping(std::string_view peer, CompletionToken&& token) {
@@ -1185,7 +1440,17 @@ public:
             token, peer_id(peer, impl_->memory()));
     }
 
-    /** Says goodbye to every peer and closes everything. Completes with `(error_code)`. */
+    /**
+     * Says goodbye to every peer and closes everything, Trystero's `leave`.
+     *
+     * Each peer is sent `\@_leave`, and 99 ms later, as Trystero waits, every connection is
+     * closed and every pending operation completes with `error::room_left`. Completes with
+     * `(error_code)`, empty, also when the room was already left.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code)`.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
+     */
     template <class CompletionToken>
     auto async_leave(CompletionToken&& token) {
         return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
@@ -1210,17 +1475,36 @@ private:
 };
 
 /**
- * A named channel of messages of type `T` within a room, wire compatible with Trystero's
- * `makeAction`. Messages arrive at the handler `on_message` set, or, without one, queue for
- * `async_receive`.
+ * A named channel of messages of type `T` within a room, wire compatible with what Trystero's
+ * `makeAction` returns.
+ *
+ * Messages arrive at the handler `on_message` set, or, without one, queue for `async_receive`, up
+ * to 1024 per action, the oldest dropped first. A message of another format than `T`'s is not
+ * delivered to the handler. A room makes it with `room::make_action`, and it keeps the room's
+ * state alive.
+ *
+ * @tparam T The type of its messages, one of those `room::make_action` lists.
+ * @see "Rooms and actions", in the guide.
  */
 template <class T>
 class action {
 public:
+    /**
+     * The action's name.
+     *
+     * @return The name, valid as long as the action.
+     */
     [[nodiscard]] std::string_view name() const { return name_; }
 
-    /** The handler for every message; with a view type, the view is valid for the duration of the
-     * call. */
+    /**
+     * Sets what is called with every message, Trystero's `onMessage`.
+     *
+     * Messages that queued while the action had no handler are delivered to it first.
+     *
+     * @tparam F A callable with a `T` and a `const message_info&`; with a view type, the view is
+     * valid for the duration of the call.
+     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     */
     template <class F>
         requires std::is_invocable_v<F&, T, const message_info&>
     void on_message(F&& f) {
@@ -1243,8 +1527,20 @@ public:
     // T is the action's type, taken by value and moved into its encoding, which keeps a value
     // that owns its storage; a boost::json::value is serialized there at once, from a reference.
     /**
-     * Sends to `options.targets`, or every active peer. The value is taken at the call (moved when
-     * `T` owns its storage). Completes with `(error_code)` once every target has it.
+     * Sends a message to `options.targets`, or every active peer, Trystero's `send`.
+     *
+     * A payload that fits one frame is sent inline; a larger one is offered, accepted by each
+     * receiver, and sent in chunks. Completes with `(error_code)` once every target has it, with
+     * the first failure: `error::invalid_action_name`, `error::metadata_too_large`,
+     * `error::no_such_peer`, `error::transfer_rejected`, `error::transfer_timed_out`,
+     * `error::channel_stalled`, `error::peer_disconnected` or `error::room_left`.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code)`.
+     * @param value The message, taken at the call: moved when `T` owns its storage, copied once
+     * into the room's resource when it is a view.
+     * @param options The targets and the metadata.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
      */
     template <class CompletionToken>
     auto async_send(T value, send_options options,  // NOLINT(performance-unnecessary-value-param)
@@ -1260,15 +1556,29 @@ public:
             std::move(options));
     }
 
+    /**
+     * Sends a message to every active peer, without metadata.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code)`.
+     * @param value The message, taken at the call as the other overload takes it.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
+     */
     template <class CompletionToken>
     auto async_send(T value, CompletionToken&& token) {
         return async_send(std::move(value), send_options(), std::forward<CompletionToken>(token));
     }
 
     /**
-     * The next message, when no handler is set. Completes with `(error_code, T, message_info)`; a
-     * message of another payload format than `T` completes with `error::transfer_rejected` and an
-     * empty value.
+     * Receives the next message, when no handler is set: the oldest queued, or the next to arrive.
+     *
+     * Completes with `(error_code, T, message_info)`; a message of another payload format than
+     * `T`'s completes with `error::transfer_rejected` and an empty value, and leaving the room
+     * with `error::room_left`. `T` must own its storage: a view would outlive the message.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code, T, message_info)`.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
      */
     template <class CompletionToken>
     auto async_receive(CompletionToken&& token) {

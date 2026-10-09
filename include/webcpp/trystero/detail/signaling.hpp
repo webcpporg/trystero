@@ -73,11 +73,15 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  */
 class signaling : public std::enable_shared_from_this<signaling> {
 public:
+    /** What the signaling asks of its room. */
     struct callbacks {
+        /** Publishes a signal on a topic, through the relay given. */
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)> publish;
+        /** A negotiation ended with an open data channel: the connection is the room's. */
         handler<void(std::string_view peer, std::shared_ptr<backend::peer_connection>,
                      std::shared_ptr<backend::data_channel>)>
             connected;
+        /** A negotiation with a peer failed, with the error. */
         handler<void(std::string_view peer, boost::system::error_code)> failed;
     };
 
@@ -139,6 +143,7 @@ public:
         }
     }
 
+    /** Ends every negotiation, and ignores every signal from now on. */
     void close() {
         closed_ = true;
         for (auto& [id, n] : peers_) {
