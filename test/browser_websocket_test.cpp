@@ -4,23 +4,27 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the browser backend's WebSockets, under node, whose WebSocket refuses the URLs a browser's
-// does: a URL the page's WebSocket cannot be made with reports a close, as the backend interface
-// says of a relay it cannot connect to. It reports it later, never inside the call that made the
-// WebSocket, and nothing is thrown. Before the fix, `new WebSocket` threw a SyntaxError through the
+// Tests the browser backend's WebSockets, under node, whose WebSocket refuses URLs as a browser's
+// does: what `new WebSocket` makes of each URL is the browser's to decide. A URL it throws for
+// makes no socket and reports a close, as the backend interface says of a relay it cannot connect
+// to; one it accepts makes a socket, whose failed connection to a port where nothing listens, or
+// its close, reports a close too. Each reports exactly one, after the call that made it, never
+// inside it, and nothing is thrown. Before the fix, `new WebSocket` threw a SyntaxError through the
 // room's constructor.
 //
-// main sets the test up and returns with node's exit code at 1; the verdict comes from a timer,
-// which sets the exit code to `boost::report_errors()`, and node exits once nothing is pending.
+// main sets the test up and returns with node's exit code at 1; the verdict comes when every URL
+// has reported its close, or from a deadline that fails by name, and node exits once nothing is
+// pending.
 
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
+#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 
 #include <emscripten/val.h>
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
 
 #include <array>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <string_view>
@@ -30,19 +34,24 @@ using emscripten::val;
 
 namespace {
 
-/** URLs no WebSocket can be made to: another scheme, a fragment, and no URL at all. */
-constexpr std::array<std::string_view, 3> refused{
-    "ftp://relay.invalid",
-    "wss://relay.invalid/#fragment",
-    "not a url",
+/**
+ * URLs node's WebSocket throws for (another scheme, a fragment, no URL, a relative one without a
+ * page to resolve it against) and ones the WHATWG constructor accepts, mapping http and https to
+ * ws and wss, to a port where nothing listens.
+ */
+constexpr std::array<std::string_view, 6> urls{
+    "ftp://relay.invalid", "wss://relay.invalid/#fragment", "not a url", "/relative",
+    "http://127.0.0.1:9",  "https://127.0.0.1:9",
 };
 
 struct state {
     boost::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    std::array<std::shared_ptr<trystero::backend::websocket>, refused.size()> sockets;
-    std::array<int, refused.size()> closes{};
+    std::array<std::shared_ptr<trystero::backend::websocket>, urls.size()> sockets;
+    std::array<int, urls.size()> closes{};
+    std::size_t total = 0;
+    val deadline = val::undefined();
 };
 
 state& the_state() {
@@ -54,39 +63,58 @@ void set_exit_code(int code) {
     val::global("process").set("exitCode", val(code));
 }
 
-/** Calls `setTimeout` with a function that runs `f` through the loop, as the page's events do. */
-void after(int milliseconds, trystero::browser::event_loop::callback f) {
-    auto& loop = the_state().loop;
-    const int id = loop.add(std::move(f));
-    // The handler takes one argument, which setTimeout passes when given one.
-    val::global("setTimeout")(loop.handler(id, 0), val(milliseconds), val::undefined());
+/** Ends the test once every URL has reported its close. */
+void closed(std::size_t i) {
+    auto& s = the_state();
+    ++s.closes.at(i);
+    if (++s.total < urls.size()) {
+        return;
+    }
+    for (std::size_t j = 0; j < urls.size(); ++j) {
+        BOOST_TEST_EQ(s.closes.at(j), 1);
+    }
+    val::global("clearTimeout")(s.deadline);
+    s.sockets = {};  // destroyed after the close: nothing more is reported
+    set_exit_code(boost::report_errors());
+}
+
+/** Makes a WebSocket of each URL, then sends on it and closes it, from an event of the page, as a
+ * room does from its handlers. */
+void connect_all(int /*slot*/, const val& /*event*/) {
+    auto& s = the_state();
+    for (std::size_t i = 0; i < urls.size(); ++i) {
+        // What node makes of the URL, as the page's own code would see it.
+        const auto probe =
+            trystero::browser::detail::js_new(val::global("WebSocket"), s.loop.text(urls.at(i)));
+        if (probe.ok) {
+            probe.value.call<void>("close");
+        }
+        std::cout << urls.at(i) << (probe.ok ? ": a socket\n" : ": refused\n");
+
+        s.sockets.at(i) = s.backend.connect(urls.at(i),
+                                            {
+                                                .open = [] { BOOST_ERROR("a URL opened"); },
+                                                .message = {},
+                                                .close = [i] { closed(i); },
+                                            },
+                                            std::pmr::get_default_resource());
+        s.sockets.at(i)->send("ignored");
+        s.sockets.at(i)->close();
+        BOOST_TEST_EQ(s.closes.at(i), 0);  // not inside the call
+    }
 }
 
 }  // namespace
 
 int main() {
     auto& s = the_state();
-    for (std::size_t i = 0; i < refused.size(); ++i) {
-        s.sockets.at(i) = s.backend.connect(refused.at(i),
-                                            {
-                                                .open = [] { BOOST_ERROR("a refused URL opened"); },
-                                                .message = {},
-                                                .close = [i] { ++the_state().closes.at(i); },
-                                            },
-                                            std::pmr::get_default_resource());
-        // Sending on it, and closing it, do nothing either.
-        s.sockets.at(i)->send("ignored");
-        s.sockets.at(i)->close();
-        BOOST_TEST_EQ(s.closes.at(i), 0);  // not inside the call
-    }
-
-    after(200, [](int /*slot*/, const val& /*event*/) {
-        for (std::size_t i = 0; i < refused.size(); ++i) {
-            BOOST_TEST_EQ(the_state().closes.at(i), 1);
-        }
-        the_state().sockets = {};  // destroyed after the close: nothing more is reported
+    const int start = s.loop.add(connect_all);
+    val::global("setTimeout")(s.loop.handler(start, 0), val(0), val::undefined());
+    const int id = s.loop.add([](int /*slot*/, const val& /*event*/) {
+        BOOST_ERROR("not every URL reported a close");
         set_exit_code(boost::report_errors());
     });
+    s.deadline = val::global("setTimeout")(s.loop.handler(id, 0), val(10'000), val::undefined());
     set_exit_code(1);  // until the verdict
     return 0;
 }

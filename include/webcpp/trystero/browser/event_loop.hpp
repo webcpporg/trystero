@@ -9,9 +9,11 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/browser/js.hpp>
 #include <webcpp/trystero/handler.hpp>
 
 #include <emscripten/val.h>
+#include <boost/asio/bind_allocator.hpp>       // lint-world: binds an allocator only
 #include <boost/asio/execution.hpp>            // lint-world: posts and polls, never blocks
 #include <boost/asio/executor_work_guard.hpp>  // lint-world: posts and polls, never blocks
 #include <boost/asio/io_context.hpp>           // lint-world: posts and polls, never blocks
@@ -233,19 +235,41 @@ public:
     /**
      * A JavaScript function of one argument that delivers it to registration `id`, slot `slot`.
      *
+     * An exception that escapes the call, which no operation of trystero raises, is reported to
+     * the page (`reportError`) and does not stop the loop: the loop recovers, as @ref recover
+     * says, and the function returns.
+     *
      * @param id The registration's id.
      * @param slot A number the callback receives, which tells its events apart.
-     * @return The function, `trystero_dispatch` bound to this loop, `id` and `slot`.
+     * @return The function, which calls `trystero_dispatch` with this loop, `id`, `slot` and its
+     * argument (browser/src.hpp).
      */
     [[nodiscard]] emscripten::val handler(int id, int slot) const {
-        return emscripten::val::module_property("trystero_dispatch")
-            .call<emscripten::val>("bind", emscripten::val::null(), token_,
-                                   emscripten::val(reinterpret_cast<std::uintptr_t>(this)),
-                                   emscripten::val(id), emscripten::val(slot));
+        // The loop's address crosses as a pointer, and comes back through trystero_dispatch.
+        return emscripten::val::take_ownership(
+            webcpp_trystero_js_handler(token_.as_handle(), this, id, slot));
+    }
+
+    /**
+     * Brings the loop back after an exception escaped a call into C++: no call is running any
+     * more, and a poll runs the work that is ready.
+     *
+     * Tip: without WebAssembly exceptions no destructor runs while an exception unwinds, so the
+     * depth a call raised stays raised; the page's functions call this from JavaScript, where the
+     * exception has reached the event that entered C++, so no call can still be running.
+     */
+    void recover() {
+        depth_ = 0;
+        poll_scheduled_ = false;
+        schedule_poll();
     }
 
     /**
      * Runs a registration's callback for a JavaScript event, then everything that became ready.
+     *
+     * An event the page delivers while C++ is already running, inside a call C++ made into
+     * JavaScript (a WebSocket that fires `close` from inside `close()`, as node's does), is
+     * posted rather than run, so that a handler never runs inside the call that caused it.
      *
      * @param id The registration's id; an unknown one runs nothing.
      * @param slot The slot the event came through.
@@ -256,9 +280,16 @@ public:
             const running call(depth_);
             if (id == poll_id) {
                 poll_scheduled_ = false;
-            } else if (const auto it = callbacks_.find(id); it != callbacks_.end()) {
-                const auto f = it->second;  // the callback may remove itself
-                (*f)(slot, std::move(event));
+            } else if (const auto it = callbacks_.find(id); it != callbacks_.end() && depth_ > 1) {
+                // Delivered when it runs, by id: the registration may be gone by then, and its
+                // object with it. Ids are never reused.
+                boost::asio::post(io_, boost::asio::bind_allocator(
+                                           it->second->get_allocator(),
+                                           [this, id, slot, event = std::move(event)]() mutable {
+                                               deliver(id, slot, std::move(event));
+                                           }));
+            } else {
+                deliver(id, slot, std::move(event));
             }
         }
         if (depth_ == 0) {
@@ -282,21 +313,25 @@ public:
             return;
         }
         poll_scheduled_ = true;
-        // A microtask's function is called with no argument, and the handler's takes one: bound
-        // to undefined, or embind refuses the call with a BindingError and the poll never runs.
-        const emscripten::val next_poll = handler(poll_id, 0);
-        emscripten::val::global("queueMicrotask")(next_poll.call<emscripten::val>(
-            "bind", emscripten::val::null(), emscripten::val::undefined()));
+        emscripten::val::global("queueMicrotask")(handler(poll_id, 0));
     }
 
 private:
+    /** Runs a registration's callback, when it still has one. */
+    void deliver(int id, int slot, emscripten::val event) {
+        if (const auto it = callbacks_.find(id); it != callbacks_.end()) {
+            const auto f = it->second;  // the callback may remove itself
+            (*f)(slot, std::move(event));
+        }
+    }
+
     /**
      * Counts a call into C++ for as long as it runs, however it ends.
      *
-     * Tip: a JavaScript exception thrown inside a callback unwinds through the call to the page;
-     * the build's WebAssembly exceptions run this destructor on the way, so the depth comes back
-     * down and the loop goes on polling. Counted by hand, the depth stayed raised and the loop
-     * never polled again: every room of the page stopped.
+     * Tip: with WebAssembly exceptions, an exception that unwinds through the call runs this
+     * destructor, and the depth comes back down; without them nothing runs on the way, and
+     * `recover` brings the depth back from JavaScript. Neither should be needed: the backend makes
+     * every call that can throw through browser/js.hpp.
      */
     class running {
     public:
@@ -355,6 +390,25 @@ inline void dispatch(const emscripten::val& token, std::uintptr_t loop, int id, 
     // The page holds the loop's address as a number, the one form it passes back through embind.
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     reinterpret_cast<event_loop*>(loop)->dispatch(id, slot, std::move(event));
+}
+
+/**
+ * The function JavaScript calls, `trystero_recover`, when an exception escaped
+ * `trystero_dispatch`: the loop recovers, as `event_loop::recover` says.
+ *
+ * Calls for a destroyed loop do nothing.
+ *
+ * @param token The loop's token, whose `alive` is false once the loop is destroyed.
+ * @param loop The loop's address, as a number.
+ * @see "The browser backend", in the guide.
+ */
+inline void recover(const emscripten::val& token, std::uintptr_t loop) {
+    if (!token["alive"].as<bool>()) {
+        return;
+    }
+    // As in dispatch: the page holds the loop's address as a number.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    reinterpret_cast<event_loop*>(loop)->recover();
 }
 
 }  // namespace webcpp::trystero::browser

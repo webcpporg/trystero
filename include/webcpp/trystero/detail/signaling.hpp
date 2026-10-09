@@ -283,7 +283,12 @@ private:
     void start_offer(std::string_view peer, negotiation& n) {
         n.offer_id = make_id(protocol::offer_id_size);
         n.offer.pc = factory_.make_peer_connection(ice_servers_, memory_);
-        n.offer.channel = n.offer.pc->create_data_channel("data");
+        n.offer.channel = n.offer.pc ? n.offer.pc->create_data_channel("data") : nullptr;
+        if (!n.offer.channel) {
+            reset_offer(n);
+            refused(peer);
+            return;
+        }
         const auto pc = n.offer.pc;
         const auto weak = weak_from_this();
         pc->set_handlers({
@@ -403,6 +408,10 @@ private:
         }
         log_("signal", "offer ", offer_id, " from ", peer);
         n.answer.pc = factory_.make_peer_connection(ice_servers_, memory_);
+        if (!n.answer.pc) {
+            refused(peer);
+            return;
+        }
         n.answered_offer_id = offer_id;
         n.answered_offer = offer;
         n.answer_relays.insert(relay);
@@ -819,6 +828,15 @@ private:
         s.pc.reset();
         s.channel.reset();
         s.pending_remote.clear();
+    }
+
+    /**
+     * Reports that the backend made no connection, or no channel, for a negotiation with `peer`,
+     * which ends: the next announcement starts another.
+     */
+    void refused(std::string_view peer) {
+        log_("webrtc", "the backend made no connection for ", peer);
+        cb_.failed(peer, make_error_code(error::backend_failure));
     }
 
     static void reset_offer(negotiation& n) {

@@ -10,18 +10,59 @@
 #include <webcpp/trystero/config.hpp>
 
 /**
- * What a browser program compiles once: the export JavaScript calls (`trystero_dispatch`). Include
- * it in exactly one source file of the program.
+ * What a browser program compiles once: the exports JavaScript calls (`trystero_dispatch` and
+ * `trystero_recover`), and the JavaScript functions the backend calls through (browser/js.hpp).
+ * Include it in exactly one source file of the program.
  *
  * Tip: Boost.JSON's definitions are not here: a program links them from /webcpp//boost_json, which
  * /webcpp/trystero//trystero brings and which builds on emscripten as on every target.
  */
 #include <webcpp/trystero/browser/event_loop.hpp>
+#include <webcpp/trystero/browser/js.hpp>
 
 #include <emscripten/bind.h>
+#include <emscripten/em_js.h>
+
+// The JavaScript functions of browser/js.hpp. Emval turns the handles C++ passes into values and
+// back; EM_JS_DEPS has Emscripten link it for them. A native parse (the reference, the lint) has
+// no JavaScript to define, nor a section EM_JS can name.
+#ifdef __EMSCRIPTEN__
+EM_JS_DEPS(webcpp_trystero, "$Emval");
+
+// clang-format off
+EM_JS(emscripten::EM_VAL, webcpp_trystero_js_try,
+      (emscripten::EM_VAL target, emscripten::EM_VAL member, emscripten::EM_VAL arguments), {
+    const object = Emval.toValue(target);
+    const name = Emval.toValue(member);
+    const values = Emval.toValue(arguments);
+    try {
+        const value =
+            name === undefined ? Reflect.construct(object, values) : object[name](...values);
+        return Emval.toHandle({ok: true, value});
+    } catch (error) {
+        return Emval.toHandle({ok: false, value: error});
+    }
+});
+
+EM_JS(emscripten::EM_VAL, webcpp_trystero_js_handler,
+      (emscripten::EM_VAL token, const void* loop, int id, int slot), {
+    const alive = Emval.toValue(token);
+    const address = loop >>> 0;
+    return Emval.toHandle(event => {
+        try {
+            Module['trystero_dispatch'](alive, address, id, slot, event);
+        } catch (error) {
+            (globalThis.reportError ?? console.error)(error);
+            Module['trystero_recover'](alive, address);
+        }
+    });
+});
+// clang-format on
+#endif
 
 EMSCRIPTEN_BINDINGS(trystero_browser) {
     emscripten::function("trystero_dispatch", &webcpp::trystero::browser::dispatch);
+    emscripten::function("trystero_recover", &webcpp::trystero::browser::recover);
 }
 
 #endif

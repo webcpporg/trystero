@@ -11,18 +11,16 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/browser/event_loop.hpp>
+#include <webcpp/trystero/browser/js.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
-#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <emscripten/val.h>
 #include <sys/random.h>                   // lint-world: getentropy, the page's entropy
 #include <boost/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
 #include <boost/asio/post.hpp>            // lint-world: posts handlers only
-#include <boost/json/storage_ptr.hpp>
 
 #include <cmath>
 #include <deque>
@@ -76,6 +74,13 @@ void defer(event_loop& loop, std::pmr::memory_resource* memory, F&& f) {
     loop.schedule_poll();
 }
 
+/**
+ * Calls `done(true, value)` or `done(false, reason)` once a promise an operation returned
+ * settles, or `done(false, exception)` after the call when the operation threw instead.
+ */
+inline void then(event_loop& loop, const js_outcome& operation, handler<void(bool, val)> done,
+                 std::pmr::memory_resource* memory);
+
 /** Calls `done(true, value)` or `done(false, reason)` once a promise settles. */
 inline void then(event_loop& loop, const val& promise, handler<void(bool, val)> done,
                  std::pmr::memory_resource* memory) {
@@ -87,6 +92,17 @@ inline void then(event_loop& loop, const val& promise, handler<void(bool, val)> 
                         done(slot == 0, std::move(value));
                     }});
     promise.call<void>("then", loop.handler(*id, 0), loop.handler(*id, 1));
+}
+
+inline void then(event_loop& loop, const js_outcome& operation, handler<void(bool, val)> done,
+                 std::pmr::memory_resource* memory) {
+    if (operation.ok) {
+        then(loop, operation.value, std::move(done), memory);
+        return;
+    }
+    defer(loop, memory, [done = std::move(done), reason = operation.value]() mutable {
+        done(false, std::move(reason));
+    });
 }
 
 }  // namespace detail
@@ -164,10 +180,9 @@ public:
     /**
      * Opens a WebSocket to `url`.
      *
-     * A URL the page's `WebSocket` would refuse with an exception (no URL, another scheme than
-     * `ws:` or `wss:`, a fragment, or `ws:` from an https page to another host than the machine)
-     * makes no socket: the handler `close` reports it after the call, as it reports a relay that
-     * cannot be reached.
+     * A URL the page's `WebSocket` refuses with an exception (one that does not parse, another
+     * scheme, a fragment, mixed content, a policy of the page's) makes no socket: the handler
+     * `close` reports it after the call, as it reports a relay that cannot be reached.
      *
      * @param loop The page's loop, which must outlive the WebSocket.
      * @param url The relay's URL, read during the call.
@@ -182,8 +197,8 @@ public:
                                             std::move(h))),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
                         [this](int slot, const val& event) { on_event(slot, event); }})) {
-        const val target = loop_.text(url);
-        if (!openable(target)) {
+        const auto made = detail::js_new(val::global("WebSocket"), loop_.text(url));
+        if (!made.ok) {
             detail::defer(loop_, memory_, [weak = std::weak_ptr<handlers>(h_)] {
                 if (const auto h = weak.lock()) {
                     if (auto f = std::exchange(h->close, {})) {
@@ -193,7 +208,7 @@ public:
             });
             return;
         }
-        socket_ = val::global("WebSocket").new_(target);
+        socket_ = made.value;
         socket_.set("onopen", loop_.handler(id_, 0));
         socket_.set("onmessage", loop_.handler(id_, 1));
         socket_.set("onclose", loop_.handler(id_, 2));
@@ -212,13 +227,14 @@ public:
     }
 
     /**
-     * Sends a text message when the socket is open, its `readyState` 1; otherwise drops it.
+     * Sends a text message when the socket is open, its `readyState` 1; otherwise, or when the
+     * socket refuses it, drops it.
      *
      * @param text The message, read during the call.
      */
     void send(std::string_view text) override {
         if (!socket_.isUndefined() && socket_["readyState"].as<int>() == 1) {
-            socket_.call<void>("send", loop_.text(text));
+            detail::js_call(socket_, "send", loop_.text(text));
         }
     }
 
@@ -230,37 +246,6 @@ public:
     }
 
 private:
-    /**
-     * Whether `new WebSocket(url)` makes a socket rather than throwing: a URL `URL.canParse`
-     * accepts, of the scheme `ws:` or `wss:`, without a fragment, and not `ws:` from an https page
-     * to another host than the machine, which the browser blocks as mixed content.
-     *
-     * Tip: a browser without `URL.canParse` (before 2023) gets the URL as it is, and may throw.
-     */
-    static bool openable(const val& url) {
-        const val url_class = val::global("URL");
-        if (url_class["canParse"].isUndefined()) {
-            return true;
-        }
-        if (!url_class.call<bool>("canParse", url) || url.call<bool>("includes", val("#"))) {
-            return false;
-        }
-        const val parsed = url_class.new_(url);
-        const val scheme = parsed["protocol"];
-        if (!scheme.strictlyEquals(val("ws:")) && !scheme.strictlyEquals(val("wss:"))) {
-            return false;
-        }
-        const val page = val::global("location");
-        if (scheme.strictlyEquals(val("ws:")) && !page.isUndefined() &&
-            page["protocol"].strictlyEquals(val("https:"))) {
-            const val host = parsed["hostname"];
-            return host.strictlyEquals(val("localhost")) || host.strictlyEquals(val("127.0.0.1")) ||
-                   host.strictlyEquals(val("[::1]")) ||
-                   host.call<bool>("endsWith", val(".localhost"));
-        }
-        return true;
-    }
-
     /** Calls through a copy of the shared handlers: a handler may destroy this socket during its
      * own call. */
     void on_event(int slot, const val& event) {
@@ -351,13 +336,14 @@ public:
     }
 
     /**
-     * Sends a binary message, copied into a new `Uint8Array`, when the channel is open.
+     * Sends a binary message, copied into a new `Uint8Array`, when the channel is open; one the
+     * channel refuses, as one larger than its peer accepts, is dropped.
      *
      * @param frame The message, read during the call.
      */
     void send(std::span<const std::uint8_t> frame) override {
         if (is_open()) {
-            channel_.call<void>("send", detail::to_js(frame));
+            detail::js_call(channel_, "send", detail::to_js(frame));
         }
     }
 
@@ -431,34 +417,54 @@ public:
      *
      * @param loop The page's loop, which must outlive the connection.
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The room's resource, which the connection's handlers, registration, channels
-     * and texts are allocated in.
+     * @param memory The room's resource, which the connection, its handlers, registration,
+     * channels and texts are allocated in.
+     * @return The connection, or null when the browser refuses to make one: it throws for a
+     * server it cannot use, and when the page holds as many connections as it allows.
      */
-    peer_connection(event_loop& loop, std::span<const backend::ice_server> servers,
-                    std::pmr::memory_resource* memory)
-        : loop_(loop),
-          memory_(memory),
-          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, const val& event) { on_event(slot, event); }})) {
+    static std::shared_ptr<peer_connection> create(event_loop& loop,
+                                                   std::span<const backend::ice_server> servers,
+                                                   std::pmr::memory_resource* memory) {
         val list = val::array();
         for (const auto& s : servers) {
             val server = val::object();
             val urls = val::array();
             for (const auto& url : s.urls) {
-                urls.call<void>("push", loop_.text(url));
+                urls.call<void>("push", loop.text(url));
             }
             server.set("urls", urls);
             if (!s.username.empty()) {
-                server.set("username", loop_.text(s.username));
+                server.set("username", loop.text(s.username));
             }
             if (!s.credential.empty()) {
-                server.set("credential", loop_.text(s.credential));
+                server.set("credential", loop.text(s.credential));
             }
             list.call<void>("push", server);
         }
         val config = val::object();
         config.set("iceServers", list);
-        pc_ = val::global("RTCPeerConnection").new_(config);
+        const auto made = detail::js_new(val::global("RTCPeerConnection"), config);
+        if (!made.ok) {
+            return nullptr;
+        }
+        return std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
+                                                     loop, made.value, memory);
+    }
+
+    /**
+     * Wraps a connection of the page, and takes over its events; `create` makes one.
+     *
+     * @param loop The page's loop, which must outlive the connection.
+     * @param connection The `RTCPeerConnection`.
+     * @param memory The room's resource, which the connection's handlers, registration, channels
+     * and texts are allocated in.
+     */
+    peer_connection(event_loop& loop, val connection, std::pmr::memory_resource* memory)
+        : loop_(loop),
+          memory_(memory),
+          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
+                        [this](int slot, const val& event) { on_event(slot, event); }})),
+          pc_(std::move(connection)) {
         pc_.set("onicecandidate", loop_.handler(id_, 0));
         pc_.set("ondatachannel", loop_.handler(id_, 1));
         pc_.set("onconnectionstatechange", loop_.handler(id_, 2));
@@ -493,11 +499,15 @@ public:
      * Opens a data channel with `createDataChannel()`.
      *
      * @param label The channel's label, read during the call.
-     * @return The channel, made in the connection's resource.
+     * @return The channel, made in the connection's resource, or null when the browser refuses
+     * to open one, as on a closed connection.
      */
     std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
-        return std::allocate_shared<data_channel>(
-            allocator(), loop_, pc_.call<val>("createDataChannel", loop_.text(label)), memory_);
+        const auto made = detail::js_call(pc_, "createDataChannel", loop_.text(label));
+        if (!made.ok) {
+            return nullptr;
+        }
+        return std::allocate_shared<data_channel>(allocator(), loop_, made.value, memory_);
     }
 
     /**
@@ -510,15 +520,15 @@ public:
     void set_local_description(
         handler<void(backend::error_code, std::string_view, std::string_view)> done) override {
         const std::weak_ptr<peer_connection> weak = shared_from_this();
-        detail::then(loop_, pc_.call<val>("setLocalDescription"),
+        detail::then(loop_, detail::js_call(pc_, "setLocalDescription"),
                      {std::allocator_arg, allocator(),
                       [weak, done = std::move(done)](bool ok, const val& /*value*/) mutable {
                           const auto self = weak.lock();
-                          if (!self || !ok) {
+                          const val local = self ? self->pc_["localDescription"] : val::null();
+                          if (!ok || local.isNull()) {
                               done(make_error_code(error::backend_failure), {}, {});
                               return;
                           }
-                          const val local = self->pc_["localDescription"];
                           const auto type = self->loop_.utf8(local["type"], self->memory_);
                           const auto sdp = self->loop_.utf8(local["sdp"], self->memory_);
                           done({}, type, sdp);
@@ -540,7 +550,7 @@ public:
         description.set("type", loop_.text(type));
         description.set("sdp", loop_.text(sdp));
         detail::then(
-            loop_, pc_.call<val>("setRemoteDescription", description),
+            loop_, detail::js_call(pc_, "setRemoteDescription", description),
             {std::allocator_arg, allocator(),
              [done = std::move(done)](bool ok, const val& /*value*/) mutable {
                  done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
@@ -551,31 +561,20 @@ public:
     /**
      * Adds a remote ICE candidate, with `addIceCandidate()`.
      *
-     * The text comes from a peer: one that is not a JSON object is dropped, and never reaches
-     * `JSON.parse`, whose exception would stop the page's loop.
+     * The text comes from a peer: one `JSON.parse` refuses is dropped, as a candidate the browser
+     * refuses is.
      *
      * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
-     * @param done Called once the promise settles, or with `error::backend_failure` when the text
-     * is not a JSON object or the promise is rejected.
+     * @param done Called once the candidate is added, or with `error::backend_failure` when the
+     * text is not JSON or the browser refuses the candidate.
      */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
-        // The text is a peer's: JSON.parse would throw on one that is not JSON, and the exception
-        // would unwind through the room to the page. It is read in C++ first, and only an object
-        // reaches JSON.parse, which accepts every text Boost.JSON does.
-        json_resource resource(memory_);
-        boost::system::error_code ec;
-        const auto document =
-            protocol::json::parse(candidate_json, boost::json::storage_ptr(&resource), ec);
-        if (ec || !document.is_object()) {
-            detail::defer(loop_, memory_, [done = std::move(done)]() mutable {
-                done(make_error_code(error::backend_failure));
-            });
-            return;
-        }
-        const val candidate = val::global("JSON").call<val>("parse", loop_.text(candidate_json));
+        const auto candidate =
+            detail::js_call(val::global("JSON"), "parse", loop_.text(candidate_json));
         detail::then(
-            loop_, pc_.call<val>("addIceCandidate", candidate),
+            loop_,
+            candidate.ok ? detail::js_call(pc_, "addIceCandidate", candidate.value) : candidate,
             {std::allocator_arg, allocator(),
              [done = std::move(done)](bool ok, const val& /*value*/) mutable {
                  done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
@@ -736,7 +735,11 @@ public:
 private:
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
-    static val subtle() { return val::global("crypto")["subtle"]; }
+    /** The page's `crypto.subtle`; undefined outside a secure context, or without `crypto`. */
+    static val subtle() {
+        const val crypto = val::global("crypto");
+        return crypto.isUndefined() || crypto.isNull() ? val::undefined() : crypto["subtle"];
+    }
 
     static val algorithm(std::span<const std::uint8_t> iv) {
         val a = val::object();
@@ -750,10 +753,8 @@ private:
         getentropy(iv.data(), iv.size());  // lint-world: a seal's IV
         const auto bytes =
             std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size());
-        const val promise =
-            subtle().call<val>("encrypt", algorithm(iv), key_, detail::to_js(bytes));
         detail::then(
-            loop_, promise,
+            loop_, detail::js_call(subtle(), "encrypt", algorithm(iv), key_, detail::to_js(bytes)),
             {std::allocator_arg, allocator(),
              [iv, done = std::move(done), memory = memory_](bool ok, const val& cipher) mutable {
                  if (!ok) {
@@ -775,10 +776,10 @@ private:
             });
             return;
         }
-        const val promise = subtle().call<val>("decrypt", algorithm(parts->iv), key_,
-                                               detail::to_js(parts->ciphertext));
         detail::then(
-            loop_, promise,
+            loop_,
+            detail::js_call(subtle(), "decrypt", algorithm(parts->iv), key_,
+                            detail::to_js(parts->ciphertext)),
             {std::allocator_arg, allocator(),
              [done = std::move(done), memory = memory_](bool ok, const val& plain) mutable {
                  if (!ok) {
@@ -822,8 +823,8 @@ private:
         usages.call<void>("push", val("encrypt"));
         usages.call<void>("push", val("decrypt"));
         detail::then(loop_,
-                     subtle().call<val>("importKey", val("raw"), detail::to_js(raw_key_),
-                                        val("AES-GCM"), val(false), usages),
+                     detail::js_call(subtle(), "importKey", "raw", detail::to_js(raw_key_),
+                                     "AES-GCM", false, usages),
                      {std::allocator_arg, allocator(),
                       [weak](bool ok, val key) {
                           if (const auto self = weak.lock()) {
@@ -892,13 +893,13 @@ public:
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
-     * @return The connection.
+     * @return The connection, or null when the browser refuses to make one, as
+     * `peer_connection::create` says.
      */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
-                                                     loop_, servers, memory);
+        return peer_connection::create(loop_, servers, memory);
     }
 
     /**

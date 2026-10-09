@@ -61,6 +61,16 @@ holds only what is specific to trystero.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/trystero//trystero` adds as a linker flag: `<embind>on`, b2's own
   feature, is not free, and b2 ignores it among usage requirements.
+- **No JavaScript exception enters WebAssembly.** The browser backend makes
+  every call into JavaScript that can throw (a constructor, `JSON.parse`, a
+  `send`, a WebRTC or Web Crypto method) through `browser/js.hpp`, whose
+  JavaScript, defined once in `browser/src.hpp` with `EM_JS`, runs it inside
+  `try` and returns a value or the exception as a value, which the C++ turns
+  into the error its interface has. Every event of the page enters C++
+  through a function of the same file that catches what still escapes,
+  reports it and recovers the loop. A message that is not a frame is dropped
+  before it is read. The browser tests run under node with exceptions and
+  without them (`*_no_exceptions`), and the interop lane passes both ways.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair

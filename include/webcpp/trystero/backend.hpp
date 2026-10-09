@@ -236,7 +236,8 @@ public:
      * Opens a data channel, like `createDataChannel()`.
      *
      * @param label The channel's label, read during the call.
-     * @return The channel, made in the connection's resource.
+     * @return The channel, made in the connection's resource, or null when the platform refuses
+     * to open one, as on a closed connection.
      */
     virtual std::shared_ptr<data_channel> create_data_channel(std::string_view label) = 0;
 
@@ -346,7 +347,8 @@ public:
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
-     * @return The connection.
+     * @return The connection, or null when the platform refuses to make one: the room then
+     * reports the negotiation with that peer as failed, through `room::on_error`.
      */
     virtual std::shared_ptr<peer_connection> make_peer_connection(
         std::span<const ice_server> servers, std::pmr::memory_resource* memory) = 0;
