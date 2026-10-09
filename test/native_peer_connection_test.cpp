@@ -6,7 +6,8 @@
 
 // Tests the native peer connection, libdatachannel's, between two connections in one process,
 // wired to each other directly: what the signaling would carry over the relays is handed across
-// here.
+// here. Each connection is bound to 127.0.0.1, so that its one host candidate is the loopback's and
+// no other interface is needed.
 
 #include <webcpp/trystero/native/peer_connection.hpp>
 
@@ -34,6 +35,8 @@ using webcpp::test::require;
 
 namespace {
 
+constexpr const char* loopback = "127.0.0.1";
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
                std::chrono::milliseconds limit = 10s) {
     const auto end = std::chrono::steady_clock::now() + limit;
@@ -51,9 +54,9 @@ struct pair {
     asio::io_context io;
     std::thread::id io_thread = std::this_thread::get_id();
     std::shared_ptr<backend::peer_connection> offerer =
-        trystero::native::peer_connection::create(io.get_executor(), {});
+        trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
     std::shared_ptr<backend::peer_connection> answerer =
-        trystero::native::peer_connection::create(io.get_executor(), {});
+        trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
     std::shared_ptr<backend::data_channel> offer_end;
     std::shared_ptr<backend::data_channel> answer_end;
     std::vector<backend::bytes> at_offerer, at_answerer;
@@ -177,7 +180,7 @@ void closing_one_end_is_seen_by_the_other() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    auto pc = trystero::native::peer_connection::create(io.get_executor(), {});
+    auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
     std::optional<backend::error_code> result;
     pc->add_ice_candidate("not json", [&](backend::error_code ec) { result = ec; });
     if (!BOOST_TEST(run_until(io, [&] { return result.has_value(); }))) {

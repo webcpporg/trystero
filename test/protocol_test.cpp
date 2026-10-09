@@ -4,9 +4,9 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the protocol layer against values Trystero JS 0.26 computed itself, which the oracle
-// writes into fixtures/expected/expected.json. The fixture's path is the test's one argument, as
-// webcpp.run passes its input file.
+// Tests the protocol layer against values Trystero JS 0.26 computed itself, which the original's
+// oracle wrote into fixtures/expected/expected.json. The fixture's path is the test's one argument,
+// as webcpp.run passes its input file.
 
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>

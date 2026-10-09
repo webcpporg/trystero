@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <string>
 
 /**
  * The native target: the backend interface over libdatachannel for WebRTC, Boost.Beast for the relays' WebSockets,
@@ -51,11 +52,28 @@ private:
 // (WEBCPP_TRYSTERO_NO_EXCEPTIONS) it does not exist, and the timer, the sealer and the WebSockets remain.
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
+/** What a native backend makes its peer connections with, beside the room's `room_config::ice_servers`. */
+struct backend_config {
+    /**
+     * The local address every peer connection binds to, as `"127.0.0.1"`; empty means every interface but the loopback.
+     *
+     * Bound to the loopback, the peers of one machine connect with no other network, which a test wants; a peer bound
+     * there reaches no other machine.
+     */
+    std::string bind_address = {};
+};
+
 /** The native factory: one per application, beside the executor it runs on. */
 class backend : public trystero::backend::factory {
 public:
-    /** A backend whose TLS verifies relays against the system's certificate authorities. */
-    explicit backend(boost::asio::any_io_executor ex) : ex_(std::move(ex)), tls_(boost::asio::ssl::context::tls_client) {
+    /**
+     * A backend whose TLS verifies relays against the system's certificate authorities.
+     *
+     * @param ex The executor everything the backend reports runs on.
+     * @param config What its peer connections are made with; the default binds them to no address.
+     */
+    explicit backend(boost::asio::any_io_executor ex, backend_config config = {})
+        : ex_(std::move(ex)), config_(std::move(config)), tls_(boost::asio::ssl::context::tls_client) {
         tls_.set_default_verify_paths();
         tls_.set_verify_mode(boost::asio::ssl::verify_peer);
     }
@@ -68,7 +86,7 @@ public:
     }
 
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(const std::vector<trystero::backend::ice_server>& servers) override {
-        return peer_connection::create(ex_, servers);
+        return peer_connection::create(ex_, servers, config_.bind_address);
     }
 
     std::unique_ptr<trystero::backend::timer> make_timer() override { return std::make_unique<timer>(ex_); }
@@ -91,6 +109,7 @@ public:
 
 private:
     boost::asio::any_io_executor ex_;
+    backend_config config_;
     boost::asio::ssl::context tls_;
 };
 

@@ -9,6 +9,7 @@
 
 #include <webcpp/trystero/native/websocket.hpp>
 
+#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
@@ -33,7 +34,12 @@ using namespace std::chrono_literals;
 
 namespace {
 
-/** Accepts WebSocket connections and sends every text message back. */
+/**
+ * Accepts WebSocket connections and sends every text message back.
+ *
+ * Tip: each coroutine ends on its first error, read from a tuple, so the server needs no
+ * exceptions, as the client it tests does not.
+ */
 struct echo_server {
     explicit echo_server(asio::io_context& io)
         : acceptor(io, {asio::ip::make_address("127.0.0.1"), 0}) {
@@ -46,19 +52,33 @@ struct echo_server {
 
     asio::awaitable<void> accept() {
         for (;;) {
-            auto socket = co_await acceptor.async_accept(asio::use_awaitable);
+            auto [ec, socket] = co_await acceptor.async_accept(asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                co_return;
+            }
             asio::co_spawn(acceptor.get_executor(), echo(std::move(socket)), asio::detached);
         }
     }
 
     static asio::awaitable<void> echo(tcp::socket socket) {
         beast::websocket::stream<tcp::socket> ws(std::move(socket));
-        co_await ws.async_accept(asio::use_awaitable);
+        auto [accepted] = co_await ws.async_accept(asio::as_tuple(asio::use_awaitable));
+        if (accepted) {
+            co_return;
+        }
         beast::flat_buffer buffer;
         for (;;) {
-            co_await ws.async_read(buffer, asio::use_awaitable);
+            auto [read, read_size] =
+                co_await ws.async_read(buffer, asio::as_tuple(asio::use_awaitable));
+            if (read) {
+                co_return;
+            }
             ws.text(true);
-            co_await ws.async_write(buffer.data(), asio::use_awaitable);
+            auto [written, written_size] =
+                co_await ws.async_write(buffer.data(), asio::as_tuple(asio::use_awaitable));
+            if (written) {
+                co_return;
+            }
             buffer.consume(buffer.size());
         }
     }

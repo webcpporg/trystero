@@ -24,17 +24,14 @@ JS 0.26, is now `test/fixtures/expected/expected.json`, byte for byte. `protocol
 `native_sealer` receive its path as their one argument (`<testing.input-file>`), as the old
 `run` rule passed it.
 
-`native_websocket`, `native_peer_connection` and `native_room` declare `<exception-handling>on`.
-The last two need `native::peer_connection` and `native::backend`, which exist only with
-exceptions, since libdatachannel reports errors by throwing. `native_websocket`'s echo server
-ends its coroutines by the exception `use_awaitable` throws when a connection closes: built
-without exceptions it compiles, and aborts at run time ("make_exception_ptr was called in
--fno-exceptions mode"). `protocol`, `room` and `native_sealer` pass built with
-`exception-handling=off`.
+`native_peer_connection` and `native_room` declare `<exception-handling>on`: they need
+`native::peer_connection` and `native::backend`, which exist only with exceptions, since
+libdatachannel reports errors by throwing. `protocol`, `room`, `native_sealer` and
+`native_websocket` pass built with `exception-handling=off`.
 
 The old suite had no variant without exceptions, and the new one has none either: webcpp builds
 none (owner decision, 2026-10-08). The lint analyses each test a second time without
-exceptions, except the three that declare them.
+exceptions, except the two that declare them.
 
 ## How each form was converted
 
@@ -214,11 +211,24 @@ No count differs, in any case or helper. These are the other differences:
   views live as long as before, the case's end, and no static state is left.
 - **The collections** are compared by `BOOST_TEST_ALL_EQ`, each temporary operand first bound
   to a local (the conversion table above).
-- **Each `io.run_for` and `io.run`** says why it may block, after `lint-run:`, as the lint asks
-  of a program whose purpose is network I/O: the memory relays and the rooms' timers post to the
+- **Each `io.run_for`** says why it may block, after `lint-run:`, as the lint asks of a program
+  whose purpose is network I/O: the memory relays and the rooms' timers post to the
   `io_context` (`room`), the client and the echo server do loopback I/O (`native_websocket`),
-  libdatachannel's threads post the connections' events (`native_peer_connection`,
-  `native_room`), and `native_sealer`'s `run` runs only the completion the sealer posted.
+  and libdatachannel's threads post the connections' events (`native_peer_connection`,
+  `native_room`). `native_sealer`'s `run` called `io.run()`; it now calls `io.poll()`, which
+  runs the completion the sealer, working synchronously, has already posted, and waits for no
+  I/O.
+- **`native_websocket`'s echo server** awaited with `use_awaitable`, so a closed connection
+  ended its coroutines by an exception, and built without exceptions the test aborted
+  ("make_exception_ptr was called in -fno-exceptions mode"). It now awaits
+  `as_tuple(use_awaitable)` and returns on the first error, so the test builds and passes both
+  ways. What the client sees is unchanged.
+- **`native_peer_connection` and `native_room` bind every connection to 127.0.0.1**, through
+  the native backend's `backend_config::bind_address` (`peer_connection::create`'s
+  `bind_address`). ICE never offers a loopback host candidate (RFC 8445, 5.1.1.1) unless the
+  agent is bound to it, so the old tests connected over a non-loopback interface of the
+  machine, and failed in a container with no network beyond the loopback
+  (`docker run --network none`). Bound, both pass there.
 - **A failed `BOOST_TEST_REQUIRE` in a helper** (`run` of `native_sealer`, the three
   completion handlers of `pair::connect`) now ends the program; before, it ended only its case.
   No such check fails while the library is correct, and none failed on the planted defects

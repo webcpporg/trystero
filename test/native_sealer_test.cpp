@@ -5,8 +5,8 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the native sealer, OpenSSL's AES-GCM, against text Trystero JS sealed with WebCrypto,
-// which the oracle writes into fixtures/expected/expected.json. The fixture's path is the test's
-// one argument.
+// which the original's oracle wrote into fixtures/expected/expected.json. The fixture's path is the
+// test's one argument.
 
 #include <webcpp/trystero/native/sealer.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
@@ -51,7 +51,7 @@ outcome run(boost::asio::io_context& io, Operation operation) {
         result = outcome{ec, std::string(text)};
     });
     io.restart();
-    io.run();  // lint-run: runs only the completion the sealer posted, then returns
+    io.poll();  // the sealer works synchronously: its completion is already posted
     require(BOOST_TEST(result.has_value()));
     return *result;
 }

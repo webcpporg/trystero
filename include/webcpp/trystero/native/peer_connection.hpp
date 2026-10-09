@@ -43,9 +43,24 @@ namespace webcpp::trystero::native {
  */
 class peer_connection : public backend::peer_connection, public std::enable_shared_from_this<peer_connection> {
 public:
-    static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex, std::span<const backend::ice_server> servers) {
+    /**
+     * Makes a peer connection that gathers through `servers`, bound to `bind_address` when it is not empty.
+     *
+     * A connection that is not bound gathers a host candidate on each interface but the loopback, which ICE never
+     * offers (RFC 8445, 5.1.1.1); one bound to an address, as `"127.0.0.1"`, gathers on that address alone, which
+     * lets two peers of one machine connect with no other network.
+     *
+     * @param ex The executor every handler of the connection runs on.
+     * @param servers The STUN and TURN servers it gathers through.
+     * @param bind_address The local address it binds to, as `"127.0.0.1"`; empty means every interface but the
+     * loopback.
+     * @return The new connection.
+     */
+    static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex, std::span<const backend::ice_server> servers,
+                                                   std::string_view bind_address = {}) {
         rtc::Configuration config;
         config.disableAutoNegotiation = true;
+        if (!bind_address.empty()) config.bindAddress = std::string(bind_address);
         for (const auto& server : servers) {
             for (const auto& url : server.urls) {
                 try {
