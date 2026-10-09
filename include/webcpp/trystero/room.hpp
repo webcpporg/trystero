@@ -367,11 +367,11 @@ struct completion {
  * handshakes, the action wire and the actions the application made. `room` and `action` are handles
  * to it. Every allocation goes through the resource of its configuration.
  *
- * | Internal action | Meaning                                                             |
- * | @_hsdata        | a handshake message: the password challenge and its response        |
- * | @_hsready       | the sender's side of the handshake passed                           |
- * | @_ping, @_pong  | round-trip measurement                                              |
- * | @_leave         | the sender leaves the room                                          |
+ * | Internal action   | Meaning                                                           |
+ * | \@_hsdata         | a handshake message: the password challenge and its response      |
+ * | \@_hsready        | the sender's side of the handshake passed                         |
+ * | \@_ping, \@_pong  | round-trip measurement                                            |
+ * | \@_leave          | the sender leaves the room                                        |
  */
 class room_impl : public std::enable_shared_from_this<room_impl> {
 public:

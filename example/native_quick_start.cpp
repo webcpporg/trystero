@@ -36,7 +36,7 @@ int main() {
         std::cout << info.from << ": " << text << '\n' << std::flush;
     });
 
-    io.run();  // natively, the program runs its io_context; libdatachannel's threads post to it
+    io.run();  // lint-run: the program's network I/O; libdatachannel's threads post to it
 }
 
 // end::program[]

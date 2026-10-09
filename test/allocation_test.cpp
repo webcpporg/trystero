@@ -577,7 +577,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //         trystero::room room(io.get_executor(), factory, {.memory = &memory}, "id");
     //         ...
     //     }
-    //     io.run();  // or destroy io: the room's pending operations free into memory
+    //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
     const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
     run_for(io, 300);
     counting = false;

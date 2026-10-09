@@ -189,7 +189,7 @@ public:
 private:
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
-    /** "turn:host" with a username and credential becomes "turn:user:credential@host", the form
+    /** "turn:host" with a username and credential becomes "turn:user:credential\@host", the form
      * libdatachannel parses. */
     static std::string with_credentials(std::string_view url, std::string_view username,
                                         std::string_view credential) {
@@ -201,11 +201,11 @@ private:
             return std::string(url);
         }
         std::string out(url.substr(0, colon + 1));
-        out.append(username)
-            .append(":")
-            .append(credential)
-            .append("@")
-            .append(url.substr(colon + 1));
+        out += username;
+        out += ':';
+        out += credential;
+        out += '@';
+        out += url.substr(colon + 1);
         return out;
     }
 

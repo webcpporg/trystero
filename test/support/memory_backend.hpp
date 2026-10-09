@@ -246,8 +246,10 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         ok += R"(,true,""])";
         from->deliver(std::move(ok));
         const auto kind = event.at("kind").as_int64();
-        const std::string_view topic =
-            event.at("tags").as_array().at(0).as_array().at(1).as_string();
+        // The event's first tag, ["x", <topic>].
+        const auto& tags = event.at("tags").as_array();
+        const auto& tag = tags.at(0).as_array();
+        const std::string_view topic = tag.at(1).as_string();
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();
             if (!socket || !s.kinds.contains(kind) || !s.topics.contains(topic)) {

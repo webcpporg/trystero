@@ -30,8 +30,8 @@
 /**
  * The native target: the backend interface over libdatachannel for WebRTC, Boost.Beast for the
  * relays' WebSockets, OpenSSL for TLS and AES-GCM, and Asio for timers. Everything it reports runs
- * on the executor it is given; the application runs that executor's context, `io_context::run()` or
- * otherwise.
+ * on the executor it is given; the application runs that executor's context, blocking on it or
+ * polling it.
  */
 namespace webcpp::trystero::native {
 

@@ -202,7 +202,8 @@ void inline_frames(const json::object& fixture) {
 }
 
 void chunked_frames(const json::object& fixture) {
-    const auto& chunked = fixture.at("actions").at("chunked").as_object();
+    const auto& actions = fixture.at("actions");
+    const auto& chunked = actions.at("chunked").as_object();
     const auto payload = hex(chunked.at("payload"));
     const auto& frames = chunked.at("frames").as_array();
     const auto offer = hex(frames.at(0));

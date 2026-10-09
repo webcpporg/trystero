@@ -103,15 +103,16 @@ inline std::pmr::string sha1_topic(
     return sha1_topic_of({text}, memory);
 }
 
-/** The topic every member of a room announces on: Trystero's sha1 of "Trystero@<app>@<room>". */
+/** The topic every member of a room announces on: Trystero's sha1 of "Trystero\@<app>\@<room>".
+ */
 inline std::pmr::string root_topic(
     std::string_view app_id, std::string_view room_id,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     return sha1_topic_of({"Trystero@", app_id, "@", room_id}, memory);
 }
 
-/** The topic a peer receives its offers, answers and candidates on: the root path, "@", the peer
- * id. */
+/** The topic a peer receives its offers, answers and candidates on: the root path, "\@", the
+ * peer id. */
 inline std::pmr::string peer_topic(
     std::string_view app_id, std::string_view room_id, std::string_view peer_id,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
