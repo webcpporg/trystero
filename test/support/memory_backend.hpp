@@ -111,9 +111,15 @@ public:
         }
     }
 
+    /** Closes every connection that has a subscription, as a relay that goes away does. */
+    void close_all();
+
     std::size_t events_seen = 0;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
     int rate_limit_next = 0;
+    /** Closes each connection right after its subscription, as a relay does after a text longer
+     * than a room reads. */
+    bool close_after_subscribe = false;
 
 private:
     using key = std::pair<const memory_websocket*, std::pmr::string>;
@@ -199,6 +205,18 @@ private:
     bool closed_ = false;
 };
 
+inline void memory_relay::close_all() {
+    std::vector<std::shared_ptr<memory_websocket>> sockets;
+    for (const auto& [k, s] : subscriptions_) {
+        if (auto socket = s.socket.lock()) {
+            sockets.push_back(std::move(socket));
+        }
+    }
+    for (const auto& socket : sockets) {
+        socket->close();
+    }
+}
+
 inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
                                   std::string_view text) {
     boost::system::error_code ec;
@@ -229,6 +247,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         protocol::json::append_value(eose, message->at(1));
         eose += ']';
         from->deliver(std::move(eose));
+        if (close_after_subscribe) {
+            from->close();
+        }
     } else if (type == "CLOSE" && message->size() >= 2) {
         subscriptions_.erase(
             key{from.get(),

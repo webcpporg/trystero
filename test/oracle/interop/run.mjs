@@ -416,7 +416,9 @@ const floodScenario = (name, cppKind) =>
     })
 
 // After the exchange, the relay sends every client a text longer than a relay's longest (1 MiB): the C++ peer closes
-// that relay's connection rather than read it, says so, reconnects, and goes on with the peer it joined.
+// that relay's connection rather than read it, says so, reconnects, and goes on with the peer it joined. Then the relay
+// sends the text after every subscription: each reconnection is closed at once, and the C++ peer tries again within a
+// bound that doubles every time, rather than every few seconds forever.
 const oversizedRelayTextScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}
@@ -429,6 +431,17 @@ const oversizedRelayTextScenario = (name, cppKind) =>
         if (!lost) return 'the C++ peer did not close the relay that sent the long text'
         const back = await until(async () => (await cpp.log()).includes(`reconnected to ${left.relay.url}`), 15_000)
         if (!back) return 'the C++ peer did not reconnect to the relay'
+        const bounds = async () =>
+            [...(await cpp.log()).matchAll(new RegExp(`lost ${left.relay.url}, next attempt within (\\d+) ms`, 'g'))].map(m => Number(m[1]))
+        // The text closes the connection open now, and then each new one after its subscription.
+        left.relay.options.afterSubscribe = JSON.stringify(['NOTICE', 'x'.repeat(1024 * 1024 + 1)])
+        left.relay.broadcast(left.relay.options.afterSubscribe)
+        const lostAgain = await until(async () => (await bounds()).length >= 3, 30_000)
+        left.relay.options.afterSubscribe = null
+        const seen = await bounds()
+        console.log(`  the C++ peer lost the relay ${seen.length} times, each time to try again within ${seen.join(', ')} ms`)
+        if (!lostAgain) return 'the C++ peer was not closed three times in 30 s'
+        if (!seen.every((bound, i) => i === 0 || bound > seen[i - 1])) return `the bounds did not grow: ${seen.join(', ')}`
         if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return 'a peer left'
         return null
     })

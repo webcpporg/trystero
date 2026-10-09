@@ -17,6 +17,8 @@ export const startRelay = (port = 0) =>
         const server = new WebSocketServer({port, host: '127.0.0.1'})
         const subscriptions = new Map() // socket -> Map(subId -> filter)
         const stats = {events: 0, rejected: 0}
+        // options.afterSubscribe: a raw text sent after every subscription, when not null.
+        const options = {afterSubscribe: null}
         const send = (socket, message) => socket.readyState === 1 && socket.send(JSON.stringify(message))
         const matches = (filter, event, topic) =>
             (!filter.kinds || filter.kinds.includes(event.kind)) &&
@@ -44,6 +46,7 @@ export const startRelay = (port = 0) =>
                     const [subId, filter] = rest
                     subscriptions.get(socket)?.set(subId, filter)
                     send(socket, ['EOSE', subId])
+                    if (options.afterSubscribe !== null && socket.readyState === 1) socket.send(options.afterSubscribe)
                 } else if (type === 'CLOSE') {
                     subscriptions.get(socket)?.delete(rest[0])
                 } else if (type === 'EVENT') {
@@ -69,5 +72,5 @@ export const startRelay = (port = 0) =>
             for (const socket of subscriptions.keys()) socket.readyState === 1 && socket.send(text)
         }
         server.on('listening', () =>
-            resolve({url: `ws://127.0.0.1:${server.address().port}`, stats, broadcast, close: () => server.close()}))
+            resolve({url: `ws://127.0.0.1:${server.address().port}`, stats, options, broadcast, close: () => server.close()}))
     })

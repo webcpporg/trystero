@@ -665,6 +665,49 @@ void announcements_with_forged_answers_are_bounded() {
     BOOST_TEST_LE(f.net.made_connections, bound);
 }
 
+// A relay that closes each connection right after its subscription, as one does after a text
+// longer than a room reads, is tried again within a bound that doubles every time, to 60 s; the
+// bound comes back to 3.3 s only after a connection that stayed open for 60 s. The clock runs 100
+// times faster.
+void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
+    fixture f;
+    f.net.time_scale = 100;
+    auto& relay = f.net.relay(relay_a);
+    relay.close_after_subscribe = true;
+    auto c = config("AAAAAAAAAAAAAAAAAAAA");
+    c.relay_urls = {relay_a};
+    std::vector<long long> bounds;
+    int reconnections = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        constexpr std::string_view within = ", next attempt within ";
+        if (const auto at = text.find(within); at != std::string_view::npos) {
+            bounds.push_back(std::stoll(std::string(text.substr(at + within.size()))));
+        }
+        reconnections += text.starts_with("reconnected to ") ? 1 : 0;
+    };
+    const trystero::room a(f.io.get_executor(), f.net, std::move(c), "backoff");
+    BOOST_TEST(run_until(f.io, [&] { return bounds.size() >= 6; }));
+    const std::vector<long long> growing{3333, 6666, 13332, 26664, 53328, 60000};
+    BOOST_TEST_ALL_EQ(bounds.begin(),
+                      bounds.begin() + std::min<std::ptrdiff_t>(6, std::ssize(bounds)),
+                      growing.begin(), growing.end());
+
+    // A connection that lasts: the 60 s announcement after it opened is on the relay, then the
+    // relay goes away.
+    relay.close_after_subscribe = false;
+    const int before = reconnections;
+    BOOST_TEST(run_until(f.io, [&] { return reconnections > before; }));
+    const auto seen = relay.events_seen;
+    // the warm-up's five announcements, then the first of the steady ones, 60 s later
+    BOOST_TEST(run_until(f.io, [&] { return relay.events_seen >= seen + 6; }));
+    const auto lost = bounds.size();
+    relay.close_all();
+    BOOST_TEST(run_until(f.io, [&] { return bounds.size() > lost; }));
+    if (bounds.size() > lost) {
+        BOOST_TEST_EQ(bounds[lost], 3333);
+    }
+}
+
 // Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
 // offers to the first ids hold their places (the clock runs at its own pace here).
 void a_refused_peer_is_logged_once() {
@@ -826,6 +869,7 @@ int main() {
     forged_offers_make_no_connection();
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();
+    a_relay_that_closes_at_once_is_tried_less_and_less_often();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

@@ -43,7 +43,12 @@ namespace webcpp::trystero::detail {
  * | rate-limited relay | skipped for 60 s, doubling to 15 min, while "rate-limited:" replies      |
  * |                    | persist                                                                  |
  * | terminal rejection | "blocked:", "restricted:", "auth-required:" or "pow:" retires the relay  |
- * | reconnect          | after a random share of 3.3 s, doubling to 60 s                          |
+ * | reconnect          | after a random share of 3.3 s, doubling to 60 s; back to 3.3 s once a    |
+ * |                    | connection stayed open for 60 s                                          |
+ *
+ * Tip: the bound of the reconnection delay comes back down only after a connection that lasted,
+ * so that a relay that closes us at once after each open, as one that sends a text longer than we
+ * read does, is tried less and less often rather than every 1.7 s, on average, forever.
  */
 class nostr_strategy : public std::enable_shared_from_this<nostr_strategy> {
 public:
@@ -132,6 +137,7 @@ private:
     static constexpr double max_backoff_ms = 15 * 60'000;
     static constexpr double first_retry_ms = 3333;
     static constexpr double max_retry_ms = 60'000;
+    static constexpr double healthy_ms = 60'000;
     static constexpr std::size_t remembered_events = 4096;
 
     struct relay_state {
@@ -148,6 +154,7 @@ private:
         double backoff_ms = 0;
         double backoff_until_ms = 0;
         double retry_ms = first_retry_ms;
+        double opened_ms = 0;
         std::shared_ptr<backend::timer> announce_timer;
         std::shared_ptr<backend::timer> reconnect_timer;
     };
@@ -232,7 +239,7 @@ private:
     void on_open(std::size_t index) {
         auto& r = relays_[index];
         r.open = true;
-        r.retry_ms = first_retry_ms;
+        r.opened_ms = factory_.now_ms();
         if (r.subscription.empty()) {
             r.subscription = make_subscription_id();
         }
@@ -253,7 +260,11 @@ private:
         if (stopped_ || r.retired) {
             return;
         }
-        log_("nostr", was_open ? "lost " : "could not reach ", r.url);
+        if (was_open && factory_.now_ms() - r.opened_ms >= healthy_ms) {
+            r.retry_ms = first_retry_ms;
+        }
+        log_("nostr", was_open ? "lost " : "could not reach ", r.url, ", next attempt within ",
+             static_cast<long long>(r.retry_ms), " ms");
         std::array<std::uint8_t, 2> random{};
         factory_.random(random);
         const double share = ((unsigned{random[0]} << 8U) | random[1]) / 65536.0;
