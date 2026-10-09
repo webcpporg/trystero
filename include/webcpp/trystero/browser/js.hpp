@@ -11,6 +11,8 @@
 
 #include <emscripten/val.h>
 
+#include <string>
+
 /**
  * The browser backend's calls into JavaScript that can throw, made so that no exception enters
  * WebAssembly: one JavaScript function, which `browser/src.hpp` defines with `EM_JS`, runs the
@@ -86,6 +88,20 @@ js_outcome js_call(const emscripten::val& object, const char* method, const Args
 template <class... Args>
 js_outcome js_new(const emscripten::val& constructor, const Args&... arguments) {
     return js_try(constructor, emscripten::val::undefined(), js_arguments(arguments...));
+}
+
+/**
+ * Reports an exception that escaped a callback to the page: `reportError` with an `Error` of
+ * `message`, or `console.error` where there is no `reportError`, as in node.
+ */
+inline void report_escape(const emscripten::val& message) {
+    const emscripten::val error = emscripten::val::global("Error").new_(message);
+    const emscripten::val report = emscripten::val::global("reportError");
+    if (report.typeOf().as<std::string>() == "function") {
+        report(error);
+    } else {
+        emscripten::val::global("console").call<void>("error", error);
+    }
 }
 
 }  // namespace webcpp::trystero::browser::detail

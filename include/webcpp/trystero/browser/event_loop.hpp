@@ -21,6 +21,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <memory_resource>
@@ -292,7 +293,10 @@ public:
      * depth a call raised stays raised; the page's function reads the depth before it enters C++
      * and gives it back here, so that a nested entry that escapes leaves the depth of the call
      * still running below it, never less. The page's function also puts WebAssembly's stack
-     * pointer back where it was before the call, which no epilogue of the unwound frames did.
+     * pointer back where it was before the call, which no epilogue of the unwound frames did, but
+     * what those frames owned on the heap stays allocated: 312 bytes per escape, measured, for a
+     * frame that held a string of 300. With exceptions, `trystero_dispatch` catches a C++
+     * exception itself, which frees it and runs every destructor, and recovers the same way.
      *
      * @param depth The depth when the call entered, as `depth()` read it; never below 0.
      */
@@ -411,7 +415,9 @@ void executor::execute(F&& f) const {
 /**
  * The one function JavaScript calls, `trystero_dispatch`, which `browser/src.hpp` exports.
  *
- * Events for a destroyed loop are dropped.
+ * Events for a destroyed loop are dropped. With exceptions, a C++ exception that escapes the
+ * callback stops here: it is reported to the page, as `event_loop::handler` says, and the loop
+ * recovers.
  *
  * @param token The loop's token, whose `alive` is false once the loop is destroyed.
  * @param loop The loop's address, as a number.
@@ -427,7 +433,23 @@ inline void dispatch(const emscripten::val& token, std::uintptr_t loop, int id, 
     }
     // The page holds the loop's address as a number, the one form it passes back through embind.
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    reinterpret_cast<event_loop*>(loop)->dispatch(id, slot, std::move(event));
+    auto& target = *reinterpret_cast<event_loop*>(loop);
+#ifdef __cpp_exceptions
+    // A C++ exception is caught here, where catching it frees it: one that reached the page's
+    // function would keep its object, and what the object owns, for good.
+    const int entered = target.depth();
+    try {
+        target.dispatch(id, slot, std::move(event));
+    } catch (const std::exception& e) {
+        detail::report_escape(emscripten::val::u8string(e.what()));
+        target.recover(entered);
+    } catch (...) {
+        detail::report_escape(emscripten::val("an exception that is not a std::exception"));
+        target.recover(entered);
+    }
+#else
+    target.dispatch(id, slot, std::move(event));
+#endif
 }
 
 /**

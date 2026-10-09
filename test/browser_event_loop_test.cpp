@@ -14,7 +14,11 @@
 //   the frames' stack behind (128 bytes without exceptions), the stack ran past its end after
 //   about 500, and the loop silently stopped;
 // - a recovery from a nested entry, which the page's function makes with the depth it found
-//   there, keeps the depth of the call still running, and the loop goes on polling.
+//   there, keeps the depth of the call still running, and the loop goes on polling;
+// - with WebAssembly exceptions, 20,000 C++ exceptions in a row that escape a callback, each from
+//   an event of the page: each is reported with its what(), and the heap in use is the same after
+//   them as before. Before the fix each one reached the page's function, which kept the exception
+//   and the string it owned: 332 bytes per escape, measured.
 //
 // main starts the first step and returns with node's exit code at 1; each step starts from the
 // previous one's posted work, the last sets the exit code to `boost::report_errors()`, and a
@@ -30,9 +34,13 @@
 #include <boost/asio/post.hpp>  // lint-world: posts handlers only
 #include <boost/core/lightweight_test.hpp>
 
+#include <malloc.h>
+
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace trystero = webcpp::trystero;
 using emscripten::val;
@@ -48,6 +56,9 @@ struct state {
     std::uintptr_t stack_before = 0;
     std::uintptr_t stack_after = 0;
     int served_after = 0;
+    bool heap_measured = false;
+    std::size_t heap_before = 0;
+    std::size_t heap_after = 0;
 };
 
 state& the_state() {
@@ -73,6 +84,77 @@ void verdict() {
     set_exit_code(boost::report_errors());
 }
 
+#ifdef __cpp_exceptions
+constexpr int cpp_escapes = 20'000;
+
+/**
+ * 20,000 C++ exceptions that escape a callback, each from an event of the page; the heap in use is
+ * measured from the same callback before and after them, after a first escape, which may allocate
+ * what every later one reuses.
+ */
+void cpp_escapes_free_their_exceptions() {
+    auto& loop = the_state().loop;
+    const int throwing = loop.add([](int /*slot*/, const val& /*event*/) {
+        throw std::runtime_error(std::string(200, 'x'));
+    });
+    const int measure = loop.add([](int /*slot*/, const val& /*event*/) {
+        auto& s = the_state();
+        const auto in_use = static_cast<std::size_t>(mallinfo().uordblks);
+        if (!s.heap_measured) {
+            s.heap_measured = true;
+            s.heap_before = in_use;
+            return;
+        }
+        s.heap_after = in_use;
+        boost::asio::post(s.loop.get_executor(), [] {
+            const auto& s = the_state();
+            BOOST_TEST_EQ(s.heap_after, s.heap_before);
+            BOOST_TEST_EQ(val::global("trysteroTestReported").as<int>(), cpp_escapes);
+            verdict();
+        });
+    });
+    val::global().set("trysteroTestThrowing", loop.handler(throwing, 0));
+    val::global().set("trysteroTestMeasure", loop.handler(measure, 0));
+    // Each escape is reported with reportError, where its message is the exception's what().
+    // clang-format off
+    EM_ASM({
+        const escapes = $0;
+        setTimeout(function() {
+            const report = globalThis.reportError;
+            let reported = 0;
+            globalThis.reportError = function(error) {
+                if (error.message == "x".repeat(200)) {
+                    ++reported;
+                }
+            };
+            globalThis.trysteroTestThrowing(null);
+            globalThis.trysteroTestMeasure(null);
+            reported = 0;
+            for (let i = 0; i < escapes; ++i) {
+                globalThis.trysteroTestThrowing(null);
+            }
+            globalThis.trysteroTestReported = reported;
+            if (report) {
+                globalThis.reportError = report;
+            } else {
+                delete globalThis.reportError;
+            }
+            globalThis.trysteroTestMeasure(null);
+        }, 0);
+    }, cpp_escapes);
+    // clang-format on
+}
+#endif
+
+/** The step after the nested recovery: C++ escapes with exceptions, else the verdict. */
+void after_nested_recovery() {
+#ifdef __cpp_exceptions
+    cpp_escapes_free_their_exceptions();
+#else
+    verdict();
+#endif
+}
+
 /**
  * A recovery from a nested entry: inside a callback, the depth is the callback's own, and
  * recovering to it, as the page's function does when a nested call escapes, leaves the depth the
@@ -86,7 +168,7 @@ void nested_recovery() {
         BOOST_TEST_EQ(loop.depth(), 1);
         boost::asio::post(loop.get_executor(), [] {
             BOOST_TEST_EQ(the_state().loop.depth(), 1);  // the poll that runs it
-            verdict();
+            after_nested_recovery();
         });
     });
 }
