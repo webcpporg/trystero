@@ -37,6 +37,39 @@ inline constexpr std::size_t max_peer_id_bytes = 64;
 inline constexpr std::size_t seal_iv_size = 16;
 
 /**
+ * The longest text a plaintext seals to, as @ref format_sealed writes it.
+ *
+ * The IV's bytes in decimal and commas, "$", and the ciphertext with its 16-byte tag in base64.
+ *
+ * @param plaintext The plaintext's size, in bytes.
+ * @return The size of the longest sealed text, in bytes, whatever the IV.
+ */
+constexpr std::size_t sealed_size(std::size_t plaintext) {
+    return (seal_iv_size * 4) - 1 + 1 + (((plaintext + 16 + 2) / 3) * 4);
+}
+
+/** The longest offer id a signal may carry, in bytes; Trystero's are @ref offer_id_size. */
+inline constexpr std::size_t max_offer_id_bytes = 64;
+
+/**
+ * The longest sealed offer or answer a signal may carry, in bytes.
+ *
+ * A data channel's SDP is a few KiB, with every candidate gathered in it a few more. Trystero
+ * bounds none; this one bounds what a negotiation copies and keeps, and refuses no SDP a browser
+ * writes for a data channel.
+ */
+inline constexpr std::size_t max_sealed_description_bytes = std::size_t{64} * 1024;
+
+/**
+ * The longest sealed candidate a signal may carry, in bytes.
+ *
+ * Trystero drops a candidate whose plaintext is longer than 8192 bytes
+ * (`maxRemoteCandidateSdpLength`), and every candidate up to that size, sealed, fits.
+ */
+inline constexpr std::size_t max_sealed_candidate_bytes = std::size_t{16} * 1024;
+static_assert(sealed_size(8192) <= max_sealed_candidate_bytes);
+
+/**
  * The raw AES-GCM key of a room, what Trystero's `genKey` imports: the SHA-256 of
  * "<password>:<app>:<room>".
  *
@@ -158,8 +191,10 @@ struct signal_message {
  *
  * @param document The parsed payload, which the caller keeps alive while it reads the views.
  * @return The message, or nothing when Trystero would ignore it (not an object, no peer id, or an
- * offer, answer or candidate that is not a non-empty string) or when its peer id is longer than
- * @ref max_peer_id_bytes.
+ * offer, answer or candidate that is not a non-empty string), or when a field is longer than its
+ * bound: the peer id than @ref max_peer_id_bytes, the offer id than @ref max_offer_id_bytes, an
+ * offer or answer than @ref max_sealed_description_bytes, a candidate than
+ * @ref max_sealed_candidate_bytes.
  */
 inline std::optional<signal_message> read_signal(const boost::json::value& document) {
     const auto* object = document.if_object();
@@ -189,7 +224,11 @@ inline std::optional<signal_message> read_signal(const boost::json::value& docum
     if (const auto* v = object->if_contains("passive"); v != nullptr && v->is_bool()) {
         out.passive = v->get_bool();
     }
-    if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes) {
+    if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes ||
+        out.offer_id.size() > max_offer_id_bytes ||
+        out.offer.size() > max_sealed_description_bytes ||
+        out.answer.size() > max_sealed_description_bytes ||
+        out.candidate.size() > max_sealed_candidate_bytes) {
         return std::nullopt;
     }
     return out;

@@ -302,6 +302,35 @@ void signals() {
     BOOST_TEST_EQ(id.find_first_not_of(tp::id_alphabet), std::string::npos);
 }
 
+// Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
+// candidate, 8192 bytes of plaintext, sealed with the longest IV in decimal, is read.
+void signal_bounds() {
+    json::value document;
+    const auto read = [&document](const tp::signal_message& m) {
+        document = json::parse(tp::write_signal(m));
+        return tp::read_signal(document).has_value();
+    };
+    std::array<std::uint8_t, tp::seal_iv_size> iv{};
+    iv.fill(255);
+    const tp::bytes ciphertext(8192 + 16, 7);
+    const auto longest_candidate = tp::format_sealed(iv, ciphertext);
+    BOOST_TEST_EQ(longest_candidate.size(), tp::sealed_size(8192));
+    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .candidate = longest_candidate}));
+
+    const auto of = [](std::size_t n) { return std::string(n, 'a'); };
+    const auto candidate = of(tp::max_sealed_candidate_bytes);
+    const auto description = of(tp::max_sealed_description_bytes);
+    const auto offer_id = of(tp::max_offer_id_bytes);
+    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .candidate = candidate}));
+    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .candidate = candidate + "a"}));
+    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .offer = description}));
+    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .offer = description + "a"}));
+    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .answer = description}));
+    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .answer = description + "a"}));
+    BOOST_TEST(read({.peer_id = "p", .offer_id = offer_id, .offer = "x"}));
+    BOOST_TEST(!read({.peer_id = "p", .offer_id = offer_id + "a", .offer = "x"}));
+}
+
 void text() {
     BOOST_TEST_EQ(tp::base64_encode(tp::bytes{}), "");
     BOOST_TEST_EQ(tp::base64_encode(tp::bytes{'f'}), "Zg==");
@@ -331,6 +360,7 @@ int main(int argc, char* argv[]) {
     chunked_frames(fixture);
     envelopes(fixture);
     signals();
+    signal_bounds();
     text();
     return boost::report_errors();
 }
