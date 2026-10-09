@@ -337,6 +337,20 @@ const refusedRelayScenario = (name, cppKind) =>
         return (await cpp.log()).includes(`could not reach ${refusedRelay}`) ? null : 'the C++ peer did not report the refused relay'
     })
 
+// A Trystero JS peer that also sends text messages on its data channel (js.html, text-messages), then a chat message:
+// the C++ peer drops the text messages before reading them, and receives the chat message; no peer leaves.
+const textMessagesScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, self: 'zzzzzzzzzzzzzzzzzzzz'})
+        const js = await open('js', {...params, 'text-messages': '1'})
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true) &&
+            (await cpp.events()).some(e => e.kind === 'chat' && e.text === 'after text'), 30_000)
+        if (!ok) return 'the exchange, or the chat message after the text messages, did not complete in 30 s'
+        if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return 'a peer left'
+        return (await cpp.log()).includes('invalid or incompatible room frame') ? 'the C++ peer took a text message for a frame' : null
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -345,6 +359,7 @@ const scenarios = async () => {
         if (!usePublic) {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop C++', 'cpp')
             await refusedRelayScenario('A relay URL the browser refuses reports a close; C++ goes on', 'cpp')
+            await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
         }
     }
 
@@ -354,6 +369,7 @@ const scenarios = async () => {
         if (!usePublic) {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
+            await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)

@@ -15,6 +15,7 @@
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/protocol/envelope.hpp>
 
 #include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
 #include <boost/asio/post.hpp>             // lint-world: posts handlers only
@@ -34,6 +35,10 @@ namespace webcpp::trystero::native {
  * Its events arrive on libdatachannel's threads; each is posted to the executor and handled there,
  * through a weak reference, so a late event for a destroyed channel does nothing. It exists only
  * with exceptions: libdatachannel reports errors by throwing.
+ *
+ * A text message, as a peer can send, or a binary one larger than any room frame
+ * (`protocol::max_room_frame_bytes`), is dropped on libdatachannel's thread: neither can be a
+ * frame.
  *
  * Tip: a received message is copied once, out of libdatachannel's `std::vector<std::byte>` into the
  * backend's bytes, in the room's resource, on the executor: what runs on libdatachannel's threads
@@ -156,8 +161,9 @@ private:
             [weak, ex] { post_to(ex, weak, [](data_channel& self) { self.on_open(); }); });
         channel_->onMessage([weak, ex](rtc::message_variant message) {
             auto* binary = std::get_if<rtc::binary>(&message);
-            if (binary == nullptr) {
-                return;  // Trystero frames are binary
+            // Trystero frames are binary, and none is larger than the largest room frame.
+            if (binary == nullptr || binary->size() > protocol::max_room_frame_bytes) {
+                return;
             }
             post_to(ex, weak,
                     [binary = std::move(*binary)](data_channel& self) { self.on_message(binary); });

@@ -14,6 +14,7 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/json_resource.hpp>
+#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
@@ -290,6 +291,10 @@ private:
 /**
  * A data channel over the page's `RTCDataChannel`, its messages received as `ArrayBuffer`s.
  *
+ * A message that is not an `ArrayBuffer`, as a text one a peer sends, or that is larger than any
+ * room frame (`protocol::max_room_frame_bytes`), is dropped before it is read: neither can be a
+ * frame, and reading a text as bytes would make a typed array of the length its text says.
+ *
  * @see "The browser backend", in the guide.
  */
 class data_channel : public backend::data_channel {
@@ -369,6 +374,13 @@ public:
     void close() override { channel_.call<void>("close"); }
 
 private:
+    /** Whether a message can be a room frame: an `ArrayBuffer` no larger than the largest one. */
+    static bool is_frame(const val& data) {
+        return data.instanceof(val::global("ArrayBuffer")) &&
+               data["byteLength"].as<double>() <=
+                   static_cast<double>(protocol::max_room_frame_bytes);
+    }
+
     void on_event(int slot, const val& event) {
         const auto h = h_;
         if (!h) {
@@ -381,7 +393,7 @@ private:
                 }
                 break;
             case 1:
-                if (h->message) {
+                if (h->message && is_frame(event["data"])) {
                     h->message(detail::from_js(event["data"], memory_));
                 }
                 break;

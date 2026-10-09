@@ -10,6 +10,7 @@
 // no other interface is needed.
 
 #include <webcpp/trystero/native/peer_connection.hpp>
+#include <webcpp/trystero/protocol/envelope.hpp>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
@@ -30,6 +31,7 @@
 namespace asio = boost::asio;
 namespace trystero = webcpp::trystero;
 namespace backend = trystero::backend;
+namespace protocol = trystero::protocol;
 using namespace std::chrono_literals;
 
 using webcpp::test::require;
@@ -155,14 +157,17 @@ void two_connections_open_a_data_channel_and_exchange_bytes() {
     BOOST_TEST(p.answer_end->is_open());
     const backend::bytes hello{1, 2, 3, 250};
     p.offer_end->send(hello);
-    p.answer_end->send(backend::bytes(20'000, 7));
+    // One byte more than any room frame is dropped before it is read; the largest one arrives.
+    p.answer_end->send(backend::bytes(protocol::max_room_frame_bytes + 1, 6));
+    p.answer_end->send(backend::bytes(protocol::max_room_frame_bytes, 7));
     if (!BOOST_TEST(run_until(
             p.io, [&] { return p.at_answerer.size() == 1 && p.at_offerer.size() == 1; }))) {
         return;
     }
     BOOST_TEST_ALL_EQ(p.at_answerer.front().begin(), p.at_answerer.front().end(), hello.begin(),
                       hello.end());
-    BOOST_TEST_EQ(p.at_offerer.front().size(), 20'000U);
+    BOOST_TEST_EQ(p.at_offerer.size(), 1U);
+    BOOST_TEST_EQ(p.at_offerer.front().size(), protocol::max_room_frame_bytes);
     BOOST_TEST_LE(p.offer_end->buffered_amount(), backend::data_channel::low_threshold);
     // Every handler ran on the executor, never on libdatachannel's threads.
     BOOST_TEST(!p.off_thread);

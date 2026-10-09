@@ -63,3 +63,4 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;
 webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
 webcpp.run browser_sealer : browser_sealer_test.cpp : : emscripten ;
+webcpp.run browser_data_channel : browser_data_channel_test.cpp : : emscripten ;

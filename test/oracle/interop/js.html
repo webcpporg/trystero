@@ -48,6 +48,19 @@ if (malformedTo) {
         setTimeout(() => sendNow.call(this, data), 1000)
     }
 }
+// With `text-messages`, this peer also sends each C++ peer, once it joins, two text messages on the data channel, as
+// a broken or hostile peer can, then a chat message the C++ peer must still receive. Its channels are found by
+// watching createDataChannel: this peer offers, so it opens them.
+const textMessages = params.get('text-messages')
+const channels = []
+if (textMessages) {
+    const create = RTCPeerConnection.prototype.createDataChannel
+    RTCPeerConnection.prototype.createDataChannel = function (...args) {
+        const channel = create.apply(this, args)
+        channels.push(channel)
+        return channel
+    }
+}
 const room = joinRoom(
     {
         appId: params.get('app'),
@@ -88,6 +101,14 @@ room.onPeerJoin = peer => {
     const big = new Uint8Array(100_000).map((_, i) => (i * 7) % 256)
     file.send(big, {target: peer, metadata: {name: 'from-js.bin'}}).then(...sent('file', peer))
     room.ping(peer).then(ms => record('ping', {peer, ms, error: ''}), e => record('ping', {peer, error: String(e)}))
+    if (textMessages) {
+        // "1e300" is no typed array length, and "300000000" one of 300 MB: neither is a frame.
+        for (const channel of channels.filter(c => c.readyState === 'open')) {
+            channel.send('1e300')
+            channel.send('300000000')
+        }
+        chat.send('after text', {target: peer}).then(...sent('after-text', peer))
+    }
 }
 room.onPeerLeave = peer => {
     log('room', 'peer left: ' + peer)
