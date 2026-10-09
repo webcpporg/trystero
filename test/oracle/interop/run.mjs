@@ -323,12 +323,28 @@ const malformedCandidateScenario = (name, cppKind) =>
         return (await cpp.log()).includes('dropped a candidate') ? null : 'no malformed candidate reached the C++ peer'
     })
 
+// The C++ peer's relays begin with a URL no WebSocket can be made to: that relay reports a close, as an unreachable
+// one does, which the C++ peer's log says, and the room goes on over the next one.
+const refusedRelay = 'ftp://relay.invalid'
+const refusedRelayScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, relays: `${refusedRelay},${relayParams.relays}`})
+        const js = await open('js', params)
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 60_000)
+        if (!ok) return 'the exchange did not complete in 60 s'
+        return (await cpp.log()).includes(`could not reach ${refusedRelay}`) ? null : 'the C++ peer did not report the refused relay'
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
         await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
         await pairScenario('Trystero JS offers, C++ answers (higher id), with a password; JS leaves', {cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
-        if (!usePublic) await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop C++', 'cpp')
+        if (!usePublic) {
+            await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop C++', 'cpp')
+            await refusedRelayScenario('A relay URL the browser refuses reports a close; C++ goes on', 'cpp')
+        }
     }
 
     if (nativePeer) {
@@ -336,6 +352,7 @@ const scenarios = async () => {
         await pairScenario('Trystero JS offers, native C++ answers (higher id), with a password; JS leaves', {cppKind: 'native', cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
         if (!usePublic) {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
+            await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
             await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', {...params, password: 'secret'})

@@ -163,6 +163,11 @@ public:
     /**
      * Opens a WebSocket to `url`.
      *
+     * A URL the page's `WebSocket` would refuse with an exception (no URL, another scheme than
+     * `ws:` or `wss:`, a fragment, or `ws:` from an https page to another host than the machine)
+     * makes no socket: the handler `close` reports it after the call, as it reports a relay that
+     * cannot be reached.
+     *
      * @param loop The page's loop, which must outlive the WebSocket.
      * @param url The relay's URL, read during the call.
      * @param h What the WebSocket reports.
@@ -176,7 +181,18 @@ public:
                                             std::move(h))),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
                         [this](int slot, const val& event) { on_event(slot, event); }})) {
-        socket_ = val::global("WebSocket").new_(loop_.text(url));
+        const val target = loop_.text(url);
+        if (!openable(target)) {
+            detail::defer(loop_, memory_, [weak = std::weak_ptr<handlers>(h_)] {
+                if (const auto h = weak.lock()) {
+                    if (auto f = std::exchange(h->close, {})) {
+                        f();
+                    }
+                }
+            });
+            return;
+        }
+        socket_ = val::global("WebSocket").new_(target);
         socket_.set("onopen", loop_.handler(id_, 0));
         socket_.set("onmessage", loop_.handler(id_, 1));
         socket_.set("onclose", loop_.handler(id_, 2));
@@ -185,6 +201,9 @@ public:
     /** Destroys the WebSocket, which closes it without reporting the close. */
     ~websocket() override {
         loop_.remove(id_);
+        if (socket_.isUndefined()) {
+            return;
+        }
         for (const char* name : {"onopen", "onmessage", "onclose"}) {
             socket_.set(name, val::null());
         }
@@ -197,15 +216,50 @@ public:
      * @param text The message, read during the call.
      */
     void send(std::string_view text) override {
-        if (socket_["readyState"].as<int>() == 1) {
+        if (!socket_.isUndefined() && socket_["readyState"].as<int>() == 1) {
             socket_.call<void>("send", loop_.text(text));
         }
     }
 
-    /** Closes the socket, which the handler `close` reports. */
-    void close() override { socket_.call<void>("close"); }
+    /** Closes the socket, which the handler `close` reports; one never made has reported it. */
+    void close() override {
+        if (!socket_.isUndefined()) {
+            socket_.call<void>("close");
+        }
+    }
 
 private:
+    /**
+     * Whether `new WebSocket(url)` makes a socket rather than throwing: a URL `URL.canParse`
+     * accepts, of the scheme `ws:` or `wss:`, without a fragment, and not `ws:` from an https page
+     * to another host than the machine, which the browser blocks as mixed content.
+     *
+     * Tip: a browser without `URL.canParse` (before 2023) gets the URL as it is, and may throw.
+     */
+    static bool openable(const val& url) {
+        const val url_class = val::global("URL");
+        if (url_class["canParse"].isUndefined()) {
+            return true;
+        }
+        if (!url_class.call<bool>("canParse", url) || url.call<bool>("includes", val("#"))) {
+            return false;
+        }
+        const val parsed = url_class.new_(url);
+        const val scheme = parsed["protocol"];
+        if (!scheme.strictlyEquals(val("ws:")) && !scheme.strictlyEquals(val("wss:"))) {
+            return false;
+        }
+        const val page = val::global("location");
+        if (scheme.strictlyEquals(val("ws:")) && !page.isUndefined() &&
+            page["protocol"].strictlyEquals(val("https:"))) {
+            const val host = parsed["hostname"];
+            return host.strictlyEquals(val("localhost")) || host.strictlyEquals(val("127.0.0.1")) ||
+                   host.strictlyEquals(val("[::1]")) ||
+                   host.call<bool>("endsWith", val(".localhost"));
+        }
+        return true;
+    }
+
     /** Calls through a copy of the shared handlers: a handler may destroy this socket during its
      * own call. */
     void on_event(int slot, const val& event) {

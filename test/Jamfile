@@ -61,3 +61,4 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # The browser backend's own tests, under node, which has the page's
 # WebSocket, Web Crypto and microtasks but no WebRTC.
 webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;
+webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
