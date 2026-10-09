@@ -477,9 +477,9 @@ private:
 void a_flood_of_announcements_is_bounded() {
     constexpr std::size_t flood = 3000;
     constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    counting_resource memory;  // first: the io_context's pending operations free into it
     fixture f;
     f.net.time_scale = 100;
-    counting_resource memory;
     auto c = config("00000000000000000000");  // lower than every flooder: it offers to each
     c.memory = &memory;
     trystero::room a(f.io.get_executor(), f.net, std::move(c), "flood");
