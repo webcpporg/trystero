@@ -103,10 +103,12 @@ room.onPeerJoin = peer => {
     room.ping(peer).then(ms => record('ping', {peer, ms, error: ''}), e => record('ping', {peer, error: String(e)}))
     if (textMessages) {
         // "1e300" is no typed array length, and "300000000" one of 300 MB: neither is a frame.
-        for (const channel of channels.filter(c => c.readyState === 'open')) {
+        const open = channels.filter(c => c.readyState === 'open')
+        for (const channel of open) {
             channel.send('1e300')
             channel.send('300000000')
         }
+        record('text-sent', {peer, channels: open.length})
         chat.send('after text', {target: peer}).then(...sent('after-text', peer))
     }
 }

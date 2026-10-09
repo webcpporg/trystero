@@ -350,6 +350,7 @@ const textMessagesScenario = (name, cppKind) =>
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true) &&
             (await cpp.events()).some(e => e.kind === 'chat' && e.text === 'after text'), 30_000)
         if (!ok) return 'the exchange, or the chat message after the text messages, did not complete in 30 s'
+        if (!(await js.events()).some(e => e.kind === 'text-sent' && e.channels > 0)) return 'no text message was sent'
         if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return 'a peer left'
         return (await cpp.log()).includes('invalid or incompatible room frame') ? 'the C++ peer took a text message for a frame' : null
     })
