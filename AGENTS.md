@@ -123,7 +123,10 @@ holds only what is specific to trystero.
   - What a flood still does: joined peers, memory and connections stay
     safe, but a flooder who keeps sending new ids takes each place, or each
     connection of the window, as it frees, so new peers can be kept out for
-    as long as the flood lasts. Trystero JS bounds none of this.
+    as long as the flood lasts. A joined peer whose connection drops comes
+    back as a new peer, with the same id, and is kept out the same way:
+    the room has no renegotiation that would keep its place. Trystero JS
+    bounds none of this.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair
