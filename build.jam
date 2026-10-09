@@ -32,12 +32,17 @@ lib ssl : : <name>ssl <search>$(openssl-root)/lib : : <include>$(openssl-root)/i
 lib crypto : : <name>crypto <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
 
 # Stops the build, naming the variable, when it is set and its directory
-# does not hold the header of its library.
+# does not hold the header of its library. A variable that is not set is
+# left alone: path.make needs a path.
 local rule check-root ( variable : header )
 {
     local root = [ os.environ $(variable) ] ;
+    if ! $(root)
+    {
+        return ;
+    }
     local directory = [ path.make $(root) ] ;
-    if $(root) && ! [ path.exists $(directory)/include/$(header) ]
+    if ! [ path.exists $(directory)/include/$(header) ]
     {
         errors.user-error "$(variable)=$(root) holds no include/$(header): set it to"
             "the directory of the library's include/ and lib/, or unset it to leave"

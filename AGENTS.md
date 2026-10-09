@@ -48,12 +48,12 @@ holds only what is specific to trystero.
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
   them where `SECP256K1_ROOT`, `SECP256K1_EMSCRIPTEN_ROOT`,
   `LIBDATACHANNEL_ROOT` and `OPENSSL_ROOT` say, until webcpp builds them from
-  `third_party/`, and stops the build, naming the variable, when one names a
-  directory without its library's header. On this machine they are under
-  `../../.local/`, and `source ../../.local/env.sh` sets the four variables
-  and `EM_CACHE`. libdatachannel is built with libc++ there, so a program
-  built with GCC and libstdc++ does not link against it, though the native
-  headers compile alone with GCC.
+  `third_party/`. A variable that is not set leaves its library to the
+  compiler's default search path; one that names a directory without its
+  library's header stops the build, naming the variable. libdatachannel is a
+  C++ library: it must be built with the same standard library as the
+  program that links it (libc++ for clang on macOS, libstdc++ for GCC), or
+  the program does not link, though the native headers still compile alone.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/trystero//trystero` adds as a linker flag: `<embind>on`, b2's own
   feature, is not free, and b2 ignores it among usage requirements.

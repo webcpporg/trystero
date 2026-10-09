@@ -133,8 +133,9 @@ webcpp.link quick_start : quick_start.cpp
 ```
 
 `b2 toolset=emscripten libs/trystero/example/chat//site` copies the chat page
-and its program into `site/` of the example's build directory, out of the
-tree, and prints that directory.
+and its program into `site/` beside the program, under the build directory
+and out of the tree, one per variant, and prints that directory. On another
+toolset it stops, saying that the page is built on emscripten alone.
 
 ## From an empty directory to a native peer and the chat
 
@@ -250,8 +251,8 @@ b2 --user-config=../user-config.jam toolset=emscripten libs/trystero/example/cha
 The first build also compiles Boost.JSON's definitions, and the first
 emscripten build Emscripten's system libraries, which takes a few minutes.
 The second command ends by printing the chat site's directory,
-`<workspace>/webcpp/bin/libs/trystero/example/chat/site`, which holds
-`index.html`, `chat-program.js` and `chat-program.wasm`.
+`bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,
+which holds `index.html`, `chat-program.js` and `chat-program.wasm`.
 
 ### 10. Run them
 
@@ -266,7 +267,7 @@ In a second terminal, from the workspace, serve the chat page:
 
 ```sh
 source env.sh && cd webcpp
-python3 -m http.server 8000 -d bin/libs/trystero/example/chat/site
+python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
 ```
 
 Open <http://localhost:8000>, write `webcpp-trystero-quick-start` as the app
