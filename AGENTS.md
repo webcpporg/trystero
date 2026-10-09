@@ -72,6 +72,20 @@ holds only what is specific to trystero.
   before the call, reports it and lets the loop poll again. A message that is not a frame is dropped
   before it is read. The browser tests run under node with exceptions and
   without them (`*_no_exceptions`), and the interop lane passes both ways.
+- **Bounded signaling.** Announcements are not sealed, so anyone who knows
+  the app and room ids can announce any number of peer ids. A room holds at
+  most `detail::signaling::max_unconnected_peers` (32) negotiations with
+  peers it is not connected to, each with at most two pending
+  connections: 64 of the 500 `RTCPeerConnection`s Chromium allows a page
+  (measured with headless Chrome: the 501st throws "Cannot create so many
+  PeerConnections"). A negotiation whose offer and answer expire without a
+  connection is dropped, an idle one gives its place to a new peer, and a
+  new peer beyond the bound is refused and logged once, until a place
+  frees: a legitimate peer is delayed, never refused for good, since
+  Trystero announces again (every 60 s, and at once after a leave).
+  Trystero JS bounds none of this. A signal whose peer id is longer than
+  `protocol::max_peer_id_bytes` (64; Trystero's ids are 20 characters) is
+  ignored.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair
@@ -94,15 +108,16 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in eight scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in nine scenarios each:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
   made to, a Trystero JS peer that also sends text messages on its data
   channel (`text-messages`), a C++ peer given a TURN server without
-  credentials, a wrong password, and a mesh of three; and, for the native
-  peer, a ninth: a room moved over the joined one, which must leave it as
-  destroying it does. Both lanes are of the kind
+  credentials, a flood of announcements from fresh peer ids
+  (`window.flood`), a wrong password, and a mesh of three; and, for the
+  native peer, a tenth: a room moved over the joined one, which must leave
+  it as destroying it does. Both lanes are of the kind
   `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of

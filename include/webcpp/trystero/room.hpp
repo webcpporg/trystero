@@ -126,7 +126,13 @@ struct room_config {
      * goes on with the others, on every backend.
      */
     std::pmr::vector<backend::ice_server> ice_servers = {};
-    /** This peer's id in the room, Trystero's `selfId`; empty means 20 random characters. */
+    /**
+     * This peer's id in the room, Trystero's `selfId`; empty means 20 random characters.
+     *
+     * Other peers ignore an id longer than `protocol::max_peer_id_bytes` (64): the room replaces
+     * one with 20 random characters, and `room::on_error` reports it with
+     * `error::invalid_configuration`.
+     */
     std::pmr::string self_id = {};
     /**
      * How long a connected peer has to finish the handshake before it is dropped, Trystero's
@@ -556,6 +562,10 @@ public:
           self_topic_(memory_),
           peers_(memory_),
           actions_(memory_) {
+        if (config_.self_id.size() > protocol::max_peer_id_bytes) {
+            config_.self_id.clear();
+            long_self_id_ = true;
+        }
         if (config_.self_id.empty()) {
             config_.self_id = random_id(protocol::peer_id_size);
         }
@@ -577,7 +587,7 @@ public:
     /** Joins: makes the sealer, the action wire, the signaling and the strategy, and starts it. */
     void start() {
         const auto weak = weak_from_this();
-        drop_unusable_ice_servers();
+        set_aside_unusable_configuration();
         sealer_ = factory_.make_sealer(
             protocol::seal_key(config_.password, config_.app_id, room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
@@ -1000,11 +1010,16 @@ private:
     }
 
     /**
-     * Drops each ICE server of the configuration no peer connection could be made with, logs it,
-     * and reports it to `on_error` once the constructor has returned, so that a handler set right
-     * after it sees it.
+     * Sets aside what of the configuration no peer could use: an over-long `self_id`, which the
+     * constructor replaced, and each ICE server no peer connection could be made with, which is
+     * dropped. Each is logged and reported to `on_error` once the constructor has returned, so
+     * that a handler set right after it sees it.
      */
-    void drop_unusable_ice_servers() {
+    void set_aside_unusable_configuration() {
+        if (long_self_id_) {
+            report_configuration(std::pmr::string(
+                "self_id is longer than any peer accepts, so the room uses a random one", memory_));
+        }
         auto& servers = config_.ice_servers;
         for (auto it = servers.begin(); it != servers.end();) {
             const auto fault = ice_server_fault(*it);
@@ -1017,14 +1032,20 @@ private:
             what += ' ';
             what += fault;
             what += ", so the room goes on without it";
-            log_("room", what);
-            post([weak = weak_from_this(), what = std::move(what)] {
-                if (const auto self = weak.lock(); self && self->on_error_) {
-                    (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
-                }
-            });
+            report_configuration(std::move(what));
             it = servers.erase(it);
         }
+    }
+
+    /** Logs a part of the configuration the room set aside, and reports it to `on_error` once the
+     * constructor has returned. */
+    void report_configuration(std::pmr::string what) {
+        log_("room", what);
+        post([weak = weak_from_this(), what = std::move(what)] {
+            if (const auto self = weak.lock(); self && self->on_error_) {
+                (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
+            }
+        });
     }
 
     void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
@@ -1292,6 +1313,7 @@ private:
         on_error_;
     std::shared_ptr<backend::timer> leave_timer_;
     bool left_ = false;
+    bool long_self_id_ = false;
 };
 
 }  // namespace detail

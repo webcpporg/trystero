@@ -23,6 +23,23 @@ window.trysteroLog = (category, text) => {
     console.log(line)
     document.getElementById('log').append(line + '\n')
 }
+// Counts the page's live RTCPeerConnections, and the most there were at once, for the scenarios that bound them.
+window.livePeerConnections = 0
+window.peakPeerConnections = 0
+const PeerConnection = window.RTCPeerConnection
+window.RTCPeerConnection = class extends PeerConnection {
+    constructor(...args) {
+        super(...args)
+        window.peakPeerConnections = Math.max(window.peakPeerConnections, ++window.livePeerConnections)
+    }
+    close() {
+        if (!this.counted) {
+            this.counted = true
+            --window.livePeerConnections
+        }
+        return super.close()
+    }
+}
 var Module = {onRuntimeInitialized: () => Module.start()}
 window.leave = () => Module.leave()
 // The program run.mjs serves under /build/, as b2 linked it: interop_browser.js, beside its wasm.

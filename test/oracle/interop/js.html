@@ -116,6 +116,22 @@ room.onPeerLeave = peer => {
 }
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
 
+// window.flood(count, prefix): publishes `count` announcements, each from a fresh peer id that starts with `prefix`,
+// on the room's topic, through a WebSocket of its own to the first relay: what anyone who knows the app and the room
+// ids can send, since announcements are not sealed. Records 'flooded' once every one is sent.
+window.flood = async (count, prefix) => {
+    const {createEvent} = await import('@trystero-p2p/nostr')
+    const {sha1} = await import('@trystero-p2p/core')
+    const topic = await sha1(['Trystero', params.get('app'), params.get('room')].join('@'))
+    const socket = new WebSocket(relays.split(',')[0])
+    await new Promise(resolve => (socket.onopen = resolve))
+    for (let i = 0; i < count; ++i) {
+        const peerId = (prefix + Math.random().toString(36).slice(2) + '0000000000').slice(0, 20)
+        sendNow.call(socket, await createEvent(topic, JSON.stringify({peerId})))
+    }
+    record('flooded', {count})
+}
+
 // With `malformed-candidate-to`, this peer also sends that peer, until it joins, a candidate whose plaintext is not
 // JSON, sealed under the room's key as Trystero seals a candidate, through a WebSocket of its own to the first relay:
 // what a broken or hostile peer of the room can send. The C++ peer must drop it and go on.

@@ -191,6 +191,7 @@ const openPage = async (path, label) => {
         events: async () => (await evaluate('window.events ?? []')) ?? [],
         log: async () => (await evaluate("document.getElementById('log')?.innerText ?? ''")) ?? '',
         leave: () => evaluate('window.leave()'),
+        value: expression => evaluate(expression),
         close: async () => {
             ws.close()
             await fetch(`${devtools}/json/close/${target.id}`).catch(() => {})
@@ -221,6 +222,7 @@ const openNative = (params, label) => {
         problems,
         events: async () => events,
         log: async () => lines.join('\n'),
+        value: async () => undefined,
         leave: async () => child.stdin.write('leave\n'),
         replace: async () => child.stdin.write('replace\n'),
         close: async () => {
@@ -365,6 +367,37 @@ const unusableIceScenario = (name, cppKind) =>
         return reported ? null : 'the C++ peer did not report the unusable ICE server'
     })
 
+// After a Trystero JS peer joined, it floods the room's topic with announcements from fresh ids above the C++ peer's
+// (js.html, window.flood): the C++ peer offers to at most the room's bound of them at once, logs each id it refuses
+// once, keeps the page's connections bounded, and goes on with the peer that joined.
+const floodCount = 300
+const unconnectedBound = 32
+const floodScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, self: '00000000000000000000'})
+        const js = await open('js', params)
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
+        await js.value(`window.flood(${floodCount}, '0000000000')`)
+        const floodIds = async () =>
+            new Set([...(await cpp.log()).matchAll(/(?:announcement from|refusing) (0000000000\w{10})/g)].map(m => m[1]))
+        const seen = await until(async () => (await floodIds()).size >= floodCount, 30_000)
+        const log = await cpp.log()
+        const offered = new Set([...log.matchAll(/announcement from (0000000000\w{10}): our id is lower, so we offer/g)].map(m => m[1]))
+        const peak = await cpp.value('window.peakPeerConnections')
+        const refused = new Set([...log.matchAll(/refusing (0000000000\w{10})/g)].map(m => m[1]))
+        const facts = `the C++ peer logged ${(await floodIds()).size} of ${floodCount} flooding ids, offered to ${offered.size}, ` +
+            `refused ${refused.size}` +
+            (peak === undefined ? '' : `, held at most ${peak} RTCPeerConnections`)
+        console.log(`  ${facts}`)
+        if (!seen) return `${facts}; not every announcement was handled in 30 s`
+        if (offered.size > unconnectedBound) return `${facts}; more than ${unconnectedBound}`
+        if (peak !== undefined && peak > 2 * unconnectedBound + 1) return `${facts}; more than ${2 * unconnectedBound + 1}`
+        if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return `${facts}; a peer left`
+        return null
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -375,6 +408,7 @@ const scenarios = async () => {
             await refusedRelayScenario('A relay URL the browser refuses reports a close; C++ goes on', 'cpp')
             await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; C++ goes on', 'cpp')
+            await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
         }
     }
 
@@ -386,6 +420,7 @@ const scenarios = async () => {
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; native C++ goes on', 'native')
+            await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)

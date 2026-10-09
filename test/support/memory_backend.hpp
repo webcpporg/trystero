@@ -62,11 +62,11 @@ void post_in(boost::asio::io_context& io, std::pmr::memory_resource* memory, F&&
 
 class memory_timer : public backend::timer {
 public:
-    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory)
-        : timer_(io), memory_(memory) {}
+    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1)
+        : timer_(io), memory_(memory), time_scale_(time_scale) {}
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
-        timer_.expires_after(delay);
+        timer_.expires_after(delay / time_scale_);
         timer_.async_wait(boost::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [fire = std::move(fire)](boost::system::error_code ec) mutable {
@@ -81,6 +81,7 @@ public:
 private:
     boost::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
+    int time_scale_;
 };
 
 class memory_websocket;
@@ -515,12 +516,13 @@ public:
             std::pmr::polymorphic_allocator<>(memory), io_, *this, connections_, next_pc_++,
             memory);
         connections_->insert_or_assign(pc->id(), pc.get());
+        peak_connections = std::max(peak_connections, connections_->size());
         return pc;
     }
 
     std::shared_ptr<backend::timer> make_timer(std::pmr::memory_resource* memory) override {
         return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory), io_,
-                                                  memory);
+                                                  memory, time_scale);
     }
 
     std::shared_ptr<backend::sealer> make_sealer(std::array<std::uint8_t, 32> key,
@@ -538,7 +540,8 @@ public:
 
     double now_ms() override {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
-            .count();
+                   .count() *
+               time_scale;
     }
 
     std::shared_ptr<memory_peer_connection> find(int id) {
@@ -548,6 +551,13 @@ public:
 
     boost::asio::io_context& io() { return io_; }
 
+    /** How many peer connections are open now. */
+    [[nodiscard]] std::size_t live_connections() const { return connections_->size(); }
+
+    /** The most peer connections that were open at once. */
+    std::size_t peak_connections = 0;
+    /** How much faster than real time the timers and the clock run, for tests of long timeouts. */
+    int time_scale = 1;
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
     int refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */

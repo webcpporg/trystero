@@ -19,8 +19,10 @@
 
 #include <boost/json/storage_ptr.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -66,6 +68,12 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * when the data channel opens: the connection is handed to the room and signals from that peer are
  * ignored until it leaves.
  *
+ * Announcements are not sealed, so anyone who knows the app and room ids can announce any number
+ * of peer ids. The negotiations under way are bounded (`max_unconnected_peers`): a negotiation is
+ * dropped when its offer and its answer expire without a connection, an idle one gives its place
+ * to a new peer, and beyond the bound a new peer is refused, logged once, until a place frees.
+ * Trystero bounds none of this; a page's connections are (500 in Chromium, measured).
+ *
  * Tip: a peer id is copied once, into the map's key, and every asynchronous handler captures its
  * own copy, in the room's resource, because it may outlive the entry. The entry points a handler
  * calls copy their arguments first, since they may reset the very handler whose captures the
@@ -73,6 +81,12 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  */
 class signaling : public std::enable_shared_from_this<signaling> {
 public:
+    /**
+     * The most negotiations a room holds at once with peers it is not connected to, each with at
+     * most two pending connections: a peer beyond it waits for its next announcement.
+     */
+    static constexpr std::size_t max_unconnected_peers = 32;
+
     /** What the signaling asks of its room. */
     struct callbacks {
         /** Publishes a signal on a topic, through the relay given. */
@@ -116,6 +130,9 @@ public:
         }
         auto it = peers_.find(message->peer_id);
         if (it == peers_.end()) {
+            if (!make_room_for(message->peer_id)) {
+                return;
+            }
             it = peers_.try_emplace(std::pmr::string(message->peer_id, memory_), allocator()).first;
         }
         const std::string_view peer = it->first;
@@ -123,6 +140,7 @@ public:
         if (n.connected) {
             return;
         }
+        n.last_ms = factory_.now_ms();
         if (message->is_announcement()) {
             on_announcement(relay, peer, n);
         } else if (!message->offer.empty()) {
@@ -163,6 +181,8 @@ private:
     static constexpr auto later_offer_retry = std::chrono::milliseconds(4'800);
     static constexpr int max_offer_retries = 2;
     static constexpr std::size_t max_pending_candidates = 128;
+    /** How many refused peer ids are remembered, so that each is logged once. */
+    static constexpr std::size_t remembered_refusals = 64;
 
     /** One side of a negotiation: a connection, the remote candidates waiting for its remote
      * description. */
@@ -193,6 +213,8 @@ private:
               counter_announced_ms(a) {}
 
         bool connected = false;
+        // When the peer last sent a message, for the eviction of an idle negotiation.
+        double last_ms = 0;
         // Our offer.
         side offer;
         std::pmr::string offer_id;
@@ -247,6 +269,51 @@ private:
     negotiation* find(std::string_view peer) {
         const auto it = peers_.find(peer);
         return it == peers_.end() ? nullptr : &it->second;
+    }
+
+    /**
+     * Whether a negotiation may start with a new peer: the room holds fewer than
+     * `max_unconnected_peers` unconnected negotiations, or one of them holds no connection and is
+     * dropped, the one idle longest. Otherwise the peer is refused, and logged once.
+     */
+    bool make_room_for(std::string_view peer) {
+        std::size_t unconnected = 0;
+        auto idle = peers_.end();
+        for (auto it = peers_.begin(); it != peers_.end(); ++it) {
+            const auto& n = it->second;
+            if (n.connected) {
+                continue;
+            }
+            ++unconnected;
+            if (!n.offer.pc && !n.answer.pc &&
+                (idle == peers_.end() || n.last_ms < idle->second.last_ms)) {
+                idle = it;
+            }
+        }
+        if (unconnected < max_unconnected_peers) {
+            return true;
+        }
+        if (idle != peers_.end()) {
+            peers_.erase(idle);
+            return true;
+        }
+        if (std::ranges::find(refused_, peer) == refused_.end()) {
+            log_("signal", "refusing ", peer, ": ", max_unconnected_peers,
+                 " negotiations are under way, the next announcement may find a slot");
+            refused_.emplace_back(peer);
+            if (refused_.size() > remembered_refusals) {
+                refused_.pop_front();
+            }
+        }
+        return false;
+    }
+
+    /** Drops a negotiation that holds no connection any more and is not connected. */
+    void drop_if_done(std::string_view peer) {
+        if (const auto it = peers_.find(peer); it != peers_.end() && !it->second.connected &&
+                                               !it->second.offer.pc && !it->second.answer.pc) {
+            peers_.erase(it);
+        }
     }
 
     void on_announcement(std::size_t relay, std::string_view peer, negotiation& n) {
@@ -316,6 +383,7 @@ private:
                                   }
                                   self->log_("signal", "offer to ", peer, " expired");
                                   reset_offer(*m);
+                                  self->drop_if_done(peer);
                               }));
         pc->set_local_description(
             bind<void(boost::system::error_code, std::string_view, std::string_view)>(
@@ -452,6 +520,7 @@ private:
                                    }
                                    self->log_("signal", "answering ", peer, " timed out");
                                    reset_answer(*m);
+                                   self->drop_if_done(peer);
                                }));
         sealer_->open(offer, bind<void(boost::system::error_code, std::string_view)>(
                                  [weak, peer = copy(peer), pc](boost::system::error_code ec,
@@ -594,6 +663,7 @@ private:
                                   self->log_("signal", peer,
                                              " answered but the connection never opened");
                                   reset_offer(*m);
+                                  self->drop_if_done(peer);
                               }));
         sealer_->open(
             answer,
@@ -874,6 +944,7 @@ private:
     callbacks cb_;
     logger log_;
     std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
+    std::pmr::deque<std::pmr::string> refused_{memory_};
     bool closed_ = false;
 };
 

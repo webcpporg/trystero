@@ -27,6 +27,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -34,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "require.hpp"
 #include "support/memory_backend.hpp"
 
 namespace asio = boost::asio;
@@ -354,6 +356,180 @@ void a_refused_peer_connection_is_reported_and_tried_again() {
     }
 }
 
+/** A resource that counts the bytes it has out, and the most it had out at once. */
+class counting_resource final : public std::pmr::memory_resource {
+public:
+    std::size_t in_use = 0;
+    std::size_t peak = 0;
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        in_use += bytes;
+        peak = std::max(peak, in_use);
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        in_use -= bytes;
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+
+/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own. */
+class flooder {
+public:
+    flooder(fixture& f, std::string_view room)
+        : f_(f), topic_(trystero::protocol::root_topic("webcpp-trystero-tests", room)) {
+        socket_ = f.net.connect(relay_a,
+                                {
+                                    .open = [this] { open_ = true; },
+                                    .message = {},
+                                    .close = {},
+                                },
+                                std::pmr::get_default_resource());
+        webcpp::test::require(BOOST_TEST(run_until(f.io, [this] { return open_; })));
+        std::array<std::uint8_t, 32> secret{};
+        secret.fill(9);
+        signer_.emplace(*trystero::protocol::nostr::signer::from_secret(secret));
+    }
+
+    /** Announces one id `times` times. */
+    void announce_as(std::string_view id, int times) {
+        const std::array<std::uint8_t, 32> aux{};
+        for (int i = 0; i < times; ++i) {
+            const auto nonce = std::to_string(next_++);
+            const auto content = trystero::protocol::write_signal({.peer_id = id}, nonce);
+            socket_->send(trystero::protocol::nostr::event_message(*signer_, f_.net.unix_seconds(),
+                                                                   topic_, content, aux));
+        }
+    }
+
+    /** Announces `count` ids, each `prefix` and a number. */
+    void announce(std::size_t count, std::string_view prefix) {
+        const std::array<std::uint8_t, 32> aux{};
+        for (std::size_t i = 0; i < count; ++i) {
+            std::pmr::string id(prefix);
+            id += std::to_string(next_++);
+            const auto content = trystero::protocol::write_signal({.peer_id = id});
+            socket_->send(trystero::protocol::nostr::event_message(*signer_, f_.net.unix_seconds(),
+                                                                   topic_, content, aux));
+        }
+    }
+
+private:
+    fixture& f_;
+    std::pmr::string topic_;
+    std::shared_ptr<trystero::backend::websocket> socket_;
+    std::optional<trystero::protocol::nostr::signer> signer_;
+    bool open_ = false;
+    std::size_t next_ = 0;
+};
+
+// Announcements are not sealed: anyone who knows the app and the room ids can announce any number
+// of fresh ids. A room offers to at most max_unconnected_peers of them at once, its memory and the
+// page's connections stay bounded, the peer it is connected to keeps working, and once the offers
+// to the flooders expire their negotiations are gone and a new peer joins. The clock runs 100
+// times faster, so that offers expire in about 0.6 s.
+void a_flood_of_announcements_is_bounded() {
+    constexpr std::size_t flood = 3000;
+    constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    fixture f;
+    f.net.time_scale = 100;
+    counting_resource memory;
+    auto c = config("00000000000000000000");  // lower than every flooder: it offers to each
+    c.memory = &memory;
+    trystero::room a(f.io.get_executor(), f.net, std::move(c), "flood");
+    trystero::room b(f.io.get_executor(), f.net, config("BBBBBBBBBBBBBBBBBBBB"), "flood");
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    auto chat_a = a.make_action<std::string>("chat");
+    auto chat_b = b.make_action<std::string>("chat");
+    std::vector<std::string> heard;
+    chat_b.on_message([&](const std::string& text, const trystero::message_info& /*info*/) {
+        heard.push_back(text);
+    });
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; })));
+    const std::size_t joined_in_use = memory.in_use;
+    const std::size_t joined_connections = f.net.live_connections();
+
+    flooder attacker(f, "flood");
+    const auto before = f.net.relay(relay_a).events_seen;
+    attacker.announce(flood, "1flood");
+    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
+    chat_a.async_send("after the flood", [](boost::system::error_code) {});
+    BOOST_TEST(run_until(f.io, [&] { return heard.size() == 1; }));
+    BOOST_TEST_LE(f.net.peak_connections, joined_connections + (2 * bound));
+    // Bounded: about 0.5 MiB here, the negotiations under way and the events remembered against
+    // replays; without the bound, every flooder's negotiation (7.7 MiB for 3000, measured).
+    constexpr std::size_t bounded = std::size_t{1} << 20U;
+    BOOST_TEST_LE(memory.in_use, joined_in_use + bounded);
+
+    // Once every offer to a flooder expired, its negotiation is gone, and a new peer joins.
+    BOOST_TEST(run_until(f.io, [&] { return f.net.live_connections() == joined_connections; }));
+    const trystero::room late(f.io.get_executor(), f.net, config("CCCCCCCCCCCCCCCCCCCC"), "flood");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
+    BOOST_TEST_EQ(heard.size(), 1U);
+
+    // A second flood keeps the room as bounded, and the room working.
+    const auto again = f.net.relay(relay_a).events_seen;
+    attacker.announce(flood, "1again");
+    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= again + flood; }));
+    chat_a.async_send("after the second flood", [](boost::system::error_code) {});
+    BOOST_TEST(run_until(f.io, [&] { return heard.size() == 2; }));
+    BOOST_TEST_LE(memory.in_use, joined_in_use + bounded);
+}
+
+// Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
+// offers to the first ids hold their places (the clock runs at its own pace here).
+void a_refused_peer_is_logged_once() {
+    fixture f;
+    auto c = config("00000000000000000000");
+    int refusals_of_one = 0;
+    int refusals = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refusals += text.starts_with("refusing ") ? 1 : 0;
+        refusals_of_one += text.starts_with("refusing 1same") ? 1 : 0;
+    };
+    const trystero::room a(f.io.get_executor(), f.net, std::move(c), "refusal");
+    flooder attacker(f, "refusal");
+    const auto before = f.net.relay(relay_a).events_seen;
+    const std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    attacker.announce(bound + 8, "1fill");
+    attacker.announce_as("1same", 5);
+    BOOST_TEST(run_until(
+        f.io, [&] { return f.net.relay(relay_a).events_seen >= before + bound + 8 + 5; }));
+    BOOST_TEST(run_until(f.io, [&] { return refusals == 9; }));
+    BOOST_TEST_EQ(refusals_of_one, 1);
+    BOOST_TEST_LE(f.net.live_connections(), 2 * bound);
+}
+
+// A peer id longer than protocol::max_peer_id_bytes is ignored in a signal; a room configured with
+// one uses a random id instead, and reports it.
+void long_peer_ids_are_bounded() {
+    const std::string longest(trystero::protocol::max_peer_id_bytes, 'x');
+    const std::string too_long(trystero::protocol::max_peer_id_bytes + 1, 'x');
+    const auto signal = [](std::string_view id) {
+        return boost::json::value(boost::json::object{{"peerId", id}});
+    };
+    BOOST_TEST(trystero::protocol::read_signal(signal(longest)).has_value());
+    BOOST_TEST(!trystero::protocol::read_signal(signal(too_long)).has_value());
+
+    fixture f;
+    trystero::room a(f.io.get_executor(), f.net, config(too_long), "long");
+    std::vector<boost::system::error_code> errors;
+    a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
+                   std::string_view /*what*/) { errors.push_back(ec); });
+    BOOST_TEST_EQ(a.self_id().size(), trystero::protocol::peer_id_size);
+    BOOST_TEST(run_until(f.io, [&] { return errors.size() == 1; }));
+    if (!errors.empty()) {
+        BOOST_TEST(errors.front() == trystero::error::invalid_configuration);
+    }
+}
+
 void three_peers_form_a_mesh() {
     fixture f;
     std::vector<std::unique_ptr<trystero::room>> rooms;
@@ -461,6 +637,9 @@ int main() {
     ice_urls_are_checked_as_webrtc_checks_them();
     unusable_ice_servers_are_dropped_and_reported();
     a_refused_peer_connection_is_reported_and_tried_again();
+    a_flood_of_announcements_is_bounded();
+    long_peer_ids_are_bounded();
+    a_refused_peer_is_logged_once();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

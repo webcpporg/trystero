@@ -24,6 +24,15 @@
 
 namespace webcpp::trystero::protocol {
 
+/**
+ * The longest peer id a room accepts in a signal, in bytes; a signal with a longer one is
+ * ignored.
+ *
+ * Every id Trystero makes is 20 characters (`selfId`, @ref peer_id_size); the bound leaves room for
+ * an application's own ids and keeps a flood of long ids from costing more than a short one.
+ */
+inline constexpr std::size_t max_peer_id_bytes = 64;
+
 /** The size of the IV Trystero's `encrypt` draws for AES-GCM: 16 bytes, not the usual 12. */
 inline constexpr std::size_t seal_iv_size = 16;
 
@@ -118,7 +127,7 @@ inline std::optional<sealed_parts> parse_sealed(
  * @see "The protocol", in the guide.
  */
 struct signal_message {
-    /** The sender's id, `peerId`. */
+    /** The sender's id, `peerId`: 1 to @ref max_peer_id_bytes bytes. */
     std::string_view peer_id = {};
     /** The offer the message belongs to, `offerId`; empty in an announcement. */
     std::string_view offer_id = {};
@@ -148,8 +157,9 @@ struct signal_message {
  * The message a parsed signaling payload holds, as views into `document`.
  *
  * @param document The parsed payload, which the caller keeps alive while it reads the views.
- * @return The message, or nothing when Trystero would ignore it: not an object, no peer id, or an
- * offer, answer or candidate that is not a non-empty string.
+ * @return The message, or nothing when Trystero would ignore it (not an object, no peer id, or an
+ * offer, answer or candidate that is not a non-empty string) or when its peer id is longer than
+ * @ref max_peer_id_bytes.
  */
 inline std::optional<signal_message> read_signal(const boost::json::value& document) {
     const auto* object = document.if_object();
@@ -179,7 +189,7 @@ inline std::optional<signal_message> read_signal(const boost::json::value& docum
     if (const auto* v = object->if_contains("passive"); v != nullptr && v->is_bool()) {
         out.passive = v->get_bool();
     }
-    if (out.peer_id.empty()) {
+    if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes) {
         return std::nullopt;
     }
     return out;
