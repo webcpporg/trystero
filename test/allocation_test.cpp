@@ -131,6 +131,9 @@ void* counted(void* pointer) {
 
 }  // namespace
 
+// The C library's allocation functions, replaced for this program alone: the C library declares
+// them with parameter names of its own, and cert-dcl58-cpp takes a replacement of what <cstdlib>
+// declares for a change to namespace std.
 // NOLINTBEGIN(readability-inconsistent-declaration-parameter-name,cert-dcl58-cpp)
 extern "C" {
 void* malloc(std::size_t size) {
@@ -226,7 +229,8 @@ extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* excep
 #elif defined(__APPLE__)
 #define WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS 1
 
-// libsystem_malloc's hook, which it calls on every allocation and release.
+// libsystem_malloc's hook, which it calls on every allocation and release: a global of its own,
+// which the test sets.
 extern "C" {
 using malloc_logger_type = void(std::uint32_t type, std::uintptr_t, std::uintptr_t, std::uintptr_t,
                                 std::uintptr_t, std::uint32_t);
@@ -378,12 +382,12 @@ void the_counts_see_an_allocation() {
     ::operator delete(pointer);
     BOOST_TEST_EQ(global_allocations, 1U);
 #ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
-    // NOLINTNEXTLINE(cppcoreguidelines-no-malloc): the C library's allocation, on purpose
+    // The C library's allocation, on purpose.
     void* volatile memory = nullptr;
     counting = true;
-    memory = std::malloc(40);  // NOLINT(cppcoreguidelines-no-malloc)
+    memory = std::malloc(40);
     counting = false;
-    std::free(memory);  // NOLINT(cppcoreguidelines-no-malloc)
+    std::free(memory);
     BOOST_TEST_EQ(c_allocations, 1U);
 #endif
     global_allocations = 0;
