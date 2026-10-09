@@ -398,6 +398,24 @@ const floodScenario = (name, cppKind) =>
         return null
     })
 
+// After the exchange, the relay sends every client a text longer than a relay's longest (1 MiB): the C++ peer closes
+// that relay's connection rather than read it, says so, reconnects, and goes on with the peer it joined.
+const oversizedRelayTextScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, self: '00000000000000000000'})
+        const js = await open('js', params)
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
+        left.relay.broadcast(JSON.stringify(['NOTICE', 'x'.repeat(1024 * 1024 + 1)]))
+        const lost = await until(async () => (await cpp.log()).includes(`lost ${left.relay.url}`), 10_000)
+        if (!lost) return 'the C++ peer did not close the relay that sent the long text'
+        const back = await until(async () => (await cpp.log()).includes(`reconnected to ${left.relay.url}`), 15_000)
+        if (!back) return 'the C++ peer did not reconnect to the relay'
+        if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return 'a peer left'
+        return null
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -409,6 +427,7 @@ const scenarios = async () => {
             await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; C++ goes on', 'cpp')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
+            await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
         }
     }
 
@@ -421,6 +440,7 @@ const scenarios = async () => {
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; native C++ goes on', 'native')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
+            await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)

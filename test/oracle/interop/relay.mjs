@@ -64,5 +64,10 @@ export const startRelay = (port = 0) =>
                 }
             })
         })
-        server.on('listening', () => resolve({url: `ws://127.0.0.1:${server.address().port}`, stats, close: () => server.close()}))
+        // broadcast(text): sends a raw text to every client, as a relay that accepts anything can.
+        const broadcast = text => {
+            for (const socket of subscriptions.keys()) socket.readyState === 1 && socket.send(text)
+        }
+        server.on('listening', () =>
+            resolve({url: `ws://127.0.0.1:${server.address().port}`, stats, broadcast, close: () => server.close()}))
     })

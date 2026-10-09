@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 
 #include <boost/asio/any_io_executor.hpp>    // lint-world: the relays' WebSockets
 #include <boost/asio/as_tuple.hpp>           // lint-world: the relays' WebSockets
@@ -225,6 +226,9 @@ private:
         if (const auto h = h_; h && h->open) {
             h->open();
         }
+        // A longer message fails the read, which closes the connection, as the browser backend
+        // does.
+        ws_.read_message_max(protocol::max_relay_message_bytes);
         boost::beast::flat_buffer buffer;
         while (!closing_) {
             auto [read_error, size] = co_await ws_.async_read(buffer, as_tuple(use_awaitable));
@@ -310,8 +314,8 @@ private:
  * Connects to a Nostr relay over Boost.Beast: `ws://` in the clear, `wss://` over TLS with `tls`.
  *
  * Writes are queued, one in flight at a time; a received message is handed over as a view of the
- * read buffer. A URL it cannot parse reports a close, as an unreachable relay does. It needs no
- * exceptions.
+ * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection. A URL
+ * it cannot parse reports a close, as an unreachable relay does. It needs no exceptions.
  *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection and should verify

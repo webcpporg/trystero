@@ -21,8 +21,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -175,14 +177,39 @@ public:
      *
      * @param text The JavaScript string.
      * @param memory The resource the copy is allocated in.
-     * @return The text.
+     * @return The text, or an empty one when the string cannot be encoded.
      */
     std::pmr::string utf8(const emscripten::val& text, std::pmr::memory_resource* memory) const {
-        const auto encoded = encoder_.call<emscripten::val>("encode", text);
-        std::pmr::string out(encoded["length"].as<std::size_t>(), '\0', memory);
+        auto out = utf8(text, memory, std::numeric_limits<std::size_t>::max());
+        return out ? std::move(*out) : std::pmr::string(memory);
+    }
+
+    /**
+     * The UTF-8 bytes of a JavaScript string, as the other overload makes them, when they are at
+     * most `max_bytes`; nothing is copied into WebAssembly otherwise.
+     *
+     * The string's length is checked first, in UTF-16 units, each at least one byte, so that a
+     * longer string is never encoded; then the encoded bytes are.
+     *
+     * @param text The JavaScript string.
+     * @param memory The resource the copy is allocated in.
+     * @param max_bytes The most bytes the text may hold.
+     * @return The text, or nothing when it is longer or cannot be encoded.
+     */
+    std::optional<std::pmr::string> utf8(const emscripten::val& text,
+                                         std::pmr::memory_resource* memory,
+                                         std::size_t max_bytes) const {
+        if (text["length"].as<double>() > static_cast<double>(max_bytes)) {
+            return std::nullopt;
+        }
+        const auto encoded = detail::js_call(encoder_, "encode", text);
+        if (!encoded.ok || encoded.value["length"].as<double>() > static_cast<double>(max_bytes)) {
+            return std::nullopt;
+        }
+        std::pmr::string out(encoded.value["length"].as<std::size_t>(), '\0', memory);
         emscripten::val(
             emscripten::typed_memory_view(out.size(), reinterpret_cast<unsigned char*>(out.data())))
-            .call<void>("set", encoded);
+            .call<void>("set", encoded.value);
         return out;
     }
 

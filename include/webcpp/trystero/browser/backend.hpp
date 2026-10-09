@@ -15,6 +15,7 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <emscripten/val.h>
@@ -173,6 +174,9 @@ private:
 /**
  * A WebSocket over the page's `WebSocket`.
  *
+ * A text longer than `protocol::max_relay_message_bytes` is not copied into WebAssembly: the
+ * socket closes, and reports the close.
+ *
  * @see "The browser backend", in the guide.
  */
 class websocket : public backend::websocket {
@@ -257,9 +261,14 @@ private:
         } else if (slot == 1) {
             const val data = event["data"];
             if (data.isString() && h->message) {
-                const auto text =
-                    loop_.utf8(data, memory_);  // the one copy: out of the JavaScript heap
-                h->message(text);
+                // The one copy, out of the JavaScript heap, of at most a relay's longest text: a
+                // longer one closes the socket, which reports the close, as the native one does.
+                const auto text = loop_.utf8(data, memory_, protocol::max_relay_message_bytes);
+                if (!text) {
+                    socket_.call<void>("close");
+                    return;
+                }
+                h->message(*text);
             }
         } else if (auto f = std::exchange(h->close, {})) {
             f();

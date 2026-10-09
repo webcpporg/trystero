@@ -108,16 +108,17 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in nine scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in ten scenarios each:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
   made to, a Trystero JS peer that also sends text messages on its data
   channel (`text-messages`), a C++ peer given a TURN server without
   credentials, a flood of announcements from fresh peer ids
-  (`window.flood`), a wrong password, and a mesh of three; and, for the
-  native peer, a tenth: a room moved over the joined one, which must leave
-  it as destroying it does. Both lanes are of the kind
+  (`window.flood`), a relay text longer than 1 MiB (`relay.broadcast`), a
+  wrong password, and a mesh of three; and, for the native peer, an
+  eleventh: a room moved over the joined one, which must leave it as
+  destroying it does. Both lanes are of the kind
   `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
@@ -143,7 +144,7 @@ holds only what is specific to trystero.
     interface that holds the default route and leads nowhere, a dummy
     device, to which nothing but the kernel's IPv6 router solicitations was
     sent.
-  - Each driver is bounded by 420 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 540 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A wire string changed in the C++ library
     (`"__trystero_pw"`) fails the password scenario of both.

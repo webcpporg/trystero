@@ -8,6 +8,7 @@
 // on 127.0.0.1.
 
 #include <webcpp/trystero/native/websocket.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -153,6 +154,36 @@ void opens_sends_in_order_receives_and_closes_once() {
     BOOST_TEST_EQ(closes, 1);
 }
 
+// A message longer than any relay's (protocol::max_relay_message_bytes) is never handed over: the
+// socket closes, as the browser's does, and the room's strategy reconnects.
+void a_message_longer_than_a_relay_sends_closes_the_socket() {
+    asio::io_context io;
+    const echo_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    bool opened = false;
+    int closes = 0;
+    std::vector<std::size_t> received;
+    const auto socket = trystero::native::connect_websocket(
+        io.get_executor(), tls, server.url(),
+        {
+            .open = [&] { opened = true; },
+            .message = [&](std::string_view text) { received.push_back(text.size()); },
+            .close = [&] { ++closes; },
+        },
+        std::pmr::get_default_resource());
+    if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
+        return;
+    }
+    socket->send(std::string(trystero::protocol::max_relay_message_bytes, 'x'));
+    if (!BOOST_TEST(run_until(io, [&] { return received.size() == 1; }))) {
+        return;
+    }
+    socket->send(std::string(trystero::protocol::max_relay_message_bytes + 1, 'x'));
+    BOOST_TEST(run_until(io, [&] { return closes == 1; }));
+    BOOST_TEST_EQ(received.size(), 1U);
+    BOOST_TEST_EQ(received.at(0), trystero::protocol::max_relay_message_bytes);
+}
+
 void an_unreachable_relay_closes_without_opening() {
     asio::io_context io;
     tcp::acceptor taken(io, {asio::ip::make_address("127.0.0.1"), 0});
@@ -219,6 +250,7 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
 int main() {
     urls_name_a_scheme_host_port_and_path();
     opens_sends_in_order_receives_and_closes_once();
+    a_message_longer_than_a_relay_sends_closes_the_socket();
     an_unreachable_relay_closes_without_opening();
     a_dropped_socket_reports_nothing();
     closing_right_after_a_send_lets_the_write_finish_first();
