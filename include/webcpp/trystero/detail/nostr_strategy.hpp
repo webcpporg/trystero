@@ -7,7 +7,6 @@
 #ifndef WEBCPP_TRYSTERO_DETAIL_NOSTR_STRATEGY_HPP
 #define WEBCPP_TRYSTERO_DETAIL_NOSTR_STRATEGY_HPP
 
-#include <utility>
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
@@ -29,6 +28,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace webcpp::trystero::detail {

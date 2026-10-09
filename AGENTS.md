@@ -46,8 +46,8 @@ holds only what is specific to trystero.
   The lint names those two headers as left out of its analysis without
   exceptions; `backend.hpp`, `sealer.hpp` and `websocket.hpp` are compiled
   alone in a call of their own, without it, so the lint analyses the timer,
-  the sealer and the WebSockets without exceptions too. trystero raises nothing of its own; a raise would go through
-  `boost::throw_exception`.
+  the sealer and the WebSockets without exceptions too. trystero raises
+  nothing of its own; a raise would go through `boost::throw_exception`.
 - **The external dependencies.** libsecp256k1 (every room), libdatachannel
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
   them where `SECP256K1_ROOT`, `SECP256K1_EMSCRIPTEN_ROOT`,
@@ -102,13 +102,14 @@ holds only what is specific to trystero.
     update checks and component downloads (measured), so the driver also
     resolves no host but 127.0.0.1 (`--host-resolver-rules`); the headless
     shell asks nothing with or without any of them. The driver removes
-    Chrome's profile once Chrome has exited, on every way the run ends but
-    a SIGKILL, whose profile the next run removes. Chrome offers host candidates only on
-    the interface of its default route, so in a container whose only
-    interface is the loopback its peers gather none and never connect: the
-    lanes were measured passing under `--network none` with one interface
-    that holds the default route and leads nowhere, a dummy device, to which
-    nothing but the kernel's IPv6 router solicitations was sent.
+    Chrome's profile once Chrome has exited, on every way the run ends but a
+    SIGKILL, whose profile the next run removes. Chrome offers host
+    candidates only on the interface of its default route, so in a container
+    whose only interface is the loopback its peers gather none and never
+    connect: the lanes were measured passing under `--network none` with one
+    interface that holds the default route and leads nowhere, a dummy
+    device, to which nothing but the kernel's IPv6 router solicitations was
+    sent.
   - Each driver is bounded by 300 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A wire string changed in the C++ library

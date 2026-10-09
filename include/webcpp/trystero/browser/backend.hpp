@@ -609,7 +609,7 @@ public:
         for (std::size_t at = 0; at < out.size(); at += 256) {
             // Each call fills at most 256 bytes.
             const auto piece = std::min<std::size_t>(256, out.size() - at);
-            getentropy(out.data() + at, piece);  // lint-world: the room's keys and ids
+            getentropy(out.data() + at, piece);  // lint-world: Trystero's randomness
         }
     }
 

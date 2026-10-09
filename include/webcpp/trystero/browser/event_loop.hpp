@@ -12,10 +12,10 @@
 #include <webcpp/trystero/handler.hpp>
 
 #include <emscripten/val.h>
-#include <boost/asio/execution.hpp>            // lint-world: posts handlers only
-#include <boost/asio/executor_work_guard.hpp>  // lint-world: posts handlers only
-#include <boost/asio/io_context.hpp>           // lint-world: posts handlers only
-#include <boost/asio/post.hpp>                 // lint-world: posts handlers only
+#include <boost/asio/execution.hpp>            // lint-world: posts and polls, never blocks
+#include <boost/asio/executor_work_guard.hpp>  // lint-world: posts and polls, never blocks
+#include <boost/asio/io_context.hpp>           // lint-world: posts and polls, never blocks
+#include <boost/asio/post.hpp>                 // lint-world: posts and polls, never blocks
 
 #include <cstddef>
 #include <cstdint>

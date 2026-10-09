@@ -123,7 +123,7 @@ public:
 
     void random(std::span<std::uint8_t> out) override {
         const auto size = static_cast<int>(out.size());
-        if (RAND_bytes(out.data(), size) != 1) {  // lint-world: the room's keys and ids
+        if (RAND_bytes(out.data(), size) != 1) {  // lint-world: Trystero's randomness
             std::abort();                         // no secure randomness: nothing is safe
         }
     }
