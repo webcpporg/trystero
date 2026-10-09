@@ -94,14 +94,19 @@ holds only what is specific to trystero.
     one that comes to it as a peer's: it changes nothing and is logged. It
     makes or acts on at most two per connection it makes, so each is
     remembered for at least an offer's lifetime (57 s), and in a quiet
-    room for its whole life. What a
-    resend still does: an offer or an answer this room never acted on
-    (one its sender sent another peer of the room, an offer the room set
-    aside for its own, or one older than what it remembers) opens and is
-    acted on, and keeps the two peers apart for that attempt, up to 23 s
-    each time it is resent. Only a wire that seals the offer id and both
-    peer ids closes this, which Trystero would have to share (reported
-    upstream).
+    room for its whole life.
+  - What remains: a sealed offer or answer the room neither made nor
+    acted on still opens and is acted on. Such texts are not scarce:
+    every peer seals a fresh offer for any id announced above its own, and
+    announcements need no key. So anyone who reads and publishes on the
+    relays, without the key, can keep any two peers of a room apart from
+    their first meeting for as long as it keeps at it, each attempt
+    costing the other peer a connection of its window. It cannot read or
+    alter anything the peers exchange, join the room, or touch peers
+    already joined; a joined peer that drops is a new peer again. The
+    room refuses only what it made or already acted on. Only a wire that
+    seals the offer id and both peer ids closes this, which Trystero would
+    have to share (reported upstream).
   - A room holds at most `detail::signaling::max_unconnected_peers` (32)
     negotiations with peers it is not connected to. A negotiation whose
     offer and answer expire without a connection is dropped, an idle one
@@ -389,8 +394,9 @@ holds only what is specific to trystero.
     dlmalloc has weak definitions the test replaces and forwards to
     `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and
     MSVC's are not counted, nor any under AddressSanitizer, whose own
-    allocator reports to none of these. Two rooms over the memory relays exchange a
-    payload, a `std::pmr::string`, a `pmr_bytes` and a `boost::json::value`
+    allocator reports to none of these. Two rooms over the memory relays
+    exchange a payload, a `std::pmr::string`, a `pmr_bytes` and a
+    `boost::json::value`
     in turn, while both counts see none and the counting resources of the
     two configurations see the rooms'; and two rooms with a password, a log
     sink and the network's state in a resource of its own are made, join,

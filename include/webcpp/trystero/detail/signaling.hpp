@@ -81,10 +81,12 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * neither its offer id nor a peer id (Trystero's wire), so one recorded from the relays still opens
  * when it is resent in its sender's name: the room remembers the offers and answers it made or
  * acted on (`remembered_descriptions`) and refuses one that comes to it as a peer's, which it logs:
- * a resent one, or its own sent back. One it never acted
- * on (what its sender sent another peer of the room, an offer it set aside for its own, one older
- * than it remembers) still opens, and keeps the two peers apart for that attempt; only a wire that
- * seals the offer id and both peer ids closes this. The negotiations under way are bounded
+ * a resent one, or its own sent back. One it neither made nor acted on still opens and is acted
+ * on, and every peer seals a fresh offer for any id announced above its own: so anyone who reads
+ * and publishes on the relays, without the key, can keep two peers apart from their first meeting
+ * for as long as it keeps at it, though it can neither read nor join anything, nor touch joined
+ * peers. Only a wire that seals the offer id and both peer ids closes this. The negotiations under
+ * way are bounded
  * (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer expire without
  * a connection, an idle one gives its place to a new peer, and beyond the bound a new peer is
  * refused, logged once. The connections made are bounded too (`max_connections_per_window`),
