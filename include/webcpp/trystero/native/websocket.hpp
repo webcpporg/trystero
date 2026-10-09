@@ -244,13 +244,21 @@ private:
         end();
     }
 
+    /**
+     * Writes the queued texts in turn, each moved out of the queue into this frame before its
+     * write starts.
+     *
+     * Tip: the connection can end while a write is in flight, and `end` then clears the queue; the
+     * text being written is no longer in it, so the write reads a text it owns, and its completion
+     * touches only that text.
+     */
     boost::asio::awaitable<void> write_queue() {
         while (!queue_.empty() && open_ && !ended_) {
-            ws_.text(true);
-            auto [ec, size] =
-                co_await ws_.async_write(boost::asio::buffer(queue_.front()),
-                                         boost::asio::as_tuple(boost::asio::use_awaitable));
+            const std::pmr::string text = std::move(queue_.front());
             queue_.pop_front();
+            ws_.text(true);
+            auto [ec, size] = co_await ws_.async_write(
+                boost::asio::buffer(text), boost::asio::as_tuple(boost::asio::use_awaitable));
             if (ec) {
                 break;
             }

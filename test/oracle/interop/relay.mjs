@@ -18,7 +18,18 @@ export const startRelay = (port = 0) =>
         const subscriptions = new Map() // socket -> Map(subId -> filter)
         const stats = {events: 0, rejected: 0}
         // options.afterSubscribe: a raw text sent after every subscription, when not null.
-        const options = {afterSubscribe: null}
+        // options.strike: {action, delay, topic}, when not null: the next subscription to `topic` takes it, and `delay`
+        // milliseconds later the relay resets that client's TCP connection (action 'reset') or sends it a text longer
+        // than 1 MiB (action 'too-long'). A C++ peer announces 233 ms after it subscribed, so a delay just below that
+        // ends its connection as that write starts.
+        const options = {afterSubscribe: null, strike: null}
+        const tooLong = 'x'.repeat(1024 * 1024 + 1)
+        const strikeLater = (socket, {action, delay}) =>
+            setTimeout(() => {
+                if (socket.readyState !== 1) return
+                if (action === 'reset') socket._socket.resetAndDestroy()
+                else socket.send(tooLong)
+            }, delay)
         const send = (socket, message) => socket.readyState === 1 && socket.send(JSON.stringify(message))
         const matches = (filter, event, topic) =>
             (!filter.kinds || filter.kinds.includes(event.kind)) &&
@@ -47,6 +58,10 @@ export const startRelay = (port = 0) =>
                     subscriptions.get(socket)?.set(subId, filter)
                     send(socket, ['EOSE', subId])
                     if (options.afterSubscribe !== null && socket.readyState === 1) socket.send(options.afterSubscribe)
+                    if (options.strike !== null && filter?.['#x']?.includes(options.strike.topic)) {
+                        strikeLater(socket, options.strike)
+                        options.strike = null
+                    }
                 } else if (type === 'CLOSE') {
                     subscriptions.get(socket)?.delete(rest[0])
                 } else if (type === 'EVENT') {

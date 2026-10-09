@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <memory_resource>
 #include <string>
 #include <string_view>
@@ -86,6 +87,81 @@ struct echo_server {
     }
 
     tcp::acceptor acceptor;
+};
+
+/** What a hostile relay does once it reads a client's first message. */
+enum class misbehaviour {
+    /** Sends a text one byte longer than a room reads, then goes on reading. */
+    too_long_text,
+    /** Drops the TCP connection with a reset. */
+    reset,
+};
+
+/**
+ * Accepts WebSocket connections, reads every message, and misbehaves at the first: what any relay
+ * of a room's list can do, and what a network drop does by chance.
+ */
+struct hostile_server {
+    hostile_server(asio::io_context& io, misbehaviour m)
+        : acceptor(io, {asio::ip::make_address("127.0.0.1"), 0}), what(m) {
+        asio::co_spawn(io, accept(), asio::detached);
+    }
+
+    [[nodiscard]] std::string url() const {
+        return "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/relay";
+    }
+
+    asio::awaitable<void> accept() {
+        for (;;) {
+            auto [ec, socket] = co_await acceptor.async_accept(asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                co_return;
+            }
+            asio::co_spawn(acceptor.get_executor(), serve(std::move(socket), what), asio::detached);
+        }
+    }
+
+    static asio::awaitable<void> serve(tcp::socket socket, misbehaviour what) {
+        const auto ws = std::make_shared<beast::websocket::stream<tcp::socket>>(std::move(socket));
+        auto [accepted] = co_await ws->async_accept(asio::as_tuple(asio::use_awaitable));
+        if (accepted) {
+            co_return;
+        }
+        beast::flat_buffer buffer;
+        for (bool first = true;; first = false) {
+            auto [read, read_size] =
+                co_await ws->async_read(buffer, asio::as_tuple(asio::use_awaitable));
+            if (read) {
+                co_return;
+            }
+            buffer.consume(buffer.size());
+            if (!first) {
+                continue;
+            }
+            if (what == misbehaviour::reset) {
+                // A linger of 0 makes the close a reset.
+                boost::system::error_code ec;
+                const bool reset =
+                    !ws->next_layer().set_option(asio::socket_base::linger(true, 0), ec) &&
+                    !ws->next_layer().close(ec);
+                BOOST_TEST(reset);
+                co_return;
+            }
+            // Written beside the reads, so that the client's writes keep draining meanwhile.
+            asio::co_spawn(
+                ws->get_executor(),
+                [ws]() -> asio::awaitable<void> {
+                    const std::string text(trystero::protocol::max_relay_message_bytes + 1, 'x');
+                    ws->text(true);
+                    co_await ws->async_write(asio::buffer(text),
+                                             asio::as_tuple(asio::use_awaitable));
+                },
+                asio::detached);
+        }
+    }
+
+    tcp::acceptor acceptor;
+    misbehaviour what;
 };
 
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
@@ -245,6 +321,46 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
     BOOST_TEST(run_until(io, [&] { return closes == 1; }));
 }
 
+// A connection that ends while a write is in flight: the relay sends a text too long to read, or
+// resets the connection, while the client has many texts queued. The socket reports one close, and
+// the write that was in flight finishes after it on a text it still owns. Each misbehaviour is met
+// several times, since which of the read and the write completes first is the network's choice.
+// The test is built with the standard library's own checks (test/Jamfile), so that a write
+// completion that touches a cleared queue fails at once.
+void a_connection_that_ends_during_a_write_closes_once(misbehaviour what) {
+    constexpr int connections = 10;
+    constexpr int texts = 200;
+    asio::io_context io;
+    const hostile_server server(io, what);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    const std::string text(std::size_t{64} * 1024, 't');
+    for (int i = 0; i < connections; ++i) {
+        bool opened = false;
+        int closes = 0;
+        std::shared_ptr<trystero::backend::websocket> socket;
+        socket = trystero::native::connect_websocket(io.get_executor(), tls, server.url(),
+                                                     {
+                                                         .open =
+                                                             [&] {
+                                                                 opened = true;
+                                                                 for (int t = 0; t < texts; ++t) {
+                                                                     socket->send(text);
+                                                                 }
+                                                             },
+                                                         .message = {},
+                                                         .close = [&] { ++closes; },
+                                                     },
+                                                     std::pmr::get_default_resource());
+        if (!BOOST_TEST(run_until(io, [&] { return closes == 1; }))) {
+            return;
+        }
+        BOOST_TEST(opened);
+        socket.reset();  // as the room's strategy replaces a relay's socket when it reconnects
+        run_until(io, [] { return false; }, 50ms);
+        BOOST_TEST_EQ(closes, 1);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -254,5 +370,7 @@ int main() {
     an_unreachable_relay_closes_without_opening();
     a_dropped_socket_reports_nothing();
     closing_right_after_a_send_lets_the_write_finish_first();
+    a_connection_that_ends_during_a_write_closes_once(misbehaviour::too_long_text);
+    a_connection_that_ends_during_a_write_closes_once(misbehaviour::reset);
     return boost::report_errors();
 }

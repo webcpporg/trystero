@@ -46,7 +46,14 @@ webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/
 webcpp.run room : room_test.cpp ;
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
-webcpp.run native_websocket : native_websocket_test.cpp : <library>/webcpp/trystero//native : native ;
+# The WebSocket test is built with the standard libraries' own checks, libc++'s
+# extensive hardening and libstdc++'s assertions, so that a completion that
+# touches a container its socket cleared fails at once, not one run in many.
+webcpp.run native_websocket : native_websocket_test.cpp
+  : <library>/webcpp/trystero//native
+    <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
+    <define>_GLIBCXX_ASSERTIONS
+  : native ;
 webcpp.run native_peer_connection : native_peer_connection_test.cpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
 webcpp.run native_room : native_room_test.cpp

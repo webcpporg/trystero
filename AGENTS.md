@@ -139,11 +139,18 @@ holds only what is specific to trystero.
   (`window.flood`, `window.floodOffers`) whose offers the watcher answers
   too, a relay text longer than 1 MiB, once and then after every
   subscription (`relay.broadcast`, `relay.options.afterSubscribe`), a
-  wrong password, and a mesh of three; and, for the native peer, two
+  wrong password, and a mesh of three; and, for the native peer, three
   more: a room moved over the joined one, which must leave it as
-  destroying it does, and the driver's own check that a native peer
-  killed by a signal (`abort` on its standard input) is named at once.
-  Both lanes are of the kind `original`, so the CI gives them its Node.
+  destroying it does; a relay that ends the connection just as the peer
+  writes, with a text longer than 1 MiB or a reset
+  (`relay.options.strike`), which twelve peers in turn must survive and
+  reconnect after; and the driver's own check that a native peer killed
+  by a signal (`abort` on its standard input) is named at once. The
+  native peer and `native_websocket` are built with the standard
+  library's own checks (libc++'s extensive hardening, libstdc++'s
+  assertions), so that a completion that touches a cleared container
+  fails at once. Both lanes are of the kind `original`, so the CI gives
+  them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to
@@ -168,7 +175,7 @@ holds only what is specific to trystero.
     interface that holds the default route and leads nowhere, a dummy
     device, to which nothing but the kernel's IPv6 router solicitations was
     sent.
-  - Each driver is bounded by 600 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 660 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A native peer that dies by a signal the
     driver did not send, as a crash does, is named as soon as it dies

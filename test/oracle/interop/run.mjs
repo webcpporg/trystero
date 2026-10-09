@@ -25,6 +25,7 @@
 // scenarios' verdict, a failure outside every scenario, or SIGTERM, SIGINT or SIGHUP (the bound of b2's driven test
 // sends SIGTERM). A SIGKILL leaves the profile, which the next run removes.
 import {spawn} from 'node:child_process'
+import {createHash} from 'node:crypto'
 import {createInterface} from 'node:readline'
 import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs'
 import {createServer} from 'node:http'
@@ -284,7 +285,7 @@ const scenario = async (name, body) => {
     deathsBefore = deaths
     const pages = []
     const open = async (kind, params) => {
-        const all = {app: 'webcpp-trystero-interop', ice, ...params}
+        const all = {app, ice, ...params}
         const page = kind === 'native'
             ? openNative(all, `native#${pages.length}`)
             : await openPage(`/${kind}.html?${new URLSearchParams({...all, program: basename(browserPeer ?? '')})}`,
@@ -314,6 +315,7 @@ const scenario = async (name, body) => {
     for (const p of pages) await p.close()
 }
 
+const app = 'webcpp-trystero-interop'
 const room = () => 'room-' + Math.random().toString(36).slice(2, 10)
 let relayParams
 
@@ -463,6 +465,35 @@ const oversizedRelayTextScenario = (name, cppKind) =>
         return null
     })
 
+// A relay that sends a client a text longer than 1 MiB, or resets its connection, just as the client writes: a C++ peer
+// announces 233 ms after it subscribes, and the relay strikes just before. A text that arrives 1 to 2 ms before the
+// write fails the read while Beast holds the write back, so the write completes after the connection ended; measured
+// against the code before the fix, a strike at 232 ms crashed 7 peers in 8, at 231 ms 5 in 8, at 228 or 234 ms none. A
+// reset fails the read and the write at once. One peer at a time, each in a room of its own, which the relay strikes by
+// its topic: each loses the relay once, survives, and reconnects.
+const strikes = [232, 231, 232, 233, 232, 231, 232, 233, 232, 232, 232, 232].map((delay, i) => ({
+    delay,
+    action: i < 8 ? 'too-long' : 'reset',
+}))
+const topicOf = text => Array.from(createHash('sha1').update(text).digest(), b => b.toString(36)).join('')
+const strikeScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const peers = []
+        for (const {delay, action} of strikes) {
+            const params = {room: room(), ...relayParams}
+            left.relay.options.strike = {action, delay, topic: topicOf(`Trystero@${app}@${params.room}`)}
+            const peer = await open(cppKind, params)
+            peers.push(peer)
+            const lost = await until(async () => (await peer.log()).includes(`lost ${left.relay.url}`), 5_000)
+            left.relay.options.strike = null
+            if (deaths !== deathsBefore) return `a C++ peer died after the relay struck it (${action} at ${delay} ms)`
+            if (!lost) return `${peer.label} did not lose the relay that struck it (${action} at ${delay} ms)`
+        }
+        const back = await until(async () =>
+            (await Promise.all(peers.map(p => p.log()))).every(log => log.includes(`reconnected to ${left.relay.url}`)), 10_000)
+        return back ? null : 'not every C++ peer reconnected to the relay'
+    })
+
 // A watcher without the room key (forger.html) answers each offer of the C++ peer with garbage in the name of the peer
 // the offer is for, before that peer's own answer (whose sends js.html holds 1 s): the C++ peer opens an answer before
 // acting on it, so the forged one changes nothing, and the real one joins them.
@@ -510,6 +541,7 @@ const scenarios = async () => {
             await forgedAnswerScenario('A forged answer from a watcher without the key changes nothing; native C++ joins', 'native')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
+            await strikeScenario('A relay that ends the connection during a write: native C++ survives and reconnects', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)
