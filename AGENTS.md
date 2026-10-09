@@ -139,10 +139,11 @@ holds only what is specific to trystero.
   (`window.flood`, `window.floodOffers`) whose offers the watcher answers
   too, a relay text longer than 1 MiB, once and then after every
   subscription (`relay.broadcast`, `relay.options.afterSubscribe`), a
-  wrong password, and a mesh of three; and, for the native peer, a
-  twelfth: a room moved over the joined one, which must leave it as
-  destroying it does. Both lanes are of the kind
-  `original`, so the CI gives them its Node.
+  wrong password, and a mesh of three; and, for the native peer, two
+  more: a room moved over the joined one, which must leave it as
+  destroying it does, and the driver's own check that a native peer
+  killed by a signal (`abort` on its standard input) is named at once.
+  Both lanes are of the kind `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to
@@ -169,8 +170,11 @@ holds only what is specific to trystero.
     sent.
   - Each driver is bounded by 600 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
-    name with what each peer saw. A wire string changed in the C++ library
-    (`"__trystero_pw"`) fails the password scenario of both.
+    name with what each peer saw. A native peer that dies by a signal the
+    driver did not send, as a crash does, is named as soon as it dies
+    (`native#0: killed by SIGSEGV`), and every wait of its scenario ends. A
+    wire string changed in the C++ library (`"__trystero_pw"`) fails the
+    password scenario of both.
 
   ```
   b2 -a libs/trystero/test/oracle//oracle

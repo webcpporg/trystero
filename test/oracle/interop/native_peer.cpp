@@ -6,8 +6,9 @@
 //
 // The native C++ side of the interop test: the browser peer's behaviour (peer.cpp), as a process.
 // The driver (run.mjs) starts it with the room's parameters, reads one JSON event per line on
-// stdout, and writes "leave" on stdin to make it leave, or "replace" to move a room of another room
-// id over the joined one, with a receive of the joined room's pending. Diagnostics go to stderr.
+// stdout, and writes "leave" on stdin to make it leave, "replace" to move a room of another room
+// id over the joined one, with a receive of the joined room's pending, or "abort" to make it die
+// by a signal, as a crash does. Diagnostics go to stderr.
 // Its peer connections are bound to 127.0.0.1, so that it meets the other peers of this machine on
 // the loopback alone, with no network beyond it.
 //
@@ -27,6 +28,7 @@
 #include <boost/json.hpp>
 
 #include <unistd.h>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -199,7 +201,8 @@ int main(int argc, char* argv[]) {
                        });
     });
 
-    // "leave" on stdin: Trystero's farewell, then the process ends; "replace": a room moved over.
+    // "leave" on stdin: Trystero's farewell, then the process ends; "replace": a room moved over;
+    // "abort": SIGABRT, for the scenario that checks the driver names a peer killed by a signal.
     boost::asio::posix::stream_descriptor input(io, ::dup(STDIN_FILENO));
     boost::asio::streambuf line;
     std::function<void()> read_command = [&] {
@@ -210,6 +213,9 @@ int main(int argc, char* argv[]) {
                 }
                 const std::string command(static_cast<const char*>(line.data().data()), size);
                 line.consume(size);
+                if (command.starts_with("abort")) {
+                    std::abort();
+                }
                 if (command.starts_with("replace")) {
                     replace(room, room_of(io, backend, args, "-replaced"));
                 }

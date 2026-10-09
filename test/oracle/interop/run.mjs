@@ -200,6 +200,9 @@ const openPage = async (path, label) => {
 }
 
 // ---- the native peer: a process with the interface of a page -------------------------------------------------------
+// How many native peers died by a signal the driver did not send, so far, and before the scenario under way.
+let deaths = 0
+let deathsBefore = 0
 const openNative = (params, label) => {
     const args = Object.entries(params).flatMap(([k, v]) => [`--${k}`, String(v)])
     const child = spawn(nativePeer, args, {stdio: ['pipe', 'pipe', 'pipe']})
@@ -216,7 +219,16 @@ const openNative = (params, label) => {
         }
     })
     createInterface({input: child.stderr}).on('line', line => lines.push(line))
-    child.on('exit', code => code && code !== 143 && code !== null && problems.push(`${label}: exited with ${code}`))
+    // A signal other than the driver's own SIGTERM is a crash: named at once, and every wait of the scenario ends.
+    child.on('exit', (code, signal) => {
+        if (signal !== null && signal !== 'SIGTERM') {
+            problems.push(`${label}: killed by ${signal}`)
+            console.log(`  ${label} killed by ${signal}`)
+            ++deaths
+        } else if (code && code !== 143) {
+            problems.push(`${label}: exited with ${code}`)
+        }
+    })
     return {
         label,
         problems,
@@ -225,9 +237,10 @@ const openNative = (params, label) => {
         value: async () => undefined,
         leave: async () => child.stdin.write('leave\n'),
         replace: async () => child.stdin.write('replace\n'),
+        abort: async () => child.stdin.write('abort\n'),
         close: async () => {
             child.kill()
-            await new Promise(resolve => (child.exitCode !== null ? resolve() : child.on('exit', resolve)))
+            await exit(child)
         },
     }
 }
@@ -237,9 +250,11 @@ const checksum = bytes => bytes.reduce((sum, b, i) => (sum + b * (i + 1)) >>> 0,
 const fromCpp = {size: 100_000, checksum: checksum(new Uint8Array(100_000).map((_, i) => (i * 13) % 256)), metadata: '{"name":"from-cpp.bin"}'}
 const fromJs = {size: 100_000, checksum: checksum(new Uint8Array(100_000).map((_, i) => (i * 7) % 256)), metadata: '{"name":"from-js.bin"}'}
 
+// Waits for `condition` for at most `ms`, and no longer once a peer of the scenario died by a signal: what it waits for
+// may never come, and the death is the failure to name.
 const until = async (condition, ms) => {
     const end = Date.now() + ms
-    while (Date.now() < end) {
+    while (Date.now() < end && deaths === deathsBefore) {
         if (await condition()) return true
         await new Promise(r => setTimeout(r, 250))
     }
@@ -266,6 +281,7 @@ const ice = 'stun:127.0.0.1:9'
 
 const scenario = async (name, body) => {
     const started = Date.now()
+    deathsBefore = deaths
     const pages = []
     const open = async (kind, params) => {
         const all = {app: 'webcpp-trystero-interop', ice, ...params}
@@ -282,8 +298,9 @@ const scenario = async (name, body) => {
     } catch (error) {
         failure = String(error?.stack ?? error)
     }
+    // The peers' problems are named even when the scenario failed on its own: a crash is the reason it did.
     const problems = pages.flatMap(p => p.problems)
-    if (!failure && problems.length) failure = problems.join('\n')
+    if (problems.length) failure = [failure, ...problems].filter(Boolean).join('\n')
     const seconds = ((Date.now() - started) / 1000).toFixed(1)
     results.push({name, ok: !failure})
     console.log(`${failure ? 'FAIL' : 'pass'}  ${name}  (${seconds} s)`)
@@ -503,6 +520,22 @@ const scenarios = async () => {
                 const left = await until(async () => (await js.events()).some(e => e.kind === 'peer-leave') &&
                     (await native.events()).some(e => e.kind === 'pending' && e.error === 'room left'), 10_000)
                 return left ? null : 'the replaced room did not say goodbye, or its pending receive did not complete with room left'
+            })
+            // The driver's own check: a native peer that dies by a signal, as a crash does, is named at once, and its
+            // scenario does not wait for anything it would have done. The signal is expected here, so this scenario
+            // takes it off the peer's problems once it is named.
+            await scenario('A native C++ peer killed by a signal is named at once', async open => {
+                const native = await open('native', {room: room(), ...relayParams})
+                if (!(await until(async () => (await native.events()).some(e => e.kind === 'joined'), 10_000))) {
+                    return 'the native peer did not start'
+                }
+                const started = Date.now()
+                await native.abort()
+                const named = await until(async () => native.problems.includes(`${native.label}: killed by SIGABRT`), 10_000)
+                if (!named) return 'the driver did not name the signal that killed the native peer'
+                const seconds = (Date.now() - started) / 1000
+                native.problems.length = 0
+                return seconds < 5 ? null : `the driver named the signal only after ${seconds} s`
             })
             await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
                 const params = {room: room(), ...relayParams}
