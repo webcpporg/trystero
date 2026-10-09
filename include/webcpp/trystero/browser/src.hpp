@@ -10,8 +10,8 @@
 #include <webcpp/trystero/config.hpp>
 
 /**
- * What a browser program compiles once: the export JavaScript calls (`trystero_dispatch`). Include it in exactly one
- * source file of the program.
+ * What a browser program compiles once: the export JavaScript calls (`trystero_dispatch`). Include
+ * it in exactly one source file of the program.
  *
  * Tip: Boost.JSON's definitions are not here: a program links them from /webcpp//boost_json, which
  * /webcpp/trystero//trystero brings and which builds on emscripten as on every target.

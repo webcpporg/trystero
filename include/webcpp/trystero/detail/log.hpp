@@ -24,12 +24,13 @@
 namespace webcpp::trystero::detail {
 
 /**
- * A room's diagnostics: a category ("nostr", "signal", "webrtc", "room", "action") and a sentence, handed to the
- * application's `room_config::log`. The sentence is given as its parts (texts, integers, error codes), joined into a
- * string of the room's resource only when there is a sink: a room without one composes no text at all.
+ * A room's diagnostics: a category ("nostr", "signal", "webrtc", "room", "action") and a sentence,
+ * handed to the application's `room_config::log`. The sentence is given as its parts (texts,
+ * integers, error codes), joined into a string of the room's resource only when there is a sink: a
+ * room without one composes no text at all.
  *
- * Tip: every part of a room shares the one sink, through a `std::shared_ptr` made in the room's resource, so the sink
- * outlives a part that is still running when the room goes.
+ * Tip: every part of a room shares the one sink, through a `std::shared_ptr` made in the room's
+ * resource, so the sink outlives a part that is still running when the room goes.
  */
 class logger {
 public:
@@ -37,11 +38,13 @@ public:
 
     logger() noexcept = default;
 
-    /** Moves `s` into `memory`, where the sentences are composed too; an empty `s` makes a logger that composes none. */
+    /** Moves `s` into `memory`, where the sentences are composed too; an empty `s` makes a logger
+     * that composes none. */
     logger(sink s, std::pmr::memory_resource* memory) : memory_(memory) {
         if (s) {
             // The allocator constructs the sink with itself, which moves the target into `memory`.
-            sink_ = std::allocate_shared<sink>(std::pmr::polymorphic_allocator<>(memory), std::move(s));
+            sink_ =
+                std::allocate_shared<sink>(std::pmr::polymorphic_allocator<>(memory), std::move(s));
         }
     }
 
@@ -49,7 +52,8 @@ public:
 
     template <class... Parts>
     void operator()(std::string_view category, const Parts&... parts) const {
-        if (!sink_) return;
+        if (!sink_)
+            return;
         std::pmr::string text(memory_);
         (append(text, parts), ...);
         (*sink_)(category, text);
@@ -61,7 +65,8 @@ private:
         if constexpr (std::is_same_v<Part, boost::system::error_code>) {
             char buffer[128];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
             text += part.message(buffer, sizeof buffer);
-        } else if constexpr (std::is_integral_v<Part> && !std::is_same_v<Part, bool> && !std::is_same_v<Part, char>) {
+        } else if constexpr (std::is_integral_v<Part> && !std::is_same_v<Part, bool> &&
+                             !std::is_same_v<Part, char>) {
             char buffer[24];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
             const auto [end, ec] = std::to_chars(buffer, buffer + sizeof buffer, part);
             text.append(buffer, end);

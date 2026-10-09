@@ -34,23 +34,29 @@
 namespace webcpp::trystero::detail {
 
 /**
- * Trystero's Nostr strategy: one subscription per relay to the room's root and self topics, announcements on the
- * root topic at Trystero's cadence, and signals published on the relay that carried the message they answer.
+ * Trystero's Nostr strategy: one subscription per relay to the room's root and self topics,
+ * announcements on the root topic at Trystero's cadence, and signals published on the relay that
+ * carried the message they answer.
  *
- * | Rule                    | Value                                                                       |
- * | announce cadence        | at once, then after 233, 533, 1333 and 5333 ms, then every 60 s              |
- * | rate-limited relay      | skipped for 60 s, doubling to 15 min, while "rate-limited:" replies persist |
- * | terminal rejection      | "blocked:", "restricted:", "auth-required:" or "pow:" retires the relay     |
- * | reconnect               | after a random share of 3.3 s, doubling to 60 s                             |
+ * | Rule               | Value                                                                    |
+ * | announce cadence   | at once, then after 233, 533, 1333 and 5333 ms, then every 60 s          |
+ * | rate-limited relay | skipped for 60 s, doubling to 15 min, while "rate-limited:" replies      |
+ * |                    | persist                                                                  |
+ * | terminal rejection | "blocked:", "restricted:", "auth-required:" or "pow:" retires the relay  |
+ * | reconnect          | after a random share of 3.3 s, doubling to 60 s                          |
  */
 class nostr_strategy : public std::enable_shared_from_this<nostr_strategy> {
 public:
-    /** A message on one of the subscribed topics, with the index of the relay that carried it; views valid for the call. */
-    using message_handler = handler<void(std::size_t relay, std::string_view topic, std::string_view content)>;
+    /** A message on one of the subscribed topics, with the index of the relay that carried it;
+     * views valid for the call. */
+    using message_handler =
+        handler<void(std::size_t relay, std::string_view topic, std::string_view content)>;
 
-    /** Every allocation goes through `memory`, the parsed relay messages through `json`, a storage of that resource. */
-    nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls, std::pmr::vector<std::pmr::string> topics,
-                   std::string_view announce_topic, handler<std::pmr::string()> announcement, message_handler on_message, logger log,
+    /** Every allocation goes through `memory`, the parsed relay messages through `json`, a storage
+     * of that resource. */
+    nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls,
+                   std::pmr::vector<std::pmr::string> topics, std::string_view announce_topic,
+                   handler<std::pmr::string()> announcement, message_handler on_message, logger log,
                    std::pmr::memory_resource* memory, boost::json::storage_ptr json)
         : factory_(factory),
           memory_(memory),
@@ -65,18 +71,23 @@ public:
           seen_(memory),
           seen_order_(memory) {
         relays_.reserve(urls.size());
-        for (const auto& url : urls) relays_.emplace_back(url, memory);
+        for (const auto& url : urls)
+            relays_.emplace_back(url, memory);
     }
 
     void start() {
-        for (std::size_t i = 0; i < relays_.size(); ++i) connect(i);
+        for (std::size_t i = 0; i < relays_.size(); ++i)
+            connect(i);
     }
 
-    /** Publishes a signal to a peer's topic on one relay, unless that relay is closed or backing off; Trystero drops it too. */
+    /** Publishes a signal to a peer's topic on one relay, unless that relay is closed or backing
+     * off; Trystero drops it too. */
     void publish(std::size_t index, std::string_view topic, std::string_view content) {
-        if (index >= relays_.size()) return;
+        if (index >= relays_.size())
+            return;
         auto& r = relays_[index];
-        if (!r.open || backoff_remaining(r) > 0) return;
+        if (!r.open || backoff_remaining(r) > 0)
+            return;
         r.socket->send(event_for(topic, content));
     }
 
@@ -84,7 +95,8 @@ public:
     void restart_announcements() {
         for (std::size_t i = 0; i < relays_.size(); ++i) {
             relays_[i].announce_attempt = 0;
-            if (relays_[i].open) announce(i);
+            if (relays_[i].open)
+                announce(i);
         }
     }
 
@@ -96,7 +108,8 @@ public:
             r.announce_timer.reset();
             r.reconnect_timer.reset();
             if (r.socket) {
-                if (r.open) r.socket->send(protocol::nostr::close_message(r.subscription, memory_));
+                if (r.open)
+                    r.socket->send(protocol::nostr::close_message(r.subscription, memory_));
                 r.socket->close();
                 r.socket.reset();
             }
@@ -113,7 +126,8 @@ private:
     static constexpr std::size_t remembered_events = 4096;
 
     struct relay_state {
-        relay_state(std::string_view address, std::pmr::memory_resource* memory) : url(address, memory), subscription(memory) {}
+        relay_state(std::string_view address, std::pmr::memory_resource* memory)
+            : url(address, memory), subscription(memory) {}
 
         std::pmr::string url;
         std::shared_ptr<backend::websocket> socket;
@@ -129,55 +143,77 @@ private:
         std::shared_ptr<backend::timer> reconnect_timer;
     };
 
-    static std::optional<protocol::nostr::signer> make_signer(backend::factory& factory, std::pmr::memory_resource* memory) {
+    static std::optional<protocol::nostr::signer> make_signer(backend::factory& factory,
+                                                              std::pmr::memory_resource* memory) {
         std::array<std::uint8_t, 32> secret{};
         for (;;) {
             factory.random(secret);
-            if (auto s = protocol::nostr::signer::from_secret(secret, memory)) return s;
+            if (auto s = protocol::nostr::signer::from_secret(secret, memory))
+                return s;
         }
     }
 
-    std::pmr::polymorphic_allocator<> allocator() const { return std::pmr::polymorphic_allocator<>(memory_); }
+    std::pmr::polymorphic_allocator<> allocator() const {
+        return std::pmr::polymorphic_allocator<>(memory_);
+    }
 
     std::pmr::string make_subscription_id() {
         std::array<std::uint8_t, 64> random{};
         factory_.random(random);
         std::pmr::string id(random.size(), '0', memory_);
-        for (std::size_t i = 0; i < random.size(); ++i) id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
+        for (std::size_t i = 0; i < random.size(); ++i)
+            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
         return id;
     }
 
     std::pmr::string event_for(std::string_view topic, std::string_view content) {
         std::array<std::uint8_t, 32> aux{};
         factory_.random(aux);
-        return protocol::nostr::event_message(*signer_, factory_.unix_seconds(), topic, content, aux, memory_);
+        return protocol::nostr::event_message(*signer_, factory_.unix_seconds(), topic, content,
+                                              aux, memory_);
     }
 
-    double backoff_remaining(const relay_state& r) const { return std::max(0.0, r.backoff_until_ms - factory_.now_ms()); }
+    double backoff_remaining(const relay_state& r) const {
+        return std::max(0.0, r.backoff_until_ms - factory_.now_ms());
+    }
 
     void connect(std::size_t index) {
-        if (stopped_ || relays_[index].retired) return;
+        if (stopped_ || relays_[index].retired)
+            return;
         auto weak = weak_from_this();
         const auto a = allocator();
-        relays_[index].socket = factory_.connect(relays_[index].url,
-                                                 {
-                                                     .open = {std::allocator_arg, a, [weak, index] { if (auto self = weak.lock()) self->on_open(index); }},
-                                                     .message = {std::allocator_arg, a,
-                                                                 [weak, index](std::string_view text) {
-                                                                     if (auto self = weak.lock()) self->on_relay_message(index, text);
-                                                                 }},
-                                                     .close = {std::allocator_arg, a, [weak, index] { if (auto self = weak.lock()) self->on_close(index); }},
-                                                 },
-                                                 memory_);
+        relays_[index].socket =
+            factory_.connect(relays_[index].url,
+                             {
+                                 .open = {std::allocator_arg, a,
+                                          [weak, index] {
+                                              if (auto self = weak.lock())
+                                                  self->on_open(index);
+                                          }},
+                                 .message = {std::allocator_arg, a,
+                                             [weak, index](std::string_view text) {
+                                                 if (auto self = weak.lock())
+                                                     self->on_relay_message(index, text);
+                                             }},
+                                 .close = {std::allocator_arg, a,
+                                           [weak, index] {
+                                               if (auto self = weak.lock())
+                                                   self->on_close(index);
+                                           }},
+                             },
+                             memory_);
     }
 
     void on_open(std::size_t index) {
         auto& r = relays_[index];
         r.open = true;
         r.retry_ms = first_retry_ms;
-        if (r.subscription.empty()) r.subscription = make_subscription_id();
-        r.socket->send(protocol::nostr::subscribe_message(r.subscription, topics_, factory_.unix_seconds(), memory_));
-        log_("nostr", r.opened_before ? "reconnected to " : "connected to ", r.url, ", subscribed to the room's topics");
+        if (r.subscription.empty())
+            r.subscription = make_subscription_id();
+        r.socket->send(protocol::nostr::subscribe_message(r.subscription, topics_,
+                                                          factory_.unix_seconds(), memory_));
+        log_("nostr", r.opened_before ? "reconnected to " : "connected to ", r.url,
+             ", subscribed to the room's topics");
         r.opened_before = true;
         r.announce_attempt = 0;
         announce(index);
@@ -188,7 +224,8 @@ private:
         const bool was_open = r.open;
         r.open = false;
         r.announce_timer.reset();
-        if (stopped_ || r.retired) return;
+        if (stopped_ || r.retired)
+            return;
         log_("nostr", was_open ? "lost " : "could not reach ", r.url);
         std::array<std::uint8_t, 2> random{};
         factory_.random(random);
@@ -197,52 +234,70 @@ private:
         r.retry_ms = std::min(r.retry_ms * 2, max_retry_ms);
         r.reconnect_timer = factory_.make_timer(memory_);
         auto weak = weak_from_this();
-        r.reconnect_timer->start(delay, {std::allocator_arg, allocator(), [weak, index] { if (auto self = weak.lock()) self->connect(index); }});
+        r.reconnect_timer->start(delay, {std::allocator_arg, allocator(), [weak, index] {
+                                             if (auto self = weak.lock())
+                                                 self->connect(index);
+                                         }});
     }
 
     void announce(std::size_t index) {
         auto& r = relays_[index];
-        if (stopped_ || r.retired) return;
+        if (stopped_ || r.retired)
+            return;
         int next_ms = steady_announce_ms;
         if (const double remaining = backoff_remaining(r); !r.open || remaining > 0) {
             next_ms = std::max(steady_announce_ms, static_cast<int>(remaining));
         } else {
             r.socket->send(event_for(announce_topic_, announcement_()));
             const int attempt = r.announce_attempt++;
-            if (attempt < static_cast<int>(warmup_ms.size())) next_ms = warmup_ms[attempt];
+            if (attempt < static_cast<int>(warmup_ms.size()))
+                next_ms = warmup_ms[attempt];
         }
-        if (!r.announce_timer) r.announce_timer = factory_.make_timer(memory_);
+        if (!r.announce_timer)
+            r.announce_timer = factory_.make_timer(memory_);
         auto weak = weak_from_this();
         r.announce_timer->start(std::chrono::milliseconds(next_ms),
-                                {std::allocator_arg, allocator(), [weak, index] { if (auto self = weak.lock()) self->announce(index); }});
+                                {std::allocator_arg, allocator(), [weak, index] {
+                                     if (auto self = weak.lock())
+                                         self->announce(index);
+                                 }});
     }
 
     void back_off(relay_state& r) {
-        r.backoff_ms = r.backoff_ms == 0 ? steady_announce_ms : std::min(std::max<double>(steady_announce_ms, r.backoff_ms * 2), max_backoff_ms);
+        r.backoff_ms =
+            r.backoff_ms == 0
+                ? steady_announce_ms
+                : std::min(std::max<double>(steady_announce_ms, r.backoff_ms * 2), max_backoff_ms);
         r.backoff_until_ms = factory_.now_ms() + r.backoff_ms;
-        log_("nostr", r.url, " rate-limits us, pausing it for ", static_cast<int>(r.backoff_ms / 1000), " s");
+        log_("nostr", r.url, " rate-limits us, pausing it for ",
+             static_cast<int>(r.backoff_ms / 1000), " s");
     }
 
     static bool terminal(std::string_view reason) {
         for (std::string_view prefix : {"blocked:", "restricted:", "auth-required:", "pow:"}) {
-            if (reason.starts_with(prefix)) return true;
+            if (reason.starts_with(prefix))
+                return true;
         }
         return false;
     }
 
     void retire(std::size_t index, std::string_view reason) {
         auto& r = relays_[index];
-        if (r.retired) return;
+        if (r.retired)
+            return;
         r.retired = true;
         log_("nostr", "retiring ", r.url, ": ", reason);
         r.announce_timer.reset();
-        if (r.socket) r.socket->close();
+        if (r.socket)
+            r.socket->close();
     }
 
     /** Whether an event id is new; a relay may repeat one, and several relays carry the same. */
     bool remember(std::string_view id) {
-        if (id.empty()) return true;
-        if (seen_.contains(id)) return false;
+        if (id.empty())
+            return true;
+        if (seen_.contains(id))
+            return false;
         const auto& stored = seen_order_.emplace_back(id);  // made in the deque's resource
         seen_.insert(stored);
         if (seen_order_.size() > remembered_events) {
@@ -255,17 +310,23 @@ private:
     void on_relay_message(std::size_t index, std::string_view text) {
         boost::system::error_code ec;
         const auto document = protocol::json::parse(text, json_, ec);
-        if (ec) return;
+        if (ec)
+            return;
         const auto message = protocol::nostr::read_relay_message(document);
-        if (!message) return;
+        if (!message)
+            return;
         auto& r = relays_[index];
         if (const auto* e = std::get_if<protocol::nostr::event>(&*message)) {
-            if (e->subscription != r.subscription || e->topic.empty()) return;
-            if (std::find(topics_.begin(), topics_.end(), e->topic) == topics_.end() || !remember(e->id)) return;
+            if (e->subscription != r.subscription || e->topic.empty())
+                return;
+            if (std::find(topics_.begin(), topics_.end(), e->topic) == topics_.end() ||
+                !remember(e->id))
+                return;
             on_message_(index, e->topic, e->content);
         } else if (const auto* o = std::get_if<protocol::nostr::ok>(&*message)) {
             if (o->accepted) {
-                if (backoff_remaining(r) == 0) r.backoff_ms = 0;
+                if (backoff_remaining(r) == 0)
+                    r.backoff_ms = 0;
             } else if (o->reason.starts_with("rate-limited:")) {
                 back_off(r);
             } else if (terminal(o->reason)) {
@@ -278,7 +339,8 @@ private:
                 retire(index, c->reason);
                 return;
             }
-            if (c->reason.starts_with("rate-limited:")) back_off(r);
+            if (c->reason.starts_with("rate-limited:"))
+                back_off(r);
             log_("nostr", r.url, " closed our subscription: ", c->reason);
             resubscribe_later(index);
         } else if (const auto* n = std::get_if<protocol::nostr::notice>(&*message)) {
@@ -288,24 +350,32 @@ private:
 
     void resubscribe_later(std::size_t index) {
         auto& r = relays_[index];
-        if (!r.reconnect_timer) r.reconnect_timer = factory_.make_timer(memory_);
-        const auto delay = std::chrono::milliseconds(static_cast<long long>(std::max(backoff_remaining(r), 5333.0)));
+        if (!r.reconnect_timer)
+            r.reconnect_timer = factory_.make_timer(memory_);
+        const auto delay = std::chrono::milliseconds(
+            static_cast<long long>(std::max(backoff_remaining(r), 5333.0)));
         auto weak = weak_from_this();
-        r.reconnect_timer->start(delay, {std::allocator_arg, allocator(), [weak, index] {
-                                             auto self = weak.lock();
-                                             if (!self || self->stopped_) return;
-                                             auto& relay = self->relays_[index];
-                                             if (relay.open) {
-                                                 relay.socket->send(protocol::nostr::subscribe_message(relay.subscription, self->topics_,
-                                                                                                       self->factory_.unix_seconds(), self->memory_));
-                                             }
-                                         }});
+        r.reconnect_timer->start(delay,
+                                 {std::allocator_arg, allocator(), [weak, index] {
+                                      auto self = weak.lock();
+                                      if (!self || self->stopped_)
+                                          return;
+                                      auto& relay = self->relays_[index];
+                                      if (relay.open) {
+                                          relay.socket->send(protocol::nostr::subscribe_message(
+                                              relay.subscription, self->topics_,
+                                              self->factory_.unix_seconds(), self->memory_));
+                                      }
+                                  }});
     }
 
     /** Transparent hashing, so an id read as a view is looked up without building a string. */
     struct view_hash {
         using is_transparent = void;
-        std::size_t operator()(std::string_view s) const noexcept { return std::hash<std::string_view>{}(s); }
+
+        std::size_t operator()(std::string_view s) const noexcept {
+            return std::hash<std::string_view>{}(s);
+        }
     };
 
     backend::factory& factory_;
@@ -318,7 +388,8 @@ private:
     logger log_;
     std::optional<protocol::nostr::signer> signer_;
     std::pmr::vector<relay_state> relays_;
-    // The ids are owned by `seen_order_`, a deque, which never moves what it holds; `seen_` indexes them by view.
+    // The ids are owned by `seen_order_`, a deque, which never moves what it holds; `seen_` indexes
+    // them by view.
     std::pmr::unordered_set<std::string_view, view_hash, std::equal_to<>> seen_;
     std::pmr::deque<std::pmr::string> seen_order_;
     bool stopped_ = false;

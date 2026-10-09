@@ -23,12 +23,14 @@
 #include <string_view>
 
 /**
- * Reading and writing the protocol's JSON texts, with every allocation in the resource the caller gives. A text the
- * protocol writes is a fixed shape of a few strings and numbers, so it is appended field by field rather than built as
- * a boost::json::value, which would copy every string into a node of its own before serializing it again.
+ * Reading and writing the protocol's JSON texts, with every allocation in the resource the caller
+ * gives. A text the protocol writes is a fixed shape of a few strings and numbers, so it is
+ * appended field by field rather than built as a boost::json::value, which would copy every string
+ * into a node of its own before serializing it again.
  *
- * Tip: strings are escaped by Boost.JSON's serializer, so the bytes match what `boost::json::serialize` and
- * JavaScript's `JSON.stringify` write; a Nostr event id is a hash over exactly these bytes.
+ * Tip: strings are escaped by Boost.JSON's serializer, so the bytes match what
+ * `boost::json::serialize` and JavaScript's `JSON.stringify` write; a Nostr event id is a hash over
+ * exactly these bytes.
  */
 namespace webcpp::trystero::protocol::json {
 
@@ -48,8 +50,8 @@ inline void drain(boost::json::serializer& serializer, std::pmr::string& out) {
 /**
  * Appends `text` as a JSON string literal, quotes included.
  *
- * Tip: the serializer keeps where it stopped on a stack of its own when the text outgrows its buffer; that stack is
- * in `out`'s resource.
+ * Tip: the serializer keeps where it stopped on a stack of its own when the text outgrows its
+ * buffer; that stack is in `out`'s resource.
  */
 inline void append_string(std::pmr::string& out, std::string_view text) {
     json_resource resource(out.get_allocator().resource());
@@ -74,7 +76,8 @@ inline void append_integer(std::pmr::string& out, std::int64_t value) {
 
 /** Appends `"key":` with a leading comma unless it opens the object. */
 inline void append_key(std::pmr::string& out, std::string_view key) {
-    if (out.back() != '{') out += ',';
+    if (out.back() != '{')
+        out += ',';
     append_string(out, key);
     out += ':';
 }
@@ -82,14 +85,16 @@ inline void append_key(std::pmr::string& out, std::string_view key) {
 /**
  * Parses `text` into a value of `storage`, or sets `ec`.
  *
- * Tip: `boost::json::parse` keeps its temporaries in the default resource once they outgrow a buffer on the stack; this
- * parser keeps them in `storage` too.
+ * Tip: `boost::json::parse` keeps its temporaries in the default resource once they outgrow a
+ * buffer on the stack; this parser keeps them in `storage` too.
  */
-inline boost::json::value parse(std::string_view text, const boost::json::storage_ptr& storage, boost::system::error_code& ec) {
+inline boost::json::value parse(std::string_view text, const boost::json::storage_ptr& storage,
+                                boost::system::error_code& ec) {
     boost::json::parser parser(storage);
     parser.reset(storage);
     parser.write(text.data(), text.size(), ec);
-    if (ec) return boost::json::value(storage);
+    if (ec)
+        return boost::json::value(storage);
     return parser.release();
 }
 

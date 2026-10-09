@@ -9,8 +9,9 @@
 
 #include <webcpp/trystero/config.hpp>
 
-// libdatachannel reports errors by throwing, and the peer connection over it catches them: it exists only
-// with exceptions, and without them (WEBCPP_TRYSTERO_NO_EXCEPTIONS) this header declares nothing.
+// libdatachannel reports errors by throwing, and the peer connection over it catches them: it
+// exists only with exceptions, and without them (WEBCPP_TRYSTERO_NO_EXCEPTIONS) this header
+// declares nothing.
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
 #include <webcpp/trystero/backend.hpp>
@@ -37,69 +38,89 @@
 namespace webcpp::trystero::native {
 
 /**
- * A peer connection of libdatachannel, with its negotiation driven by the signaling: automatic negotiation is off, so
- * an offer or an answer exists only when `set_local_description` asks for one, as in the browser.
+ * A peer connection of libdatachannel, with its negotiation driven by the signaling: automatic
+ * negotiation is off, so an offer or an answer exists only when `set_local_description` asks for
+ * one, as in the browser.
  *
- * | libdatachannel                  | Here                                                            |
- * | events, on its own threads      | posted to the executor, through a weak reference               |
- * | exceptions on refused input     | `error::backend_failure`                                         |
- * | `Candidate`                     | the JSON of an `RTCIceCandidateInit`, as the browser writes it   |
+ * | libdatachannel              | Here                                                            |
+ * | events, on its own threads  | posted to the executor, through a weak reference                |
+ * | exceptions on refused input | `error::backend_failure`                                        |
+ * | `Candidate`                 | the JSON of an `RTCIceCandidateInit`, as the browser writes it  |
  *
- * Tip: the connection, its handlers and the texts it hands to the room are in the room's resource; libdatachannel's
- * own objects, and the `std::string` and `rtc::Description` its API takes and returns, are libdatachannel's.
+ * Tip: the connection, its handlers and the texts it hands to the room are in the room's resource;
+ * libdatachannel's own objects, and the `std::string` and `rtc::Description` its API takes and
+ * returns, are libdatachannel's.
  */
-class peer_connection : public backend::peer_connection, public std::enable_shared_from_this<peer_connection> {
+class peer_connection : public backend::peer_connection,
+                        public std::enable_shared_from_this<peer_connection> {
     struct private_tag {
         explicit private_tag() = default;
     };
 
 public:
-    using description_handler = handler<void(backend::error_code, std::string_view, std::string_view)>;
+    using description_handler =
+        handler<void(backend::error_code, std::string_view, std::string_view)>;
 
     /**
-     * Makes a peer connection that gathers through `servers`, bound to `bind_address` when it is not empty.
+     * Makes a peer connection that gathers through `servers`, bound to `bind_address` when it is
+     * not empty.
      *
-     * A connection that is not bound gathers a host candidate on each interface but the loopback, which ICE never
-     * offers (RFC 8445, 5.1.1.1); one bound to an address, as `"127.0.0.1"`, gathers on that address alone, which
-     * lets two peers of one machine connect with no other network.
+     * A connection that is not bound gathers a host candidate on each interface but the loopback,
+     * which ICE never offers (RFC 8445, 5.1.1.1); one bound to an address, as `"127.0.0.1"`,
+     * gathers on that address alone, which lets two peers of one machine connect with no other
+     * network.
      *
      * @param ex The executor every handler of the connection runs on.
      * @param servers The STUN and TURN servers it gathers through.
-     * @param bind_address The local address it binds to, as `"127.0.0.1"`; empty means every interface but the
-     * loopback.
+     * @param bind_address The local address it binds to, as `"127.0.0.1"`; empty means every
+     * interface but the loopback.
      * @param memory The resource the connection, its handlers and its texts are allocated in.
      * @return The new connection.
      */
-    static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex, std::span<const backend::ice_server> servers,
-                                                   std::string_view bind_address, std::pmr::memory_resource* memory) {
+    static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex,
+                                                   std::span<const backend::ice_server> servers,
+                                                   std::string_view bind_address,
+                                                   std::pmr::memory_resource* memory) {
         rtc::Configuration config;
         config.disableAutoNegotiation = true;
-        if (!bind_address.empty()) config.bindAddress = std::string(bind_address);
+        if (!bind_address.empty())
+            config.bindAddress = std::string(bind_address);
         for (const auto& server : servers) {
             for (const auto& url : server.urls) {
                 try {
-                    config.iceServers.emplace_back(with_credentials(url, server.username, server.credential));
-                } catch (...) {  // a URL libdatachannel cannot parse is skipped, as a browser skips an unusable server
+                    config.iceServers.emplace_back(
+                        with_credentials(url, server.username, server.credential));
+                } catch (...) {  // a URL libdatachannel cannot parse is skipped, as a browser skips
+                                 // an unusable server
                 }
             }
         }
         const std::pmr::polymorphic_allocator<> allocator(memory);
-        auto self = std::allocate_shared<peer_connection>(allocator, private_tag{}, std::move(ex),
-                                                          std::allocate_shared<rtc::PeerConnection>(allocator, config), memory);
+        auto self = std::allocate_shared<peer_connection>(
+            allocator, private_tag{}, std::move(ex),
+            std::allocate_shared<rtc::PeerConnection>(allocator, config), memory);
         self->start();
         return self;
     }
 
-    peer_connection(private_tag /*tag*/, boost::asio::any_io_executor ex, std::shared_ptr<rtc::PeerConnection> pc, std::pmr::memory_resource* memory)
-        : ex_(std::move(ex)), pc_(std::move(pc)), memory_(memory), json_(memory), pending_local_(memory) {}
+    peer_connection(private_tag /*tag*/, boost::asio::any_io_executor ex,
+                    std::shared_ptr<rtc::PeerConnection> pc, std::pmr::memory_resource* memory)
+        : ex_(std::move(ex)),
+          pc_(std::move(pc)),
+          memory_(memory),
+          json_(memory),
+          pending_local_(memory) {}
 
     ~peer_connection() override {
         pc_->resetCallbacks();
         pc_->close();
     }
 
-    /** The handlers, kept in a shared object so that one replacing them during its own call outlives the call. */
-    void set_handlers(handlers h) override { h_ = std::allocate_shared<handlers>(allocator(), std::move(h)); }
+    /** The handlers, kept in a shared object so that one replacing them during its own call
+     * outlives the call. */
+    void set_handlers(handlers h) override {
+        h_ = std::allocate_shared<handlers>(allocator(), std::move(h));
+    }
 
     std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
         return data_channel::create(ex_, pc_->createDataChannel(std::string(label)), memory_);
@@ -112,11 +133,14 @@ public:
         } catch (...) {
             auto failed = std::move(pending_local_.back());
             pending_local_.pop_back();
-            post([failed = std::move(failed)]() mutable { failed(make_error_code(error::backend_failure), {}, {}); });
+            post([failed = std::move(failed)]() mutable {
+                failed(make_error_code(error::backend_failure), {}, {});
+            });
         }
     }
 
-    void set_remote_description(std::string_view type, std::string_view sdp, handler<void(backend::error_code)> done) override {
+    void set_remote_description(std::string_view type, std::string_view sdp,
+                                handler<void(backend::error_code)> done) override {
         backend::error_code ec;
         try {
             pc_->setRemoteDescription(rtc::Description(std::string(sdp), std::string(type)));
@@ -126,19 +150,24 @@ public:
         post([done = std::move(done), ec]() mutable { done(ec); });
     }
 
-    void add_ice_candidate(std::string_view candidate_json, handler<void(backend::error_code)> done) override {
+    void add_ice_candidate(std::string_view candidate_json,
+                           handler<void(backend::error_code)> done) override {
         backend::error_code ec;
         boost::system::error_code parse_error;
-        const auto document = protocol::json::parse(candidate_json, boost::json::storage_ptr(&json_), parse_error);
+        const auto document =
+            protocol::json::parse(candidate_json, boost::json::storage_ptr(&json_), parse_error);
         const auto* object = parse_error ? nullptr : document.if_object();
         const auto* candidate = object != nullptr ? object->if_contains("candidate") : nullptr;
         const auto* mid = object != nullptr ? object->if_contains("sdpMid") : nullptr;
         if (candidate == nullptr || !candidate->is_string()) {
             ec = make_error_code(error::backend_failure);
-        } else if (!candidate->get_string().empty()) {  // an empty candidate marks the end of gathering
+        } else if (!candidate->get_string()
+                        .empty()) {  // an empty candidate marks the end of gathering
             try {
                 const std::string text(candidate->get_string());
-                const std::string mid_text = mid != nullptr && mid->is_string() ? std::string(mid->get_string()) : std::string("0");
+                const std::string mid_text = mid != nullptr && mid->is_string()
+                                                 ? std::string(mid->get_string())
+                                                 : std::string("0");
                 pc_->addRemoteCandidate(rtc::Candidate(text, mid_text));
             } catch (...) {
                 ec = make_error_code(error::backend_failure);
@@ -151,19 +180,30 @@ public:
 
     void close() override { pc_->close(); }
 
-    /** libdatachannel's own `rtc::PeerConnection`: what media will be added to (the documentation's roadmap). */
+    /** libdatachannel's own `rtc::PeerConnection`: what media will be added to (the documentation's
+     * roadmap). */
     const std::shared_ptr<rtc::PeerConnection>& native_handle() const { return pc_; }
 
 private:
-    std::pmr::polymorphic_allocator<> allocator() const { return std::pmr::polymorphic_allocator<>(memory_); }
+    std::pmr::polymorphic_allocator<> allocator() const {
+        return std::pmr::polymorphic_allocator<>(memory_);
+    }
 
-    /** "turn:host" with a username and credential becomes "turn:user:credential@host", the form libdatachannel parses. */
-    static std::string with_credentials(std::string_view url, std::string_view username, std::string_view credential) {
-        if (username.empty()) return std::string(url);
+    /** "turn:host" with a username and credential becomes "turn:user:credential@host", the form
+     * libdatachannel parses. */
+    static std::string with_credentials(std::string_view url, std::string_view username,
+                                        std::string_view credential) {
+        if (username.empty())
+            return std::string(url);
         const auto colon = url.find(':');
-        if (colon == std::string_view::npos) return std::string(url);
+        if (colon == std::string_view::npos)
+            return std::string(url);
         std::string out(url.substr(0, colon + 1));
-        out.append(username).append(":").append(credential).append("@").append(url.substr(colon + 1));
+        out.append(username)
+            .append(":")
+            .append(credential)
+            .append("@")
+            .append(url.substr(colon + 1));
         return out;
     }
 
@@ -179,7 +219,8 @@ private:
         pc_->onLocalDescription([weak, ex](rtc::Description description) {
             boost::asio::post(ex, [weak, description = std::move(description)] {
                 auto self = weak.lock();
-                if (!self || self->pending_local_.empty()) return;
+                if (!self || self->pending_local_.empty())
+                    return;
                 auto done = std::move(self->pending_local_.front());
                 self->pending_local_.pop_front();
                 done({}, description.typeString(), std::string(description));
@@ -188,9 +229,11 @@ private:
         pc_->onLocalCandidate([weak, ex](rtc::Candidate candidate) {
             boost::asio::post(ex, [weak, candidate = std::move(candidate)] {
                 auto self = weak.lock();
-                if (!self) return;
+                if (!self)
+                    return;
                 auto h = self->h_;
-                if (!h || !h->ice_candidate) return;
+                if (!h || !h->ice_candidate)
+                    return;
                 std::pmr::string json(R"({"candidate":)", self->memory_);
                 protocol::json::append_string(json, candidate.candidate());
                 json += R"(,"sdpMid":)";
@@ -202,15 +245,18 @@ private:
         pc_->onDataChannel([weak, ex](std::shared_ptr<rtc::DataChannel> channel) {
             boost::asio::post(ex, [weak, ex, channel = std::move(channel)]() mutable {
                 auto self = weak.lock();
-                if (!self) return;
+                if (!self)
+                    return;
                 auto wrapped = data_channel::create(ex, std::move(channel), self->memory_);
-                if (auto h = self->h_; h && h->data_channel) h->data_channel(std::move(wrapped));
+                if (auto h = self->h_; h && h->data_channel)
+                    h->data_channel(std::move(wrapped));
             });
         });
         pc_->onStateChange([weak, ex](rtc::PeerConnection::State state) {
             boost::asio::post(ex, [weak, state] {
                 if (auto self = weak.lock()) {
-                    if (auto h = self->h_; h && h->state) h->state(map(state));
+                    if (auto h = self->h_; h && h->state)
+                        h->state(map(state));
                 }
             });
         });

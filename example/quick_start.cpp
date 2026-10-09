@@ -4,9 +4,9 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// The quick start of the documentation (doc/trystero/quick_start.adoc), which includes the tagged regions below: a
-// browser program that joins a room, greets every peer that joins, prints what it receives, and echoes another action
-// from a coroutine.
+// The quick start of the documentation (doc/trystero/quick_start.adoc), which includes the tagged
+// regions below: a browser program that joins a room, greets every peer that joins, prints what it
+// receives, and echoes another action from a coroutine.
 
 // tag::includes[]
 #include <webcpp/trystero.hpp>
@@ -32,24 +32,26 @@ struct application {
     asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    trystero::room room{loop.get_executor(), backend,
-                        {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
+    trystero::room room{
+        loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
     trystero::action<std::string> chat = room.make_action<std::string>("chat");
     trystero::action<std::string> echo = room.make_action<std::string>("echo");
 };
+
 // end::application[]
 
 // tag::coroutine[]
 /** Answers every message of the "echo" action, one at a time. */
 asio::awaitable<void> echo_back(trystero::action<std::string>& echo) {
     for (;;) {
-        auto [ec, text, info] =
-            co_await echo.async_receive(asio::as_tuple(asio::use_awaitable));
-        if (ec) co_return;  // the room was left
+        auto [ec, text, info] = co_await echo.async_receive(asio::as_tuple(asio::use_awaitable));
+        if (ec)
+            co_return;  // the room was left
         co_await echo.async_send("echo: " + text, trystero::send_options{{info.from}, {}},
                                  asio::use_awaitable);
     }
 }
+
 // end::coroutine[]
 
 // tag::main[]
@@ -59,7 +61,8 @@ int main() {
     app->room.on_peer_join([app](std::string_view peer) {
         trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
         app->chat.async_send("hello", std::move(to_peer), [](boost::system::error_code ec) {
-            if (ec) std::cerr << "not delivered: " << ec.message() << '\n';
+            if (ec)
+                std::cerr << "not delivered: " << ec.message() << '\n';
         });
     });
     app->chat.on_message([](std::string text, const trystero::message_info& info) {
@@ -67,4 +70,5 @@ int main() {
     });
     asio::co_spawn(app->loop.get_executor(), echo_back(app->echo), asio::detached);
 }
+
 // end::main[]

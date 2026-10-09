@@ -21,7 +21,8 @@
 
 namespace webcpp::trystero::protocol {
 
-/** Trystero 0.26's default Nostr relays, in its order: the order is part of the relay derivation. */
+/** Trystero 0.26's default Nostr relays, in its order: the order is part of the relay derivation.
+ */
 inline constexpr std::array<std::string_view, 29> default_nostr_relays{
     "wss://0x-nostr-relay.fly.dev",
     "wss://bendernostur.duckdns.org:8443",
@@ -55,8 +56,9 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
 };
 
 /**
- * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks the same order.
- * Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
+ * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks
+ * the same order. Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures
+ * check it.
  */
 template <class Sequence>
 Sequence shuffle(Sequence items, double seed) {
@@ -73,13 +75,17 @@ Sequence shuffle(Sequence items, double seed) {
 }
 
 /**
- * The relays an app uses when it names none: the defaults shuffled by the app id, the first `redundancy` kept. The
- * views are into `defaults`.
+ * The relays an app uses when it names none: the defaults shuffled by the app id, the first
+ * `redundancy` kept. The views are into `defaults`.
  */
-inline std::pmr::vector<std::string_view> derive_relays(std::string_view app_id, std::span<const std::string_view> defaults, std::size_t redundancy,
-                                                        std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    auto shuffled = shuffle(std::pmr::vector<std::string_view>(defaults.begin(), defaults.end(), memory), str_to_num(app_id));
-    if (shuffled.size() > redundancy) shuffled.resize(redundancy);
+inline std::pmr::vector<std::string_view> derive_relays(
+    std::string_view app_id, std::span<const std::string_view> defaults, std::size_t redundancy,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    auto shuffled =
+        shuffle(std::pmr::vector<std::string_view>(defaults.begin(), defaults.end(), memory),
+                str_to_num(app_id));
+    if (shuffled.size() > redundancy)
+        shuffled.resize(redundancy);
     return shuffled;
 }
 

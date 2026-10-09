@@ -15,11 +15,11 @@
 #include <webcpp/trystero/native/sealer.hpp>
 #include <webcpp/trystero/native/websocket.hpp>
 
+#include <openssl/rand.h>
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/bind_allocator.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <openssl/rand.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -28,9 +28,10 @@
 #include <string>
 
 /**
- * The native target: the backend interface over libdatachannel for WebRTC, Boost.Beast for the relays' WebSockets,
- * OpenSSL for TLS and AES-GCM, and Asio for timers. Everything it reports runs on the executor it is given; the
- * application runs that executor's context, `io_context::run()` or otherwise.
+ * The native target: the backend interface over libdatachannel for WebRTC, Boost.Beast for the
+ * relays' WebSockets, OpenSSL for TLS and AES-GCM, and Asio for timers. Everything it reports runs
+ * on the executor it is given; the application runs that executor's context, `io_context::run()` or
+ * otherwise.
  */
 namespace webcpp::trystero::native {
 
@@ -42,10 +43,12 @@ public:
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
         timer_.expires_after(delay);
-        timer_.async_wait(boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
-                                                      [fire = std::move(fire)](boost::system::error_code ec) mutable {
-                                                          if (!ec) fire();
-                                                      }));
+        timer_.async_wait(boost::asio::bind_allocator(
+            std::pmr::polymorphic_allocator<>(memory_),
+            [fire = std::move(fire)](boost::system::error_code ec) mutable {
+                if (!ec)
+                    fire();
+            }));
     }
 
     void cancel() override { timer_.cancel(); }
@@ -56,16 +59,19 @@ private:
 };
 
 // The factory makes peer connections over libdatachannel, which need exceptions: without them
-// (WEBCPP_TRYSTERO_NO_EXCEPTIONS) it does not exist, and the timer, the sealer and the WebSockets remain.
+// (WEBCPP_TRYSTERO_NO_EXCEPTIONS) it does not exist, and the timer, the sealer and the WebSockets
+// remain.
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
-/** What a native backend makes its peer connections with, beside the room's `room_config::ice_servers`. */
+/** What a native backend makes its peer connections with, beside the room's
+ * `room_config::ice_servers`. */
 struct backend_config {
     /**
-     * The local address every peer connection binds to, as `"127.0.0.1"`; empty means every interface but the loopback.
+     * The local address every peer connection binds to, as `"127.0.0.1"`; empty means every
+     * interface but the loopback.
      *
-     * Bound to the loopback, the peers of one machine connect with no other network, which a test wants; a peer bound
-     * there reaches no other machine.
+     * Bound to the loopback, the peers of one machine connect with no other network, which a test
+     * wants; a peer bound there reaches no other machine.
      */
     std::pmr::string bind_address = {};
 };
@@ -80,42 +86,55 @@ public:
      * @param config What its peer connections are made with; the default binds them to no address.
      */
     explicit backend(boost::asio::any_io_executor ex, backend_config config = {})
-        : ex_(std::move(ex)), config_(std::move(config)), tls_(boost::asio::ssl::context::tls_client) {
+        : ex_(std::move(ex)),
+          config_(std::move(config)),
+          tls_(boost::asio::ssl::context::tls_client) {
         tls_.set_default_verify_paths();
         tls_.set_verify_mode(boost::asio::ssl::verify_peer);
     }
 
-    /** The TLS configuration of the relays' connections, for an application with authorities of its own. */
+    /** The TLS configuration of the relays' connections, for an application with authorities of its
+     * own. */
     boost::asio::ssl::context& tls_context() { return tls_; }
 
-    std::shared_ptr<trystero::backend::websocket> connect(std::string_view url, trystero::backend::websocket::handlers h,
-                                                          std::pmr::memory_resource* memory) override {
+    std::shared_ptr<trystero::backend::websocket> connect(
+        std::string_view url, trystero::backend::websocket::handlers h,
+        std::pmr::memory_resource* memory) override {
         return connect_websocket(ex_, tls_, url, std::move(h), memory);
     }
 
-    std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(std::span<const trystero::backend::ice_server> servers,
-                                                                             std::pmr::memory_resource* memory) override {
+    std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
+        std::span<const trystero::backend::ice_server> servers,
+        std::pmr::memory_resource* memory) override {
         return peer_connection::create(ex_, servers, config_.bind_address, memory);
     }
 
-    std::shared_ptr<trystero::backend::timer> make_timer(std::pmr::memory_resource* memory) override {
+    std::shared_ptr<trystero::backend::timer> make_timer(
+        std::pmr::memory_resource* memory) override {
         return std::allocate_shared<timer>(std::pmr::polymorphic_allocator<>(memory), ex_, memory);
     }
 
-    std::shared_ptr<trystero::backend::sealer> make_sealer(std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), ex_, key, memory);
+    std::shared_ptr<trystero::backend::sealer> make_sealer(
+        std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
+        return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), ex_, key,
+                                            memory);
     }
 
     void random(std::span<std::uint8_t> out) override {
-        if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1) std::abort();  // no secure randomness: nothing is safe
+        if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1)
+            std::abort();  // no secure randomness: nothing is safe
     }
 
     std::int64_t unix_seconds() override {
-        return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        return std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+            .count();
     }
 
     double now_ms() override {
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+            .count();
     }
 
 private:

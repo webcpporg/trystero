@@ -24,19 +24,23 @@
 #include <vector>
 
 /**
- * The seam between the room and a platform: what a target must provide for a room to run on it. The browser provides
- * it over `emscripten::val` (webcpp/trystero/browser), a native target over libdatachannel, Boost.Beast and OpenSSL
- * (webcpp/trystero/native), and the tests over memory (test/support).
+ * The seam between the room and a platform: what a target must provide for a room to run on it. The
+ * browser provides it over `emscripten::val` (webcpp/trystero/browser), a native target over
+ * libdatachannel, Boost.Beast and OpenSSL (webcpp/trystero/native), and the tests over memory
+ * (test/support).
  *
- * Tip: every handler a backend invokes runs on the room's executor, one at a time, and may destroy the object that
- * invoked it. A backend whose events arrive on other threads (libdatachannel) posts them there first.
+ * Tip: every handler a backend invokes runs on the room's executor, one at a time, and may destroy
+ * the object that invoked it. A backend whose events arrive on other threads (libdatachannel) posts
+ * them there first.
  *
- * Text crosses this interface as `std::string_view`, valid for the duration of the call or of the handler: a backend
- * reads what it is given before returning, and a handler copies what it keeps. The one exception is a data channel
- * message, handed over by value: the receiver keeps the frame, and taking ownership of it is what spares a copy.
+ * Text crosses this interface as `std::string_view`, valid for the duration of the call or of the
+ * handler: a backend reads what it is given before returning, and a handler copies what it keeps.
+ * The one exception is a data channel message, handed over by value: the receiver keeps the frame,
+ * and taking ownership of it is what spares a copy.
  *
- * Tip: every method that makes an object takes the room's memory resource last, and the backend allocates the object,
- * its handlers and what it hands to the room (a frame, a text) through it, on the room's executor only.
+ * Tip: every method that makes an object takes the room's memory resource last, and the backend
+ * allocates the object, its handlers and what it hands to the room (a frame, a text) through it, on
+ * the room's executor only.
  */
 namespace webcpp::trystero::backend {
 
@@ -50,7 +54,8 @@ struct ice_server {
     std::pmr::string credential;
 };
 
-/** A one-shot timer; starting it again replaces the pending expiry, and destroying it cancels it. */
+/** A one-shot timer; starting it again replaces the pending expiry, and destroying it cancels it.
+ */
 class timer {
 public:
     virtual ~timer() = default;
@@ -106,12 +111,15 @@ public:
     /** A data channel, made in the connection's resource. */
     virtual std::shared_ptr<data_channel> create_data_channel(std::string_view label) = 0;
     /**
-     * Creates the offer or the answer the signaling state calls for and applies it, like `setLocalDescription()`;
-     * `done` sees its type ("offer" or "answer") and SDP.
+     * Creates the offer or the answer the signaling state calls for and applies it, like
+     * `setLocalDescription()`; `done` sees its type ("offer" or "answer") and SDP.
      */
-    virtual void set_local_description(handler<void(error_code, std::string_view type, std::string_view sdp)> done) = 0;
-    virtual void set_remote_description(std::string_view type, std::string_view sdp, handler<void(error_code)> done) = 0;
-    virtual void add_ice_candidate(std::string_view candidate_json, handler<void(error_code)> done) = 0;
+    virtual void set_local_description(
+        handler<void(error_code, std::string_view type, std::string_view sdp)> done) = 0;
+    virtual void set_remote_description(std::string_view type, std::string_view sdp,
+                                        handler<void(error_code)> done) = 0;
+    virtual void add_ice_candidate(std::string_view candidate_json,
+                                   handler<void(error_code)> done) = 0;
     virtual bool has_remote_description() const = 0;
     virtual void close() = 0;
 };
@@ -120,19 +128,25 @@ public:
 class sealer {
 public:
     virtual ~sealer() = default;
-    virtual void seal(std::string_view plaintext, handler<void(error_code, std::string_view sealed)> done) = 0;
-    /** Completes with `trystero::error::wrong_password` when the text was sealed under another key. */
-    virtual void open(std::string_view sealed, handler<void(error_code, std::string_view plaintext)> done) = 0;
+    virtual void seal(std::string_view plaintext,
+                      handler<void(error_code, std::string_view sealed)> done) = 0;
+    /** Completes with `trystero::error::wrong_password` when the text was sealed under another key.
+     */
+    virtual void open(std::string_view sealed,
+                      handler<void(error_code, std::string_view plaintext)> done) = 0;
 };
 
 /** Makes everything above; one per page in the browser, one per test. */
 class factory {
 public:
     virtual ~factory() = default;
-    virtual std::shared_ptr<websocket> connect(std::string_view url, websocket::handlers h, std::pmr::memory_resource* memory) = 0;
-    virtual std::shared_ptr<peer_connection> make_peer_connection(std::span<const ice_server> servers, std::pmr::memory_resource* memory) = 0;
+    virtual std::shared_ptr<websocket> connect(std::string_view url, websocket::handlers h,
+                                               std::pmr::memory_resource* memory) = 0;
+    virtual std::shared_ptr<peer_connection> make_peer_connection(
+        std::span<const ice_server> servers, std::pmr::memory_resource* memory) = 0;
     virtual std::shared_ptr<timer> make_timer(std::pmr::memory_resource* memory) = 0;
-    virtual std::shared_ptr<sealer> make_sealer(std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) = 0;
+    virtual std::shared_ptr<sealer> make_sealer(std::array<std::uint8_t, 32> key,
+                                                std::pmr::memory_resource* memory) = 0;
     /** Bytes from a cryptographically secure source: they become secret keys and nonces. */
     virtual void random(std::span<std::uint8_t> out) = 0;
     /** Wall-clock seconds since the Unix epoch, for Nostr's `created_at` and `since`. */
