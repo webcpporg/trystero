@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -60,28 +61,40 @@ void post_in(boost::asio::io_context& io, std::pmr::memory_resource* memory, F&&
                                                       std::forward<F>(f)));
 }
 
+/** An Asio timer, as the native backend's: a wait cancelled, replaced or destroyed never fires,
+ * even when Asio had already queued its expiry. */
 class memory_timer : public backend::timer {
 public:
     memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1)
-        : timer_(io), memory_(memory), time_scale_(time_scale) {}
+        : timer_(io),
+          memory_(memory),
+          time_scale_(time_scale),
+          waits_(
+              std::allocate_shared<std::uint64_t>(std::pmr::polymorphic_allocator<>(memory), 0)) {}
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
+        const std::uint64_t wait = ++*waits_;
         timer_.expires_after(delay / time_scale_);
         timer_.async_wait(boost::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
-            [fire = std::move(fire)](boost::system::error_code ec) mutable {
-                if (!ec) {
+            [waits = std::weak_ptr<std::uint64_t>(waits_), wait,
+             fire = std::move(fire)](boost::system::error_code ec) mutable {
+                if (const auto current = waits.lock(); !ec && current && *current == wait) {
                     fire();
                 }
             }));
     }
 
-    void cancel() override { timer_.cancel(); }
+    void cancel() override {
+        ++*waits_;
+        timer_.cancel();
+    }
 
 private:
     boost::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
     int time_scale_;
+    std::shared_ptr<std::uint64_t> waits_;
 };
 
 class memory_websocket;
