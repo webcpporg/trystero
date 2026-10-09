@@ -33,6 +33,11 @@
  * the object that invoked it. A backend whose events arrive on other threads (libdatachannel) posts
  * them there first.
  *
+ * Every handler runs after the call that caused it has returned, never inside it: a completion
+ * (`done`) of a `peer_connection` or a `sealer`, and a `websocket`'s `close` when no socket can be
+ * made, are posted even when their result is known at once. The room calls these operations from
+ * inside handlers whose state a completion run there would change under them.
+ *
  * Text crosses this interface as `std::string_view`, valid for the duration of the call or of the
  * handler: a backend reads what it is given before returning, and a handler copies what it keeps.
  * The one exception is a data channel message, handed over by value: the receiver keeps the frame,

@@ -758,7 +758,9 @@ private:
     void decrypt(std::string_view sealed, done_handler done) {
         const auto parts = protocol::parse_sealed(sealed, memory_);
         if (!parts || parts->iv.empty()) {
-            done(make_error_code(error::wrong_password), {});
+            detail::defer(loop_, memory_, [done = std::move(done)]() mutable {
+                done(make_error_code(error::wrong_password), {});
+            });
             return;
         }
         const val promise = subtle().call<val>("decrypt", algorithm(parts->iv), key_,
@@ -777,9 +779,18 @@ private:
             memory_);
     }
 
+    /**
+     * Runs `op` once the key is imported, or has failed to be: after the call in every case, so
+     * that no completion runs inside the operation that started it.
+     */
     void wait_for_key(handler<void(sealer&, bool)> op) {
+        const std::weak_ptr<sealer> weak = shared_from_this();
         if (state_ == key_state::failed) {
-            op(*this, false);
+            detail::defer(loop_, memory_, [weak, op = std::move(op)]() mutable {
+                if (const auto self = weak.lock()) {
+                    op(*self, false);
+                }
+            });
             return;
         }
         waiting_.push_back(std::move(op));
@@ -787,14 +798,17 @@ private:
             return;
         }
         state_ = key_state::importing;
-        if (subtle().isUndefined()) {
-            key_imported(false, val::undefined());
-            return;  // not a secure context
+        if (subtle().isUndefined()) {  // not a secure context
+            detail::defer(loop_, memory_, [weak] {
+                if (const auto self = weak.lock()) {
+                    self->key_imported(false, val::undefined());
+                }
+            });
+            return;
         }
         val usages = val::array();
         usages.call<void>("push", val("encrypt"));
         usages.call<void>("push", val("decrypt"));
-        const std::weak_ptr<sealer> weak = shared_from_this();
         detail::then(loop_,
                      subtle().call<val>("importKey", val("raw"), detail::to_js(raw_key_),
                                         val("AES-GCM"), val(false), usages),
