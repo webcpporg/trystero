@@ -70,10 +70,11 @@ holds only what is specific to trystero.
   targets, without the network.
 - **The oracle and the interop tests, trystero's own lanes.**
   `test/oracle/` pins Trystero 0.26.0 (`trystero`, `@trystero-p2p/core` and
-  `@trystero-p2p/nostr`, with `ws` 8.18.3 for the local relay) in its
-  `package.json` and `package-lock.json`, which `webcpp.original node`
-  installs. Its `Jamfile` declares two own lanes. `oracle`, which names no
-  target: `oracle.mjs` runs Trystero's own functions over the inputs of
+  `@trystero-p2p/nostr`, with `ws` 8.22.0 and `@noble/secp256k1` 3.2.0 for
+  the local relay, which imports both) in its `package.json` and
+  `package-lock.json`, which `webcpp.original node` installs. Its `Jamfile`
+  declares two own lanes. `oracle`, which names no target: `oracle.mjs` runs
+  Trystero's own functions over the inputs of
   `test/fixtures/cases/protocol.json` and writes `expected.json`, which must
   equal `test/fixtures/expected/expected.json` byte for byte, the file the
   `protocol` and `native_sealer` tests read; `update-expected` is its only
