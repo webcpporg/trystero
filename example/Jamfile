@@ -1,0 +1,26 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+project : requirements <library>/webcpp/trystero//trystero ;
+
+import webcpp ;
+
+webcpp.targets native emscripten ;
+
+# Each needs the public relays or a browser, so it is linked and never run.
+# The native backend needs exceptions whatever the build asks: libdatachannel
+# reports errors by throwing.
+# tag::native[]
+webcpp.link native_quick_start : native_quick_start.cpp
+  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+# end::native[]
+# tag::browser[]
+webcpp.link quick_start : quick_start.cpp
+  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+# end::browser[]
+
+# The chat page, on emscripten: its program and the site it is served from.
+build-project chat ;

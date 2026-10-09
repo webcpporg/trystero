@@ -1,0 +1,46 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# A chat page whose room is C++. b2 toolset=emscripten
+# libs/trystero/example/chat//site copies the page and its program into
+# site/ of this directory's build directory, out of the tree, and prints
+# that directory, for any static server on localhost.
+
+project : requirements <library>/webcpp/trystero//trystero ;
+
+import notfile ;
+import path ;
+import project ;
+import webcpp ;
+
+webcpp.targets emscripten ;
+
+path-constant HERE : . ;
+
+webcpp.link chat : chat.cpp
+  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+
+local current = [ project.current ] ;
+.site = [ path.native [ path.join [ path.root [ $(current).build-dir ] [ path.pwd ] ]
+    site ] ] ;
+
+rule site ( targets * : sources * : properties * )
+{
+    SITE on $(targets) = $(.site) ;
+}
+
+# A copy action rather than install, which knows chat-program.js but not the
+# chat-program.wasm em++ writes beside it.
+actions site
+{
+    set -e
+    mkdir -p "$(SITE)"
+    cp "$(>[1])" "`dirname "$(>[1])"`/chat-program.wasm" "$(HERE)/index.html" "$(SITE)/"
+    echo "$(SITE)"
+}
+
+notfile site : @$(__name__).site : chat-program ;
+explicit site ;

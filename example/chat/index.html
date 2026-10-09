@@ -1,0 +1,126 @@
+<!--
+Copyright (c) 2026 WebCpp.org
+
+Distributed under the Boost Software License, Version 1.0. (See
+accompanying file LICENSE_1_0.txt or copy at
+https://www.boost.org/LICENSE_1_0.txt)
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trystero chat</title>
+<style>
+:root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e3e6ec;
+    --accent: #3b5bdb; --accent-text: #ffffff; --mine: #e7ecff; --theirs: #f0f2f5;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #12151b; --panel: #1a1e26; --text: #e6e9ef; --muted: #8b93a5; --line: #2a303b;
+        --accent: #6c8cff; --accent-text: #0d1020; --mine: #23305a; --theirs: #232833;
+    }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px; display: grid; gap: 16px; }
+h1 { font-size: 20px; margin: 0; }
+.lead { margin: 4px 0 0; color: var(--muted); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+form { display: flex; gap: 8px; flex-wrap: wrap; }
+input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input { flex: 1 1 160px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+button { padding: 10px 16px; border: 0; border-radius: 8px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.status { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.status code { color: var(--text); }
+#messages { height: 46vh; min-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+.bubble { max-width: 80%; padding: 8px 12px; border-radius: 12px; background: var(--theirs); overflow-wrap: anywhere; }
+.bubble.mine { align-self: flex-end; background: var(--mine); }
+.bubble .who { display: block; font-size: 12px; color: var(--muted); }
+.notice { align-self: center; margin: 2px 0; font-size: 12px; color: var(--muted); }
+details { color: var(--muted); font-size: 12px; }
+#log { max-height: 220px; overflow: auto; margin: 8px 0 0; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>trystero chat</h1>
+        <p class="lead">The room runs in C++ compiled to WebAssembly and meets its peers over public Nostr relays. Trystero JS peers with the same app and room join the same chat.</p>
+    </header>
+    <section class="panel">
+        <form id="join-form">
+            <input id="app" value="webcpp-trystero-chat" aria-label="App id">
+            <input id="room" value="lobby" aria-label="Room id">
+            <button id="join" disabled>Join</button>
+        </form>
+    </section>
+    <section class="panel">
+        <div class="status"><span id="who">Not in a room yet.</span><span id="peers">0 peers</span></div>
+        <div id="messages" aria-live="polite"></div>
+        <form id="send-form">
+            <input id="text" placeholder="Write a message" autocomplete="off" aria-label="Message" disabled>
+            <button id="send" disabled>Send</button>
+        </form>
+    </section>
+    <details><summary>Diagnostics</summary><pre id="log"></pre></details>
+</main>
+<script>
+const $ = id => document.getElementById(id)
+const peers = new Set()
+const short = id => id.slice(0, 6)
+const add = (node) => {
+    $('messages').append(node)
+    $('messages').scrollTop = $('messages').scrollHeight
+}
+const notice = text => {
+    const p = document.createElement('p')
+    p.className = 'notice'
+    p.textContent = text
+    add(p)
+}
+const showPeers = () => ($('peers').textContent = peers.size === 1 ? '1 peer' : `${peers.size} peers`)
+window.chatUi = {
+    joined: (self, room) => {
+        $('who').innerHTML = ''
+        const code = text => Object.assign(document.createElement('code'), {textContent: text})
+        $('who').append('You are ', code(short(self)), ' in room ', code(room))
+        for (const id of ['app', 'room', 'join']) $(id).disabled = true
+        for (const id of ['text', 'send']) $(id).disabled = false
+        $('text').focus()
+        notice('Looking for peers…')
+    },
+    peerJoined: peer => {
+        peers.add(peer)
+        showPeers()
+        notice(`${short(peer)} joined`)
+    },
+    peerLeft: peer => {
+        peers.delete(peer)
+        showPeers()
+        notice(`${short(peer)} left`)
+    },
+    message: (from, text, mine) => {
+        const div = document.createElement('div')
+        div.className = mine ? 'bubble mine' : 'bubble'
+        div.append(Object.assign(document.createElement('span'), {className: 'who', textContent: mine ? 'you' : short(from)}), text)
+        add(div)
+    },
+    log: (category, text) => $('log').append(`${category}: ${text}\n`),
+}
+var Module = {onRuntimeInitialized: () => ($('join').disabled = false)}
+$('join-form').onsubmit = event => {
+    event.preventDefault()
+    Module.join($('app').value.trim(), $('room').value.trim())
+}
+$('send-form').onsubmit = event => {
+    event.preventDefault()
+    Module.send($('text').value)
+    $('text').value = ''
+}
+</script>
+<script src="chat-program.js"></script>
+</body>
+</html>

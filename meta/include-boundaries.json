@@ -1,0 +1,20 @@
+{
+    "boundaries": [
+        {
+            "headers": [
+                "include/webcpp/trystero.hpp",
+                "include/webcpp/trystero/*.hpp",
+                "include/webcpp/trystero/protocol/*.hpp",
+                "include/webcpp/trystero/detail/*.hpp"
+            ],
+            "must-not-include": [
+                "webcpp/trystero/native",
+                "webcpp/trystero/browser",
+                "rtc/",
+                "emscripten/",
+                "openssl/"
+            ],
+            "why": "the core builds on both targets, without libdatachannel, OpenSSL or Emscripten"
+        }
+    ]
+}

@@ -1,0 +1,16 @@
+{
+    "key": "trystero",
+    "name": "trystero",
+    "authors": ["R"],
+    "description": "Serverless WebRTC rooms for C++20, wire compatible with Trystero.",
+    "category": ["Concurrent", "IO"],
+    "maintainers": ["R <github.overboard312@passmail.net>"],
+    "cxxstd": "20",
+    "port-of": {
+        "name": "Trystero",
+        "language": "JavaScript",
+        "version": "0.26.0",
+        "url": "https://github.com/dmotz/trystero",
+        "licence": "MIT"
+    }
+}

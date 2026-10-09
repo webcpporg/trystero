@@ -1,0 +1,28 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+project : requirements <library>/webcpp/trystero//trystero ;
+
+import webcpp ;
+
+webcpp.targets native emscripten ;
+
+# The headers that build on both targets, the native backend's, against
+# libdatachannel and OpenSSL, and the browser backend's, on emscripten. The
+# native backend needs exceptions whatever the build asks: libdatachannel
+# reports errors by throwing.
+webcpp.headers-alone trystero : ../include
+  : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
+webcpp.headers-alone trystero : ../include : trystero/native/*.hpp
+  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
+
+# config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when the build has
+# no exceptions, and keeps it when a developer defines it in a build that
+# has them.
+webcpp.compile config : config_test.cpp ;
+webcpp.compile config_developer_defined : config_test.cpp
+  : <define>WEBCPP_TRYSTERO_NO_EXCEPTIONS <define>WEBCPP_TEST_TRYSTERO_DEVELOPER_DEFINED ;

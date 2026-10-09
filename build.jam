@@ -1,0 +1,87 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# trystero, serverless WebRTC rooms, wire compatible with Trystero. A program
+# uses /webcpp/trystero//trystero, the rooms and the browser backend, or
+# /webcpp/trystero//native for the native backend.
+
+project /webcpp/trystero ;
+
+# libsecp256k1, libdatachannel and OpenSSL are found where SECP256K1_ROOT,
+# SECP256K1_EMSCRIPTEN_ROOT, LIBDATACHANNEL_ROOT and OPENSSL_ROOT say, until
+# webcpp builds them from third_party/; a variable that is not set leaves
+# the library to the compiler's default search path.
+import errors ;
+import os ;
+import path ;
+
+local secp256k1-root = [ os.environ SECP256K1_ROOT ] ;
+local secp256k1-emscripten-root = [ os.environ SECP256K1_EMSCRIPTEN_ROOT ] ;
+local libdatachannel-root = [ os.environ LIBDATACHANNEL_ROOT ] ;
+local openssl-root = [ os.environ OPENSSL_ROOT ] ;
+lib secp256k1 : : <name>secp256k1 <toolset>emscripten <search>$(secp256k1-emscripten-root)/lib
+  : : <include>$(secp256k1-emscripten-root)/include ;
+lib secp256k1 : : <name>secp256k1 <search>$(secp256k1-root)/lib
+  : : <include>$(secp256k1-root)/include ;
+lib datachannel : : <name>datachannel <search>$(libdatachannel-root)/lib
+  : : <include>$(libdatachannel-root)/include <dll-path>$(libdatachannel-root)/lib ;
+lib ssl : : <name>ssl <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
+lib crypto : : <name>crypto <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
+
+# Stops the build, naming the variable, when it is set and its directory
+# does not hold the header of its library.
+local rule check-root ( variable : header )
+{
+    local root = [ os.environ $(variable) ] ;
+    local directory = [ path.make $(root) ] ;
+    if $(root) && ! [ path.exists $(directory)/include/$(header) ]
+    {
+        errors.user-error "$(variable)=$(root) holds no include/$(header): set it to"
+            "the directory of the library's include/ and lib/, or unset it to leave"
+            "the library to the compiler's default search path." ;
+    }
+}
+
+# The dependencies of the rooms: libsecp256k1, the emscripten build of it on
+# emscripten. Checked only when a target that uses trystero is built.
+rule trystero-dependencies ( properties * )
+{
+    if <toolset>emscripten in $(properties)
+    {
+        check-root SECP256K1_EMSCRIPTEN_ROOT : secp256k1.h ;
+    }
+    else
+    {
+        check-root SECP256K1_ROOT : secp256k1.h ;
+    }
+}
+
+# The native backend's own dependencies, checked only when a target that
+# uses it is built.
+rule native-dependencies ( properties * )
+{
+    check-root LIBDATACHANNEL_ROOT : rtc/rtc.hpp ;
+    check-root OPENSSL_ROOT : openssl/ssl.h ;
+}
+
+# On emscripten, the browser has no threads (the event loop drives Asio), and
+# the browser backend reaches the page through embind: -lembind, what b2's
+# <embind>on links, which as a usage requirement it would drop (measured: a
+# program then fails to link, undefined _embind_register_function), since
+# b2 takes only free features from usage requirements.
+alias trystero : : <conditional>@trystero-dependencies
+  : : <include>include <library>/boost//headers <library>/webcpp//boost_json
+  <library>secp256k1
+  <toolset>emscripten:<define>BOOST_ASIO_DISABLE_THREADS
+  <toolset>emscripten:<linkflags>-lembind ;
+
+# The native backend needs exceptions: libdatachannel reports errors by
+# throwing, and data_channel.hpp and peer_connection.hpp catch them. Each
+# headers-alone call, test and program of it declares
+# <exception-handling>on itself, since b2 lets no usage requirement override
+# a build's exception-handling=off.
+alias native : : <conditional>@native-dependencies
+  : : <library>trystero <library>datachannel <library>ssl <library>crypto ;
