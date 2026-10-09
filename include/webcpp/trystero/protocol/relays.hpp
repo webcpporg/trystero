@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cmath>
+#include <memory_resource>
 #include <span>
 #include <string>
 #include <string_view>
@@ -57,8 +58,8 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
  * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks the same order.
  * Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
  */
-template <class T>
-std::vector<T> shuffle(std::vector<T> items, double seed) {
+template <class Sequence>
+Sequence shuffle(Sequence items, double seed) {
     auto rand = [&seed] {
         const double x = std::sin(seed++) * 10000;
         return x - std::floor(x);
@@ -75,8 +76,9 @@ std::vector<T> shuffle(std::vector<T> items, double seed) {
  * The relays an app uses when it names none: the defaults shuffled by the app id, the first `redundancy` kept. The
  * views are into `defaults`.
  */
-inline std::vector<std::string_view> derive_relays(std::string_view app_id, std::span<const std::string_view> defaults, std::size_t redundancy) {
-    auto shuffled = shuffle(std::vector<std::string_view>(defaults.begin(), defaults.end()), str_to_num(app_id));
+inline std::pmr::vector<std::string_view> derive_relays(std::string_view app_id, std::span<const std::string_view> defaults, std::size_t redundancy,
+                                                        std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    auto shuffled = shuffle(std::pmr::vector<std::string_view>(defaults.begin(), defaults.end(), memory), str_to_num(app_id));
     if (shuffled.size() > redundancy) shuffled.resize(redundancy);
     return shuffled;
 }

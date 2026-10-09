@@ -43,3 +43,9 @@ webcpp.run native_peer_connection : native_peer_connection_test.cpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
 webcpp.run native_room : native_room_test.cpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
+
+# Every allocation of two rooms that exchange a payload goes through the
+# resources of their configurations, and the global operator new and the C
+# library's allocation functions see none. Its two counting resources hold
+# 64 MiB each, beyond Emscripten's 16 MiB unless the memory grows.
+webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;

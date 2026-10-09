@@ -74,12 +74,12 @@ int main(int argc, char** argv) {
         relays = comma == std::string_view::npos ? std::string_view() : relays.substr(comma + 1);
     }
     if (!args["ice"].empty())
-        config.ice_servers.push_back({{args["ice"]}, {}, {}});
+        config.ice_servers.push_back({{std::pmr::string(args["ice"])}, {}, {}});
     config.log = [](std::string_view category, std::string_view text) {
         std::cerr << category << ": " << text << std::endl;
     };
 
-    trystero::room room(io.get_executor(), backend, config, args["room"]);
+    trystero::room room(io.get_executor(), backend, std::move(config), args["room"]);
     boost::json::array relays;
     for (const auto& url : room.relay_urls())
         relays.emplace_back(url);

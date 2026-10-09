@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,8 +44,9 @@ public:
           relays_(relays) {}
 
     std::shared_ptr<trystero::backend::websocket> connect(
-        std::string_view url, trystero::backend::websocket::handlers h) override {
-        return relays_.connect(url, std::move(h));
+        std::string_view url, trystero::backend::websocket::handlers h,
+        std::pmr::memory_resource* memory) override {
+        return relays_.connect(url, std::move(h), memory);
     }
 
 private:

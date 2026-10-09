@@ -57,7 +57,7 @@ int main() {
     auto* app = new application;  // a page's program lives as long as the tab
 
     app->room.on_peer_join([app](std::string_view peer) {
-        trystero::send_options to_peer{{std::string(peer)}, {}};
+        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
         app->chat.async_send("hello", std::move(to_peer), [](boost::system::error_code ec) {
             if (ec) std::cerr << "not delivered: " << ec.message() << '\n';
         });

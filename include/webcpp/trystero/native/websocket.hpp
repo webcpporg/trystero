@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/handler.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
 #include <boost/asio/as_tuple.hpp>
@@ -28,6 +29,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -39,14 +41,14 @@ namespace detail {
 
 struct url_parts {
     bool secure = false;
-    std::string host;
-    std::string port;
-    std::string target;
+    std::pmr::string host;
+    std::pmr::string port;
+    std::pmr::string target;
 };
 
-/** The parts of a `ws://` or `wss://` URL; nothing for any other scheme or without a host. */
-inline std::optional<url_parts> parse_url(std::string_view url) {
-    url_parts out;
+/** The parts of a `ws://` or `wss://` URL, in `memory`; nothing for any other scheme or without a host. */
+inline std::optional<url_parts> parse_url(std::string_view url, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    url_parts out{false, std::pmr::string(memory), std::pmr::string(memory), std::pmr::string(memory)};
     if (url.starts_with("wss://")) {
         out.secure = true;
         url.remove_prefix(6);
@@ -57,12 +59,12 @@ inline std::optional<url_parts> parse_url(std::string_view url) {
     }
     const auto slash = url.find_first_of("/?");
     const auto authority = url.substr(0, slash);
-    out.target = slash == std::string_view::npos ? "/" : std::string(url.substr(slash));
+    out.target = slash == std::string_view::npos ? std::string_view("/") : url.substr(slash);
     if (out.target.front() == '?') out.target.insert(out.target.begin(), '/');
     const auto colon = authority.rfind(':');
     const bool has_port = colon != std::string_view::npos && authority.find(']', colon) == std::string_view::npos;
-    out.host = std::string(authority.substr(0, has_port ? colon : authority.size()));
-    out.port = has_port ? std::string(authority.substr(colon + 1)) : std::string(out.secure ? "443" : "80");
+    out.host = authority.substr(0, has_port ? colon : authority.size());
+    out.port = has_port ? authority.substr(colon + 1) : std::string_view(out.secure ? "443" : "80");
     if (out.host.empty() || out.port.empty()) return std::nullopt;
     return out;
 }
@@ -71,6 +73,9 @@ inline std::optional<url_parts> parse_url(std::string_view url) {
  * One WebSocket connection, run by a coroutine that owns it until the connection ends: connect, TLS for `wss`, the
  * handshake, then a read loop handing each message to the handler as a view of the read buffer. Writes are queued,
  * one in flight at a time, as Beast requires.
+ *
+ * Tip: the session, its handlers and its queued texts are in the room's resource; Boost.Beast's stream state, the
+ * resolver's results and the coroutines' frames are Beast's and Asio's.
  */
 template <bool Secure>
 class websocket_session : public std::enable_shared_from_this<websocket_session<Secure>> {
@@ -79,8 +84,15 @@ public:
     using next_layer = std::conditional_t<Secure, boost::asio::ssl::stream<boost::beast::tcp_stream>, boost::beast::tcp_stream>;
     using stream_type = boost::beast::websocket::stream<next_layer>;
 
-    websocket_session(boost::asio::any_io_executor ex, boost::asio::ssl::context& tls, url_parts url, backend::websocket::handlers h)
-        : ex_(ex), resolver_(ex), ws_(make_stream(ex, tls)), url_(std::move(url)), h_(std::move(h)) {}
+    websocket_session(boost::asio::any_io_executor ex, boost::asio::ssl::context& tls, url_parts url, backend::websocket::handlers h,
+                      std::pmr::memory_resource* memory)
+        : ex_(ex),
+          resolver_(ex),
+          ws_(make_stream(ex, tls)),
+          url_(std::move(url)),
+          memory_(memory),
+          h_(std::allocate_shared<backend::websocket::handlers>(std::pmr::polymorphic_allocator<>(memory), std::move(h))),
+          queue_(memory) {}
 
     void start() {
         boost::asio::co_spawn(ex_, [self = this->shared_from_this()] { return self->run(); }, boost::asio::detached);
@@ -108,7 +120,7 @@ public:
 
     /** The owner let go: nothing is reported any more, and the connection is dropped. */
     void abandon() {
-        h_ = {};
+        h_.reset();
         closing_ = true;
         boost::beast::get_lowest_layer(ws_).close();
     }
@@ -135,25 +147,26 @@ private:
         if constexpr (Secure) {
             auto& tls = ws_.next_layer();
             if (SSL_set_tlsext_host_name(tls.native_handle(), url_.host.c_str()) != 1) co_return end();  // SNI
-            tls.set_verify_callback(boost::asio::ssl::host_name_verification(url_.host));
+            tls.set_verify_callback(boost::asio::ssl::host_name_verification(std::string(url_.host)));  // Asio's, a std::string
             auto [tls_error] = co_await tls.async_handshake(boost::asio::ssl::stream_base::client, as_tuple(use_awaitable));
             if (tls_error || closing_) co_return end();
         }
         lowest.expires_never();
         ws_.set_option(boost::beast::websocket::stream_base::timeout::suggested(boost::beast::role_type::client));
         const bool default_port = url_.port == (Secure ? "443" : "80");
-        const std::string host = default_port ? url_.host : url_.host + ":" + url_.port;
+        std::pmr::string host(url_.host, memory_);
+        if (!default_port) host.append(":").append(url_.port);
         auto [handshake_error] = co_await ws_.async_handshake(host, url_.target, as_tuple(use_awaitable));
         if (handshake_error || closing_) co_return end();
         open_ = true;
-        if (auto f = h_.open) f();
+        if (auto h = h_; h && h->open) h->open();
         boost::beast::flat_buffer buffer;
         while (!closing_) {
             auto [read_error, size] = co_await ws_.async_read(buffer, as_tuple(use_awaitable));
             if (read_error) break;
-            if (auto f = h_.message) {
+            if (auto h = h_; h && h->message) {
                 const auto data = buffer.cdata();
-                f(std::string_view(static_cast<const char*>(data.data()), size));
+                h->message(std::string_view(static_cast<const char*>(data.data()), size));
             }
             buffer.consume(buffer.size());
         }
@@ -174,15 +187,19 @@ private:
         if (std::exchange(ended_, true)) return;
         open_ = false;
         queue_.clear();
-        if (auto f = std::exchange(h_.close, {})) f();
+        if (auto h = h_) {
+            if (auto f = std::exchange(h->close, {})) f();
+        }
     }
 
     boost::asio::any_io_executor ex_;
     tcp::resolver resolver_;
     stream_type ws_;
     url_parts url_;
-    backend::websocket::handlers h_;
-    std::deque<std::string> queue_;
+    std::pmr::memory_resource* memory_;
+    // Shared so that a handler that destroys the connection's owner during its own call outlives the call.
+    std::shared_ptr<backend::websocket::handlers> h_;
+    std::pmr::deque<std::pmr::string> queue_;
     bool open_ = false;
     bool writing_ = false;
     bool closing_ = false;
@@ -209,17 +226,19 @@ private:
  * the connection and should verify peers. A URL it cannot parse reports a close, as an unreachable relay does.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(boost::asio::any_io_executor ex, boost::asio::ssl::context& tls, std::string_view url,
-                                                            backend::websocket::handlers h) {
-    auto parts = detail::parse_url(url);
-    if (!parts) parts = detail::url_parts{false, "", "", ""};
+                                                            backend::websocket::handlers h,
+                                                            std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    auto parts = detail::parse_url(url, memory);
+    if (!parts) parts = detail::url_parts{false, std::pmr::string(memory), std::pmr::string(memory), std::pmr::string(memory)};
+    const std::pmr::polymorphic_allocator<> allocator(memory);
     if (parts->secure) {
-        auto session = std::make_shared<detail::websocket_session<true>>(ex, tls, std::move(*parts), std::move(h));
+        auto session = std::allocate_shared<detail::websocket_session<true>>(allocator, ex, tls, std::move(*parts), std::move(h), memory);
         session->start();
-        return std::make_shared<detail::websocket_handle<true>>(std::move(session));
+        return std::allocate_shared<detail::websocket_handle<true>>(allocator, std::move(session));
     }
-    auto session = std::make_shared<detail::websocket_session<false>>(ex, tls, std::move(*parts), std::move(h));
+    auto session = std::allocate_shared<detail::websocket_session<false>>(allocator, ex, tls, std::move(*parts), std::move(h), memory);
     session->start();
-    return std::make_shared<detail::websocket_handle<false>>(std::move(session));
+    return std::allocate_shared<detail::websocket_handle<false>>(allocator, std::move(session));
 }
 
 }  // namespace webcpp::trystero::native

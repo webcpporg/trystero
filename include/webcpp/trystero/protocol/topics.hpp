@@ -18,6 +18,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <cstdint>
+#include <memory_resource>
 #include <random>
 #include <string>
 #include <string_view>
@@ -34,9 +35,9 @@ inline constexpr std::size_t nonce_size = 8;
 
 /** A random id of `n` characters of `id_alphabet`, Trystero's `genId`. */
 template <class Generator>
-std::string make_id(std::size_t n, Generator& generator) {
+std::pmr::string make_id(std::size_t n, Generator& generator, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::uniform_int_distribution<std::size_t> pick(0, id_alphabet.size() - 1);
-    std::string out(n, '0');
+    std::pmr::string out(n, '0', memory);
     for (auto& c : out) c = id_alphabet[pick(generator)];
     return out;
 }
@@ -61,10 +62,10 @@ inline std::array<std::uint8_t, 32> sha256(std::string_view text) { return sha25
  * padding, concatenated.
  * Tip: the text is not fixed width; it is a topic name and is only ever compared, never decoded.
  */
-inline std::string sha1_topic_of(std::initializer_list<std::string_view> parts) {
+inline std::pmr::string sha1_topic_of(std::initializer_list<std::string_view> parts, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     boost::hash2::sha1_160 h;
     for (const auto part : parts) h.update(part.data(), part.size());
-    std::string out;
+    std::pmr::string out(memory);
     out.reserve(40);
     for (std::uint8_t b : h.result()) {
         char digits[2];
@@ -78,19 +79,21 @@ inline std::string sha1_topic_of(std::initializer_list<std::string_view> parts) 
     return out;
 }
 
-inline std::string sha1_topic(std::string_view text) { return sha1_topic_of({text}); }
+inline std::pmr::string sha1_topic(std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) { return sha1_topic_of({text}, memory); }
 
 /** The topic every member of a room announces on: Trystero's sha1 of "Trystero@<app>@<room>". */
-inline std::string root_topic(std::string_view app_id, std::string_view room_id) { return sha1_topic_of({"Trystero@", app_id, "@", room_id}); }
+inline std::pmr::string root_topic(std::string_view app_id, std::string_view room_id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return sha1_topic_of({"Trystero@", app_id, "@", room_id}, memory);
+}
 
 /** The topic a peer receives its offers, answers and candidates on: the root path, "@", the peer id. */
-inline std::string peer_topic(std::string_view app_id, std::string_view room_id, std::string_view peer_id) {
-    return sha1_topic_of({"Trystero@", app_id, "@", room_id, "@", peer_id});
+inline std::pmr::string peer_topic(std::string_view app_id, std::string_view room_id, std::string_view peer_id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return sha1_topic_of({"Trystero@", app_id, "@", room_id, "@", peer_id}, memory);
 }
 
 /** The token that names a room inside a data channel's envelope: hex SHA-256 of "Trystero:<app>:<room>". */
-inline std::string room_token(std::string_view app_id, std::string_view room_id) {
-    return to_hex(sha256_of({"Trystero:", app_id, ":", room_id}));
+inline std::pmr::string room_token(std::string_view app_id, std::string_view room_id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return to_hex(sha256_of({"Trystero:", app_id, ":", room_id}), memory);
 }
 
 /** Trystero's `strToNum`: the sum of the text's UTF-16 code units, modulo `limit`. */

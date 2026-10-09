@@ -11,6 +11,7 @@
 
 #include <boost/system/error_code.hpp>
 
+#include <cstddef>
 #include <string>
 #include <type_traits>
 
@@ -36,7 +37,13 @@ class error_category_impl : public boost::system::error_category {
 public:
     const char* name() const noexcept override { return "webcpp.trystero"; }
 
-    std::string message(int ev) const override {
+    std::string message(int ev) const override { return text(ev); }
+
+    /** The message without a `std::string`: a room logs through this form, which allocates nothing. */
+    const char* message(int ev, char* /*buffer*/, std::size_t /*length*/) const noexcept override { return text(ev); }
+
+private:
+    static const char* text(int ev) noexcept {
         switch (static_cast<error>(ev)) {
             case error::room_left: return "room left";
             case error::no_such_peer: return "no active peer with this id";

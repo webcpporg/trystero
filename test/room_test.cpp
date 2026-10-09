@@ -16,6 +16,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/core/lightweight_test.hpp>
+#include <boost/json/serialize.hpp>
 
 #include <chrono>
 #include <cstddef>

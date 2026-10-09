@@ -9,14 +9,19 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/handler.hpp>
+
 #include <boost/asio/execution.hpp>
 #include <boost/asio/executor_work_guard.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
 #include <emscripten/val.h>
 
+#include <cstddef>
 #include <cstdint>
-#include <functional>
+#include <memory>
+#include <memory_resource>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -58,16 +63,22 @@ private:
  * passed to `trystero_dispatch` (browser/src.hpp). An object registers a callback with `add` and removes it with
  * `remove` when it is destroyed, so a late event for a destroyed object finds nothing. A loop must outlive the page's
  * use of it; its destructor marks every handler it made as dead.
+ *
+ * Tip: a loop serves every room of the page, so its registrations are in the resource it is constructed with, not in
+ * a room's.
  */
 class event_loop {
 public:
-    using callback = std::function<void(int slot, emscripten::val event)>;
+    using callback = handler<void(int slot, emscripten::val event)>;
 
-    explicit event_loop(boost::asio::io_context& io)
+    explicit event_loop(boost::asio::io_context& io, std::pmr::memory_resource* memory = std::pmr::get_default_resource())
         : io_(io),
           work_(boost::asio::make_work_guard(io)),
           token_(emscripten::val::object()),
-          decoder_(emscripten::val::global("TextDecoder").new_()) {
+          decoder_(emscripten::val::global("TextDecoder").new_()),
+          encoder_(emscripten::val::global("TextEncoder").new_()),
+          memory_(memory),
+          callbacks_(memory) {
         token_.set("alive", true);
     }
 
@@ -77,6 +88,17 @@ public:
      */
     emscripten::val text(std::string_view utf8) const {
         return decoder_.call<emscripten::val>("decode", emscripten::val(emscripten::typed_memory_view(utf8.size(), utf8.data())));
+    }
+
+    /**
+     * The UTF-8 bytes of a JavaScript string, copied straight into a string of `memory`: no std::string is made to
+     * carry them across, as `emscripten::val::as<std::string>()` would.
+     */
+    std::pmr::string utf8(const emscripten::val& text, std::pmr::memory_resource* memory) const {
+        const emscripten::val encoded = encoder_.call<emscripten::val>("encode", text);
+        std::pmr::string out(encoded["length"].as<std::size_t>(), '\0', memory);
+        emscripten::val(emscripten::typed_memory_view(out.size(), reinterpret_cast<unsigned char*>(out.data()))).call<void>("set", encoded);
+        return out;
     }
 
     event_loop(const event_loop&) = delete;
@@ -90,7 +112,7 @@ public:
 
     int add(callback f) {
         const int id = next_id_++;
-        callbacks_.emplace(id, std::move(f));
+        callbacks_.emplace(id, std::allocate_shared<callback>(std::pmr::polymorphic_allocator<>(memory_), std::move(f)));
         return id;
     }
 
@@ -110,7 +132,7 @@ public:
             poll_scheduled_ = false;
         } else if (auto it = callbacks_.find(id); it != callbacks_.end()) {
             auto f = it->second;  // the callback may remove itself
-            f(slot, std::move(event));
+            (*f)(slot, std::move(event));
         }
         --depth_;
         if (depth_ == 0) poll();
@@ -138,7 +160,9 @@ private:
     boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_;
     emscripten::val token_;
     emscripten::val decoder_;
-    std::unordered_map<int, callback> callbacks_;
+    emscripten::val encoder_;
+    std::pmr::memory_resource* memory_;
+    std::pmr::unordered_map<int, std::shared_ptr<callback>> callbacks_;
     int next_id_ = 1;
     int depth_ = 0;
     bool poll_scheduled_ = false;

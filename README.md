@@ -27,6 +27,15 @@ libdatachannel reports errors by throwing: without exceptions, or with
 `native::peer_connection` and `native::backend` do not exist, and the native
 timer, sealer and WebSockets remain.
 
+Every allocation of a room goes through the `std::pmr::memory_resource` its
+`room_config::memory` names, the default resource unless it names another:
+its state, its handlers, its JSON, the objects its backend makes for it, and
+a message an action's handler receives as a `std::pmr::string`, a
+`trystero::pmr_bytes` or a `boost::json::value`. A completion handler is
+allocated as its own associated allocator says, which
+`boost::asio::bind_allocator` sets. What libdatachannel, OpenSSL and the
+browser's JavaScript allocate stays theirs.
+
 ## Building inside the superproject
 
 trystero is developed inside the webcpp superproject, as a Boost library is
@@ -90,7 +99,7 @@ int main() {
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
-        trystero::send_options to_peer{{std::string(peer)}, {}};
+        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
         chat.async_send("hello from a native peer", std::move(to_peer), [](boost::system::error_code) {});
     });
     chat.on_message([](std::string text, const trystero::message_info& info) {

@@ -43,8 +43,8 @@ json::value load(const char* path) {
     return json::parse(text.str());
 }
 
-std::string str(const json::value& v) {
-    return std::string(v.as_string());
+std::string_view str(const json::value& v) {
+    return v.as_string();
 }
 
 tp::bytes hex(const json::value& v) {

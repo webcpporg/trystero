@@ -51,7 +51,7 @@ void join_room(std::string app_id, std::string room_id) {
     trystero::room_config config;
     config.app_id = std::move(app_id);
     config.log = [](std::string_view category, std::string_view text) { ui("log", category, text); };
-    c.room = std::make_unique<trystero::room>(c.loop.get_executor(), c.backend, config, room_id);
+    c.room = std::make_unique<trystero::room>(c.loop.get_executor(), c.backend, std::move(config), room_id);
     c.messages = std::make_unique<trystero::action<std::string_view>>(c.room->make_action<std::string_view>("chat"));
     c.outgoing = std::make_unique<trystero::action<std::string>>(c.room->make_action<std::string>("chat"));
     c.room->on_peer_join([](std::string_view peer) { ui("peerJoined", peer); });

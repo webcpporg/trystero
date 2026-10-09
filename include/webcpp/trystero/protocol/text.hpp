@@ -11,6 +11,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -19,10 +20,11 @@
 
 namespace webcpp::trystero::protocol {
 
-using bytes = std::vector<std::uint8_t>;
+/** Bytes, in the resource a room or the caller gives. */
+using bytes = std::pmr::vector<std::uint8_t>;
 
 /** Appends lowercase hexadecimal of a byte sequence, Trystero's `toHex`. */
-inline void append_hex(std::string& out, std::span<const std::uint8_t> data) {
+inline void append_hex(std::pmr::string& out, std::span<const std::uint8_t> data) {
     static constexpr std::string_view digits = "0123456789abcdef";
     out.reserve(out.size() + data.size() * 2);
     for (const auto b : data) {
@@ -31,14 +33,14 @@ inline void append_hex(std::string& out, std::span<const std::uint8_t> data) {
     }
 }
 
-inline std::string to_hex(std::span<const std::uint8_t> data) {
-    std::string out;
+inline std::pmr::string to_hex(std::span<const std::uint8_t> data, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
     append_hex(out, data);
     return out;
 }
 
 /** Bytes of a hexadecimal text, or nothing when it is not hexadecimal of even length. */
-inline std::optional<bytes> from_hex(std::string_view text) {
+inline std::optional<bytes> from_hex(std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     if (text.size() % 2 != 0) return std::nullopt;
     auto nibble = [](char c) -> int {
         if (c >= '0' && c <= '9') return c - '0';
@@ -46,7 +48,7 @@ inline std::optional<bytes> from_hex(std::string_view text) {
         if (c >= 'A' && c <= 'F') return c - 'A' + 10;
         return -1;
     };
-    bytes out;
+    bytes out(memory);
     out.reserve(text.size() / 2);
     for (std::size_t i = 0; i < text.size(); i += 2) {
         const int high = nibble(text[i]);
@@ -58,7 +60,7 @@ inline std::optional<bytes> from_hex(std::string_view text) {
 }
 
 /** Appends standard base64 with padding, what `btoa` writes over binary text. */
-inline void append_base64(std::string& out, std::span<const std::uint8_t> in) {
+inline void append_base64(std::pmr::string& out, std::span<const std::uint8_t> in) {
     static constexpr std::string_view table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     out.reserve(out.size() + (in.size() + 2) / 3 * 4);
     std::size_t i = 0;
@@ -83,14 +85,14 @@ inline void append_base64(std::string& out, std::span<const std::uint8_t> in) {
     }
 }
 
-inline std::string base64_encode(std::span<const std::uint8_t> in) {
-    std::string out;
+inline std::pmr::string base64_encode(std::span<const std::uint8_t> in, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
     append_base64(out, in);
     return out;
 }
 
 /** Bytes of a padded base64 text, what `atob` accepts, or nothing when it is not base64. */
-inline std::optional<bytes> base64_decode(std::string_view in) {
+inline std::optional<bytes> base64_decode(std::string_view in, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     auto value = [](char c) -> int {
         if (c >= 'A' && c <= 'Z') return c - 'A';
         if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -101,7 +103,7 @@ inline std::optional<bytes> base64_decode(std::string_view in) {
     };
     while (!in.empty() && in.back() == '=') in.remove_suffix(1);
     if (in.size() % 4 == 1) return std::nullopt;
-    bytes out;
+    bytes out(memory);
     out.reserve(in.size() * 3 / 4);
     std::uint32_t buffer = 0;
     int bits = 0;

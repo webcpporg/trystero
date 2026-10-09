@@ -22,6 +22,8 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 #include <boost/asio/io_context.hpp>
+#include <boost/json/object.hpp>
+#include <boost/json/serialize.hpp>
 
 #include <memory>
 #include <string>
@@ -80,14 +82,14 @@ void start() {
     config.self_id = param("self");
     for (std::string relays = param("relays"); !relays.empty();) {
         const auto comma = relays.find(',');
-        config.relay_urls.push_back(relays.substr(0, comma));
+        config.relay_urls.emplace_back(relays.substr(0, comma));
         relays = comma == std::string::npos ? std::string() : relays.substr(comma + 1);
     }
     if (std::string ice = param("ice"); !ice.empty())
-        config.ice_servers.push_back({{std::move(ice)}, {}, {}});
+        config.ice_servers.push_back({{std::pmr::string(ice)}, {}, {}});
     config.log = log;
-    app->room = std::make_unique<trystero::room>(app->loop.get_executor(), app->backend, config,
-                                                 param("room"));
+    app->room = std::make_unique<trystero::room>(app->loop.get_executor(), app->backend,
+                                                 std::move(config), param("room"));
     auto& room = *app->room;
     boost::json::array relays;
     for (const auto& url : room.relay_urls())

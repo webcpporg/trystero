@@ -12,6 +12,7 @@
 #include <webcpp/trystero/protocol/text.hpp>
 
 #include <cstdint>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -35,8 +36,8 @@ inline constexpr std::size_t max_room_frame_bytes = max_action_frame_bytes + 3 +
  * Starts a room frame in an empty buffer: the header for `token`, with room reserved for `payload_size` more bytes.
  * The action frame is then appended in place, so the frame is allocated and written once.
  */
-inline bytes begin_room_frame(std::string_view token, std::size_t payload_size) {
-    bytes out;
+inline bytes begin_room_frame(std::string_view token, std::size_t payload_size, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     out.reserve(3 + token.size() + payload_size);
     out.push_back(1);
     out.push_back(static_cast<std::uint8_t>((token.size() >> 8) & 0xff));
@@ -45,14 +46,14 @@ inline bytes begin_room_frame(std::string_view token, std::size_t payload_size) 
     return out;
 }
 
-inline bytes room_frame(std::string_view token, std::span<const std::uint8_t> payload) {
-    auto out = begin_room_frame(token, payload.size());
+inline bytes room_frame(std::string_view token, std::span<const std::uint8_t> payload, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    auto out = begin_room_frame(token, payload.size(), memory);
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }
 
-inline bytes presence_frame(std::string_view token, bool present) {
-    bytes out;
+inline bytes presence_frame(std::string_view token, bool present, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     out.reserve(4 + token.size());
     out.push_back(2);
     out.push_back(present ? 1 : 0);

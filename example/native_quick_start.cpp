@@ -25,7 +25,7 @@ int main() {
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
-        trystero::send_options to_peer{{std::string(peer)}, {}};
+        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
         chat.async_send("hello from a native peer", std::move(to_peer), [](boost::system::error_code) {});
     });
     chat.on_message([](std::string text, const trystero::message_info& info) {

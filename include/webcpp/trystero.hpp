@@ -20,6 +20,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
+#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #endif

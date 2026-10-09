@@ -116,6 +116,145 @@ holds only what is specific to trystero.
   b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten libs/trystero/test/oracle//interop
   ```
 
+- **Allocation.** trystero is born with webcpp's allocation rule, through
+  `std::pmr`, header-only. The page's section "Allocation" is written from
+  these rules.
+  - **One resource per room.** `room_config::memory`, a
+    `std::pmr::memory_resource*` that defaults to
+    `std::pmr::get_default_resource()`, is the resource every allocation of
+    the room goes through, from its construction to its destruction: the
+    room itself, the copy of its configuration, its peers, actions, queues,
+    frames, transfers, negotiations and relays, its handlers, the text it
+    composes for its log, the objects its backend makes for it, the context
+    libsecp256k1 signs with (`secp256k1_context_preallocated_create`, in the
+    resource), and the JSON it parses and writes. The resource must outlive
+    the room and every value the room handed out (a `std::pmr::string`, a
+    `pmr_bytes` or a `boost::json::value` a handler kept). trystero touches
+    it only from the room's executor, so it need not be thread-safe when
+    that executor runs on one thread.
+  - **Containers.** Every container trystero declares is a `std::pmr` one:
+    `std::pmr::string` (and `peer_id`), `std::pmr::vector` (and
+    `backend::bytes`, `protocol::bytes` and `pmr_bytes`), `std::pmr::deque`,
+    `std::pmr::map`, `std::pmr::set`, `std::pmr::unordered_map` and
+    `std::pmr::unordered_set`, built over the room's resource. A struct that
+    holds them takes the room's `std::pmr::polymorphic_allocator<>` in its
+    constructor, and a container of such structs is given it when it makes
+    one (`try_emplace(key, allocator)`). A `std::pmr` container is never
+    copied without an allocator: its copy constructor takes the default
+    resource, so a copy names the resource
+    (`std::pmr::string(text, allocator)`). Moving keeps the resource.
+  - **Shared objects** are made with `std::allocate_shared` over
+    `std::pmr::polymorphic_allocator<>`, never with `std::make_shared`,
+    `std::make_unique` or `new`; a timer is a `std::shared_ptr` for that
+    reason.
+  - **Handlers.** `webcpp::trystero::handler<R(Args...)>` (`handler.hpp`) is
+    a move-only callable that allocates through a
+    `std::pmr::polymorphic_allocator<>`: constructed with
+    `handler(std::allocator_arg_t, allocator, f)`, it holds `f` inline when
+    `f` fits in three pointers and is nothrow-movable, and in storage of the
+    allocator otherwise. It replaces every `std::function` of `backend.hpp`
+    (the handlers of `timer`, `websocket`, `data_channel`,
+    `peer_connection` and `sealer`), of the room and of
+    `detail::logger::sink`, since `std::function` takes no allocator since
+    C++17. Constructed from `f` alone it uses the default resource; the room
+    moves a handler it is given (`room_config::log`) into its own resource
+    with the allocator-extended move. A move assignment carries the source's
+    allocator with its target. Where a handler must survive its own
+    replacement during its call, its owner keeps it in a `std::shared_ptr`
+    made in the resource and calls it through a copy of that pointer.
+  - **The backend.** Each method of `backend::factory` that makes an object
+    takes the room's `std::pmr::memory_resource*` as its last parameter, and
+    the backend allocates its objects, their handlers and the frames and
+    texts it hands to the room through it.
+  - **Asio.** Every `boost::asio::post`, `dispatch`, timer wait and
+    `any_completion_handler` the room makes carries
+    `boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
+    ...)`. A post through `boost::asio::any_io_executor` is wrapped by Asio in
+    a function object allocated with `std::allocator`, from Asio's
+    per-thread recycling cache, which calls `std::aligned_alloc` on a miss
+    (measured: two per post, in every round of five posts, natively and on
+    emscripten). So `detail::post` posts through the executor of an
+    `io_context` when the room's executor is one, where Asio allocates the
+    operation as the handler's allocator says; on another executor the
+    wrapper stays Asio's. A user's completion handler is allocated as its
+    own associated allocator says: the room never binds its allocator over
+    it, and the page shows `bind_allocator` with the room's resource. When
+    the room erases a completion handler's type
+    (`detail::completion`, an `any_completion_handler`), it records whether
+    the handler's associated executor is the room's, which only the concrete
+    type tells without allocating; such a completion runs from an operation
+    the room posts to its executor, allocated with the handler's allocator,
+    and one bound to another executor is handed to it by Asio, whose
+    type-erased executor wraps it with `std::allocator` (measured: telling
+    the executor apart through the erased type cost two `operator new` calls
+    a completion, and Asio's wrapper a `std::aligned_alloc`).
+  - **Boost.JSON** allocates through `json_resource` (`json_resource.hpp`),
+    a `boost::container::pmr::memory_resource` that forwards to a
+    `std::pmr::memory_resource`, header-only: `boost::container::pmr`'s own
+    global resources are compiled (`BOOST_CONTAINER_DECL`), and the CI
+    installs Boost's headers alone. The room's JSON storage is
+    `boost::json::make_shared_resource<json_resource>(memory)`, made once when
+    the room is constructed, since a value a handler keeps may outlive the
+    room. Text is parsed by a `boost::json::parser` over that storage, never
+    by `boost::json::parse`, whose temporaries beyond a stack buffer come
+    from the default resource; JSON is written by a
+    `boost::json::serializer` whose stack is the resource.
+  - **Payloads.** `detail::payload_traits` has `std::pmr::string` and
+    `std::pmr::vector<std::uint8_t>` (`webcpp::trystero::pmr_bytes`) beside
+    the standard types, and `decode(incoming& message,
+    std::pmr::memory_resource* memory)` takes the resource for every type:
+    the `std::pmr` types are built in it, and `boost::json::value` in the
+    room's JSON storage, which the message carries. `std::string` and `bytes`
+    stay as they are, with `std::allocator`: the user's choice. `encode`
+    takes the resource too, for what keeps the payload alive.
+  - **The protocol** (`protocol/`) takes a `std::pmr::memory_resource*` as
+    the last parameter of every function that returns what it allocates,
+    with `std::pmr::get_default_resource()` as its default, and returns
+    `std::pmr` types; `protocol::nostr::verify` uses
+    `secp256k1_context_static` and allocates nothing.
+  - **Outside the resource**, stated on the page: libdatachannel's and
+    OpenSSL's own allocations, with the `std::string` and `rtc::Description`
+    libdatachannel's API takes and returns; `emscripten::val`'s JavaScript
+    heap; the JSON storage's counter, which Boost.JSON allocates with
+    `operator new` once per room; Asio's own once-per-context allocations
+    (its services and the scheduler's first operation); the wrapper Asio puts
+    around a post through an executor that is not an `io_context`'s; the
+    native backend's posts from libdatachannel's threads, which carry Asio's
+    default allocator, since the resource is touched only on the room's
+    executor; and Boost.Beast's and Asio's state inside the native WebSocket
+    (its stream, its resolver's results, its coroutines' frames). The
+    browser's `event_loop` and the test's `memory_network` are shared by
+    every room of a page or of a test, and allocate their own registrations
+    and relays through the resource they are constructed with.
+  - **The proof** is `test/allocation_test.cpp`, on both targets, which
+    counts the global `operator new`, replaced, and the C library's
+    allocation functions, where the platform lets a program see them:
+    glibc's functions are replaced and forward to `__libc_*`, Emscripten's
+    dlmalloc has weak definitions the test replaces and forwards to
+    `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and
+    MSVC's are not counted. Two rooms over the memory relays exchange a
+    payload, a `std::pmr::string`, a `pmr_bytes` and a `boost::json::value`
+    in turn, while both counts see none and the counting resources of the
+    two configurations see the rooms'; and two rooms with a password, a log
+    sink and the network's state in a resource of its own are made, join,
+    exchange a payload that travels in chunks, measure a round trip, one says
+    goodbye, both are destroyed and the io_context is drained, while
+    `operator new` sees exactly the two rooms' JSON storage counters and the
+    C library nothing. Asio's once-per-context allocations are made first
+    (its timer service, its reactor, the scheduler's first operation, and room
+    in its timer queue for 256 waits); without them the count is 8, not 2.
+    The replaced `operator new` raises an alignment below `sizeof(void*)` and
+    rounds the size to a multiple of the alignment, since
+    `std::aligned_alloc` refuses both (measured: macOS refuses the alignments
+    1, 2 and 4, Emscripten 1 and 2, and both a size that is not a multiple of
+    the alignment), throws `std::bad_alloc` where there are exceptions, uses
+    `_aligned_malloc` on MSVC, and checks itself for every alignment from 1
+    to 64. On Emscripten the test also replaces `select()`, which Emscripten
+    implements over `poll()` with an array it callocs on every call, and
+    which Asio's reactor calls on every wait of the io_context the test
+    drives (measured: thousands of calls while two rooms exchange one
+    payload): the replacement keeps the array on the stack, so that the count
+    sees the rooms' allocations rather than the C library's wait.
 - **No twins.** Every example needs the public relays or a browser, so each
   is a `webcpp.link`, linked and never run, and has no `.expected` and no
   twin in Trystero's language. The chat page's site is written by

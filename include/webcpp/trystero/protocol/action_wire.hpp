@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
@@ -138,38 +139,38 @@ inline void append_rejected(bytes& out, std::uint32_t id, std::string_view reaso
 }
 
 /** The same frames, each in a buffer of its own. */
-inline bytes encode_inline(std::string_view name, payload_format format, std::string_view metadata, std::span<const std::uint8_t> payload) {
-    bytes out;
+inline bytes encode_inline(std::string_view name, payload_format format, std::string_view metadata, std::span<const std::uint8_t> payload, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_inline(out, name, format, metadata, payload);
     return out;
 }
 
-inline bytes encode_offer(std::string_view name, payload_format format, std::string_view metadata, std::uint32_t id, std::size_t size) {
-    bytes out;
+inline bytes encode_offer(std::string_view name, payload_format format, std::string_view metadata, std::uint32_t id, std::size_t size, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_offer(out, name, format, metadata, id, size);
     return out;
 }
 
-inline bytes encode_chunk(std::uint32_t id, std::size_t offset, std::span<const std::uint8_t> data) {
-    bytes out;
+inline bytes encode_chunk(std::uint32_t id, std::size_t offset, std::span<const std::uint8_t> data, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_chunk(out, id, offset, data);
     return out;
 }
 
-inline bytes encode_accepted(std::uint32_t id) {
-    bytes out;
+inline bytes encode_accepted(std::uint32_t id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_accepted(out, id);
     return out;
 }
 
-inline bytes encode_cancelled(std::uint32_t id) {
-    bytes out;
+inline bytes encode_cancelled(std::uint32_t id, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_cancelled(out, id);
     return out;
 }
 
-inline bytes encode_rejected(std::uint32_t id, std::string_view reason) {
-    bytes out;
+inline bytes encode_rejected(std::uint32_t id, std::string_view reason, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    bytes out(memory);
     append_rejected(out, id, reason);
     return out;
 }

@@ -21,6 +21,7 @@
 
 #include <cstring>
 #include <memory>
+#include <memory_resource>
 #include <utility>
 #include <variant>
 
@@ -30,16 +31,26 @@ namespace webcpp::trystero::native {
  * A data channel of libdatachannel. Its events arrive on libdatachannel's threads; each is posted to the executor and
  * handled there, through a weak reference, so a late event for a destroyed channel does nothing.
  *
- * Tip: a received message is copied once, out of libdatachannel's `std::vector<std::byte>` into the backend's bytes;
- * from there the room keeps it without another copy.
+ * Tip: a received message is copied once, out of libdatachannel's `std::vector<std::byte>` into the backend's bytes, in
+ * the room's resource, on the executor: what runs on libdatachannel's threads touches no resource of the room, and
+ * its posts carry Asio's default allocator.
  */
 class data_channel : public backend::data_channel, public std::enable_shared_from_this<data_channel> {
+    struct private_tag {
+        explicit private_tag() = default;
+    };
+
 public:
-    static std::shared_ptr<data_channel> create(boost::asio::any_io_executor ex, std::shared_ptr<rtc::DataChannel> channel) {
-        auto self = std::shared_ptr<data_channel>(new data_channel(std::move(ex), std::move(channel)));
+    static std::shared_ptr<data_channel> create(boost::asio::any_io_executor ex, std::shared_ptr<rtc::DataChannel> channel,
+                                                std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+        auto self = std::allocate_shared<data_channel>(std::pmr::polymorphic_allocator<>(memory), private_tag{}, std::move(ex), std::move(channel),
+                                                       memory);
         self->start();
         return self;
     }
+
+    data_channel(private_tag /*tag*/, boost::asio::any_io_executor ex, std::shared_ptr<rtc::DataChannel> channel, std::pmr::memory_resource* memory)
+        : ex_(std::move(ex)), channel_(std::move(channel)), memory_(memory) {}
 
     ~data_channel() override {
         channel_->resetCallbacks();
@@ -49,7 +60,8 @@ public:
         }
     }
 
-    void set_handlers(handlers h) override { h_ = std::move(h); }
+    /** The handlers, kept in a shared object so that one replacing them during its own call outlives the call. */
+    void set_handlers(handlers h) override { h_ = std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory_), std::move(h)); }
 
     bool is_open() const override { return channel_->isOpen(); }
 
@@ -70,44 +82,43 @@ public:
     }
 
 private:
-    data_channel(boost::asio::any_io_executor ex, std::shared_ptr<rtc::DataChannel> channel) : ex_(std::move(ex)), channel_(std::move(channel)) {}
-
     void start() {
         std::weak_ptr<data_channel> weak = shared_from_this();
         auto ex = ex_;
         channel_->setBufferedAmountLowThreshold(low_threshold);
         channel_->onOpen([weak, ex] {
             boost::asio::post(ex, [weak] {
-                if (auto self = weak.lock(); self && self->h_.open) {
-                    auto f = self->h_.open;
-                    f();
+                if (auto self = weak.lock()) {
+                    if (auto h = self->h_; h && h->open) h->open();
                 }
             });
         });
         channel_->onMessage([weak, ex](rtc::message_variant message) {
-            const auto* binary = std::get_if<rtc::binary>(&message);
+            auto* binary = std::get_if<rtc::binary>(&message);
             if (binary == nullptr) return;  // Trystero frames are binary
-            backend::bytes frame(binary->size());
-            std::memcpy(frame.data(), binary->data(), binary->size());
-            boost::asio::post(ex, [weak, frame = std::move(frame)]() mutable {
-                if (auto self = weak.lock(); self && self->h_.message) {
-                    auto f = self->h_.message;
-                    f(std::move(frame));
-                }
+            boost::asio::post(ex, [weak, binary = std::move(*binary)] {
+                auto self = weak.lock();
+                if (!self) return;
+                auto h = self->h_;
+                if (!h || !h->message) return;
+                backend::bytes frame(binary.size(), self->memory_);
+                std::memcpy(frame.data(), binary.data(), binary.size());
+                h->message(std::move(frame));
             });
         });
         channel_->onClosed([weak, ex] {
             boost::asio::post(ex, [weak] {
                 if (auto self = weak.lock()) {
-                    if (auto f = std::exchange(self->h_.close, {})) f();
+                    if (auto h = self->h_) {
+                        if (auto f = std::exchange(h->close, {})) f();
+                    }
                 }
             });
         });
         channel_->onBufferedAmountLow([weak, ex] {
             boost::asio::post(ex, [weak] {
-                if (auto self = weak.lock(); self && self->h_.buffered_amount_low) {
-                    auto f = self->h_.buffered_amount_low;
-                    f();
+                if (auto self = weak.lock()) {
+                    if (auto h = self->h_; h && h->buffered_amount_low) h->buffered_amount_low();
                 }
             });
         });
@@ -115,7 +126,8 @@ private:
 
     boost::asio::any_io_executor ex_;
     std::shared_ptr<rtc::DataChannel> channel_;
-    handlers h_;
+    std::pmr::memory_resource* memory_;
+    std::shared_ptr<handlers> h_;
 };
 
 }  // namespace webcpp::trystero::native

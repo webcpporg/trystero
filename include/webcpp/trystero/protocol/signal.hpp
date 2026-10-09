@@ -17,6 +17,7 @@
 
 #include <array>
 #include <charconv>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,8 +39,8 @@ struct sealed_parts {
 };
 
 /** The text form of a sealed signal: the IV's bytes in decimal joined by commas, "$", the ciphertext in base64. */
-inline std::string format_sealed(std::span<const std::uint8_t> iv, std::span<const std::uint8_t> ciphertext) {
-    std::string out;
+inline std::pmr::string format_sealed(std::span<const std::uint8_t> iv, std::span<const std::uint8_t> ciphertext, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
     out.reserve(iv.size() * 4 + 1 + (ciphertext.size() + 2) / 3 * 4);
     for (std::size_t i = 0; i < iv.size(); ++i) {
         if (i != 0) out += ',';
@@ -50,10 +51,10 @@ inline std::string format_sealed(std::span<const std::uint8_t> iv, std::span<con
     return out;
 }
 
-inline std::optional<sealed_parts> parse_sealed(std::string_view text) {
+inline std::optional<sealed_parts> parse_sealed(std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const auto dollar = text.find('$');
     if (dollar == std::string_view::npos) return std::nullopt;
-    sealed_parts out;
+    sealed_parts out{bytes(memory), bytes(memory)};
     for (std::string_view ivs = text.substr(0, dollar); !ivs.empty();) {
         const auto comma = ivs.find(',');
         const auto item = ivs.substr(0, comma);
@@ -63,7 +64,7 @@ inline std::optional<sealed_parts> parse_sealed(std::string_view text) {
         out.iv.push_back(static_cast<std::uint8_t>(value));
         ivs = comma == std::string_view::npos ? std::string_view{} : ivs.substr(comma + 1);
     }
-    auto ciphertext = base64_decode(text.substr(dollar + 1));
+    auto ciphertext = base64_decode(text.substr(dollar + 1), memory);
     if (!ciphertext) return std::nullopt;
     out.ciphertext = std::move(*ciphertext);
     return out;
@@ -110,8 +111,8 @@ inline std::optional<signal_message> read_signal(const boost::json::value& docum
 }
 
 /** The JSON text of a message; the optional `nonce` makes repeated announcements distinct events. */
-inline std::string write_signal(const signal_message& m, std::string_view nonce = {}) {
-    std::string out;
+inline std::pmr::string write_signal(const signal_message& m, std::string_view nonce = {}, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
     out.reserve(64 + m.peer_id.size() + m.offer_id.size() + m.offer.size() + m.answer.size() + m.candidate.size() + nonce.size());
     out += '{';
     auto field = [&out](std::string_view key, std::string_view value) {
@@ -134,8 +135,9 @@ inline std::string write_signal(const signal_message& m, std::string_view nonce 
 }
 
 /** The password handshake's proof: hex SHA-256 of "<challenge>:<password>:<app>:<room>". */
-inline std::string handshake_proof(std::string_view challenge, std::string_view password, std::string_view app_id, std::string_view room_id) {
-    return to_hex(sha256_of({challenge, ":", password, ":", app_id, ":", room_id}));
+inline std::pmr::string handshake_proof(std::string_view challenge, std::string_view password, std::string_view app_id, std::string_view room_id,
+                                        std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return to_hex(sha256_of({challenge, ":", password, ":", app_id, ":", room_id}), memory);
 }
 
 }  // namespace webcpp::trystero::protocol

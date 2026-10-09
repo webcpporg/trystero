@@ -10,7 +10,9 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/post.hpp>
 #include <webcpp/trystero/error.hpp>
+#include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <boost/asio/any_io_executor.hpp>
@@ -20,6 +22,7 @@
 
 #include <array>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,12 +41,12 @@ inline constexpr std::size_t gcm_tag_size = 16;
 
 /** AES-256-GCM with a 16-byte IV, the ciphertext followed by its 16-byte tag: what WebCrypto's encrypt returns. */
 inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std::uint8_t, 32>& key, std::span<const std::uint8_t> iv,
-                                             std::span<const std::uint8_t> input) {
+                                             std::span<const std::uint8_t> input, std::pmr::memory_resource* memory) {
     if (!encrypt && input.size() < gcm_tag_size) return std::nullopt;
     const cipher_context context(EVP_CIPHER_CTX_new());
     if (!context) return std::nullopt;
     const auto body = encrypt ? input : input.first(input.size() - gcm_tag_size);
-    backend::bytes out(body.size() + (encrypt ? gcm_tag_size : 0));
+    backend::bytes out(body.size() + (encrypt ? gcm_tag_size : 0), memory);
     int length = 0;
     int ok = EVP_CipherInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr, encrypt ? 1 : 0);
     ok = ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN, static_cast<int>(iv.size()), nullptr);
@@ -65,37 +68,41 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
 /**
  * AES-GCM under one room key, through OpenSSL, in Trystero's sealed text form. It works synchronously and posts each
  * completion to the executor, as the backend's contract asks: a handler never runs inside the call that started it.
+ * Its texts and completions are in the room's resource; OpenSSL's cipher context is OpenSSL's.
  */
 class sealer : public backend::sealer {
 public:
-    sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key) : ex_(std::move(ex)), key_(key) {}
+    using done_handler = handler<void(backend::error_code, std::string_view)>;
 
-    void seal(std::string_view plaintext, std::function<void(backend::error_code, std::string_view)> done) override {
+    sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory = std::pmr::get_default_resource())
+        : ex_(std::move(ex)), key_(key), memory_(memory) {}
+
+    void seal(std::string_view plaintext, done_handler done) override {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
-        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) return complete(std::move(done), error::backend_failure, {});
-        const auto cipher = detail::aes_gcm(true, key_, iv, std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()));
-        if (!cipher) return complete(std::move(done), error::backend_failure, {});
-        complete(std::move(done), {}, protocol::format_sealed(iv, *cipher));
+        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) return complete(std::move(done), error::backend_failure);
+        const auto cipher =
+            detail::aes_gcm(true, key_, iv, std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()), memory_);
+        if (!cipher) return complete(std::move(done), error::backend_failure);
+        complete(std::move(done), {}, protocol::format_sealed(iv, *cipher, memory_));
     }
 
-    void open(std::string_view sealed, std::function<void(backend::error_code, std::string_view)> done) override {
-        const auto parts = protocol::parse_sealed(sealed);
-        const auto plain = parts && !parts->iv.empty() ? detail::aes_gcm(false, key_, parts->iv, parts->ciphertext) : std::nullopt;
-        if (!plain) return complete(std::move(done), error::wrong_password, {});
-        complete(std::move(done), {}, std::string(plain->begin(), plain->end()));
+    void open(std::string_view sealed, done_handler done) override {
+        const auto parts = protocol::parse_sealed(sealed, memory_);
+        const auto plain = parts && !parts->iv.empty() ? detail::aes_gcm(false, key_, parts->iv, parts->ciphertext, memory_) : std::nullopt;
+        if (!plain) return complete(std::move(done), error::wrong_password);
+        complete(std::move(done), {}, std::pmr::string(plain->begin(), plain->end(), memory_));
     }
 
 private:
-    void complete(std::function<void(backend::error_code, std::string_view)> done, backend::error_code ec, std::string text) {
-        boost::asio::post(ex_, [done = std::move(done), ec, text = std::move(text)] { done(ec, text); });
+    void complete(done_handler done, backend::error_code ec, std::pmr::string text) {
+        trystero::detail::post(ex_, memory_, [done = std::move(done), ec, text = std::move(text)]() mutable { done(ec, text); });
     }
 
-    void complete(std::function<void(backend::error_code, std::string_view)> done, error e, std::string text) {
-        complete(std::move(done), make_error_code(e), std::move(text));
-    }
+    void complete(done_handler done, error e) { complete(std::move(done), make_error_code(e), std::pmr::string(memory_)); }
 
     boost::asio::any_io_executor ex_;
     std::array<std::uint8_t, 32> key_;
+    std::pmr::memory_resource* memory_;
 };
 
 }  // namespace webcpp::trystero::native
