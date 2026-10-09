@@ -63,6 +63,31 @@ EM_JS(emscripten::EM_VAL, webcpp_trystero_js_handler,
         }
     });
 });
+
+EM_JS(emscripten::EM_VAL, webcpp_trystero_js_census, (), {
+    const key = Symbol.for("webcpp.trystero.census");
+    if (!globalThis[key]) {
+        const census = {held: 0, onrelease: null};
+        // Without FinalizationRegistry nothing is counted, so that the page never stops making
+        // connections for a count that never comes down.
+        const registry = typeof FinalizationRegistry == "function"
+            ? new FinalizationRegistry(function() {
+                --census.held;
+                if (census.onrelease) {
+                    census.onrelease(census.held);
+                }
+            })
+            : null;
+        census.add = function(connection) {
+            if (registry) {
+                ++census.held;
+                registry.register(connection, 0);
+            }
+        };
+        globalThis[key] = census;
+    }
+    return Emval.toHandle(globalThis[key]);
+});
 // clang-format on
 #endif
 

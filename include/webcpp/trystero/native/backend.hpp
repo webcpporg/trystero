@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/native/peer_connection.hpp>
 #include <webcpp/trystero/native/sealer.hpp>
@@ -22,6 +23,7 @@
 #include <boost/asio/steady_timer.hpp>     // lint-world: Trystero's timers
 
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <memory>
 #include <memory_resource>
@@ -97,6 +99,15 @@ struct backend_config {
      * wants; a peer bound there reaches no other machine.
      */
     std::pmr::string bind_address = {};
+
+    /**
+     * The most peer connections the backend makes in any minute, for every room it serves
+     * together: beyond, it makes none, and a room reports each negotiation it cannot start.
+     *
+     * Tip: a room makes at most 64 in any 57 s however its peers behave, so the default lets four
+     * rooms do so at once; an application with more rooms raises it.
+     */
+    std::size_t max_peer_connections_per_minute = 256;
 };
 
 /**
@@ -123,6 +134,8 @@ public:
     explicit backend(boost::asio::any_io_executor ex, backend_config config = {})
         : ex_(std::move(ex)),
           config_(std::move(config)),
+          constructions_(config_.max_peer_connections_per_minute, std::chrono::minutes(1),
+                         std::pmr::get_default_resource()),
           tls_(boost::asio::ssl::context::tls_client) {
         tls_.set_default_verify_paths();
         tls_.set_verify_mode(boost::asio::ssl::verify_peer);
@@ -157,11 +170,16 @@ public:
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
-     * @return The connection, or null when libdatachannel refuses to make one, by throwing.
+     * @return The connection, or null when the backend made
+     * `backend_config::max_peer_connections_per_minute` in the last minute, or when libdatachannel
+     * refuses to make one, by throwing.
      */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
+        if (!constructions_.take(now_ms())) {
+            return nullptr;
+        }
         try {
             return peer_connection::create(ex_, servers, config_.bind_address, memory);
         } catch (...) {
@@ -230,6 +248,7 @@ public:
 private:
     boost::asio::any_io_executor ex_;
     backend_config config_;
+    trystero::detail::construction_window constructions_;
     boost::asio::ssl::context tls_;
 };
 

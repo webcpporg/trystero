@@ -30,6 +30,8 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <memory_resource>
+#include <span>
 #include <string>
 
 namespace trystero = webcpp::trystero;
@@ -83,6 +85,23 @@ trystero::room_config config_of(std::map<std::string, std::string>& args) {
     return config;
 }
 
+/** The native backend, which records each peer connection it makes, for the scenarios that count
+ * them. */
+class counting_backend : public trystero::native::backend {
+public:
+    using trystero::native::backend::backend;
+
+    std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
+        std::span<const trystero::backend::ice_server> servers,
+        std::pmr::memory_resource* memory) override {
+        auto pc = trystero::native::backend::make_peer_connection(servers, memory);
+        if (pc) {
+            record("made-connection");
+        }
+        return pc;
+    }
+};
+
 trystero::room room_of(boost::asio::io_context& io, trystero::native::backend& backend,
                        std::map<std::string, std::string>& args, std::string_view suffix = {}) {
     return {io.get_executor(), backend, config_of(args), args["room"] + std::string(suffix)};
@@ -116,7 +135,7 @@ void leave(trystero::room& room, boost::asio::io_context& io) {
 int main(int argc, char* argv[]) {
     auto args = arguments(argc, argv);
     boost::asio::io_context io;
-    trystero::native::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+    counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     trystero::room room = room_of(io, backend, args);
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {

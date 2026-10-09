@@ -120,21 +120,30 @@ room.onPeerLeave = peer => {
 }
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
 
-// window.flood(count, prefix): publishes `count` announcements, each from a fresh peer id that starts with `prefix`,
-// on the room's topic, through a WebSocket of its own to the first relay: what anyone who knows the app and the room
-// ids can send, since announcements are not sealed. Records 'flooded' once every one is sent.
-window.flood = async (count, prefix) => {
+// Publishes `count` signals, each from a fresh peer id that starts with `prefix`, on the topic of the room's peer
+// `to`, or on the room's own topic, through a WebSocket of its own to the first relay. Records `kind` once every one is
+// sent.
+const floodWith = async (kind, count, prefix, to, signal) => {
     const {createEvent} = await import('@trystero-p2p/nostr')
     const {sha1} = await import('@trystero-p2p/core')
-    const topic = await sha1(['Trystero', params.get('app'), params.get('room')].join('@'))
+    const topic = await sha1(['Trystero', params.get('app'), params.get('room'), ...(to ? [to] : [])].join('@'))
     const socket = new WebSocket(relays.split(',')[0])
     await new Promise(resolve => (socket.onopen = resolve))
     for (let i = 0; i < count; ++i) {
         const peerId = (prefix + Math.random().toString(36).slice(2) + '0000000000').slice(0, 20)
-        sendNow.call(socket, await createEvent(topic, JSON.stringify({peerId})))
+        sendNow.call(socket, await createEvent(topic, JSON.stringify({peerId, ...signal})))
     }
-    record('flooded', {count})
+    record(kind, {count})
 }
+
+// window.flood(count, prefix): announcements from fresh ids on the room's topic, what anyone who knows the app and
+// the room ids can send, since announcements are not sealed. Records 'flooded'.
+window.flood = (count, prefix) => floodWith('flooded', count, prefix, null, {})
+
+// window.floodOffers(count, prefix, to): offers from fresh ids to the peer `to` that no key sealed, what anyone who
+// reads the relays can send. Records 'flooded-offers'.
+window.floodOffers = (count, prefix, to) =>
+    floodWith('flooded-offers', count, prefix, to, {offerId: 'forged', offer: 'not a sealed offer'})
 
 // With `malformed-candidate-to`, this peer also sends that peer, until it joins, a candidate whose plaintext is not
 // JSON, sealed under the room's key as Trystero seals a candidate, through a WebSocket of its own to the first relay:

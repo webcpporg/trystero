@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -86,6 +87,14 @@ public:
      * most two pending connections: a peer beyond it waits for its next announcement.
      */
     static constexpr std::size_t max_unconnected_peers = 32;
+
+    /**
+     * The most connections a room makes in any 57 s (`offer_ttl`, the longest a negotiation holds
+     * one): those its unconnected negotiations hold at most at once. A place freed early is not
+     * taken again until the window has passed, so no signal, however soon it ends a negotiation,
+     * makes a room add more than this to what a browser counts.
+     */
+    static constexpr std::size_t max_connections_per_window = 2 * max_unconnected_peers;
 
     /** What the signaling asks of its room. */
     struct callbacks {
@@ -299,15 +308,43 @@ private:
             peers_.erase(idle);
             return true;
         }
-        if (std::ranges::find(refused_, peer) == refused_.end()) {
+        if (first_refusal(peer)) {
             log_("signal", "refusing ", peer, ": ", max_unconnected_peers,
                  " negotiations are under way, the next announcement may find a slot");
-            refused_.emplace_back(peer);
-            if (refused_.size() > remembered_refusals) {
-                refused_.pop_front();
-            }
         }
         return false;
+    }
+
+    /** Whether `peer` is refused for the first time, among the last `remembered_refusals`. */
+    bool first_refusal(std::string_view peer) {
+        if (std::ranges::find(refused_, peer) != refused_.end()) {
+            return false;
+        }
+        refused_.emplace_back(peer);
+        if (refused_.size() > remembered_refusals) {
+            refused_.pop_front();
+        }
+        return true;
+    }
+
+    /**
+     * Makes a connection for the negotiation with `peer`, within `max_connections_per_window`:
+     * null beyond it, logged once per peer, or when the backend makes none, reported.
+     */
+    std::shared_ptr<backend::peer_connection> make_connection(std::string_view peer) {
+        if (!constructions_.take(factory_.now_ms())) {
+            if (first_refusal(peer)) {
+                log_("signal", "refusing ", peer, ": ", max_connections_per_window,
+                     " connections were made in the last ", offer_ttl.count(),
+                     " ms, a later announcement may find one");
+            }
+            return nullptr;
+        }
+        auto pc = factory_.make_peer_connection(ice_servers_, memory_);
+        if (!pc) {
+            refused(peer);
+        }
+        return pc;
     }
 
     /** Drops a negotiation that holds no connection any more and is not connected. */
@@ -351,8 +388,12 @@ private:
 
     void start_offer(std::string_view peer, negotiation& n) {
         n.offer_id = make_id(protocol::offer_id_size);
-        n.offer.pc = factory_.make_peer_connection(ice_servers_, memory_);
-        n.offer.channel = n.offer.pc ? n.offer.pc->create_data_channel("data") : nullptr;
+        n.offer.pc = make_connection(peer);
+        if (!n.offer.pc) {
+            reset_offer(n);
+            return;
+        }
+        n.offer.channel = n.offer.pc->create_data_channel("data");
         if (!n.offer.channel) {
             reset_offer(n);
             refused(peer);
@@ -505,15 +546,15 @@ private:
         if (n.answer.pc || n.answered || (n.offer.pc && self_id_ < peer)) {
             return;  // another offer, or our own, came first
         }
+        auto made = make_connection(peer);
+        if (!made) {
+            return;
+        }
         if (n.offer.pc) {
             reset_offer(n);
         }
         log_("signal", "offer ", offer_id, " from ", peer);
-        n.answer.pc = factory_.make_peer_connection(ice_servers_, memory_);
-        if (!n.answer.pc) {
-            refused(peer);
-            return;
-        }
+        n.answer.pc = std::move(made);
         n.answered_offer_id = offer_id;
         n.answered_offer = offer;
         n.answer_relays.insert(relay);
@@ -982,6 +1023,7 @@ private:
     logger log_;
     std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
     std::pmr::deque<std::pmr::string> refused_{memory_};
+    construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
     std::size_t failed_opens_ = 0;
     bool closed_ = false;
 };

@@ -23,13 +23,16 @@ window.trysteroLog = (category, text) => {
     console.log(line)
     document.getElementById('log').append(line + '\n')
 }
-// Counts the page's live RTCPeerConnections, and the most there were at once, for the scenarios that bound them.
+// Counts the page's RTCPeerConnections, for the scenarios that bound them: every one made, as Chromium counts them
+// until a garbage collection, the live ones, and the most there were at once.
+window.madePeerConnections = 0
 window.livePeerConnections = 0
 window.peakPeerConnections = 0
 const PeerConnection = window.RTCPeerConnection
 window.RTCPeerConnection = class extends PeerConnection {
     constructor(...args) {
         super(...args)
+        ++window.madePeerConnections
         window.peakPeerConnections = Math.max(window.peakPeerConnections, ++window.livePeerConnections)
     }
     close() {

@@ -368,33 +368,49 @@ const unusableIceScenario = (name, cppKind) =>
         return reported ? null : 'the C++ peer did not report the unusable ICE server'
     })
 
-// After a Trystero JS peer joined, it floods the room's topic with announcements from fresh ids above the C++ peer's
-// (js.html, window.flood): the C++ peer offers to at most the room's bound of them at once, logs each id it refuses
-// once, keeps the page's connections bounded, and goes on with the peer that joined.
+// After a Trystero JS peer joined, it floods the C++ peer with what no key is needed for (js.html, window.flood and
+// window.floodOffers): announcements from fresh ids above the C++ peer's, which a watcher (forger.html) answers with
+// garbage in the flooders' names as soon as the C++ peer offers to them, and offers that no key sealed, from fresh ids.
+// The C++ peer offers to at most the room's bound of them at once, makes no connection for a forged offer or answer,
+// logs each id it refuses once, makes at most the room's bound of connections in the window (counted as Chromium
+// counts them, every one made), and goes on with the peer that joined.
 const floodCount = 300
 const unconnectedBound = 32
 const floodScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}
-        const cpp = await open(cppKind, {...params, self: '00000000000000000000'})
+        const self = '00000000000000000000'
+        const forger = await open('forger', {...params, target: self})
+        if (!(await until(async () => (await forger.events()).some(e => e.kind === 'watching'), 10_000))) return 'the forger never watched'
+        const cpp = await open(cppKind, {...params, self})
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
         await js.value(`window.flood(${floodCount}, '0000000000')`)
-        const floodIds = async () =>
-            new Set([...(await cpp.log()).matchAll(/(?:announcement from|refusing) (0000000000\w{10})/g)].map(m => m[1]))
-        const seen = await until(async () => (await floodIds()).size >= floodCount, 30_000)
+        await js.value(`window.floodOffers(${floodCount}, '1111111111', '${self}')`)
+        const ids = async (prefix, said) =>
+            new Set([...(await cpp.log()).matchAll(new RegExp(`(?:${said}|refusing) (${prefix}\\w{10})`, 'g'))].map(m => m[1]))
+        const floodIds = () => ids('0000000000', 'announcement from')
+        const offerIds = () => ids('1111111111', 'could not open the offer from')
+        const seen = await until(async () => (await floodIds()).size >= floodCount && (await offerIds()).size >= floodCount, 30_000)
         const log = await cpp.log()
         const offered = new Set([...log.matchAll(/announcement from (0000000000\w{10}): our id is lower, so we offer/g)].map(m => m[1]))
+        const refused = new Set([...log.matchAll(/refusing ([01]{10}\w{10})/g)].map(m => m[1]))
+        const forged = (await forger.events()).filter(e => e.kind === 'forged').length
+        const made = cppKind === 'native'
+            ? (await cpp.events()).filter(e => e.kind === 'made-connection').length
+            : await cpp.value('window.madePeerConnections')
         const peak = await cpp.value('window.peakPeerConnections')
-        const refused = new Set([...log.matchAll(/refusing (0000000000\w{10})/g)].map(m => m[1]))
-        const facts = `the C++ peer logged ${(await floodIds()).size} of ${floodCount} flooding ids, offered to ${offered.size}, ` +
-            `refused ${refused.size}` +
-            (peak === undefined ? '' : `, held at most ${peak} RTCPeerConnections`)
+        const facts = `the C++ peer logged ${(await floodIds()).size} of ${floodCount} announcing ids and ` +
+            `${(await offerIds()).size} of ${floodCount} offering ids, offered to ${offered.size}, refused ${refused.size}, ` +
+            `made ${made} connections` + (peak === undefined ? '' : `, held at most ${peak}`) +
+            `; the watcher forged ${forged} answers`
         console.log(`  ${facts}`)
-        if (!seen) return `${facts}; not every announcement was handled in 30 s`
-        if (offered.size > unconnectedBound) return `${facts}; more than ${unconnectedBound}`
-        if (peak !== undefined && peak > 2 * unconnectedBound + 1) return `${facts}; more than ${2 * unconnectedBound + 1}`
+        if (!seen) return `${facts}; not every flooding signal was handled in 30 s`
+        if (offered.size > unconnectedBound) return `${facts}; offered to more than ${unconnectedBound}`
+        if (forged < 1) return `${facts}; the watcher forged no answer`
+        // The flooders' offers, and at most two for the peer that joined.
+        if (made > unconnectedBound + 2) return `${facts}; more than ${unconnectedBound + 2} connections`
         if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return `${facts}; a peer left`
         return null
     })

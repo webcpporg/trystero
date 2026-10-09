@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <memory_resource>
 #include <optional>
@@ -426,6 +427,15 @@ public:
             *signer_, f_.net.unix_seconds(), topic, trystero::protocol::write_signal(m), aux));
     }
 
+    /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
+     */
+    static std::string sealed(std::string_view room, std::string_view plain) {
+        const auto key = trystero::protocol::seal_key("", "webcpp-trystero-tests", room);
+        return std::string(trystero::protocol::format_sealed(
+            std::span(key).first(16),
+            std::span(reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size())));
+    }
+
     /** Announces one id `times` times. */
     void announce_as(std::string_view id, int times) {
         const std::array<std::uint8_t, 32> aux{};
@@ -571,6 +581,88 @@ void forged_offers_make_no_connection() {
     BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + 200; }));
     run_until(f.io, [] { return false; }, 200ms);  // the opens complete
     BOOST_TEST_EQ(f.net.made_connections, 0U);
+}
+
+// A room member, who holds the key, sends offers from fresh ids whose SDP every connection refuses:
+// each ends its negotiation at once and frees its place, but the room makes no more than
+// max_connections_per_window connections in the window, and refuses the rest.
+void sealed_offers_that_fail_at_once_are_bounded() {
+    constexpr std::size_t flood = 500;
+    constexpr std::size_t bound = trystero::detail::signaling::max_connections_per_window;
+    fixture f;
+    auto c = config("zzzzzzzzzzzzzzzzzzzz");
+    int refusals = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refusals += text.find(" connections were made in the last ") != std::string_view::npos;
+    };
+    const trystero::room a(f.io.get_executor(), f.net, std::move(c), "churn");
+    flooder member(f, "churn");
+    const auto a_topic =
+        trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", "zzzzzzzzzzzzzzzzzzzz");
+    const auto offer = flooder::sealed("churn", "not an SDP the connection takes");
+    // One at a time, each once the previous one made its connection or was refused: sent at once,
+    // the offers would evict each other's negotiations before they open.
+    for (std::size_t i = 0; i < flood; ++i) {
+        member.publish(a_topic,
+                       {.peer_id = "1churn" + std::to_string(i), .offer_id = "o", .offer = offer});
+        if (!BOOST_TEST(run_until(f.io, [&] { return f.net.made_connections + refusals > i; }))) {
+            break;
+        }
+    }
+    BOOST_TEST_LE(f.net.made_connections, bound);
+    BOOST_TEST_EQ(f.net.made_connections + refusals, flood);
+}
+
+// A watcher without the key announces fresh ids above ours and answers each of our offers to them
+// with garbage, in their names: an answer that does not open frees no place, so the room makes a
+// connection for at most max_unconnected_peers of them.
+void announcements_with_forged_answers_are_bounded() {
+    constexpr std::size_t flood = 300;
+    constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    fixture f;
+    const std::string_view a_id = "00000000000000000000";
+    auto c = config(a_id);
+    std::size_t refusals = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refusals += text.starts_with("refusing ") ? 1 : 0;
+    };
+    const trystero::room a(f.io.get_executor(), f.net, std::move(c), "churn");
+    flooder attacker(f, "churn");
+    const auto a_topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", a_id);
+    std::map<std::string, std::string, std::less<>> owners;  // peer topic -> its peer id
+    std::size_t forged = 0;
+    attacker.on_text = [&](std::string_view text) {
+        boost::system::error_code ec;
+        const auto document = boost::json::parse(text, ec);
+        const auto message =
+            ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
+        const auto* event =
+            message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
+        const auto topic = event == nullptr ? std::string_view() : event->topic;
+        const auto owner = owners.find(topic);
+        if (owner == owners.end()) {
+            return;
+        }
+        const auto content = boost::json::parse(event->content, ec);
+        const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
+        if (signal && signal->peer_id == a_id && !signal->offer.empty()) {
+            attacker.publish(a_topic, {
+                                          .peer_id = owner->second,
+                                          .offer_id = signal->offer_id,
+                                          .answer = "not a sealed answer",
+                                      });
+            ++forged;
+        }
+    };
+    for (std::size_t i = 0; i < flood; ++i) {
+        const auto id = "1churn" + std::to_string(i);
+        const auto topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", id);
+        attacker.watch(topic);
+        owners.emplace(std::string(topic), id);
+        attacker.announce_as(id, 1);
+    }
+    BOOST_TEST(run_until(f.io, [&] { return forged >= bound && refusals >= flood - bound; }));
+    BOOST_TEST_LE(f.net.made_connections, bound);
 }
 
 // Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
@@ -732,6 +824,8 @@ int main() {
     a_refused_peer_is_logged_once();
     a_forged_answer_changes_nothing();
     forged_offers_make_no_connection();
+    sealed_offers_that_fail_at_once_are_bounded();
+    announcements_with_forged_answers_are_bounded();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

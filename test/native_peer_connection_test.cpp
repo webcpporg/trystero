@@ -7,8 +7,10 @@
 // Tests the native peer connection, libdatachannel's, between two connections in one process,
 // wired to each other directly: what the signaling would carry over the relays is handed across
 // here. Each connection is bound to 127.0.0.1, so that its one host candidate is the loopback's and
-// no other interface is needed.
+// no other interface is needed. The backend makes at most
+// `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them.
 
+#include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/native/peer_connection.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 
@@ -196,11 +198,31 @@ void a_malformed_candidate_fails_without_throwing() {
     BOOST_TEST(*result == trystero::error::backend_failure);
 }
 
+void the_backend_makes_at_most_its_budget_in_a_minute() {
+    asio::io_context io;
+    trystero::native::backend factory(
+        io.get_executor(),
+        {.bind_address = std::pmr::string(loopback), .max_peer_connections_per_minute = 3});
+    std::vector<std::shared_ptr<backend::peer_connection>> made;
+    for (int i = 0; i < 3; ++i) {
+        made.push_back(factory.make_peer_connection({}, std::pmr::get_default_resource()));
+        BOOST_TEST(made.back() != nullptr);
+    }
+    BOOST_TEST(factory.make_peer_connection({}, std::pmr::get_default_resource()) == nullptr);
+    // Closed and dropped, they still count: the budget counts what was made.
+    for (const auto& pc : made) {
+        pc->close();
+    }
+    made.clear();
+    BOOST_TEST(factory.make_peer_connection({}, std::pmr::get_default_resource()) == nullptr);
+}
+
 }  // namespace
 
 int main() {
     two_connections_open_a_data_channel_and_exchange_bytes();
     closing_one_end_is_seen_by_the_other();
     a_malformed_candidate_fails_without_throwing();
+    the_backend_makes_at_most_its_budget_in_a_minute();
     return boost::report_errors();
 }

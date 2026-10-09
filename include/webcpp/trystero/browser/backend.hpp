@@ -429,7 +429,8 @@ public:
      * @param memory The room's resource, which the connection, its handlers, registration,
      * channels and texts are allocated in.
      * @return The connection, or null when the browser refuses to make one: it throws for a
-     * server it cannot use, and when the page holds as many connections as it allows.
+     * server it cannot use, and when the page holds as many connections as it allows. The page's
+     * census counts the connection made, until the garbage collector frees it.
      */
     static std::shared_ptr<peer_connection> create(event_loop& loop,
                                                    std::span<const backend::ice_server> servers,
@@ -456,6 +457,7 @@ public:
         if (!made.ok) {
             return nullptr;
         }
+        val::take_ownership(webcpp_trystero_js_census()).call<void>("add", made.value);
         return std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
                                                      loop, made.value, memory);
     }
@@ -881,6 +883,19 @@ public:
     explicit backend(event_loop& loop) : loop_(loop) {}
 
     /**
+     * The most `RTCPeerConnection`s the page's rooms hold, every backend of the page together,
+     * counted from their construction until the garbage collector frees them: half of the 500
+     * Chromium allows a page, which it counts the same way, so that a closed connection still
+     * counts until a collection the page cannot ask for.
+     *
+     * Tip: a room makes at most 64 connections in any 57 s, so floods of four rooms reach this
+     * within a minute when no collection runs; the page then makes none until one does, and its
+     * rooms report each negotiation they cannot start, while the rest of Chromium's count stays
+     * free for what the page makes without a room.
+     */
+    static constexpr std::size_t max_peer_connections = 256;
+
+    /**
      * Opens a WebSocket to a relay, with the page's `WebSocket`.
      *
      * @param url The relay's URL, read during the call.
@@ -902,12 +917,16 @@ public:
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
-     * @return The connection, or null when the browser refuses to make one, as
-     * `peer_connection::create` says.
+     * @return The connection, or null when the page holds `max_peer_connections`, or when the
+     * browser refuses to make one, as `peer_connection::create` says.
      */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
+        const val census = val::take_ownership(webcpp_trystero_js_census());
+        if (census["held"].as<double>() >= static_cast<double>(max_peer_connections)) {
+            return nullptr;
+        }
         return peer_connection::create(loop_, servers, memory);
     }
 
