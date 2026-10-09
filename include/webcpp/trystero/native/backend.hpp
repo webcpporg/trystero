@@ -16,10 +16,10 @@
 #include <webcpp/trystero/native/websocket.hpp>
 
 #include <openssl/rand.h>
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/bind_allocator.hpp>
-#include <boost/asio/ssl/context.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/bind_allocator.hpp>   // lint-world: posts handlers only
+#include <boost/asio/ssl/context.hpp>      // lint-world: the relays' TLS
+#include <boost/asio/steady_timer.hpp>     // lint-world: Trystero's timers
 
 #include <chrono>
 #include <cstdlib>
@@ -55,7 +55,7 @@ public:
     void cancel() override { timer_.cancel(); }
 
 private:
-    boost::asio::steady_timer timer_;
+    boost::asio::steady_timer timer_;  // lint-world: Trystero's timers
     std::pmr::memory_resource* memory_;
 };
 
@@ -122,21 +122,20 @@ public:
     }
 
     void random(std::span<std::uint8_t> out) override {
-        if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1) {
-            std::abort();  // no secure randomness: nothing is safe
+        const auto size = static_cast<int>(out.size());
+        if (RAND_bytes(out.data(), size) != 1) {  // lint-world: the room's keys and ids
+            std::abort();                         // no secure randomness: nothing is safe
         }
     }
 
     std::int64_t unix_seconds() override {
-        return std::chrono::duration_cast<std::chrono::seconds>(
-                   std::chrono::system_clock::now().time_since_epoch())
-            .count();
+        const auto now = std::chrono::system_clock::now();  // lint-world: Nostr's created_at
+        return std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
     }
 
     double now_ms() override {
-        return std::chrono::duration<double, std::milli>(
-                   std::chrono::steady_clock::now().time_since_epoch())
-            .count();
+        const auto now = std::chrono::steady_clock::now();  // lint-world: Trystero's timing
+        return std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
     }
 
 private:

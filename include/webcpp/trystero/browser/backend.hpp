@@ -16,7 +16,7 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <emscripten/val.h>
-#include <sys/random.h>
+#include <sys/random.h>  // lint-world: getentropy, the page's entropy
 
 #include <cmath>
 #include <deque>
@@ -484,7 +484,7 @@ private:
 
     void encrypt(std::string_view plaintext, done_handler done) {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
-        getentropy(iv.data(), iv.size());
+        getentropy(iv.data(), iv.size());  // lint-world: a seal's IV
         const auto bytes =
             std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size());
         const val promise =
@@ -607,7 +607,9 @@ public:
 
     void random(std::span<std::uint8_t> out) override {
         for (std::size_t at = 0; at < out.size(); at += 256) {
-            getentropy(out.data() + at, std::min<std::size_t>(256, out.size() - at));
+            // Each call fills at most 256 bytes.
+            const auto piece = std::min<std::size_t>(256, out.size() - at);
+            getentropy(out.data() + at, piece);  // lint-world: the room's keys and ids
         }
     }
 

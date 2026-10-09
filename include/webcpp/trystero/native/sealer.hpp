@@ -17,8 +17,8 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/post.hpp>
+#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/post.hpp>             // lint-world: posts handlers only
 
 #include <array>
 #include <memory>
@@ -99,7 +99,7 @@ public:
 
     void seal(std::string_view plaintext, done_handler done) override {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
-        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) {
+        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) {  // lint-world: a seal's IV
             complete(std::move(done), error::backend_failure);
             return;
         }

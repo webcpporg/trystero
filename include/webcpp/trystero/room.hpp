@@ -24,13 +24,13 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/asio/any_completion_handler.hpp>
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/append.hpp>
-#include <boost/asio/associated_allocator.hpp>
-#include <boost/asio/associated_executor.hpp>
-#include <boost/asio/async_result.hpp>
-#include <boost/asio/bind_allocator.hpp>
+#include <boost/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
+#include <boost/asio/any_io_executor.hpp>         // lint-world: posts handlers only
+#include <boost/asio/append.hpp>                  // lint-world: posts handlers only
+#include <boost/asio/associated_allocator.hpp>    // lint-world: posts handlers only
+#include <boost/asio/associated_executor.hpp>     // lint-world: posts handlers only
+#include <boost/asio/async_result.hpp>            // lint-world: posts handlers only
+#include <boost/asio/bind_allocator.hpp>          // lint-world: posts handlers only
 #include <boost/assert.hpp>
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>

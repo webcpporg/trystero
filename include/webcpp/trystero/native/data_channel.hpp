@@ -16,8 +16,8 @@
 
 #include <webcpp/trystero/backend.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/post.hpp>
+#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/post.hpp>             // lint-world: posts handlers only
 #include <rtc/datachannel.hpp>
 
 #include <cstring>

@@ -22,8 +22,8 @@
 #include <webcpp/trystero/native/data_channel.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 
-#include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/post.hpp>
+#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/post.hpp>             // lint-world: posts handlers only
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 #include <rtc/peerconnection.hpp>
