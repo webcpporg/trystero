@@ -164,6 +164,38 @@ struct hostile_server {
     misbehaviour what;
 };
 
+/**
+ * Accepts WebSocket connections, answers the handshake, and never reads again, keeping each
+ * connection open: a relay that stalls, or a path that died without a reset.
+ */
+struct stalled_server {
+    explicit stalled_server(asio::io_context& io)
+        : acceptor(io, {asio::ip::make_address("127.0.0.1"), 0}) {
+        asio::co_spawn(io, accept(), asio::detached);
+    }
+
+    [[nodiscard]] std::string url() const {
+        return "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/relay";
+    }
+
+    asio::awaitable<void> accept() {
+        for (;;) {
+            auto [ec, socket] = co_await acceptor.async_accept(asio::as_tuple(asio::use_awaitable));
+            if (ec) {
+                co_return;
+            }
+            auto ws = std::make_shared<beast::websocket::stream<tcp::socket>>(std::move(socket));
+            auto [accepted] = co_await ws->async_accept(asio::as_tuple(asio::use_awaitable));
+            if (!accepted) {
+                held.push_back(std::move(ws));
+            }
+        }
+    }
+
+    tcp::acceptor acceptor;
+    std::vector<std::shared_ptr<beast::websocket::stream<tcp::socket>>> held;
+};
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
                std::chrono::milliseconds limit = 5s) {
     const auto end = std::chrono::steady_clock::now() + limit;
@@ -361,6 +393,61 @@ void a_connection_that_ends_during_a_write_closes_once(misbehaviour what) {
     }
 }
 
+// A relay that stops reading: the texts a room sends it pile up in the socket's queue. At
+// websocket_limits::max_queued_bytes the socket drops the connection, reports one close, and holds
+// no more, so that the room reconnects with its backoff.
+void a_relay_that_stops_reading_is_dropped_at_the_queue_bound() {
+    asio::io_context io;
+    const stalled_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    bool opened = false;
+    int closes = 0;
+    const auto socket = trystero::native::connect_websocket(io.get_executor(), tls, server.url(),
+                                                            {
+                                                                .open = [&] { opened = true; },
+                                                                .message = {},
+                                                                .close = [&] { ++closes; },
+                                                            },
+                                                            std::pmr::get_default_resource());
+    if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
+        return;
+    }
+    const std::string text(std::size_t{64} * 1024, 't');
+    for (int i = 0; i < 2000 && closes == 0; ++i) {
+        socket->send(text);
+        io.poll();
+    }
+    BOOST_TEST(run_until(io, [&] { return closes == 1; }));
+    run_until(io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(closes, 1);
+}
+
+// A relay that stops answering while the room has nothing to send: a keep-alive ping goes
+// unanswered, and the socket closes after websocket_limits::idle_timeout, here 1 s.
+void a_relay_that_stops_answering_times_out() {
+    asio::io_context io;
+    const stalled_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    bool opened = false;
+    int closes = 0;
+    const auto socket = trystero::native::connect_websocket(
+        io.get_executor(), tls, server.url(),
+        {
+            .open = [&] { opened = true; },
+            .message = {},
+            .close = [&] { ++closes; },
+        },
+        std::pmr::get_default_resource(),
+        {
+            .max_queued_bytes = trystero::native::websocket_limits{}.max_queued_bytes,
+            .idle_timeout = 1s,
+        });
+    if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
+        return;
+    }
+    BOOST_TEST(run_until(io, [&] { return closes == 1; }, 10s));
+}
+
 }  // namespace
 
 int main() {
@@ -372,5 +459,7 @@ int main() {
     closing_right_after_a_send_lets_the_write_finish_first();
     a_connection_that_ends_during_a_write_closes_once(misbehaviour::too_long_text);
     a_connection_that_ends_during_a_write_closes_once(misbehaviour::reset);
+    a_relay_that_stops_reading_is_dropped_at_the_queue_bound();
+    a_relay_that_stops_answering_times_out();
     return boost::report_errors();
 }

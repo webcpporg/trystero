@@ -122,6 +122,13 @@ holds only what is specific to trystero.
   - A room asks a peer below it to offer at most once in 5.3 s per relay,
     Trystero's announce interval, so a flood of low ids does not have the
     relays rate-limit the room.
+  - A relay is a third party too. A text longer than 1 MiB closes its
+    connection on both backends. On native, a relay that stops reading is
+    dropped once the texts queued for it would pass
+    `native::websocket_limits::max_queued_bytes` (4 MiB), and one that
+    stops answering once `idle_timeout` (30 s) passes with its keep-alive
+    ping unanswered (`backend_config::relay_limits`); either reports a
+    close, and the room reconnects with its backoff.
   - What a flood still does: joined peers, memory and connections stay
     safe, but a flooder who keeps sending new ids takes each place, or each
     connection of the window, as it frees, so new peers can be kept out for

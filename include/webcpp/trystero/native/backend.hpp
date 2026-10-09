@@ -124,6 +124,9 @@ struct backend_config {
      * rooms do so at once; an application with more rooms raises it.
      */
     std::size_t max_peer_connections_per_minute = 256;
+
+    /** What the relays' WebSockets tolerate of a relay that stops reading or answering. */
+    websocket_limits relay_limits = {};
 };
 
 /**
@@ -177,7 +180,7 @@ public:
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
-        return connect_websocket(ex_, tls_, url, std::move(h), memory);
+        return connect_websocket(ex_, tls_, url, std::move(h), memory, config_.relay_limits);
     }
 
     /**

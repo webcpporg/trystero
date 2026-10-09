@@ -38,6 +38,26 @@
 
 namespace webcpp::trystero::native {
 
+/**
+ * What a native WebSocket tolerates of a relay that stops reading or answering.
+ *
+ * @see "The native backend", in the guide.
+ */
+struct websocket_limits {
+    /**
+     * The most bytes of text queued to write: a relay that stops reading lets them pile up, and a
+     * text beyond this drops the connection, which reports a close, so that the room reconnects
+     * with its backoff.
+     */
+    std::size_t max_queued_bytes = std::size_t{4} << 20U;
+
+    /**
+     * How long the connection may stay silent: half of it, a keep-alive ping is sent, and a relay
+     * that answers nothing within the whole of it is closed, which reports a close.
+     */
+    std::chrono::seconds idle_timeout = std::chrono::seconds(30);
+};
+
 namespace detail {
 
 // Its implicit move assignment may allocate: a std::pmr member copies when the two resources
@@ -112,12 +132,13 @@ public:
     /** A session, not started, for a parsed URL, in `memory`. */
     websocket_session(const boost::asio::any_io_executor& ex, boost::asio::ssl::context& tls,
                       url_parts url, backend::websocket::handlers h,
-                      std::pmr::memory_resource* memory)
+                      std::pmr::memory_resource* memory, websocket_limits limits)
         : ex_(ex),
           resolver_(ex),
           ws_(make_stream(ex, tls)),
           url_(std::move(url)),
           memory_(memory),
+          limits_(limits),
           h_(std::allocate_shared<backend::websocket::handlers>(
               std::pmr::polymorphic_allocator<>(memory), std::move(h))),
           queue_(memory) {}
@@ -128,11 +149,22 @@ public:
             ex_, [self = this->shared_from_this()] { return self->run(); }, boost::asio::detached);
     }
 
-    /** Queues a text to write, when open and not closing; one write is in flight at a time. */
+    /**
+     * Queues a text to write, when open and not closing; one write is in flight at a time. A text
+     * that would take the queue beyond `websocket_limits::max_queued_bytes` drops the connection.
+     */
     void send(std::string_view text) {
         if (!open_ || closing_) {
             return;
         }
+        if (queued_bytes_ + text.size() > limits_.max_queued_bytes) {
+            // The relay stopped reading: no close frame could reach it, so the socket is closed,
+            // the read fails, and end() reports the close.
+            closing_ = true;
+            boost::beast::get_lowest_layer(ws_).close();
+            return;
+        }
+        queued_bytes_ += text.size();
         queue_.emplace_back(text);  // a write outlives the call, so the text is copied once, here
         if (std::exchange(writing_, true)) {
             return;  // marked now: the writer only starts once the executor runs it
@@ -210,8 +242,11 @@ private:
             }
         }
         lowest.expires_never();
-        ws_.set_option(boost::beast::websocket::stream_base::timeout::suggested(
-            boost::beast::role_type::client));
+        auto timeouts = boost::beast::websocket::stream_base::timeout::suggested(
+            boost::beast::role_type::client);
+        timeouts.idle_timeout = limits_.idle_timeout;
+        timeouts.keep_alive_pings = true;  // a relay that reads nothing answers no ping
+        ws_.set_option(timeouts);
         const bool default_port = url_.port == (Secure ? "443" : "80");
         std::pmr::string host(url_.host, memory_);
         if (!default_port) {
@@ -256,6 +291,7 @@ private:
         while (!queue_.empty() && open_ && !ended_) {
             const std::pmr::string text = std::move(queue_.front());
             queue_.pop_front();
+            queued_bytes_ -= text.size();
             ws_.text(true);
             auto [ec, size] = co_await ws_.async_write(
                 boost::asio::buffer(text), boost::asio::as_tuple(boost::asio::use_awaitable));
@@ -272,6 +308,7 @@ private:
         }
         open_ = false;
         queue_.clear();
+        queued_bytes_ = 0;
         if (const auto h = h_) {
             if (auto f = std::exchange(h->close, {})) {
                 f();
@@ -284,10 +321,12 @@ private:
     stream_type ws_;
     url_parts url_;
     std::pmr::memory_resource* memory_;
+    websocket_limits limits_;
     // Shared so that a handler that destroys the connection's owner during its own call outlives
     // the call.
     std::shared_ptr<backend::websocket::handlers> h_;
     std::pmr::deque<std::pmr::string> queue_;
+    std::size_t queued_bytes_ = 0;  // of the texts in queue_
     bool open_ = false;
     bool writing_ = false;
     bool closing_ = false;
@@ -322,8 +361,11 @@ private:
  * Connects to a Nostr relay over Boost.Beast: `ws://` in the clear, `wss://` over TLS with `tls`.
  *
  * Writes are queued, one in flight at a time; a received message is handed over as a view of the
- * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection. A URL
- * it cannot parse reports a close, as an unreachable relay does. It needs no exceptions.
+ * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection. A
+ * relay that stops reading is dropped once the queue would pass `limits.max_queued_bytes`, and one
+ * that stops answering once `limits.idle_timeout` passes with its keep-alive ping unanswered; both
+ * report a close. A URL it cannot parse reports a close, as an unreachable relay does. It needs no
+ * exceptions.
  *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection and should verify
@@ -332,6 +374,7 @@ private:
  * @param h What the WebSocket reports.
  * @param memory The room's resource, which the connection, its handlers and its queued texts are
  * allocated in; Beast's stream state and the coroutines' frames are Asio's.
+ * @param limits What it tolerates of a relay that stops reading or answering.
  * @return The WebSocket; destroying it drops the connection without reporting it.
  * @see "The native backend", in the guide.
  */
@@ -339,7 +382,8 @@ inline std::shared_ptr<backend::websocket> connect_websocket(const boost::asio::
                                                              boost::asio::ssl::context& tls,
                                                              std::string_view url,
                                                              backend::websocket::handlers h,
-                                                             std::pmr::memory_resource* memory) {
+                                                             std::pmr::memory_resource* memory,
+                                                             websocket_limits limits = {}) {
     auto parts = detail::parse_url(url, memory);
     if (!parts) {
         parts = detail::url_parts{
@@ -352,12 +396,12 @@ inline std::shared_ptr<backend::websocket> connect_websocket(const boost::asio::
     const std::pmr::polymorphic_allocator<> allocator(memory);
     if (parts->secure) {
         auto session = std::allocate_shared<detail::websocket_session<true>>(
-            allocator, ex, tls, std::move(*parts), std::move(h), memory);
+            allocator, ex, tls, std::move(*parts), std::move(h), memory, limits);
         session->start();
         return std::allocate_shared<detail::websocket_handle<true>>(allocator, std::move(session));
     }
     auto session = std::allocate_shared<detail::websocket_session<false>>(
-        allocator, ex, tls, std::move(*parts), std::move(h), memory);
+        allocator, ex, tls, std::move(*parts), std::move(h), memory, limits);
     session->start();
     return std::allocate_shared<detail::websocket_handle<false>>(allocator, std::move(session));
 }
