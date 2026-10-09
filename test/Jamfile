@@ -26,3 +26,22 @@ webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscript
 webcpp.compile config : config_test.cpp ;
 webcpp.compile config_developer_defined : config_test.cpp
   : <define>WEBCPP_TRYSTERO_NO_EXCEPTIONS <define>WEBCPP_TEST_TRYSTERO_DEVELOPER_DEFINED ;
+
+# The protocol against what Trystero JS computed, which the oracle writes into
+# fixtures/expected/expected.json, and whole rooms over the memory backend of
+# support/memory_backend.hpp: on both targets. The native backend's tests,
+# over libdatachannel and OpenSSL, run natively only. Three need exceptions
+# whatever the build asks: data_channel.hpp, peer_connection.hpp and
+# backend.hpp exist only with them, since libdatachannel reports errors by
+# throwing, and the echo server of native_websocket ends its coroutines by
+# the exception use_awaitable throws when a connection closes.
+webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
+webcpp.run room : room_test.cpp ;
+webcpp.run native_sealer : native_sealer_test.cpp
+  : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
+webcpp.run native_websocket : native_websocket_test.cpp
+  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+webcpp.run native_peer_connection : native_peer_connection_test.cpp
+  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+webcpp.run native_room : native_room_test.cpp
+  : <library>/webcpp/trystero//native <exception-handling>on : native ;
