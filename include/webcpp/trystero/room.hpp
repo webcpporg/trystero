@@ -1307,18 +1307,28 @@ public:
      */
     room(room&&) noexcept = default;
 
+    // Leaving sends each peer Trystero's farewell, whose frames are allocated in the room's
+    // resource: a resource that fails then ends the program, as in the destructor.
     /**
-     * Takes the membership of the room moved from, which may then only be destroyed or assigned.
+     * Leaves the membership this room held at once, as the destructor does, then takes the
+     * membership of the room moved from, which may then only be destroyed or assigned.
      *
-     * The membership this room held is not left: no farewell is sent. While an `action` of it
-     * lives, it stays joined, unreachable, its relays, peers and timers still running; otherwise it
-     * is destroyed as it is, without the steps leaving takes, so its pending operations are not
-     * completed with `error::room_left`. Let a room leave with `async_leave` before assigning to
-     * it, or assign only to a room moved from.
+     * Every peer of the membership left is told, every connection of it is closed, and every
+     * operation pending on it completes with `error::room_left`, even while an `action` of it
+     * lives.
      *
+     * @param other The room moved from.
      * @return This room.
      */
-    room& operator=(room&&) noexcept = default;
+    room& operator=(room&& other) noexcept {  // NOLINT(bugprone-exception-escape)
+        if (this != &other) {
+            if (impl_) {
+                impl_->abandon();
+            }
+            impl_ = std::move(other.impl_);
+        }
+        return *this;
+    }
 
     // Leaving sends each peer Trystero's farewell, whose frames are allocated in the room's
     // resource: a resource that fails then ends the program, as in any destructor.

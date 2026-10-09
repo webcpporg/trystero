@@ -87,7 +87,8 @@ holds only what is specific to trystero.
   offering, Trystero JS offering with a password, a Trystero JS peer that
   also sends malformed candidates (`js.html`'s `malformed-candidate-to`), a
   first relay whose URL no WebSocket can be made to, a wrong password, and a
-  mesh of three. Both lanes are of the kind
+  mesh of three; and, for the native peer, a seventh: a room moved over the
+  joined one, which must leave it as destroying it does. Both lanes are of the kind
   `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of

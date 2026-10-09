@@ -222,6 +222,7 @@ const openNative = (params, label) => {
         events: async () => events,
         log: async () => lines.join('\n'),
         leave: async () => child.stdin.write('leave\n'),
+        replace: async () => child.stdin.write('replace\n'),
         close: async () => {
             child.kill()
             await new Promise(resolve => (child.exitCode !== null ? resolve() : child.on('exit', resolve)))
@@ -353,6 +354,17 @@ const scenarios = async () => {
         if (!usePublic) {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
+            await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
+                const params = {room: room(), ...relayParams}
+                const native = await open('native', params)
+                const js = await open('js', params)
+                const ok = await until(async () => exchangeComplete(await native.events(), false) && exchangeComplete(await js.events(), true), 60_000)
+                if (!ok) return 'the exchange did not complete in 60 s'
+                await native.replace()
+                const left = await until(async () => (await js.events()).some(e => e.kind === 'peer-leave') &&
+                    (await native.events()).some(e => e.kind === 'pending' && e.error === 'room left'), 10_000)
+                return left ? null : 'the replaced room did not say goodbye, or its pending receive did not complete with room left'
+            })
             await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', {...params, password: 'secret'})

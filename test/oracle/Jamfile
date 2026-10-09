@@ -20,7 +20,7 @@ webcpp.lane oracle : cases-protocol ;
 # browser's peer in headless Chrome, and the native peer as a process. The
 # native peer needs exceptions whatever the build asks: native::backend
 # exists only with them, since libdatachannel reports errors by throwing.
-# Each driver has 420 s, beyond its six scenarios' own limits (four
+# Each driver has 420 s, beyond its scenarios' own limits (up to five
 # exchanges of 60 to 70 s, a wait of 8 s and a mesh of 60 s) and Chrome's
 # start, so that a scenario that does not complete fails by name, with what
 # each peer saw, before the bound stops it; a run where every page also

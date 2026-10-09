@@ -6,9 +6,10 @@
 //
 // The native C++ side of the interop test: the browser peer's behaviour (peer.cpp), as a process.
 // The driver (run.mjs) starts it with the room's parameters, reads one JSON event per line on
-// stdout, and writes "leave" on stdin to make it leave. Diagnostics go to stderr. Its peer
-// connections are bound to 127.0.0.1, so that it meets the other peers of this machine on the
-// loopback alone, with no network beyond it.
+// stdout, and writes "leave" on stdin to make it leave, or "replace" to move a room of another room
+// id over the joined one, with a receive of the joined room's pending. Diagnostics go to stderr.
+// Its peer connections are bound to 127.0.0.1, so that it meets the other peers of this machine on
+// the loopback alone, with no network beyond it.
 //
 // | Argument      | Meaning                                                          |
 // | --app, --room | the app id and room id                                           |
@@ -28,6 +29,7 @@
 #include <unistd.h>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 
 namespace trystero = webcpp::trystero;
@@ -81,13 +83,41 @@ trystero::room_config config_of(std::map<std::string, std::string>& args) {
     return config;
 }
 
+trystero::room room_of(boost::asio::io_context& io, trystero::native::backend& backend,
+                       std::map<std::string, std::string>& args, std::string_view suffix = {}) {
+    return {io.get_executor(), backend, config_of(args), args["room"] + std::string(suffix)};
+}
+
+/**
+ * Moves `next` over `joined`, with a receive pending on the joined room: the receive, on an action
+ * no peer sends, completes when the joined room is left, while the action keeps its state alive.
+ */
+void replace(trystero::room& joined, trystero::room next) {
+    const auto pending =
+        std::make_shared<trystero::action<std::string>>(joined.make_action<std::string>("pending"));
+    pending->async_receive([pending](boost::system::error_code ec, const std::string& /*text*/,
+                                     const trystero::message_info& /*info*/) {
+        record("pending", {{"error", ec ? ec.message() : ""}});
+    });
+    joined = std::move(next);
+    record("replaced", {{"self", joined.self_id()}});
+}
+
+/** Leaves with Trystero's farewell, then stops `io`, which ends the process. */
+void leave(trystero::room& room, boost::asio::io_context& io) {
+    room.async_leave([&io](boost::system::error_code ec) {
+        record("left", {{"error", ec ? ec.message() : ""}});
+        io.stop();
+    });
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
     auto args = arguments(argc, argv);
     boost::asio::io_context io;
     trystero::native::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
-    trystero::room room(io.get_executor(), backend, config_of(args), args["room"]);
+    trystero::room room = room_of(io, backend, args);
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {
         relays.emplace_back(url);
@@ -150,7 +180,7 @@ int main(int argc, char* argv[]) {
                        });
     });
 
-    // "leave" on stdin: Trystero's farewell, then the process ends.
+    // "leave" on stdin: Trystero's farewell, then the process ends; "replace": a room moved over.
     boost::asio::posix::stream_descriptor input(io, ::dup(STDIN_FILENO));
     boost::asio::streambuf line;
     std::function<void()> read_command = [&] {
@@ -161,14 +191,14 @@ int main(int argc, char* argv[]) {
                 }
                 const std::string command(static_cast<const char*>(line.data().data()), size);
                 line.consume(size);
-                if (command.starts_with("leave")) {
-                    room.async_leave([&](boost::system::error_code ec) {
-                        record("left", {{"error", ec ? ec.message() : ""}});
-                        io.stop();
-                    });
+                if (command.starts_with("replace")) {
+                    replace(room, room_of(io, backend, args, "-replaced"));
+                }
+                if (!command.starts_with("leave")) {
+                    read_command();
                     return;
                 }
-                read_command();
+                leave(room, io);
             });
     };
     read_command();

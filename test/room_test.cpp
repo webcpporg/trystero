@@ -240,6 +240,30 @@ void leaving_is_seen_by_the_others_and_a_return_reconnects() {
     BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
 }
 
+// A room moved over a joined one leaves it as destroying it does: the other peer sees it go, and
+// its pending operations complete with room_left, while an action of it still holds its state.
+void moving_a_room_over_a_joined_one_leaves_it() {
+    fixture f;
+    trystero::room a(f.io.get_executor(), f.net, config("KKKKKKKKKKKKKKKKKKKK"), "move");
+    std::vector<std::string> left;
+    std::vector<std::string> joined;
+    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    trystero::room b(f.io.get_executor(), f.net, config("LLLLLLLLLLLLLLLLLLLL"), "move");
+    auto pending = b.make_action<std::string>("pending");
+    std::optional<boost::system::error_code> received;
+    pending.async_receive([&](boost::system::error_code ec, const std::string& /*text*/,
+                              const trystero::message_info& /*info*/) { received = ec; });
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
+
+    b = trystero::room(f.io.get_executor(), f.net, config("MMMMMMMMMMMMMMMMMMMM"), "elsewhere");
+    BOOST_TEST(run_until(f.io, [&] { return left.size() == 1 && received.has_value(); }));
+    BOOST_TEST(a.peers().empty());
+    if (BOOST_TEST(received.has_value())) {
+        BOOST_TEST(*received == trystero::error::room_left);
+    }
+}
+
 void three_peers_form_a_mesh() {
     fixture f;
     std::vector<std::unique_ptr<trystero::room>> rooms;
@@ -343,6 +367,7 @@ int main() {
     ping_measures_a_round_trip();
     the_same_password_joins_and_another_does_not();
     leaving_is_seen_by_the_others_and_a_return_reconnects();
+    moving_a_room_over_a_joined_one_leaves_it();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();
