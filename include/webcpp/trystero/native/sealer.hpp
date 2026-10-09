@@ -91,9 +91,9 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
  * AES-GCM under one room key, through OpenSSL, in Trystero's sealed text form, what Trystero's
  * `encrypt` and `decrypt` do with `crypto.subtle`.
  *
- * It works synchronously and posts each completion to the executor, as the backend's contract
- * asks: a handler never runs inside the call that started it. Its texts and completions are in the
- * room's resource; OpenSSL's cipher context is OpenSSL's. It needs no exceptions.
+ * It works synchronously and posts each completion to the executor, so a handler never runs inside
+ * the call that started it. Its texts and completions are in the room's resource; OpenSSL's cipher
+ * context is OpenSSL's. It needs no exceptions.
  *
  * @see "The native backend", in the guide.
  */

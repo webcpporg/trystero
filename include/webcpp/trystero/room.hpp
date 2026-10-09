@@ -99,8 +99,11 @@ struct room_config {
     /** The application's id, Trystero's `appId`: rooms of different apps never meet. */
     std::pmr::string app_id = {};
     /**
-     * The room's password, Trystero's `password`: it seals the signals and adds a challenge to
-     * the handshake, so peers with another password never join; empty means none.
+     * The room's password, Trystero's `password`: part of the key the signals are sealed with,
+     * and a challenge added to the handshake, so peers with another password never join.
+     *
+     * Empty means none: the signals are still sealed, under a key of the app and the room alone,
+     * as Trystero's `genKey` does, and the handshake has no challenge.
      */
     std::pmr::string password = {};
     /**
@@ -1307,8 +1310,11 @@ public:
     /**
      * Takes the membership of the room moved from, which may then only be destroyed or assigned.
      *
-     * The membership this room held is released as it is, without the farewell its destructor
-     * would send.
+     * The membership this room held is not left: no farewell is sent. While an `action` of it
+     * lives, it stays joined, unreachable, its relays, peers and timers still running; otherwise it
+     * is destroyed as it is, without the steps leaving takes, so its pending operations are not
+     * completed with `error::room_left`. Let a room leave with `async_leave` before assigning to
+     * it, or assign only to a room moved from.
      *
      * @return This room.
      */
@@ -1537,7 +1543,8 @@ public:
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code)`.
      * @param value The message, taken at the call: moved when `T` owns its storage, copied once
-     * into the room's resource when it is a view.
+     * into the room's resource when it is a view, and serialized at once into the room's resource
+     * when it is a `boost::json::value`, or a @ref payload that holds one.
      * @param options The targets and the metadata.
      * @param token The completion token.
      * @return What the token's initiation returns.

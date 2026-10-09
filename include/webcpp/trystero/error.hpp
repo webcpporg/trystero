@@ -43,11 +43,19 @@ enum class error {
     transfer_timed_out,
     /** The data channel stopped draining while a transfer waited for it. */
     channel_stalled,
-    /** A peer's signal or handshake used another password, Trystero's "incorrect password". */
+    /**
+     * A peer's signal or handshake used another password, or the peer sent a handshake message the
+     * protocol does not expect, Trystero's "incorrect password for overlapping room".
+     */
     wrong_password,
     /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
     handshake_timed_out,
-    /** The handshake's messages were not what the protocol expects. */
+    /**
+     * Reserved: nothing reports it today.
+     *
+     * A handshake message of the wrong shape reports `wrong_password`, as Trystero's handshake
+     * does.
+     */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
     backend_failure,
