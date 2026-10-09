@@ -1,0 +1,40 @@
+{
+    "topics": [
+        ["trystero-cpp-probe", "lobby", "00000000000000000000"],
+        ["my-app", "room-1", "zzzzzzzzzzzzzzzzzzzz"],
+        ["café ☕ app", "sala ünïcode 🎉", "AbCdEfGhIjKlMnOpQrSt"],
+        ["a", "b", "c"]
+    ],
+    "str_to_num": ["", "a", "trystero-cpp-probe", "café ☕", "🎉🎉", "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v"],
+    "relays": ["trystero-cpp-probe", "my-app", "café ☕ app", "x", "a-much-longer-application-identifier-for-testing"],
+    "relay_redundancy": 5,
+    "shuffle": {"seeds": [0, 1, 1234567, 9007199254740991], "length": 29},
+    "handshake": [["ch4ll3ng3", "secret", "my-app", "room-1"], ["x", "", "a", "b"]],
+    "sealed": {
+        "password": "secret",
+        "app_id": "my-app",
+        "room_id": "room-1",
+        "plaintext": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n",
+        "random": {"multiplier": 17, "offset": 3}
+    },
+    "nostr_events": {
+        "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+        "created_at": 1759700000,
+        "contents": [
+            "{\"peerId\":\"abc\",\"nonce\":\"12345678\"}",
+            "quote \" backslash \\ newline \n tab \t unicode é ☕ 🎉 control \u0001",
+            ""
+        ]
+    },
+    "actions": {
+        "text": ["chat", "hello from Trystero JS"],
+        "json": ["drink", {"drink": "negroni", "withIce": true, "n": [1, 2.5, null]}],
+        "binary": ["pic", [0, 1, 2, 253, 254, 255]],
+        "text_with_metadata": ["chat", "hi", {"from": "js", "n": 7}],
+        "empty_text": ["@_hsready", ""],
+        "thirty_two_byte_name": ["abcdefghijklmnopqrstuvwxyz012345", "x"],
+        "chunked": {"type": "file", "length": 40000, "multiplier": 7, "metadata": {"name": "big.bin"}}
+    },
+    "controls": {"max_receive_bytes": 30000},
+    "envelope": {"app_id": "my-app", "room_id": "room-1", "frame": [2, 0, 99, 104, 97, 116], "timeout": 60000}
+}

@@ -1,0 +1,89 @@
+<!--
+Copyright (c) 2026 WebCpp.org
+
+Distributed under the Boost Software License, Version 1.0. (See
+accompanying file LICENSE_1_0.txt or copy at
+https://www.boost.org/LICENSE_1_0.txt)
+
+A Trystero JS peer of the interop test, which run.mjs opens in headless Chrome.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trystero JS peer</title>
+<script type="importmap">
+{
+    "imports": {
+        "trystero": "/node_modules/trystero/dist/index.mjs",
+        "@trystero-p2p/core": "/node_modules/@trystero-p2p/core/dist/index.mjs",
+        "@trystero-p2p/nostr": "/node_modules/@trystero-p2p/nostr/dist/index.mjs",
+        "@noble/secp256k1": "/node_modules/@noble/secp256k1/index.js"
+    }
+}
+</script>
+</head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+// The JavaScript side of the interop test: Trystero 0.26 doing exactly what the C++ peer does (interop/peer.cpp).
+import {joinRoom, selfId} from 'trystero'
+
+window.events = []
+const record = (kind, fields = {}) => window.events.push({kind, ...fields})
+const log = (category, text) => {
+    const line = `[${(performance.now() / 1000).toFixed(2)}s] ${category}: ${text}`
+    console.log(line)
+    document.getElementById('log').append(line + '\n')
+}
+const params = new URLSearchParams(location.search)
+const relays = params.get('relays')
+const room = joinRoom(
+    {
+        appId: params.get('app'),
+        // No ICE server: Chrome gathers its host candidates alone, and asks no public STUN server.
+        rtcConfig: {iceServers: []},
+        ...(params.get('password') ? {password: params.get('password')} : {}),
+        ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
+    },
+    params.get('room'),
+    {onJoinError: details => record('error', {peer: details.peerId, error: details.error})}
+)
+record('joined', {self: selfId})
+log('room', 'self id ' + selfId)
+
+const checksum = bytes => {
+    let sum = 0
+    for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i + 1)) >>> 0
+    return sum
+}
+const chat = room.makeAction('chat')
+const drink = room.makeAction('drink')
+const file = room.makeAction('file')
+chat.onMessage = (text, {peerId}) => {
+    record('chat', {from: peerId, text})
+    if (!text.startsWith('echo: ')) chat.send('echo: ' + text, {target: peerId})
+}
+drink.onMessage = (value, {peerId}) => record('drink', {from: peerId, value})
+file.onMessage = (data, {peerId, metadata}) => {
+    const bytes = new Uint8Array(data)
+    record('file', {from: peerId, size: bytes.length, checksum: checksum(bytes), metadata: JSON.stringify(metadata ?? null)})
+}
+const sent = (what, peer) => [() => record('sent', {what, peer, error: ''}), e => record('sent', {what, peer, error: String(e)})]
+room.onPeerJoin = peer => {
+    log('room', 'peer joined: ' + peer)
+    record('peer-join', {peer})
+    chat.send('hello from Trystero JS', {target: peer}).then(...sent('chat', peer))
+    drink.send({drink: 'negroni', withIce: true, from: 'js'}, {target: peer}).then(...sent('drink', peer))
+    const big = new Uint8Array(100_000).map((_, i) => (i * 7) % 256)
+    file.send(big, {target: peer, metadata: {name: 'from-js.bin'}}).then(...sent('file', peer))
+    room.ping(peer).then(ms => record('ping', {peer, ms, error: ''}), e => record('ping', {peer, error: String(e)}))
+}
+room.onPeerLeave = peer => {
+    log('room', 'peer left: ' + peer)
+    record('peer-leave', {peer})
+}
+window.leave = () => room.leave().then(() => record('left', {error: ''}))
+</script>
+</body>
+</html>

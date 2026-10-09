@@ -1,0 +1,34 @@
+<!--
+Copyright (c) 2026 WebCpp.org
+
+Distributed under the Boost Software License, Version 1.0. (See
+accompanying file LICENSE_1_0.txt or copy at
+https://www.boost.org/LICENSE_1_0.txt)
+
+The C++ peer of the interop test (peer.cpp, built with Emscripten), which run.mjs opens in headless
+Chrome.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>webcpp trystero peer</title>
+</head>
+<body>
+<pre id="log"></pre>
+<script>
+window.events = []
+window.trysteroLog = (category, text) => {
+    const line = `[${(performance.now() / 1000).toFixed(2)}s] ${category}: ${text}`
+    console.log(line)
+    document.getElementById('log').append(line + '\n')
+}
+var Module = {onRuntimeInitialized: () => Module.start()}
+window.leave = () => Module.leave()
+// The program run.mjs serves under /build/, as b2 linked it: interop_browser.js, beside its wasm.
+const program = document.createElement('script')
+program.src = '/build/' + new URLSearchParams(location.search).get('program')
+document.body.append(program)
+</script>
+</body>
+</html>

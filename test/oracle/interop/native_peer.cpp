@@ -1,0 +1,156 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+//
+// The native C++ side of the interop test: the browser peer's behaviour (peer.cpp), as a process.
+// The driver (run.mjs) starts it with the room's parameters, reads one JSON event per line on
+// stdout, and writes "leave" on stdin to make it leave. Diagnostics go to stderr. Its peer
+// connections are bound to 127.0.0.1, so that it meets the other peers of this machine on the
+// loopback alone, with no network beyond it.
+//
+// | Argument      | Meaning                                                          |
+// | --app, --room | the app id and room id                                           |
+// | --password    | the room password, optional                                      |
+// | --self        | this peer's id, optional                                         |
+// | --relays      | comma-separated relay URLs, optional (Trystero's default list)   |
+// | --ice         | a STUN or TURN server's URL, optional (Trystero's default list)  |
+#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/room.hpp>
+
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/posix/stream_descriptor.hpp>
+#include <boost/asio/read_until.hpp>
+#include <boost/asio/streambuf.hpp>
+#include <boost/json.hpp>
+
+#include <unistd.h>
+#include <iostream>
+#include <map>
+#include <string>
+
+namespace trystero = webcpp::trystero;
+
+namespace {
+
+/** An event for the driver: a kind and fields, one JSON object per line. */
+void record(std::string_view kind, boost::json::object fields = {}) {
+    fields["kind"] = kind;
+    std::cout << boost::json::serialize(fields) << std::endl;
+}
+
+std::uint32_t checksum(const trystero::bytes& data) {
+    std::uint32_t sum = 0;
+    for (std::size_t i = 0; i < data.size(); ++i)
+        sum += data[i] * static_cast<std::uint32_t>(i + 1);
+    return sum;
+}
+
+std::map<std::string, std::string> arguments(int argc, char** argv) {
+    std::map<std::string, std::string> out;
+    for (int i = 1; i + 1 < argc; i += 2) {
+        std::string_view key = argv[i];
+        if (key.starts_with("--"))
+            out[std::string(key.substr(2))] = argv[i + 1];
+    }
+    return out;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    auto args = arguments(argc, argv);
+    boost::asio::io_context io;
+    trystero::native::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+
+    trystero::room_config config;
+    config.app_id = args["app"];
+    config.password = args["password"];
+    config.self_id = args["self"];
+    for (std::string_view relays = args["relays"]; !relays.empty();) {
+        const auto comma = relays.find(',');
+        config.relay_urls.emplace_back(relays.substr(0, comma));
+        relays = comma == std::string_view::npos ? std::string_view() : relays.substr(comma + 1);
+    }
+    if (!args["ice"].empty())
+        config.ice_servers.push_back({{args["ice"]}, {}, {}});
+    config.log = [](std::string_view category, std::string_view text) {
+        std::cerr << category << ": " << text << std::endl;
+    };
+
+    trystero::room room(io.get_executor(), backend, config, args["room"]);
+    boost::json::array relays;
+    for (const auto& url : room.relay_urls())
+        relays.emplace_back(url);
+    record("joined", {{"self", room.self_id()}, {"relays", relays}});
+
+    auto chat = room.make_action<std::string>("chat");
+    auto drink = room.make_action<boost::json::value>("drink");
+    auto file = room.make_action<trystero::bytes>("file");
+
+    room.on_peer_join([&](std::string_view peer_view) {
+        const trystero::peer_id peer(peer_view);
+        record("peer-join", {{"peer", peer}});
+        auto done = [peer](const char* what) {
+            return [peer, what](boost::system::error_code ec) {
+                record("sent", {{"what", what}, {"peer", peer}, {"error", ec ? ec.message() : ""}});
+            };
+        };
+        chat.async_send("hello from C++", trystero::send_options{{peer}, {}}, done("chat"));
+        drink.async_send(
+            boost::json::object{{"drink", "cafezinho"}, {"withIce", false}, {"from", "c++"}},
+            trystero::send_options{{peer}, {}}, done("drink"));
+        trystero::bytes big(100'000);
+        for (std::size_t i = 0; i < big.size(); ++i)
+            big[i] = static_cast<std::uint8_t>((i * 13) % 256);
+        file.async_send(std::move(big),
+                        trystero::send_options{{peer}, R"({"name":"from-cpp.bin"})"}, done("file"));
+        room.async_ping(peer, [peer](boost::system::error_code ec, std::chrono::milliseconds rtt) {
+            record("ping",
+                   {{"peer", peer}, {"error", ec ? ec.message() : ""}, {"ms", rtt.count()}});
+        });
+    });
+    room.on_peer_leave([](std::string_view peer) { record("peer-leave", {{"peer", peer}}); });
+    room.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+        record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
+    });
+    chat.on_message([&](std::string text, const trystero::message_info& info) {
+        record("chat", {{"from", info.from}, {"text", text}});
+        if (!text.starts_with("echo: "))
+            chat.async_send("echo: " + text, trystero::send_options{{info.from}, {}},
+                            [](boost::system::error_code) {});
+    });
+    drink.on_message([](boost::json::value v, const trystero::message_info& info) {
+        record("drink", {{"from", info.from}, {"value", v}});
+    });
+    file.on_message([](trystero::bytes data, const trystero::message_info& info) {
+        record("file", {{"from", info.from},
+                        {"size", data.size()},
+                        {"checksum", checksum(data)},
+                        {"metadata", info.metadata}});
+    });
+
+    // "leave" on stdin: Trystero's farewell, then the process ends.
+    boost::asio::posix::stream_descriptor input(io, ::dup(STDIN_FILENO));
+    boost::asio::streambuf line;
+    std::function<void()> read_command = [&] {
+        boost::asio::async_read_until(
+            input, line, '\n', [&](boost::system::error_code ec, std::size_t size) {
+                if (ec)
+                    return;
+                std::string command(static_cast<const char*>(line.data().data()), size);
+                line.consume(size);
+                if (command.starts_with("leave")) {
+                    room.async_leave([&](boost::system::error_code ec) {
+                        record("left", {{"error", ec ? ec.message() : ""}});
+                        io.stop();
+                    });
+                    return;
+                }
+                read_command();
+            });
+    };
+    read_command();
+    io.run();  // lint-run: a process whose purpose is network I/O, until "leave" stops it
+}

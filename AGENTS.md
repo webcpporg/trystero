@@ -64,6 +64,47 @@ holds only what is specific to trystero.
   sealer that opens only what was sealed under the same key, each event
   posted to the `io_context`. A test of a whole room runs over it, on both
   targets, without the network.
+- **The oracle and the interop tests, trystero's own lanes.**
+  `test/oracle/` pins Trystero 0.26.0 (`trystero`, `@trystero-p2p/core` and
+  `@trystero-p2p/nostr`, with `ws` 8.18.3 for the local relay) in its
+  `package.json` and `package-lock.json`, which `webcpp.original node`
+  installs. Its `Jamfile` declares two own lanes. `oracle`, which names no
+  target: `oracle.mjs` runs Trystero's own functions over the inputs of
+  `test/fixtures/cases/protocol.json` and writes `expected.json`, which must
+  equal `test/fixtures/expected/expected.json` byte for byte, the file the
+  `protocol` and `native_sealer` tests read; `update-expected` is its only
+  writer. `interop`, on native and emscripten (`native.trystero.interop` and
+  `emscripten.trystero.interop` in the report): two driven tests,
+  `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
+  meets the C++ peer, the native one as a process or the browser's in
+  headless Chrome, with Trystero JS peers in Chrome, over the in-memory
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in four scenarios each: both
+  offer orders, a password, a wrong password, and a mesh of three. Both
+  lanes are of the kind `original`, so the CI gives them its Node.
+  - Every peer gathers its ICE candidates on the machine alone: the C++
+    peers get `stun:127.0.0.1:9`, where nothing answers, in place of
+    Trystero's public STUN servers, the native peer binds its connections to
+    127.0.0.1 (`native::backend_config::bind_address`), and the Trystero JS
+    peers have `rtcConfig: {iceServers: []}`.
+  - Chrome is `--chrome`, `CHROME`, or on macOS Playwright's
+    `chrome-headless-shell` from its cache; elsewhere `CHROME` is required,
+    and the driver fails naming it. Chrome offers host candidates only on
+    the interface of its default route, so in a container whose only
+    interface is the loopback its peers gather none and never connect: the
+    lanes were measured passing under `--network none` with one interface
+    that holds the default route and leads nowhere, a dummy device, to which
+    nothing but the kernel's IPv6 router solicitations was sent.
+  - Each driver is bounded by 240 s (`<webcpp-drive-timeout>`), beyond its
+    scenarios' own limits, so that a scenario that does not complete fails by
+    name with what each peer saw. A wire string changed in the C++ library
+    (`"__trystero_pw"`) fails the password scenario of both.
+
+  ```
+  b2 -a libs/trystero/test/oracle//oracle
+  b2 -a --dump-tests --out-xml=native.trystero.interop.xml libs/trystero/test/oracle//interop
+  b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten libs/trystero/test/oracle//interop
+  ```
+
 - **No twins.** Every example needs the public relays or a browser, so each
   is a `webcpp.link`, linked and never run, and has no `.expected` and no
   twin in Trystero's language. The chat page's site is written by

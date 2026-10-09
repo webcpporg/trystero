@@ -310,6 +310,24 @@ checks that `<webcpp/trystero/config.hpp>` defines
 `test/support/memory_backend.hpp` is a backend in memory, whose relays,
 peer connections and data channels run whole rooms in one process.
 
+Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
+against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
+`package-lock.json`, with Node:
+
+    b2 libs/trystero/test/oracle//oracle
+    b2 libs/trystero/test/oracle//interop
+    b2 toolset=emscripten libs/trystero/test/oracle//interop
+
+`oracle` runs Trystero's own functions over the inputs of
+`test/fixtures/cases/protocol.json` and checks that they still write
+`test/fixtures/expected/expected.json`, the values the protocol tests
+reproduce; `b2 libs/trystero/test/oracle//update-expected` writes it again.
+`interop` meets each C++ peer, the native one and the browser's, with
+Trystero JS peers in headless Chrome, over a Nostr relay of its own on
+127.0.0.1, natively and on emscripten; every peer gathers its ICE candidates
+on the machine alone. Chrome is the one `CHROME` names, else on macOS
+Playwright's `chrome-headless-shell`.
+
 ## What derives from Trystero
 
 trystero ports Trystero 0.26.0, Copyright (c) 2021 Dan Motzenbecker,
