@@ -33,7 +33,9 @@ emscripten::EM_VAL webcpp_trystero_js_try(emscripten::EM_VAL target, emscripten:
 
 /**
  * A function of one argument that calls `trystero_dispatch(token, loop, id, slot, argument)`, and
- * on an exception reports it and calls `trystero_recover(token, loop)`.
+ * on an exception puts WebAssembly's stack pointer back as it was before the call, reports the
+ * exception, and calls `trystero_recover(token, loop, depth)` with the depth `trystero_depth` gave
+ * before the call.
  */
 emscripten::EM_VAL webcpp_trystero_js_handler(emscripten::EM_VAL token, const void* loop, int id,
                                               int slot);

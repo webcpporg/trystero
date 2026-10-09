@@ -251,15 +251,26 @@ public:
     }
 
     /**
-     * Brings the loop back after an exception escaped a call into C++: no call is running any
-     * more, and a poll runs the work that is ready.
+     * How many calls into C++ are running: 0 between events, 1 inside a callback.
+     *
+     * @return The depth.
+     */
+    [[nodiscard]] int depth() const noexcept { return depth_; }
+
+    /**
+     * Brings the loop back after an exception escaped a call into C++ that entered at `depth`:
+     * the calls it unwound no longer count, and a poll runs the work that is ready.
      *
      * Tip: without WebAssembly exceptions no destructor runs while an exception unwinds, so the
-     * depth a call raised stays raised; the page's functions call this from JavaScript, where the
-     * exception has reached the event that entered C++, so no call can still be running.
+     * depth a call raised stays raised; the page's function reads the depth before it enters C++
+     * and gives it back here, so that a nested entry that escapes leaves the depth of the call
+     * still running below it, never less. The page's function also puts WebAssembly's stack
+     * pointer back where it was before the call, which no epilogue of the unwound frames did.
+     *
+     * @param depth The depth when the call entered, as `depth()` read it; never below 0.
      */
-    void recover() {
-        depth_ = 0;
+    void recover(int depth) {
+        depth_ = depth > 0 ? depth : 0;
         poll_scheduled_ = false;
         schedule_poll();
     }
@@ -400,15 +411,34 @@ inline void dispatch(const emscripten::val& token, std::uintptr_t loop, int id, 
  *
  * @param token The loop's token, whose `alive` is false once the loop is destroyed.
  * @param loop The loop's address, as a number.
+ * @param depth The loop's depth when the call that escaped entered, as `trystero_depth` read it.
  * @see "The browser backend", in the guide.
  */
-inline void recover(const emscripten::val& token, std::uintptr_t loop) {
+inline void recover(const emscripten::val& token, std::uintptr_t loop, int depth) {
     if (!token["alive"].as<bool>()) {
         return;
     }
     // As in dispatch: the page holds the loop's address as a number.
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    reinterpret_cast<event_loop*>(loop)->recover();
+    reinterpret_cast<event_loop*>(loop)->recover(depth);
+}
+
+/**
+ * The function JavaScript calls, `trystero_depth`, before it enters C++ through
+ * `trystero_dispatch`: the depth `trystero_recover` restores if the call escapes.
+ *
+ * @param token The loop's token, whose `alive` is false once the loop is destroyed.
+ * @param loop The loop's address, as a number.
+ * @return The loop's depth, or 0 for a destroyed loop.
+ * @see "The browser backend", in the guide.
+ */
+inline int depth(const emscripten::val& token, std::uintptr_t loop) {
+    if (!token["alive"].as<bool>()) {
+        return 0;
+    }
+    // As in dispatch: the page holds the loop's address as a number.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    return reinterpret_cast<const event_loop*>(loop)->depth();
 }
 
 }  // namespace webcpp::trystero::browser

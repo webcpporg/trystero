@@ -24,10 +24,11 @@
 #include <emscripten/em_js.h>
 
 // The JavaScript functions of browser/js.hpp. Emval turns the handles C++ passes into values and
-// back; EM_JS_DEPS has Emscripten link it for them. A native parse (the reference, the lint) has
+// back, and stackSave and stackRestore keep WebAssembly's stack pointer; EM_JS_DEPS has Emscripten
+// link them. A native parse (the reference, the lint) has
 // no JavaScript to define, nor a section EM_JS can name.
 #ifdef __EMSCRIPTEN__
-EM_JS_DEPS(webcpp_trystero, "$Emval");
+EM_JS_DEPS(webcpp_trystero, "$Emval,$stackSave,$stackRestore");
 
 // clang-format off
 EM_JS(emscripten::EM_VAL, webcpp_trystero_js_try,
@@ -49,11 +50,16 @@ EM_JS(emscripten::EM_VAL, webcpp_trystero_js_handler,
     const alive = Emval.toValue(token);
     const address = loop >>> 0;
     return Emval.toHandle(event => {
+        // An exception leaves WebAssembly without running its frames' epilogues: the stack
+        // pointer and the loop's depth are put back as they were before the call.
+        const top = stackSave();
+        const depth = Module['trystero_depth'](alive, address);
         try {
             Module['trystero_dispatch'](alive, address, id, slot, event);
         } catch (error) {
+            stackRestore(top);
             (globalThis.reportError ?? console.error)(error);
-            Module['trystero_recover'](alive, address);
+            Module['trystero_recover'](alive, address, depth);
         }
     });
 });
@@ -63,6 +69,7 @@ EM_JS(emscripten::EM_VAL, webcpp_trystero_js_handler,
 EMSCRIPTEN_BINDINGS(trystero_browser) {
     emscripten::function("trystero_dispatch", &webcpp::trystero::browser::dispatch);
     emscripten::function("trystero_recover", &webcpp::trystero::browser::recover);
+    emscripten::function("trystero_depth", &webcpp::trystero::browser::depth);
 }
 
 #endif

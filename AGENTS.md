@@ -68,7 +68,8 @@ holds only what is specific to trystero.
   `try` and returns a value or the exception as a value, which the C++ turns
   into the error its interface has. Every event of the page enters C++
   through a function of the same file that catches what still escapes,
-  reports it and recovers the loop. A message that is not a frame is dropped
+  puts WebAssembly's stack pointer and the loop's depth back as they were
+  before the call, reports it and lets the loop poll again. A message that is not a frame is dropped
   before it is read. The browser tests run under node with exceptions and
   without them (`*_no_exceptions`), and the interop lane passes both ways.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
