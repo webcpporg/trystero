@@ -45,33 +45,39 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
                                              std::span<const std::uint8_t> iv,
                                              std::span<const std::uint8_t> input,
                                              std::pmr::memory_resource* memory) {
-    if (!encrypt && input.size() < gcm_tag_size)
+    if (!encrypt && input.size() < gcm_tag_size) {
         return std::nullopt;
+    }
     const cipher_context context(EVP_CIPHER_CTX_new());
-    if (!context)
+    if (!context) {
         return std::nullopt;
+    }
     const auto body = encrypt ? input : input.first(input.size() - gcm_tag_size);
     backend::bytes out(body.size() + (encrypt ? gcm_tag_size : 0), memory);
     int length = 0;
-    int ok = EVP_CipherInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr,
-                               encrypt ? 1 : 0);
-    ok = ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN,
-                                   static_cast<int>(iv.size()), nullptr);
-    ok = ok && EVP_CipherInit_ex(context.get(), nullptr, nullptr, key.data(), iv.data(), -1);
-    ok = ok && EVP_CipherUpdate(context.get(), out.data(), &length, body.data(),
-                                static_cast<int>(body.size()));
-    if (!encrypt) {
-        auto* tag = const_cast<std::uint8_t*>(input.data() + body.size());
-        ok = ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_TAG,
-                                       static_cast<int>(gcm_tag_size), tag);
-    }
     int final_length = 0;
-    ok = ok && EVP_CipherFinal_ex(context.get(), out.data() + length, &final_length);
-    if (encrypt)
-        ok = ok && EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_GET_TAG,
-                                       static_cast<int>(gcm_tag_size), out.data() + body.size());
-    if (!ok)
+    // OpenSSL's functions return 0 when they fail.
+    bool ok = EVP_CipherInit_ex(context.get(), EVP_aes_256_gcm(), nullptr, nullptr, nullptr,
+                                encrypt ? 1 : 0) != 0 &&
+              EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_IVLEN,
+                                  static_cast<int>(iv.size()), nullptr) != 0 &&
+              EVP_CipherInit_ex(context.get(), nullptr, nullptr, key.data(), iv.data(), -1) != 0 &&
+              EVP_CipherUpdate(context.get(), out.data(), &length, body.data(),
+                               static_cast<int>(body.size())) != 0;
+    if (ok && !encrypt) {
+        // OpenSSL takes the expected tag through a pointer to mutable bytes, and only reads it.
+        auto* tag = const_cast<std::uint8_t*>(input.data() + body.size());
+        ok = EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_SET_TAG,
+                                 static_cast<int>(gcm_tag_size), tag) != 0;
+    }
+    ok = ok && EVP_CipherFinal_ex(context.get(), out.data() + length, &final_length) != 0;
+    if (ok && encrypt) {
+        ok = EVP_CIPHER_CTX_ctrl(context.get(), EVP_CTRL_GCM_GET_TAG,
+                                 static_cast<int>(gcm_tag_size), out.data() + body.size()) != 0;
+    }
+    if (!ok) {
         return std::nullopt;
+    }
     return out;
 }
 
@@ -93,14 +99,18 @@ public:
 
     void seal(std::string_view plaintext, done_handler done) override {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
-        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1)
-            return complete(std::move(done), error::backend_failure);
+        if (RAND_bytes(iv.data(), static_cast<int>(iv.size())) != 1) {
+            complete(std::move(done), error::backend_failure);
+            return;
+        }
         const auto cipher = detail::aes_gcm(
             true, key_, iv,
             std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()),
             memory_);
-        if (!cipher)
-            return complete(std::move(done), error::backend_failure);
+        if (!cipher) {
+            complete(std::move(done), error::backend_failure);
+            return;
+        }
         complete(std::move(done), {}, protocol::format_sealed(iv, *cipher, memory_));
     }
 
@@ -109,8 +119,10 @@ public:
         const auto plain = parts && !parts->iv.empty()
                                ? detail::aes_gcm(false, key_, parts->iv, parts->ciphertext, memory_)
                                : std::nullopt;
-        if (!plain)
-            return complete(std::move(done), error::wrong_password);
+        if (!plain) {
+            complete(std::move(done), error::wrong_password);
+            return;
+        }
         complete(std::move(done), {}, std::pmr::string(plain->begin(), plain->end(), memory_));
     }
 

@@ -40,14 +40,18 @@ class executor {
 public:
     explicit executor(event_loop& loop) noexcept : loop_(&loop) {}
 
-    boost::asio::execution_context& query(boost::asio::execution::context_t) const noexcept;
+    [[nodiscard]] boost::asio::execution_context& query(
+        boost::asio::execution::context_t /*context*/) const noexcept;
 
     static constexpr boost::asio::execution::blocking_t::never_t query(
-        boost::asio::execution::blocking_t) noexcept {
+        boost::asio::execution::blocking_t /*blocking*/) noexcept {
         return {};
     }
 
-    executor require(boost::asio::execution::blocking_t::never_t) const noexcept { return *this; }
+    [[nodiscard]] executor require(
+        boost::asio::execution::blocking_t::never_t /*never*/) const noexcept {
+        return executor(*loop_);
+    }
 
     template <class F>
     void execute(F&& f) const;
@@ -98,7 +102,7 @@ public:
      * A JavaScript string of UTF-8 text, decoded straight from the wasm memory the view points
      * into: no std::string is made to carry it across, as `emscripten::val(std::string)` would.
      */
-    emscripten::val text(std::string_view utf8) const {
+    [[nodiscard]] emscripten::val text(std::string_view utf8) const {
         return decoder_.call<emscripten::val>(
             "decode", emscripten::val(emscripten::typed_memory_view(utf8.size(), utf8.data())));
     }
@@ -108,7 +112,7 @@ public:
      * std::string is made to carry them across, as `emscripten::val::as<std::string>()` would.
      */
     std::pmr::string utf8(const emscripten::val& text, std::pmr::memory_resource* memory) const {
-        const emscripten::val encoded = encoder_.call<emscripten::val>("encode", text);
+        const auto encoded = encoder_.call<emscripten::val>("encode", text);
         std::pmr::string out(encoded["length"].as<std::size_t>(), '\0', memory);
         emscripten::val(
             emscripten::typed_memory_view(out.size(), reinterpret_cast<unsigned char*>(out.data())))
@@ -139,7 +143,7 @@ public:
     void remove(int id) { callbacks_.erase(id); }
 
     /** A JavaScript function of one argument that delivers it to registration `id`, slot `slot`. */
-    emscripten::val handler(int id, int slot) const {
+    [[nodiscard]] emscripten::val handler(int id, int slot) const {
         return emscripten::val::module_property("trystero_dispatch")
             .call<emscripten::val>("bind", emscripten::val::null(), token_,
                                    emscripten::val(reinterpret_cast<std::uintptr_t>(this)),
@@ -151,20 +155,22 @@ public:
         ++depth_;
         if (id == poll_id) {
             poll_scheduled_ = false;
-        } else if (auto it = callbacks_.find(id); it != callbacks_.end()) {
-            auto f = it->second;  // the callback may remove itself
+        } else if (const auto it = callbacks_.find(id); it != callbacks_.end()) {
+            const auto f = it->second;  // the callback may remove itself
             (*f)(slot, std::move(event));
         }
         --depth_;
-        if (depth_ == 0)
+        if (depth_ == 0) {
             poll();
+        }
     }
 
     /** Runs every ready handler; what they post runs too. */
     void poll() {
         ++depth_;
-        if (io_.stopped())
+        if (io_.stopped()) {
             io_.restart();
+        }
         io_.poll();
         --depth_;
     }
@@ -172,8 +178,9 @@ public:
     /** Schedules a `poll()` in a microtask unless one is pending or a poll is running, which will
      * see the work. */
     void schedule_poll() {
-        if (depth_ > 0 || poll_scheduled_)
+        if (depth_ > 0 || poll_scheduled_) {
             return;
+        }
         poll_scheduled_ = true;
         emscripten::val::global("queueMicrotask")(handler(poll_id, 0));
     }
@@ -193,7 +200,7 @@ private:
 };
 
 inline boost::asio::execution_context& executor::query(
-    boost::asio::execution::context_t) const noexcept {
+    boost::asio::execution::context_t /*context*/) const noexcept {
     return loop_->io();
 }
 
@@ -205,10 +212,13 @@ void executor::execute(F&& f) const {
 
 /** The one function JavaScript calls; `browser/src.hpp` exports it. Events for a destroyed loop are
  * dropped. */
-inline void dispatch(emscripten::val token, std::uintptr_t loop, int id, int slot,
+inline void dispatch(const emscripten::val& token, std::uintptr_t loop, int id, int slot,
                      emscripten::val event) {
-    if (!token["alive"].as<bool>())
+    if (!token["alive"].as<bool>()) {
         return;
+    }
+    // The page holds the loop's address as a number, the one form it passes back through embind.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     reinterpret_cast<event_loop*>(loop)->dispatch(id, slot, std::move(event));
 }
 

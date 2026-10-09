@@ -27,13 +27,13 @@ int main() {
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
-        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
+        trystero::send_options to_peer{.targets = {trystero::peer_id(peer)}, .metadata = {}};
         chat.async_send("hello from a native peer", std::move(to_peer),
                         [](boost::system::error_code) {});
     });
-    chat.on_message([](std::string text, const trystero::message_info& info) {
+    chat.on_message([](const std::string& text, const trystero::message_info& info) {
         // flushed: into a pipe too, since the program runs until it is stopped
-        std::cout << info.from << ": " << text << std::endl;
+        std::cout << info.from << ": " << text << '\n' << std::flush;
     });
 
     io.run();  // natively, the program runs its io_context; libdatachannel's threads post to it

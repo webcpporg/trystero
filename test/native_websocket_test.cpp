@@ -30,7 +30,7 @@
 namespace asio = boost::asio;
 namespace beast = boost::beast;
 namespace trystero = webcpp::trystero;
-using tcp = asio::ip::tcp;
+using asio::ip::tcp;
 using namespace std::chrono_literals;
 
 namespace {
@@ -47,7 +47,7 @@ struct echo_server {
         asio::co_spawn(io, accept(), asio::detached);
     }
 
-    std::string url() const {
+    [[nodiscard]] std::string url() const {
         return "ws://127.0.0.1:" + std::to_string(acceptor.local_endpoint().port()) + "/relay";
     }
 
@@ -122,12 +122,12 @@ void urls_name_a_scheme_host_port_and_path() {
 
 void opens_sends_in_order_receives_and_closes_once() {
     asio::io_context io;
-    echo_server server(io);
+    const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
     std::vector<std::string> received;
-    auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::native::connect_websocket(
         io.get_executor(), tls, server.url(),
         {
             .open = [&] { opened = true; },
@@ -161,25 +161,25 @@ void an_unreachable_relay_closes_without_opening() {
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    auto socket = trystero::native::connect_websocket(io.get_executor(), tls,
-                                                      "ws://127.0.0.1:" + std::to_string(port),
-                                                      {
-                                                          .open = [&] { opened = true; },
-                                                          .message = {},
-                                                          .close = [&] { ++closes; },
-                                                      },
-                                                      std::pmr::get_default_resource());
+    const auto socket = trystero::native::connect_websocket(
+        io.get_executor(), tls, "ws://127.0.0.1:" + std::to_string(port),
+        {
+            .open = [&] { opened = true; },
+            .message = {},
+            .close = [&] { ++closes; },
+        },
+        std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return closes == 1; }));
     BOOST_TEST(!opened);
 }
 
 void a_dropped_socket_reports_nothing() {
     asio::io_context io;
-    echo_server server(io);
+    const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     int events = 0;
     {
-        auto socket =
+        const auto socket =
             trystero::native::connect_websocket(io.get_executor(), tls, server.url(),
                                                 {
                                                     .open = [&] { ++events; },
@@ -194,17 +194,17 @@ void a_dropped_socket_reports_nothing() {
 
 void closing_right_after_a_send_lets_the_write_finish_first() {
     asio::io_context io;
-    echo_server server(io);
+    const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    auto socket = trystero::native::connect_websocket(io.get_executor(), tls, server.url(),
-                                                      {
-                                                          .open = [&] { opened = true; },
-                                                          .message = {},
-                                                          .close = [&] { ++closes; },
-                                                      },
-                                                      std::pmr::get_default_resource());
+    const auto socket = trystero::native::connect_websocket(io.get_executor(), tls, server.url(),
+                                                            {
+                                                                .open = [&] { opened = true; },
+                                                                .message = {},
+                                                                .close = [&] { ++closes; },
+                                                            },
+                                                            std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }

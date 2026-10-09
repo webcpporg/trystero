@@ -46,10 +46,11 @@ inline std::pmr::string format_sealed(
     std::span<const std::uint8_t> iv, std::span<const std::uint8_t> ciphertext,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::string out(memory);
-    out.reserve(iv.size() * 4 + 1 + (ciphertext.size() + 2) / 3 * 4);
+    out.reserve((iv.size() * 4) + 1 + ((ciphertext.size() + 2) / 3 * 4));
     for (std::size_t i = 0; i < iv.size(); ++i) {
-        if (i != 0)
+        if (i != 0) {
             out += ',';
+        }
         json::append_integer(out, iv[i]);
     }
     out += '$';
@@ -60,22 +61,25 @@ inline std::pmr::string format_sealed(
 inline std::optional<sealed_parts> parse_sealed(
     std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const auto dollar = text.find('$');
-    if (dollar == std::string_view::npos)
+    if (dollar == std::string_view::npos) {
         return std::nullopt;
-    sealed_parts out{bytes(memory), bytes(memory)};
+    }
+    sealed_parts out{.iv = bytes(memory), .ciphertext = bytes(memory)};
     for (std::string_view ivs = text.substr(0, dollar); !ivs.empty();) {
         const auto comma = ivs.find(',');
         const auto item = ivs.substr(0, comma);
         unsigned value = 0;
         const auto [end, ec] = std::from_chars(item.data(), item.data() + item.size(), value);
-        if (ec != std::errc{} || end != item.data() + item.size() || value > 255)
+        if (ec != std::errc{} || end != item.data() + item.size() || value > 255) {
             return std::nullopt;
+        }
         out.iv.push_back(static_cast<std::uint8_t>(value));
         ivs = comma == std::string_view::npos ? std::string_view{} : ivs.substr(comma + 1);
     }
     auto ciphertext = base64_decode(text.substr(dollar + 1), memory);
-    if (!ciphertext)
+    if (!ciphertext) {
         return std::nullopt;
+    }
     out.ciphertext = std::move(*ciphertext);
     return out;
 }
@@ -93,7 +97,9 @@ struct signal_message {
     std::string_view candidate = {};
     bool passive = false;
 
-    bool is_announcement() const { return offer.empty() && answer.empty() && candidate.empty(); }
+    [[nodiscard]] bool is_announcement() const {
+        return offer.empty() && answer.empty() && candidate.empty();
+    }
 };
 
 /**
@@ -103,28 +109,35 @@ struct signal_message {
  */
 inline std::optional<signal_message> read_signal(const boost::json::value& document) {
     const auto* object = document.if_object();
-    if (object == nullptr)
+    if (object == nullptr) {
         return std::nullopt;
+    }
     signal_message out;
-    auto text = [object](std::string_view key, std::string_view& into, bool must_be_nonempty) {
+    const auto text = [object](std::string_view key, std::string_view& into,
+                               bool must_be_nonempty) {
         const auto* v = object->if_contains(key);
-        if (v == nullptr)
+        if (v == nullptr) {
             return true;
+        }
         const auto* s = v->if_string();
-        if (s == nullptr || (must_be_nonempty && s->empty()))
+        if (s == nullptr || (must_be_nonempty && s->empty())) {
             return !must_be_nonempty;
+        }
         into = std::string_view(s->data(), s->size());
         return true;
     };
     if (!text("offer", out.offer, true) || !text("answer", out.answer, true) ||
-        !text("candidate", out.candidate, true))
+        !text("candidate", out.candidate, true)) {
         return std::nullopt;
+    }
     text("peerId", out.peer_id, false);
     text("offerId", out.offer_id, false);
-    if (const auto* v = object->if_contains("passive"); v != nullptr && v->is_bool())
+    if (const auto* v = object->if_contains("passive"); v != nullptr && v->is_bool()) {
         out.passive = v->get_bool();
-    if (out.peer_id.empty())
+    }
+    if (out.peer_id.empty()) {
         return std::nullopt;
+    }
     return out;
 }
 
@@ -137,9 +150,10 @@ inline std::pmr::string write_signal(
     out.reserve(64 + m.peer_id.size() + m.offer_id.size() + m.offer.size() + m.answer.size() +
                 m.candidate.size() + nonce.size());
     out += '{';
-    auto field = [&out](std::string_view key, std::string_view value) {
-        if (value.empty())
+    const auto field = [&out](std::string_view key, std::string_view value) {
+        if (value.empty()) {
             return;
+        }
         json::append_key(out, key);
         json::append_string(out, value);
     };

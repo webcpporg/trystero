@@ -38,16 +38,17 @@ namespace webcpp::trystero::native {
 /** An Asio timer whose waits are allocated in the room's resource. */
 class timer : public trystero::backend::timer {
 public:
-    timer(boost::asio::any_io_executor ex, std::pmr::memory_resource* memory)
-        : timer_(std::move(ex)), memory_(memory) {}
+    timer(const boost::asio::any_io_executor& ex, std::pmr::memory_resource* memory)
+        : timer_(ex), memory_(memory) {}
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
         timer_.expires_after(delay);
         timer_.async_wait(boost::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [fire = std::move(fire)](boost::system::error_code ec) mutable {
-                if (!ec)
+                if (!ec) {
                     fire();
+                }
             }));
     }
 
@@ -121,8 +122,9 @@ public:
     }
 
     void random(std::span<std::uint8_t> out) override {
-        if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1)
+        if (RAND_bytes(out.data(), static_cast<int>(out.size())) != 1) {
             std::abort();  // no secure randomness: nothing is safe
+        }
     }
 
     std::int64_t unix_seconds() override {

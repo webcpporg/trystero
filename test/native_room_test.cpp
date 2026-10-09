@@ -68,7 +68,7 @@ trystero::room_config config(std::string_view self_id, std::string_view password
     c.relay_urls = {relay_url};
     // Nothing answers there: with every connection bound to 127.0.0.1, the loopback's host
     // candidate is the only one, and it is enough.
-    c.ice_servers = {{{"stun:127.0.0.1:9"}, {}, {}}};
+    c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
     c.self_id = self_id;
     return c;
 }
@@ -119,7 +119,7 @@ void native_rooms_join_and_exchange_every_format() {
         boost::json::object{{"drink", "negroni"}},
         [](boost::system::error_code ec) { BOOST_TEST(!ec); });
     a.make_action<trystero::bytes>("file").async_send(
-        big, trystero::send_options{{}, R"({"name":"big.bin"})"},
+        big, trystero::send_options{.targets = {}, .metadata = R"({"name":"big.bin"})"},
         [](boost::system::error_code ec) { BOOST_TEST(!ec); });
     if (!BOOST_TEST(
             run_until(f.io, [&] { return !text.empty() && !json.is_null() && !file.empty(); }))) {
@@ -141,8 +141,8 @@ void native_rooms_join_and_exchange_every_format() {
 
 void another_password_never_joins() {
     fixture f;
-    trystero::room a(f.io.get_executor(), f.backend, config("BBBBBBBBBBBBBBBBBBBB", "s3cret"),
-                     "private");
+    const trystero::room a(f.io.get_executor(), f.backend, config("BBBBBBBBBBBBBBBBBBBB", "s3cret"),
+                           "private");
     trystero::room b(f.io.get_executor(), f.backend, config("CCCCCCCCCCCCCCCCCCCC", "guess"),
                      "private");
     std::vector<boost::system::error_code> errors;

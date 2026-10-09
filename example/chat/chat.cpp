@@ -52,12 +52,13 @@ void ui(const char* name, const Args&... args) {
     val::global("chatUi").call<void>(name, js(args)...);
 }
 
-void join_room(std::string app_id, std::string room_id) {
+void join_room(const std::string& app_id, const std::string& room_id) {
     auto& c = the_chat();
-    if (c.room)
+    if (c.room) {
         return;
+    }
     trystero::room_config config;
-    config.app_id = std::move(app_id);
+    config.app_id = app_id;
     config.log = [](std::string_view category, std::string_view text) {
         ui("log", category, text);
     };
@@ -78,12 +79,14 @@ void join_room(std::string app_id, std::string room_id) {
 
 void send_message(std::string text) {
     auto& c = the_chat();
-    if (!c.room || text.empty())
+    if (!c.room || text.empty()) {
         return;
+    }
     ui("message", c.room->self_id(), std::string_view(text), true);
     c.outgoing->async_send(std::move(text), [](boost::system::error_code ec) {
-        if (ec)
+        if (ec) {
             ui("log", std::string_view("chat"), std::string_view("not delivered: " + ec.message()));
+        }
     });
 }
 

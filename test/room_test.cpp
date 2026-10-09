@@ -86,7 +86,8 @@ void two_peers_join_and_exchange_every_payload_format() {
     // the ids.
     trystero::room a(f.io.get_executor(), f.net, config("AAAAAAAAAAAAAAAAAAAA"), "lobby");
     trystero::room z(f.io.get_executor(), f.net, config("zzzzzzzzzzzzzzzzzzzz"), "lobby");
-    std::vector<std::string> joined_a, joined_z;
+    std::vector<std::string> joined_a;
+    std::vector<std::string> joined_z;
     a.on_peer_join([&](std::string_view p) { joined_a.emplace_back(p); });
     z.on_peer_join([&](std::string_view p) { joined_z.emplace_back(p); });
 
@@ -112,7 +113,7 @@ void two_peers_join_and_exchange_every_payload_format() {
     BOOST_TEST_ALL_EQ(peers.begin(), peers.end(), only_z.begin(), only_z.end());
 
     std::vector<boost::system::error_code> sent;
-    chat_a.async_send("hello", trystero::send_options{{}, R"({"n":1})"},
+    chat_a.async_send("hello", trystero::send_options{.targets = {}, .metadata = R"({"n":1})"},
                       [&](boost::system::error_code ec) { sent.push_back(ec); });
     a.make_action<boost::json::value>("drink").async_send(
         boost::json::object{{"drink", "negroni"}},
@@ -140,7 +141,8 @@ void large_payloads_travel_in_chunks_both_ways() {
     trystero::room b(f.io.get_executor(), f.net, config("CCCCCCCCCCCCCCCCCCCC"), "files");
     auto file_a = a.make_action<trystero::bytes>("file");
     auto file_b = b.make_action<trystero::bytes>("file");
-    trystero::bytes got_a, got_b;
+    trystero::bytes got_a;
+    trystero::bytes got_b;
     std::string meta_b;
     file_a.on_message(
         [&](trystero::bytes v, const trystero::message_info&) { got_a = std::move(v); });
@@ -155,7 +157,8 @@ void large_payloads_travel_in_chunks_both_ways() {
         big[i] = static_cast<std::uint8_t>(i * 31);
     }
     int done = 0;
-    file_a.async_send(big, trystero::send_options{{}, R"({"name":"big.bin"})"},
+    file_a.async_send(big,
+                      trystero::send_options{.targets = {}, .metadata = R"({"name":"big.bin"})"},
                       [&](boost::system::error_code ec) {
                           BOOST_TEST(!ec);
                           ++done;
@@ -174,7 +177,7 @@ void large_payloads_travel_in_chunks_both_ways() {
 void ping_measures_a_round_trip() {
     fixture f;
     trystero::room a(f.io.get_executor(), f.net, config("DDDDDDDDDDDDDDDDDDDD"), "ping");
-    trystero::room b(f.io.get_executor(), f.net, config("EEEEEEEEEEEEEEEEEEEE"), "ping");
+    const trystero::room b(f.io.get_executor(), f.net, config("EEEEEEEEEEEEEEEEEEEE"), "ping");
     BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
     std::optional<boost::system::error_code> result;
     a.async_ping(b.self_id(), [&](boost::system::error_code ec, std::chrono::milliseconds rtt) {
@@ -221,7 +224,8 @@ void the_same_password_joins_and_another_does_not() {
 void leaving_is_seen_by_the_others_and_a_return_reconnects() {
     fixture f;
     trystero::room a(f.io.get_executor(), f.net, config("IIIIIIIIIIIIIIIIIIII"), "leave");
-    std::vector<std::string> left, joined;
+    std::vector<std::string> left;
+    std::vector<std::string> joined;
     a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
     a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
     {
@@ -232,7 +236,7 @@ void leaving_is_seen_by_the_others_and_a_return_reconnects() {
         BOOST_TEST(run_until(f.io, [&] { return done && left.size() == 1; }));
         BOOST_TEST(a.peers().empty());
     }
-    trystero::room b2(f.io.get_executor(), f.net, config("JJJJJJJJJJJJJJJJJJJJ"), "leave");
+    const trystero::room b2(f.io.get_executor(), f.net, config("JJJJJJJJJJJJJJJJJJJJ"), "leave");
     BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
 }
 
@@ -257,7 +261,7 @@ void three_peers_form_a_mesh() {
     int heard = 0;
     for (std::size_t i = 1; i < rooms.size(); ++i) {
         rooms[i]->make_action<std::string>("shout").on_message(
-            [&](std::string text, const trystero::message_info&) {
+            [&](const std::string& text, const trystero::message_info& /*info*/) {
                 heard += text == "all" ? 1 : 0;
             });
     }
@@ -312,7 +316,8 @@ void view_handlers_read_the_frame_without_copying() {
     a.make_action<std::string_view>("note").async_send(
         std::string_view("a view, copied once at the call"), asio::detached);
     a.make_action<trystero::bytes>("blob").async_send(
-        trystero::bytes(50'000, 7), trystero::send_options{{}, R"({"k":1})"}, asio::detached);
+        trystero::bytes(50'000, 7), trystero::send_options{.targets = {}, .metadata = R"({"k":1})"},
+        asio::detached);
     BOOST_TEST(run_until(f.io, [&] { return !text_seen.empty() && bytes_seen != 0; }));
     BOOST_TEST_EQ(text_seen, "a view, copied once at the call");
     BOOST_TEST_EQ(bytes_seen, 50'000U);

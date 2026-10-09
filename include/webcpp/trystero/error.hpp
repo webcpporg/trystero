@@ -33,7 +33,7 @@ enum class error {
     backend_failure,      // the browser or the native stack refused an operation
 };
 
-class error_category_impl : public boost::system::error_category {
+class error_category_impl final : public boost::system::error_category {
 public:
     const char* name() const noexcept override { return "webcpp.trystero"; }
 
@@ -66,7 +66,7 @@ private:
     }
 };
 
-inline const boost::system::error_category& error_category() noexcept {
+const inline boost::system::error_category& error_category() noexcept {
     static const error_category_impl category;
     return category;
 }

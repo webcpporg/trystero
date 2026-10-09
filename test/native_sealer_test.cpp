@@ -33,7 +33,7 @@ using webcpp::test::require;
 namespace {
 
 json::value load(const char* path) {
-    std::ifstream file(path);
+    const std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
     return json::parse(text.str());
@@ -49,7 +49,7 @@ template <class Operation>
 outcome run(boost::asio::io_context& io, Operation operation) {
     std::optional<outcome> result;
     operation([&](boost::system::error_code ec, std::string_view text) {
-        result = outcome{ec, std::string(text)};
+        result = outcome{.ec = ec, .text = std::string(text)};
     });
     io.restart();
     io.poll();  // the sealer works synchronously: its completion is already posted

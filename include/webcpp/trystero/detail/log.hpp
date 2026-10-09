@@ -13,6 +13,7 @@
 
 #include <boost/system/error_code.hpp>
 
+#include <array>
 #include <charconv>
 #include <memory>
 #include <memory_resource>
@@ -52,8 +53,9 @@ public:
 
     template <class... Parts>
     void operator()(std::string_view category, const Parts&... parts) const {
-        if (!sink_)
+        if (!sink_) {
             return;
+        }
         std::pmr::string text(memory_);
         (append(text, parts), ...);
         (*sink_)(category, text);
@@ -63,13 +65,14 @@ private:
     template <class Part>
     static void append(std::pmr::string& text, const Part& part) {
         if constexpr (std::is_same_v<Part, boost::system::error_code>) {
-            char buffer[128];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
-            text += part.message(buffer, sizeof buffer);
+            std::array<char, 128> buffer{};
+            text += part.message(buffer.data(), buffer.size());
         } else if constexpr (std::is_integral_v<Part> && !std::is_same_v<Part, bool> &&
                              !std::is_same_v<Part, char>) {
-            char buffer[24];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
-            const auto [end, ec] = std::to_chars(buffer, buffer + sizeof buffer, part);
-            text.append(buffer, end);
+            std::array<char, 24> buffer{};
+            const auto [end, ec] =
+                std::to_chars(buffer.data(), buffer.data() + buffer.size(), part);
+            text.append(buffer.data(), end);
         } else {
             text += std::string_view(part);
         }

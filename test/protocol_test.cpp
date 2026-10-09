@@ -37,7 +37,7 @@ namespace tp = webcpp::trystero::protocol;
 namespace {
 
 json::value load(const char* path) {
-    std::ifstream file(path);
+    const std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
     return json::parse(text.str());
@@ -155,8 +155,8 @@ void nostr_events(const json::object& fixture) {
 
 void inline_frames(const json::object& fixture) {
     const auto& actions = fixture.at("actions").as_object();
-    auto encode = [](std::string_view name, tp::payload_format format, std::string_view metadata,
-                     std::string_view payload) {
+    const auto encode = [](std::string_view name, tp::payload_format format,
+                           std::string_view metadata, std::string_view payload) {
         return tp::encode_inline(
             name, format, metadata,
             std::span(reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size()));
@@ -269,7 +269,7 @@ void envelopes(const json::object& fixture) {
 
 void signals() {
     json::value document;  // the views read_signal returns point into it
-    auto read = [&document](std::string_view text) {
+    const auto read = [&document](std::string_view text) {
         document = json::parse(text);
         return tp::read_signal(document);
     };
@@ -293,6 +293,8 @@ void signals() {
     // Escaping matches JSON.stringify, so a sealed text or a candidate with quotes survives the
     // round trip.
     BOOST_TEST_EQ(tp::write_signal({.peer_id = "q\"\\\n"}), R"({"peerId":"q\"\\\n"})");
+    // A fixed seed: the test checks the form of an id, the same on every run.
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937 generator(42);
     const auto id = tp::make_id(tp::peer_id_size, generator);
     BOOST_TEST_EQ(id.size(), tp::peer_id_size);

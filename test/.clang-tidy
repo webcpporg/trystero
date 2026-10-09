@@ -1,0 +1,26 @@
+# The tests inherit the superproject's configuration and switch off one check
+# and one option.
+#
+# bugprone-unchecked-optional-access reports an optional that a test reads
+# where its value must be there. Either the test has asserted it first, with
+# `if (!BOOST_TEST(x.has_value())) { return; }`, and BOOST_TEST is a call
+# returning whether its condition held, which the checker does not look into;
+# or the test calls value(), whose failure on an empty optional ends the
+# program, with std::bad_optional_access or, built without exceptions, an
+# abort, and so fails the test. The library's headers are still analysed with
+# it, through the aggregate translation unit tools/lint/compile_commands.py
+# writes.
+#
+# bugprone-exception-escape.CheckMain treats every test's main as a function
+# that should not throw. A test's main lets what a failing case throws, a
+# boost::system::system_error from value() on a failed result or a
+# std::bad_alloc, end the process uncaught, which fails the test as it should;
+# example/.clang-tidy says the same of the examples. The check stays on for
+# everything else: a noexcept function, a destructor, a move or a swap.
+---
+InheritParentConfig: true
+Checks: >
+  -bugprone-unchecked-optional-access
+CheckOptions:
+  - key: bugprone-exception-escape.CheckMain
+    value: 'false'

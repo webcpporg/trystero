@@ -19,6 +19,7 @@
 #include <boost/hash2/sha2.hpp>
 #include <boost/json/value.hpp>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -53,21 +54,28 @@ namespace detail {
 inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey, std::int64_t created_at,
                                              int kind, std::string_view quoted_topic,
                                              std::string_view quoted_content) {
-    char buffer[48];
-    char* end = std::to_chars(buffer, buffer + 24, created_at).ptr;
+    std::array<char, 48> buffer{};
+    char* end = std::to_chars(buffer.data(), buffer.data() + 24, created_at).ptr;
     *end++ = ',';
-    end = std::to_chars(end, buffer + sizeof buffer, kind).ptr;
-    const std::string_view numbers(buffer, static_cast<std::size_t>(end - buffer));
+    end = std::to_chars(end, buffer.data() + buffer.size(), kind).ptr;
+    const std::string_view numbers(buffer.data(), static_cast<std::size_t>(end - buffer.data()));
     boost::hash2::sha2_256 h;
-    for (const std::string_view part :
-         {std::string_view(R"([0,")"), pubkey, std::string_view(R"(",)"), numbers,
-          std::string_view(R"(,[["x",)"), quoted_topic, std::string_view("]],"), quoted_content,
-          std::string_view("]")}) {
+    for (const std::string_view part : {
+             std::string_view(R"([0,")"),
+             pubkey,
+             std::string_view(R"(",)"),
+             numbers,
+             std::string_view(R"(,[["x",)"),
+             quoted_topic,
+             std::string_view("]],"),
+             quoted_content,
+             std::string_view("]"),
+         }) {
         h.update(part.data(), part.size());
     }
     const auto digest = h.result();
     std::array<std::uint8_t, 32> out{};
-    std::copy(digest.begin(), digest.end(), out.begin());
+    std::ranges::copy(digest, out.begin());
     return out;
 }
 
@@ -105,8 +113,9 @@ public:
         std::span<const std::uint8_t, 32> secret,
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
         signer s(memory);
-        if (secp256k1_keypair_create(s.context_.get(), &s.keypair_, secret.data()) == 0)
+        if (secp256k1_keypair_create(s.context_.get(), &s.keypair_, secret.data()) == 0) {
             return std::nullopt;
+        }
         secp256k1_xonly_pubkey xonly;
         secp256k1_keypair_xonly_pub(s.context_.get(), &xonly, nullptr, &s.keypair_);
         std::array<std::uint8_t, 32> pub{};
@@ -115,10 +124,10 @@ public:
         return s;
     }
 
-    std::string_view pubkey() const { return pubkey_; }
+    [[nodiscard]] std::string_view pubkey() const { return pubkey_; }
 
-    std::array<std::uint8_t, 64> sign(std::span<const std::uint8_t, 32> message,
-                                      std::span<const std::uint8_t, 32> aux) const {
+    [[nodiscard]] std::array<std::uint8_t, 64> sign(std::span<const std::uint8_t, 32> message,
+                                                    std::span<const std::uint8_t, 32> aux) const {
         std::array<std::uint8_t, 64> sig{};
         secp256k1_schnorrsig_sign32(context_.get(), sig.data(), message.data(), &keypair_,
                                     aux.data());
@@ -136,14 +145,16 @@ private:
         }
     };
 
-    static std::size_t context_size() {
-        return secp256k1_context_preallocated_size(SECP256K1_CONTEXT_NONE);
-    }
+    // A context that signs and verifies needs no flag. libsecp256k1 spells it with a shift of a
+    // signed constant, (1 << 0), inside its own macro, which is the dependency's to write.
+    // NOLINTNEXTLINE(bugprone-signed-bitwise)
+    static constexpr unsigned context_flags = SECP256K1_CONTEXT_NONE;
+
+    static std::size_t context_size() { return secp256k1_context_preallocated_size(context_flags); }
 
     explicit signer(std::pmr::memory_resource* memory)
         : context_(secp256k1_context_preallocated_create(
-                       memory->allocate(context_size(), alignof(std::max_align_t)),
-                       SECP256K1_CONTEXT_NONE),
+                       memory->allocate(context_size(), alignof(std::max_align_t)), context_flags),
                    context_deleter{memory}),
           pubkey_(memory) {}
 
@@ -157,8 +168,9 @@ private:
 inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::uint8_t, 32> id,
                    std::span<const std::uint8_t, 32> pubkey) {
     secp256k1_xonly_pubkey key;
-    if (secp256k1_xonly_pubkey_parse(secp256k1_context_static, &key, pubkey.data()) == 0)
+    if (secp256k1_xonly_pubkey_parse(secp256k1_context_static, &key, pubkey.data()) == 0) {
         return false;
+    }
     return secp256k1_schnorrsig_verify(secp256k1_context_static, sig.data(), id.data(), id.size(),
                                        &key) == 1;
 }
@@ -202,24 +214,27 @@ inline std::pmr::string subscribe_message(
     std::string_view subscription, std::span<const std::pmr::string> topics, std::int64_t since,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::set<int> kinds(memory);
-    for (const auto& t : topics)
+    for (const auto& t : topics) {
         kinds.insert(topic_kind(t));
+    }
     std::pmr::string out(memory);
-    out.reserve(96 + subscription.size() + topics.size() * 48);
+    out.reserve(96 + subscription.size() + (topics.size() * 48));
     out += R"(["REQ",)";
     json::append_string(out, subscription);
     out += R"(,{"kinds":[)";
     for (const int k : kinds) {
-        if (out.back() != '[')
+        if (out.back() != '[') {
             out += ',';
+        }
         json::append_integer(out, k);
     }
     out += R"(],"since":)";
     json::append_integer(out, since);
     out += R"(,"#x":[)";
     for (std::size_t i = 0; i < topics.size(); ++i) {
-        if (i != 0)
+        if (i != 0) {
             out += ',';
+        }
         json::append_string(out, topics[i]);
     }
     out += "]}]";
@@ -264,52 +279,73 @@ struct notice {
 
 using relay_message = std::variant<event, ok, eose, closed, notice>;
 
+namespace detail {
+
+/** The text a JSON value holds, or an empty view when it holds none. */
+inline std::string_view text_of(const boost::json::value& v) {
+    const auto* s = v.if_string();
+    return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
+}
+
+/** The event of a relay's `["EVENT", <subscription>, <event>]`, as views into `array`. */
+inline std::optional<relay_message> read_event(const boost::json::array& array) {
+    if (array.size() < 3 || !array.at(2).is_object()) {
+        return std::nullopt;
+    }
+    const auto& o = array.at(2).get_object();
+    event e;
+    e.subscription = text_of(array.at(1));
+    if (const auto* id = o.if_contains("id")) {
+        e.id = text_of(*id);
+    }
+    if (const auto* c = o.if_contains("content")) {
+        e.content = text_of(*c);
+    }
+    if (const auto* tags = o.if_contains("tags"); tags != nullptr && tags->is_array()) {
+        for (const auto& tag : tags->get_array()) {
+            const auto* pair = tag.if_array();
+            if (pair != nullptr && pair->size() >= 2 && text_of(pair->at(0)) == topic_tag &&
+                pair->at(1).is_string()) {
+                e.topic = text_of(pair->at(1));
+                break;
+            }
+        }
+    }
+    return e;
+}
+
+}  // namespace detail
+
 /** The message a parsed relay text holds, as views into `document`, which the caller keeps alive
  * while it reads them. */
 inline std::optional<relay_message> read_relay_message(const boost::json::value& document) {
     const auto* array = document.if_array();
-    if (array == nullptr || array->empty() || !array->at(0).is_string())
+    if (array == nullptr || array->empty() || !array->at(0).is_string()) {
         return std::nullopt;
-    auto view = [](const boost::json::value& v) -> std::string_view {
-        const auto* s = v.if_string();
-        return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
-    };
-    auto text_at = [array, &view](std::size_t i) {
-        return i < array->size() ? view(array->at(i)) : std::string_view();
+    }
+    const auto text_at = [array](std::size_t i) {
+        return i < array->size() ? detail::text_of(array->at(i)) : std::string_view();
     };
     const std::string_view type = text_at(0);
     if (type == "EVENT") {
-        if (array->size() < 3 || !array->at(2).is_object())
-            return std::nullopt;
-        const auto& o = array->at(2).get_object();
-        event e;
-        e.subscription = text_at(1);
-        if (const auto* id = o.if_contains("id"))
-            e.id = view(*id);
-        if (const auto* c = o.if_contains("content"))
-            e.content = view(*c);
-        if (const auto* tags = o.if_contains("tags"); tags != nullptr && tags->is_array()) {
-            for (const auto& tag : tags->get_array()) {
-                const auto* pair = tag.if_array();
-                if (pair != nullptr && pair->size() >= 2 && view(pair->at(0)) == topic_tag &&
-                    pair->at(1).is_string()) {
-                    e.topic = view(pair->at(1));
-                    break;
-                }
-            }
-        }
-        return e;
+        return detail::read_event(*array);
     }
-    if (type == "OK")
-        return ok{text_at(1),
-                  array->size() > 2 && array->at(2).is_bool() && array->at(2).get_bool(),
-                  text_at(3)};
-    if (type == "EOSE")
+    if (type == "OK") {
+        return ok{
+            .id = text_at(1),
+            .accepted = array->size() > 2 && array->at(2).is_bool() && array->at(2).get_bool(),
+            .reason = text_at(3),
+        };
+    }
+    if (type == "EOSE") {
         return eose{text_at(1)};
-    if (type == "CLOSED")
-        return closed{text_at(1), text_at(2)};
-    if (type == "NOTICE")
+    }
+    if (type == "CLOSED") {
+        return closed{.subscription = text_at(1), .reason = text_at(2)};
+    }
+    if (type == "NOTICE") {
         return notice{text_at(1)};
+    }
     return std::nullopt;
 }
 

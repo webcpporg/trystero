@@ -28,7 +28,7 @@ namespace webcpp::trystero::protocol {
  * | room     | 1, token length (uint16 BE), token, action frame             |
  * | presence | 2, present (0 or 1), token length (uint16 BE), token         |
  */
-inline constexpr std::size_t max_action_frame_bytes = 16 * 1024;
+inline constexpr std::size_t max_action_frame_bytes = std::size_t{16} * 1024;
 inline constexpr std::size_t max_room_token_bytes = 128;
 inline constexpr std::size_t max_room_frame_bytes =
     max_action_frame_bytes + 3 + max_room_token_bytes;
@@ -44,8 +44,8 @@ inline bytes begin_room_frame(
     bytes out(memory);
     out.reserve(3 + token.size() + payload_size);
     out.push_back(1);
-    out.push_back(static_cast<std::uint8_t>((token.size() >> 8) & 0xff));
-    out.push_back(static_cast<std::uint8_t>(token.size() & 0xff));
+    out.push_back(static_cast<std::uint8_t>((token.size() >> 8U) & 0xffU));
+    out.push_back(static_cast<std::uint8_t>(token.size() & 0xffU));
     out.insert(out.end(), token.begin(), token.end());
     return out;
 }
@@ -63,8 +63,8 @@ inline bytes presence_frame(std::string_view token, bool present,
     out.reserve(4 + token.size());
     out.push_back(2);
     out.push_back(present ? 1 : 0);
-    out.push_back(static_cast<std::uint8_t>((token.size() >> 8) & 0xff));
-    out.push_back(static_cast<std::uint8_t>(token.size() & 0xff));
+    out.push_back(static_cast<std::uint8_t>((token.size() >> 8U) & 0xffU));
+    out.push_back(static_cast<std::uint8_t>(token.size() & 0xffU));
     out.insert(out.end(), token.begin(), token.end());
     return out;
 }
@@ -81,15 +81,19 @@ struct envelope {
 /** The envelope of a frame, or nothing when the frame is malformed; Trystero drops the peer then.
  */
 inline std::optional<envelope> decode_envelope(std::span<const std::uint8_t> frame) {
-    if (frame.size() < 3 || frame.size() > max_room_frame_bytes)
+    if (frame.size() < 3 || frame.size() > max_room_frame_bytes) {
         return std::nullopt;
-    const std::size_t offset = frame[0] == 1 ? 1 : frame[0] == 2 ? 2 : 0;
-    if (offset == 0 || frame.size() < offset + 2)
+    }
+    // The token's length follows the kind of a room frame (1), and a presence frame's (2) byte.
+    const std::size_t offset = frame[0] == 1 || frame[0] == 2 ? frame[0] : 0;
+    if (offset == 0 || frame.size() < offset + 2) {
         return std::nullopt;
-    const std::size_t token_size = (frame[offset] << 8) | frame[offset + 1];
+    }
+    const std::size_t token_size = (std::size_t{frame[offset]} << 8U) | frame[offset + 1];
     const std::size_t header_size = offset + 2 + token_size;
-    if (token_size == 0 || token_size > max_room_token_bytes || frame.size() < header_size)
+    if (token_size == 0 || token_size > max_room_token_bytes || frame.size() < header_size) {
         return std::nullopt;
+    }
     envelope out;
     out.token =
         std::string_view(reinterpret_cast<const char*>(frame.data() + offset + 2), token_size);

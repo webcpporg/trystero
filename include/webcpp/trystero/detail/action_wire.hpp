@@ -32,13 +32,16 @@
 
 namespace webcpp::trystero::detail {
 
+// Its implicit move assignment may allocate: a std::pmr member copies when the two resources
+// differ, which bugprone-exception-escape, expecting every move assignment not to throw, reports.
 /**
  * A received action message. It owns one buffer, the data channel frame it arrived in or the
  * payload a transfer assembled, and names its parts as ranges of it: moving a message moves the
  * buffer and copies nothing. It carries the JSON storage of the room that received it, in which a
  * JSON payload is decoded.
  */
-struct incoming {
+struct incoming {  // NOLINT(bugprone-exception-escape)
+
     struct range {
         std::size_t offset = 0;
         std::size_t size = 0;
@@ -52,13 +55,13 @@ struct incoming {
     range metadata_at = {};  // JSON text, or empty
     boost::json::storage_ptr json = {};
 
-    std::string_view name() const { return text(name_at); }
+    [[nodiscard]] std::string_view name() const { return text(name_at); }
 
-    std::span<const std::uint8_t> payload() const {
+    [[nodiscard]] std::span<const std::uint8_t> payload() const {
         return std::span(buffer).subspan(payload_at.offset, payload_at.size);
     }
 
-    std::string_view metadata() const { return text(metadata_at); }
+    [[nodiscard]] std::string_view metadata() const { return text(metadata_at); }
 
     /** The payload as a buffer of its own, in the buffer's resource: the buffer itself when the
      * payload starts it. */
@@ -68,12 +71,12 @@ struct incoming {
             return std::move(buffer);
         }
         const auto p = payload();
-        return backend::bytes(p.begin(), p.end(), buffer.get_allocator());
+        return {p.begin(), p.end(), buffer.get_allocator()};
     }
 
 private:
-    std::string_view text(range r) const {
-        return std::string_view(reinterpret_cast<const char*>(buffer.data()) + r.offset, r.size);
+    [[nodiscard]] std::string_view text(range r) const {
+        return {reinterpret_cast<const char*>(buffer.data()) + r.offset, r.size};
     }
 };
 
@@ -89,7 +92,7 @@ class channel_link {
 public:
     /** Sends a room frame; false when the channel is no longer open. */
     virtual bool send(std::span<const std::uint8_t> room_frame) = 0;
-    virtual std::size_t buffered_amount() const = 0;
+    [[nodiscard]] virtual std::size_t buffered_amount() const = 0;
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
      * it closes first. */
     virtual void wait_drained(handler<void(bool)> done) = 0;
@@ -123,19 +126,21 @@ public:
     struct link {
         std::weak_ptr<channel_link> target;
 
-        bool send(std::span<const std::uint8_t> frame) const {
-            auto t = target.lock();
+        [[nodiscard]] bool send(std::span<const std::uint8_t> frame) const {
+            const auto t = target.lock();
             return t && t->send(frame);
         }
 
-        std::size_t buffered_amount() const {
-            auto t = target.lock();
+        [[nodiscard]] std::size_t buffered_amount() const {
+            const auto t = target.lock();
             return t ? t->buffered_amount() : std::size_t{0};
         }
 
         void wait_drained(handler<void(bool)> done) const {
-            if (auto t = target.lock())
-                return t->wait_drained(std::move(done));
+            if (const auto t = target.lock()) {
+                t->wait_drained(std::move(done));
+                return;
+            }
             done(false);
         }
     };
@@ -173,16 +178,24 @@ public:
     void send(std::string_view name, protocol::payload_format format, std::string_view metadata,
               payload_ref payload, std::span<const std::string_view> targets, bool include_pending,
               handler<void(boost::system::error_code)> done) {
-        if (!protocol::valid_action_name(name))
-            return done(make_error_code(error::invalid_action_name));
-        if (metadata.size() > protocol::max_action_frame_bytes - protocol::offer_header_size)
-            return done(make_error_code(error::metadata_too_large));
+        if (!protocol::valid_action_name(name)) {
+            done(make_error_code(error::invalid_action_name));
+            return;
+        }
+        if (metadata.size() > protocol::max_action_frame_bytes - protocol::offer_header_size) {
+            done(make_error_code(error::metadata_too_large));
+            return;
+        }
         std::pmr::vector<std::string_view> chosen(targets.begin(), targets.end(), memory_);
-        if (chosen.empty())
+        if (chosen.empty()) {
             chosen = cb_.peers(include_pending);
-        if (chosen.empty())
-            return done({});
-        auto state = std::allocate_shared<fan_out>(allocator(), chosen.size(), std::move(done));
+        }
+        if (chosen.empty()) {
+            done({});
+            return;
+        }
+        const auto state =
+            std::allocate_shared<fan_out>(allocator(), chosen.size(), std::move(done));
         if (protocol::fits_inline(metadata.size(), payload.data.size())) {
             auto frame = protocol::begin_room_frame(
                 token_, protocol::inline_header_size + metadata.size() + payload.data.size(),
@@ -207,7 +220,7 @@ public:
             // A transfer outlives this call: a payload nobody keeps alive is copied once, here.
             const std::shared_ptr<const backend::bytes> copy = std::allocate_shared<backend::bytes>(
                 allocator(), payload.data.begin(), payload.data.end());
-            payload = {std::span(*copy), copy};
+            payload = {.data = std::span(*copy), .owner = copy};
         }
         for (const auto peer : chosen) {
             auto l = cb_.find_link(peer, include_pending);
@@ -229,8 +242,9 @@ public:
             return;
         }
         if (const auto* p = std::get_if<protocol::proposal>(&*decoded.frame)) {
-            if (!cb_.may_receive(peer, p->name))
+            if (!cb_.may_receive(peer, p->name)) {
                 return;
+            }
             if (p->kind == protocol::frame_kind::inline_payload) {
                 on_inline(peer, std::move(frame), *p);
             } else {
@@ -247,16 +261,18 @@ public:
     void receiver_added() { drain(); }
 
     void clear_peer(std::string_view peer, boost::system::error_code reason) {
-        if (auto it = outgoing_.find(peer); it != outgoing_.end()) {
+        if (const auto it = outgoing_.find(peer); it != outgoing_.end()) {
             auto transfers = std::move(it->second);
             outgoing_.erase(it);
-            for (auto& [id, t] : transfers)
+            for (auto& [id, t] : transfers) {
                 t->fail(reason);
+            }
         }
-        if (auto it = incoming_.find(peer); it != incoming_.end()) {
+        if (const auto it = incoming_.find(peer); it != incoming_.end()) {
             for (auto& [id, b] : it->second.bulk) {
-                if (b.receiving)
+                if (b.receiving) {
                     reserved_bytes_ -= b.size;
+                }
             }
             incoming_.erase(it);
         }
@@ -276,10 +292,12 @@ private:
         fan_out(std::size_t n, done_handler d) : remaining(n), done(std::move(d)) {}
 
         void complete(boost::system::error_code ec) {
-            if (ec && !first_error)
+            if (ec && !first_error) {
                 first_error = ec;
-            if (--remaining == 0)
+            }
+            if (--remaining == 0) {
                 done(first_error);
+            }
         }
 
         std::size_t remaining;
@@ -313,7 +331,10 @@ private:
         std::shared_ptr<backend::timer> timer;
     };
 
-    struct waiting_inline {
+    // Its implicit move assignment may allocate: a std::pmr member copies when the two resources
+    // differ, which bugprone-exception-escape, expecting every move assignment not to throw,
+    // reports.
+    struct waiting_inline {  // NOLINT(bugprone-exception-escape)
         incoming message;
         double arrived_ms = 0;
     };
@@ -325,10 +346,10 @@ private:
         std::pmr::deque<waiting_inline> waiting;
         std::optional<std::uint32_t> active;
 
-        std::size_t count() const { return bulk.size() + waiting.size(); }
+        [[nodiscard]] std::size_t count() const { return bulk.size() + waiting.size(); }
     };
 
-    pmr_allocator allocator() const { return pmr_allocator(memory_); }
+    pmr_allocator allocator() const { return {memory_}; }
 
     /** `f` as a handler of the room's resource. */
     template <class Signature, class F>
@@ -337,25 +358,30 @@ private:
     }
 
     /** Sends a frame once the channel buffers no more than Trystero's threshold. */
-    void send_when_drained(const link& l, std::shared_ptr<const backend::bytes> frame,
+    void send_when_drained(const link& l, const std::shared_ptr<const backend::bytes>& frame,
                            done_handler done) {
         if (l.buffered_amount() <= backend::data_channel::low_threshold) {
-            return done(l.send(*frame) ? boost::system::error_code{}
-                                       : make_error_code(error::peer_disconnected));
+            done(l.send(*frame) ? boost::system::error_code{}
+                                : make_error_code(error::peer_disconnected));
+            return;
         }
-        auto timer = factory_.make_timer(memory_);
-        auto pending = std::allocate_shared<settling>(allocator(), std::move(done));
+        const auto timer = factory_.make_timer(memory_);
+        const auto pending = std::allocate_shared<settling>(allocator(), std::move(done));
         timer->start(drain_timeout, bind<void()>([pending] {
-                         if (std::exchange(pending->settled, true))
+                         if (std::exchange(pending->settled, true)) {
                              return;
+                         }
                          pending->done(make_error_code(error::channel_stalled));
                      }));
         l.wait_drained(bind<void(bool)>([pending, timer, l, frame](bool open) {
-            if (std::exchange(pending->settled, true))
+            if (std::exchange(pending->settled, true)) {
                 return;
+            }
             timer->cancel();
-            if (!open)
-                return pending->done(make_error_code(error::peer_disconnected));
+            if (!open) {
+                pending->done(make_error_code(error::peer_disconnected));
+                return;
+            }
             pending->done(l.send(*frame) ? boost::system::error_code{}
                                          : make_error_code(error::peer_disconnected));
         }));
@@ -370,37 +396,41 @@ private:
     }
 
     void send_bulk(std::string_view peer_view, const link& l, std::string_view name,
-                   protocol::payload_format format, std::string_view metadata, payload_ref payload,
-                   std::shared_ptr<fan_out> state) {
+                   protocol::payload_format format, std::string_view metadata,
+                   const payload_ref& payload, const std::shared_ptr<fan_out>& state) {
         const std::uint32_t id = next_id_++;
         auto offer = protocol::begin_room_frame(
             token_, protocol::offer_header_size + metadata.size(), memory_);
         protocol::append_offer(offer, name, format, metadata, id, payload.data.size());
         std::pmr::string peer(peer_view, memory_);  // the transfer's handlers outlive this call
         auto& transfers = outgoing_[peer];
-        auto transfer = std::allocate_shared<outgoing_transfer>(allocator());
+        const auto transfer = std::allocate_shared<outgoing_transfer>(allocator());
         transfers[id] = transfer;
-        auto weak = weak_from_this();
-        auto finished = std::allocate_shared<bool>(allocator(), false);
+        const auto weak = weak_from_this();
+        const auto finished = std::allocate_shared<bool>(allocator(), false);
         // Shared by the timer, the acceptance, the chunks and the transfer's failure: the first
         // call settles it.
-        auto finish = std::allocate_shared<done_handler>(
+        const auto finish = std::allocate_shared<done_handler>(
             allocator(),
             [weak, peer = std::move(peer), id, state, finished](boost::system::error_code ec) {
-                if (std::exchange(*finished, true))
+                if (std::exchange(*finished, true)) {
                     return;
-                if (auto self = weak.lock()) {
-                    if (auto it = self->outgoing_.find(peer); it != self->outgoing_.end()) {
+                }
+                if (const auto self = weak.lock()) {
+                    if (const auto it = self->outgoing_.find(peer); it != self->outgoing_.end()) {
                         it->second.erase(id);
-                        if (it->second.empty())
+                        if (it->second.empty()) {
                             self->outgoing_.erase(it);
+                        }
                     }
                     // The receiver may hold a reservation for this transfer: tell it, as Trystero
-                    // does.
+                    // does. A channel that refuses the frame is closing, which frees it anyway.
                     if (ec && ec != make_error_code(error::transfer_rejected) &&
                         ec != make_error_code(error::peer_disconnected)) {
-                        if (auto l = self->cb_.find_link(peer, true))
-                            l->send(*self->control_frame(protocol::append_cancelled, id));
+                        if (auto l = self->cb_.find_link(peer, true)) {
+                            static_cast<void>(
+                                l->send(*self->control_frame(protocol::append_cancelled, id)));
+                        }
                     }
                 }
                 state->complete(ec);
@@ -413,77 +443,90 @@ private:
                                }));
         transfer->accepted =
             bind<void()>([weak, l, id, payload, finish, transfer_weak = std::weak_ptr(transfer)] {
-                auto self = weak.lock();
-                auto t = transfer_weak.lock();
-                if (!self || !t)
+                const auto self = weak.lock();
+                const auto t = transfer_weak.lock();
+                if (!self || !t) {
                     return;
+                }
                 t->timer->cancel();
                 self->send_chunks(l, id, payload, 0, finish);
             });
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(offer)),
             bind<void(boost::system::error_code)>([finish](boost::system::error_code ec) {
-                if (ec)
+                if (ec) {
                     (*finish)(ec);
+                }
             }));
     }
 
     void send_chunks(const link& l, std::uint32_t id, const payload_ref& payload,
-                     std::size_t offset, std::shared_ptr<done_handler> finish) {
-        if (offset >= payload.data.size())
-            return (*finish)({});
+                     std::size_t offset, const std::shared_ptr<done_handler>& finish) {
+        if (offset >= payload.data.size()) {
+            (*finish)({});
+            return;
+        }
         const auto length = std::min(protocol::chunk_size, payload.data.size() - offset);
         auto frame =
             protocol::begin_room_frame(token_, protocol::chunk_header_size + length, memory_);
         protocol::append_chunk(frame, id, offset, payload.data.subspan(offset, length));
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(frame)),
             bind<void(boost::system::error_code)>(
                 [weak, l, id, payload, offset, length, finish](boost::system::error_code ec) {
-                    if (ec)
-                        return (*finish)(ec);
-                    auto self = weak.lock();
-                    if (!self)
-                        return (*finish)(make_error_code(error::room_left));
+                    if (ec) {
+                        (*finish)(ec);
+                        return;
+                    }
+                    const auto self = weak.lock();
+                    if (!self) {
+                        (*finish)(make_error_code(error::room_left));
+                        return;
+                    }
                     self->send_chunks(l, id, payload, offset + length, finish);
                 }));
     }
 
     void control(std::string_view peer, const backend::bytes& frame) {
         if (auto l = cb_.find_link(peer, true)) {
-            if (!l->send(frame))
+            if (!l->send(frame)) {
                 cb_.fail_peer(peer, "unable to send action control");
+            }
         }
     }
 
     void on_control(std::string_view peer, const protocol::control_message& m) {
         if (m.kind == protocol::frame_kind::cancelled) {
-            if (auto it = incoming_.find(peer); it != incoming_.end()) {
-                if (auto b = it->second.bulk.find(m.id); b != it->second.bulk.end())
+            if (const auto it = incoming_.find(peer); it != incoming_.end()) {
+                if (const auto b = it->second.bulk.find(m.id); b != it->second.bulk.end()) {
                     release_bulk(it->second, b);
+                }
             }
             drain();
             return;
         }
-        auto it = outgoing_.find(peer);
-        if (it == outgoing_.end())
+        const auto it = outgoing_.find(peer);
+        if (it == outgoing_.end()) {
             return;
-        auto t = it->second.find(m.id);
-        if (t == it->second.end())
+        }
+        const auto t = it->second.find(m.id);
+        if (t == it->second.end()) {
             return;
-        auto transfer = t->second;
+        }
+        const auto transfer = t->second;
         if (m.kind == protocol::frame_kind::accepted) {
-            if (transfer->accepted)
+            if (transfer->accepted) {
                 std::exchange(transfer->accepted, {})();
+            }
         } else {
             transfer->fail(make_error_code(error::transfer_rejected));
         }
     }
 
     void on_inline(std::string_view peer, backend::bytes&& frame, const protocol::proposal& p) {
-        const auto base = frame.data();
-        auto offset_of = [base](const void* at) {
+        const auto* const base = frame.data();
+        const auto offset_of = [base](const void* at) {
             return static_cast<std::size_t>(static_cast<const std::uint8_t*>(at) - base);
         };
         incoming message{
@@ -491,9 +534,9 @@ private:
             .format = p.format,
             .buffer =
                 std::move(frame),  // the views in `p` stay valid: moving a vector keeps its storage
-            .name_at = {offset_of(p.name.data()), p.name.size()},
-            .payload_at = {offset_of(p.payload.data()), p.payload.size()},
-            .metadata_at = {offset_of(p.metadata.data()), p.metadata.size()},
+            .name_at = {.offset = offset_of(p.name.data()), .size = p.name.size()},
+            .payload_at = {.offset = offset_of(p.payload.data()), .size = p.payload.size()},
+            .metadata_at = {.offset = offset_of(p.metadata.data()), .size = p.metadata.size()},
             .json = json_,
         };
         if (cb_.has_receiver(p.name)) {
@@ -501,15 +544,17 @@ private:
             return;
         }
         auto& in = incoming_for(peer);
-        if (in.count() >= max_pending_per_peer)
+        if (in.count() >= max_pending_per_peer) {
             return;
-        in.waiting.push_back({std::move(message), factory_.now_ms()});
+        }
+        in.waiting.push_back({.message = std::move(message), .arrived_ms = factory_.now_ms()});
     }
 
     peer_in& incoming_for(std::string_view peer) {
         auto it = incoming_.find(peer);
-        if (it == incoming_.end())
+        if (it == incoming_.end()) {
             it = incoming_.try_emplace(std::pmr::string(peer, memory_), allocator()).first;
+        }
         return it->second;
     }
 
@@ -519,16 +564,20 @@ private:
             cb_.fail_peer(peer, "duplicate action offer");
             return;
         }
-        auto reject = [&](std::string_view reason) {
+        const auto reject = [&](std::string_view reason) {
             auto frame = protocol::begin_room_frame(
                 token_, protocol::control_header_size + reason.size(), memory_);
             protocol::append_rejected(frame, p.id, reason);
             control(peer, frame);
         };
-        if (p.size > max_receive_bytes_)
-            return reject("payload exceeds receiver size limit");
-        if (in.count() >= max_pending_per_peer)
-            return reject("too many pending transfers");
+        if (p.size > max_receive_bytes_) {
+            reject("payload exceeds receiver size limit");
+            return;
+        }
+        if (in.count() >= max_pending_per_peer) {
+            reject("too many pending transfers");
+            return;
+        }
         auto& b = in.bulk.try_emplace(p.id, allocator()).first->second;
         b.name = p.name;
         b.format = p.format;
@@ -541,18 +590,21 @@ private:
 
     /** (Re)starts a transfer's expiry: 120 s without an accepted chunk drops it. */
     void arm(std::string_view peer_view, std::uint32_t id, bulk_in& b) {
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         b.timer->start(transfer_timeout,
                        bind<void()>([weak, peer = std::pmr::string(peer_view, memory_), id] {
-                           auto self = weak.lock();
-                           if (!self)
+                           const auto self = weak.lock();
+                           if (!self) {
                                return;
-                           auto it = self->incoming_.find(peer);
-                           if (it == self->incoming_.end())
+                           }
+                           const auto it = self->incoming_.find(peer);
+                           if (it == self->incoming_.end()) {
                                return;
-                           auto b = it->second.bulk.find(id);
-                           if (b == it->second.bulk.end())
+                           }
+                           const auto b = it->second.bulk.find(id);
+                           if (b == it->second.bulk.end()) {
                                return;
+                           }
                            self->release_bulk(it->second, b);
                            auto frame = protocol::begin_room_frame(
                                self->token_, protocol::control_header_size + 32, self->memory_);
@@ -563,12 +615,14 @@ private:
     }
 
     void on_chunk(std::string_view peer, const protocol::chunk& c) {
-        auto it = incoming_.find(peer);
-        if (it == incoming_.end())
+        const auto it = incoming_.find(peer);
+        if (it == incoming_.end()) {
             return;
-        auto b = it->second.bulk.find(c.id);
-        if (b == it->second.bulk.end())
+        }
+        const auto b = it->second.bulk.find(c.id);
+        if (b == it->second.bulk.end()) {
             return;  // cancelled or expired transfers cannot resurrect
+        }
         auto& t = b->second;
         if (!t.receiving || c.offset != static_cast<double>(t.data.size()) || c.data.empty() ||
             c.data.size() != std::min(protocol::chunk_size, t.size - t.data.size())) {
@@ -577,15 +631,17 @@ private:
         }
         // Room for the payload, then its metadata and name, so the delivered message is this one
         // buffer.
-        if (t.data.empty())
+        if (t.data.empty()) {
             t.data.reserve(t.size + t.metadata.size() + t.name.size());
+        }
         t.data.insert(t.data.end(), c.data.begin(), c.data.end());
         arm(peer, c.id, t);
-        if (t.data.size() < t.size)
+        if (t.data.size() < t.size) {
             return;
-        const incoming::range payload_at{0, t.size};
-        const incoming::range metadata_at{t.size, t.metadata.size()};
-        const incoming::range name_at{t.size + t.metadata.size(), t.name.size()};
+        }
+        const incoming::range payload_at{.offset = 0, .size = t.size};
+        const incoming::range metadata_at{.offset = t.size, .size = t.metadata.size()};
+        const incoming::range name_at{.offset = t.size + t.metadata.size(), .size = t.name.size()};
         t.data.insert(t.data.end(), t.metadata.begin(), t.metadata.end());
         t.data.insert(t.data.end(), t.name.begin(), t.name.end());
         incoming message{
@@ -603,10 +659,12 @@ private:
     }
 
     void release_bulk(peer_in& in, std::pmr::map<std::uint32_t, bulk_in>::iterator b) {
-        if (b->second.receiving)
+        if (b->second.receiving) {
             reserved_bytes_ -= b->second.size;
-        if (in.active == b->first)
+        }
+        if (in.active == b->first) {
             in.active.reset();
+        }
         in.bulk.erase(b);
     }
 
@@ -625,12 +683,14 @@ private:
                 }
             }
             in.waiting = std::move(still_waiting);
-            if (in.active)
+            if (in.active) {
                 continue;
+            }
             for (auto& [id, b] : in.bulk) {
                 if (b.receiving || !cb_.has_receiver(b.name) ||
-                    reserved_bytes_ + b.size > max_receive_bytes_)
+                    reserved_bytes_ + b.size > max_receive_bytes_) {
                     continue;
+                }
                 b.receiving = true;
                 reserved_bytes_ += b.size;
                 in.active = id;
@@ -638,8 +698,9 @@ private:
                 break;
             }
         }
-        for (auto& m : ready)
+        for (auto& m : ready) {
             cb_.deliver(std::move(m));
+        }
     }
 
     backend::factory& factory_;

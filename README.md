@@ -100,16 +100,18 @@ namespace trystero = webcpp::trystero;
 int main() {
     boost::asio::io_context io;
     trystero::native::backend backend(io.get_executor());
-    trystero::room room(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby");
+    trystero::room room(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"},
+                        "lobby");
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
-        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
-        chat.async_send("hello from a native peer", std::move(to_peer), [](boost::system::error_code) {});
+        trystero::send_options to_peer{.targets = {trystero::peer_id(peer)}, .metadata = {}};
+        chat.async_send("hello from a native peer", std::move(to_peer),
+                        [](boost::system::error_code) {});
     });
-    chat.on_message([](std::string text, const trystero::message_info& info) {
+    chat.on_message([](const std::string& text, const trystero::message_info& info) {
         // flushed: into a pipe too, since the program runs until it is stopped
-        std::cout << info.from << ": " << text << std::endl;
+        std::cout << info.from << ": " << text << '\n' << std::flush;
     });
 
     io.run();  // natively, the program runs its io_context; libdatachannel's threads post to it
@@ -125,8 +127,8 @@ struct application {
     asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    trystero::room room{loop.get_executor(), backend,
-                        {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
+    trystero::room room{
+        loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
     trystero::action<std::string> chat = room.make_action<std::string>("chat");
     trystero::action<std::string> echo = room.make_action<std::string>("echo");
 };

@@ -26,6 +26,8 @@ namespace asio = boost::asio;
 namespace trystero = webcpp::trystero;
 // end::includes[]
 
+namespace {
+
 // tag::application[]
 /** What the page keeps alive: event loop, backend, room and actions. */
 struct application {
@@ -45,27 +47,32 @@ struct application {
 asio::awaitable<void> echo_back(trystero::action<std::string>& echo) {
     for (;;) {
         auto [ec, text, info] = co_await echo.async_receive(asio::as_tuple(asio::use_awaitable));
-        if (ec)
+        if (ec) {
             co_return;  // the room was left
-        co_await echo.async_send("echo: " + text, trystero::send_options{{info.from}, {}},
+        }
+        co_await echo.async_send("echo: " + text,
+                                 trystero::send_options{.targets = {info.from}, .metadata = {}},
                                  asio::use_awaitable);
     }
 }
 
 // end::coroutine[]
 
+}  // namespace
+
 // tag::main[]
 int main() {
     auto* app = new application;  // a page's program lives as long as the tab
 
     app->room.on_peer_join([app](std::string_view peer) {
-        trystero::send_options to_peer{{trystero::peer_id(peer)}, {}};
+        trystero::send_options to_peer{.targets = {trystero::peer_id(peer)}, .metadata = {}};
         app->chat.async_send("hello", std::move(to_peer), [](boost::system::error_code ec) {
-            if (ec)
+            if (ec) {
                 std::cerr << "not delivered: " << ec.message() << '\n';
+            }
         });
     });
-    app->chat.on_message([](std::string text, const trystero::message_info& info) {
+    app->chat.on_message([](const std::string& text, const trystero::message_info& info) {
         std::cout << info.from << ": " << text << '\n';
     });
     asio::co_spawn(app->loop.get_executor(), echo_back(app->echo), asio::detached);

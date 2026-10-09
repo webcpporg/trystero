@@ -60,34 +60,54 @@ public:
           drain_waiters_(memory) {}
 
     void start() {
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         const std::pmr::polymorphic_allocator<> allocator(memory_);
         channel_->set_handlers({
             .open = {},
-            .message = {std::allocator_arg, allocator,
-                        [weak](backend::bytes frame) {
-                            if (auto self = weak.lock())
-                                self->on_message(std::move(frame));
-                        }},
-            .close = {std::allocator_arg, allocator,
-                      [weak] {
-                          if (auto self = weak.lock())
-                              self->end("data channel closed");
-                      }},
-            .buffered_amount_low = {std::allocator_arg, allocator,
-                                    [weak] {
-                                        if (auto self = weak.lock())
-                                            self->on_drained(true);
-                                    }},
+            .message =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak](backend::bytes frame) {
+                        if (const auto self = weak.lock()) {
+                            self->on_message(std::move(frame));
+                        }
+                    },
+                },
+            .close =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak] {
+                        if (const auto self = weak.lock()) {
+                            self->end("data channel closed");
+                        }
+                    },
+                },
+            .buffered_amount_low =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak] {
+                        if (const auto self = weak.lock()) {
+                            self->on_drained(true);
+                        }
+                    },
+                },
         });
         pc_->set_handlers({
             .ice_candidate = {},
             .data_channel = {},
-            .state = {std::allocator_arg, allocator,
-                      [weak](backend::connection_state state) {
-                          if (auto self = weak.lock())
-                              self->on_state(state);
-                      }},
+            .state =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak](backend::connection_state state) {
+                        if (const auto self = weak.lock()) {
+                            self->on_state(state);
+                        }
+                    },
+                },
         });
         send_presence(true);
     }
@@ -96,8 +116,9 @@ public:
 
     /** Sends a room frame; false when the channel is no longer open. */
     bool send(std::span<const std::uint8_t> room_frame) override {
-        if (ended_ || !channel_->is_open())
+        if (ended_ || !channel_->is_open()) {
             return false;
+        }
         channel_->send(room_frame);
         return true;
     }
@@ -109,18 +130,23 @@ public:
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
      * it closes first. */
     void wait_drained(handler<void(bool)> done) override {
-        if (ended_)
-            return done(false);
-        if (channel_->buffered_amount() <= backend::data_channel::low_threshold)
-            return done(true);
+        if (ended_) {
+            done(false);
+            return;
+        }
+        if (channel_->buffered_amount() <= backend::data_channel::low_threshold) {
+            done(true);
+            return;
+        }
         drain_waiters_.push_back(std::move(done));
     }
 
     /** Says the room is left and closes the connection without reporting it: the room already
      * knows. */
     void close() {
-        if (ended_)
+        if (ended_) {
             return;
+        }
         send_presence(false);
         ended_ = true;
         release();
@@ -129,8 +155,9 @@ public:
 
 private:
     void send_presence(bool present) {
-        if (channel_->is_open())
+        if (channel_->is_open()) {
             channel_->send(protocol::presence_frame(token_, present, memory_));
+        }
     }
 
     void on_message(backend::bytes&& frame) {
@@ -139,11 +166,13 @@ private:
             end("invalid or incompatible room frame");
             return;
         }
-        if (envelope->token != token_)
+        if (envelope->token != token_) {
             return;
+        }
         if (envelope->type == protocol::envelope::kind::presence) {
-            if (!envelope->present)
+            if (!envelope->present) {
                 end("peer left the room");
+            }
             return;
         }
         const auto action = envelope->payload;
@@ -156,14 +185,16 @@ private:
             end(state == connection_state::failed ? "connection failed" : "connection closed");
         } else if (state == connection_state::disconnected) {
             // Trystero waits five seconds before treating a disconnection as the end.
-            if (!disconnect_timer_)
+            if (!disconnect_timer_) {
                 disconnect_timer_ = factory_.make_timer(memory_);
-            auto weak = weak_from_this();
+            }
+            const auto weak = weak_from_this();
             disconnect_timer_->start(
                 std::chrono::milliseconds(5000),
                 {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_), [weak] {
-                     if (auto self = weak.lock())
+                     if (const auto self = weak.lock()) {
                          self->end("connection lost");
+                     }
                  }});
         } else if (disconnect_timer_) {
             disconnect_timer_->cancel();
@@ -171,8 +202,9 @@ private:
     }
 
     void on_drained(bool open) {
-        for (auto& waiter : std::exchange(drain_waiters_, {}))
+        for (auto& waiter : std::exchange(drain_waiters_, {})) {
             waiter(open);
+        }
     }
 
     void release() {
@@ -184,8 +216,9 @@ private:
     }
 
     void end(std::string_view reason) {
-        if (ended_)
+        if (ended_) {
             return;
+        }
         ended_ = true;
         log_("webrtc", "connection with ", peer_, " ended: ", reason);
         release();

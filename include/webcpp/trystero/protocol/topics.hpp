@@ -14,6 +14,7 @@
 #include <boost/hash2/sha1.hpp>
 #include <boost/hash2/sha2.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -38,10 +39,14 @@ inline constexpr std::size_t nonce_size = 8;
 template <class Generator>
 std::pmr::string make_id(std::size_t n, Generator& generator,
                          std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    // A distribution draws through a non-const operator(), which misc-const-correctness does not
+    // see through the dependent generator.
+    // NOLINTNEXTLINE(misc-const-correctness)
     std::uniform_int_distribution<std::size_t> pick(0, id_alphabet.size() - 1);
     std::pmr::string out(n, '0', memory);
-    for (auto& c : out)
+    for (auto& c : out) {
         c = id_alphabet[pick(generator)];
+    }
     return out;
 }
 
@@ -52,11 +57,12 @@ std::pmr::string make_id(std::size_t n, Generator& generator,
  */
 inline std::array<std::uint8_t, 32> sha256_of(std::initializer_list<std::string_view> parts) {
     boost::hash2::sha2_256 h;
-    for (const auto part : parts)
+    for (const auto part : parts) {
         h.update(part.data(), part.size());
+    }
     const auto digest = h.result();
     std::array<std::uint8_t, 32> out{};
-    std::copy(digest.begin(), digest.end(), out.begin());
+    std::ranges::copy(digest, out.begin());
     return out;
 }
 
@@ -73,19 +79,21 @@ inline std::pmr::string sha1_topic_of(
     std::initializer_list<std::string_view> parts,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     boost::hash2::sha1_160 h;
-    for (const auto part : parts)
+    for (const auto part : parts) {
         h.update(part.data(), part.size());
+    }
     std::pmr::string out(memory);
     out.reserve(40);
     for (std::uint8_t b : h.result()) {
-        char digits[2];
+        std::array<char, 2> digits{};
         std::size_t n = 0;
         do {
             digits[n++] = "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36];
             b /= 36;
         } while (b != 0);
-        while (n != 0)
+        while (n != 0) {
             out += digits[--n];
+        }
     }
     return out;
 }

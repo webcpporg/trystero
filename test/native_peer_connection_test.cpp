@@ -90,7 +90,7 @@ struct pair {
             .data_channel =
                 [this](std::shared_ptr<backend::data_channel> channel) {
                     on_io_thread();
-                    answer_end = channel;
+                    answer_end = std::move(channel);
                     watch(answer_end, answer_open, at_answerer, &answer_closes);
                 },
             .state =
@@ -181,8 +181,8 @@ void closing_one_end_is_seen_by_the_other() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback,
-                                                        std::pmr::get_default_resource());
+    const auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback,
+                                                              std::pmr::get_default_resource());
     std::optional<backend::error_code> result;
     pc->add_ice_candidate("not json", [&](backend::error_code ec) { result = ec; });
     if (!BOOST_TEST(run_until(io, [&] { return result.has_value(); }))) {

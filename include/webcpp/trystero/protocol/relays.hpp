@@ -62,7 +62,7 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
  */
 template <class Sequence>
 Sequence shuffle(Sequence items, double seed) {
-    auto rand = [&seed] {
+    const auto rand = [&seed] {
         const double x = std::sin(seed++) * 10000;
         return x - std::floor(x);
     };
@@ -84,8 +84,9 @@ inline std::pmr::vector<std::string_view> derive_relays(
     auto shuffled =
         shuffle(std::pmr::vector<std::string_view>(defaults.begin(), defaults.end(), memory),
                 str_to_num(app_id));
-    if (shuffled.size() > redundancy)
+    if (shuffled.size() > redundancy) {
         shuffled.resize(redundancy);
+    }
     return shuffled;
 }
 

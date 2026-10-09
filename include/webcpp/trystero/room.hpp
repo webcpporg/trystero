@@ -35,6 +35,7 @@
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 
+#include <array>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -74,7 +75,7 @@ struct room_config {
     /** This peer's id in the room; empty means 20 random characters. */
     std::pmr::string self_id = {};
     std::chrono::milliseconds handshake_timeout{10'000};
-    std::size_t max_receive_bytes = 256 * 1024 * 1024;
+    std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
     /** Diagnostics, by category; see detail::logger. The room moves the sink into `memory`. */
     detail::logger::sink log = {};
     /**
@@ -113,11 +114,17 @@ struct send_options {
 inline std::pmr::vector<backend::ice_server> default_ice_servers(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::vector<backend::ice_server> out(memory);
-    for (const std::string_view url :
-         {"stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302",
-          "stun:stun2.l.google.com:19302", "stun:stun.cloudflare.com:3478"}) {
-        backend::ice_server server{std::pmr::vector<std::pmr::string>(memory),
-                                   std::pmr::string(memory), std::pmr::string(memory)};
+    for (const std::string_view url : {
+             "stun:stun.l.google.com:19302",
+             "stun:stun1.l.google.com:19302",
+             "stun:stun2.l.google.com:19302",
+             "stun:stun.cloudflare.com:3478",
+         }) {
+        backend::ice_server server{
+            .urls = std::pmr::vector<std::pmr::string>(memory),
+            .username = std::pmr::string(memory),
+            .credential = std::pmr::string(memory),
+        };
         server.urls.emplace_back(url);
         out.push_back(std::move(server));
     }
@@ -182,8 +189,9 @@ struct payload_traits<std::string> {
     }
 
     static std::optional<std::string> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
-        if (m.format != protocol::payload_format::text)
+        if (m.format != protocol::payload_format::text) {
             return std::nullopt;
+        }
         return std::string(as_text(m.payload()));
     }
 };
@@ -197,8 +205,9 @@ struct payload_traits<std::pmr::string> {
     }
 
     static std::optional<std::pmr::string> decode(incoming& m, std::pmr::memory_resource* memory) {
-        if (m.format != protocol::payload_format::text)
+        if (m.format != protocol::payload_format::text) {
             return std::nullopt;
+        }
         return std::pmr::string(as_text(m.payload()), memory);
     }
 };
@@ -213,8 +222,9 @@ struct payload_traits<std::string_view> {
 
     static std::optional<std::string_view> decode(incoming& m,
                                                   std::pmr::memory_resource* /*memory*/) {
-        if (m.format != protocol::payload_format::text)
+        if (m.format != protocol::payload_format::text) {
             return std::nullopt;
+        }
         return as_text(m.payload());
     }
 };
@@ -231,12 +241,14 @@ struct payload_traits<boost::json::value> {
 
     static std::optional<boost::json::value> decode(incoming& m,
                                                     std::pmr::memory_resource* /*memory*/) {
-        if (m.format != protocol::payload_format::json)
+        if (m.format != protocol::payload_format::json) {
             return std::nullopt;
+        }
         boost::system::error_code ec;
         auto v = protocol::json::parse(as_text(m.payload()), m.json, ec);
-        if (ec)
+        if (ec) {
             return std::nullopt;
+        }
         return v;
     }
 };
@@ -250,8 +262,9 @@ struct payload_traits<bytes> {
     }
 
     static std::optional<bytes> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
-        if (m.format != protocol::payload_format::binary)
+        if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
+        }
         const auto p = m.payload();
         return bytes(p.begin(), p.end());
     }
@@ -266,8 +279,9 @@ struct payload_traits<pmr_bytes> {
     }
 
     static std::optional<pmr_bytes> decode(incoming& m, std::pmr::memory_resource* memory) {
-        if (m.format != protocol::payload_format::binary)
+        if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
+        }
         return pmr_bytes(std::move(m).take_payload(), memory);
     }
 };
@@ -283,8 +297,9 @@ struct payload_traits<std::span<const std::uint8_t>> {
 
     static std::optional<std::span<const std::uint8_t>> decode(
         incoming& m, std::pmr::memory_resource* /*memory*/) {
-        if (m.format != protocol::payload_format::binary)
+        if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
+        }
         return m.payload();
     }
 };
@@ -296,7 +311,8 @@ struct payload_traits<payload> {
     static encoded_payload encode(payload v, std::pmr::memory_resource* memory) {
         return std::visit(
             [memory](auto&& x) {
-                return payload_traits<std::decay_t<decltype(x)>>::encode(std::move(x), memory);
+                return payload_traits<std::decay_t<decltype(x)>>::encode(
+                    std::forward<decltype(x)>(x), memory);
             },
             std::move(v));
     }
@@ -304,13 +320,20 @@ struct payload_traits<payload> {
     static std::optional<payload> decode(incoming& m, std::pmr::memory_resource* memory) {
         switch (m.format) {
             case protocol::payload_format::text:
-                return payload(*payload_traits<std::string>::decode(m, memory));
-            case protocol::payload_format::json:
-                if (auto v = payload_traits<boost::json::value>::decode(m, memory))
+                if (auto v = payload_traits<std::string>::decode(m, memory)) {
                     return payload(std::move(*v));
+                }
+                return std::nullopt;
+            case protocol::payload_format::json:
+                if (auto v = payload_traits<boost::json::value>::decode(m, memory)) {
+                    return payload(std::move(*v));
+                }
                 return std::nullopt;
             case protocol::payload_format::binary:
-                return payload(*payload_traits<bytes>::decode(m, memory));
+                if (auto v = payload_traits<bytes>::decode(m, memory)) {
+                    return payload(std::move(*v));
+                }
+                return std::nullopt;
         }
         return std::nullopt;
     }
@@ -329,7 +352,7 @@ struct completion {
     using allocator_type =
         boost::asio::associated_allocator_t<boost::asio::any_completion_handler<Signature>>;
 
-    allocator_type get_allocator() const noexcept {
+    [[nodiscard]] allocator_type get_allocator() const noexcept {
         return boost::asio::get_associated_allocator(handler);
     }
 
@@ -375,10 +398,12 @@ public:
           self_topic_(memory_),
           peers_(memory_),
           actions_(memory_) {
-        if (config_.self_id.empty())
+        if (config_.self_id.empty()) {
             config_.self_id = random_id(protocol::peer_id_size);
-        if (config_.ice_servers.empty())
+        }
+        if (config_.ice_servers.empty()) {
             config_.ice_servers = default_ice_servers(memory_);
+        }
         if (config_.relay_urls.empty()) {
             for (const auto url :
                  protocol::derive_relays(config_.app_id, protocol::default_nostr_relays,
@@ -392,7 +417,7 @@ public:
     }
 
     void start() {
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         sealer_ = factory_.make_sealer(
             protocol::seal_key(config_.password, config_.app_id, room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
@@ -401,32 +426,34 @@ public:
                 .find_link = bind<std::optional<action_wire::link>(std::string_view, bool)>(
                     [weak](std::string_view peer,
                            bool include_pending) -> std::optional<action_wire::link> {
-                        auto self = weak.lock();
+                        const auto self = weak.lock();
                         return self ? self->link_to(peer, include_pending) : std::nullopt;
                     }),
                 .peers = bind<std::pmr::vector<std::string_view>(bool)>(
                     [weak, memory = memory_](bool include_pending) {
-                        auto self = weak.lock();
+                        const auto self = weak.lock();
                         return self ? self->peer_views(include_pending)
                                     : std::pmr::vector<std::string_view>(memory);
                     }),
                 .may_receive = bind<bool(std::string_view, std::string_view)>(
                     [weak](std::string_view peer, std::string_view name) {
-                        auto self = weak.lock();
+                        const auto self = weak.lock();
                         return self && self->may_receive(peer, name);
                     }),
                 .has_receiver = bind<bool(std::string_view)>([weak](std::string_view name) {
-                    auto self = weak.lock();
+                    const auto self = weak.lock();
                     return self && (name.starts_with("@_") || self->actions_.contains(name));
                 }),
                 .deliver = bind<void(incoming&&)>([weak](incoming&& m) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->on_incoming(std::move(m));
+                    }
                 }),
                 .fail_peer = bind<void(std::string_view, std::string_view)>(
                     [weak](std::string_view peer, std::string_view reason) {
-                        if (auto self = weak.lock())
+                        if (const auto self = weak.lock()) {
                             self->kick(peer, reason);
+                        }
                     }),
             },
             memory_, json_);
@@ -436,22 +463,23 @@ public:
             signaling::callbacks{
                 .publish = bind<void(std::size_t, std::string_view, std::string_view)>(
                     [weak](std::size_t relay, std::string_view topic, std::string_view content) {
-                        if (auto self = weak.lock())
+                        if (const auto self = weak.lock()) {
                             self->strategy_->publish(relay, topic, content);
+                        }
                     }),
                 .connected = bind<void(std::string_view, std::shared_ptr<backend::peer_connection>,
                                        std::shared_ptr<backend::data_channel>)>(
                     [weak](std::string_view peer, std::shared_ptr<backend::peer_connection> pc,
                            std::shared_ptr<backend::data_channel> channel) {
-                        if (auto self = weak.lock())
+                        if (const auto self = weak.lock()) {
                             self->on_connected(peer, std::move(pc), std::move(channel));
+                        }
                     }),
                 .failed = bind<void(std::string_view, boost::system::error_code)>(
                     [weak](std::string_view peer, boost::system::error_code ec) {
-                        if (auto self = weak.lock()) {
-                            char buffer[128];  // NOLINT(cppcoreguidelines-avoid-c-arrays): the
-                                               // message without a std::string
-                            self->report(peer, ec, ec.message(buffer, sizeof buffer));
+                        if (const auto self = weak.lock()) {
+                            std::array<char, 128> buffer{};  // the message without a std::string
+                            self->report(peer, ec, ec.message(buffer.data(), buffer.size()));
                         }
                     }),
             },
@@ -461,16 +489,17 @@ public:
         topics.push_back(self_topic_);
         strategy_ = std::allocate_shared<nostr_strategy>(
             allocator(), factory_, config_.relay_urls, std::move(topics), root_topic_,
-            bind<std::pmr::string()>([weak, memory = memory_]() {
-                auto self = weak.lock();
+            bind<std::pmr::string()>([weak, memory = memory_] {
+                const auto self = weak.lock();
                 return self ? protocol::write_signal({.peer_id = self->config_.self_id},
                                                      self->random_id(protocol::nonce_size), memory)
                             : std::pmr::string(memory);
             }),
             bind<void(std::size_t, std::string_view, std::string_view)>(
                 [weak](std::size_t relay, std::string_view, std::string_view content) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->signaling_->handle(relay, content);
+                    }
                 }),
             log_, memory_, json_);
         log_("room", "joining room ", room_id_, " of app ", config_.app_id, " as ", config_.self_id,
@@ -482,9 +511,7 @@ public:
 
     std::pmr::memory_resource* memory() const { return memory_; }
 
-    std::pmr::polymorphic_allocator<> allocator() const {
-        return std::pmr::polymorphic_allocator<>(memory_);
-    }
+    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
     std::string_view self_id() const { return config_.self_id; }
 
@@ -493,8 +520,9 @@ public:
     std::pmr::vector<peer_id> active_peers() const {
         std::pmr::vector<peer_id> out(memory_);
         for (const auto& [id, p] : peers_) {
-            if (p.active)
+            if (p.active) {
                 out.push_back(id);
+            }
         }
         return out;
     }
@@ -511,10 +539,12 @@ public:
 
     /** Registers an action; frames that waited for it are delivered to it from now on. */
     void add_action(std::string_view name) {
-        if (!actions_.contains(name))
+        if (!actions_.contains(name)) {
             actions_.try_emplace(std::pmr::string(name, memory_), allocator());
-        if (wire_)
+        }
+        if (wire_) {
             wire_->receiver_added();
+        }
     }
 
     void set_action_handler(std::string_view name, message_handler handler) {
@@ -528,52 +558,63 @@ public:
 
     void receive(std::string_view name,
                  completion<void(boost::system::error_code, incoming)> handler) {
-        if (left_)
-            return complete(std::move(handler), make_error_code(error::room_left), incoming{});
+        if (left_) {
+            complete(std::move(handler), make_error_code(error::room_left), incoming{});
+            return;
+        }
         auto& slot = slot_for(name);
         if (!slot.queue.empty()) {
             auto m = std::move(slot.queue.front());
             slot.queue.pop_front();
-            return complete(std::move(handler), boost::system::error_code{}, std::move(m));
+            complete(std::move(handler), boost::system::error_code{}, std::move(m));
+            return;
         }
         slot.receivers.push_back(std::move(handler));
     }
 
     void send(std::string_view name, encoded_payload payload, const send_options& options,
               completion<void(boost::system::error_code)> handler) {
-        if (left_)
-            return complete(std::move(handler), make_error_code(error::room_left));
-        auto weak = weak_from_this();
+        if (left_) {
+            complete(std::move(handler), make_error_code(error::room_left));
+            return;
+        }
+        const auto weak = weak_from_this();
         const std::pmr::vector<std::string_view> targets(options.targets.begin(),
                                                          options.targets.end(), memory_);
         wire_->send(name, payload.format, options.metadata, std::move(payload.ref), targets,
                     is_internal_to_pending(name),
                     bind<void(boost::system::error_code)>(
                         [weak, handler = std::move(handler)](boost::system::error_code ec) mutable {
-                            if (auto self = weak.lock())
+                            if (const auto self = weak.lock()) {
                                 self->complete(std::move(handler), ec);
+                            }
                         }));
     }
 
     void ping(std::string_view peer,
               completion<void(boost::system::error_code, std::chrono::milliseconds)> handler) {
-        auto it = peers_.find(peer);
+        const auto it = peers_.find(peer);
         if (left_ || it == peers_.end() || !it->second.active) {
-            return complete(std::move(handler),
-                            make_error_code(left_ ? error::room_left : error::no_such_peer),
-                            std::chrono::milliseconds{});
+            complete(std::move(handler),
+                     make_error_code(left_ ? error::room_left : error::no_such_peer),
+                     std::chrono::milliseconds{});
+            return;
         }
-        it->second.pings.push_back({factory_.now_ms(), std::move(handler)});
+        it->second.pings.push_back(
+            {.started_ms = factory_.now_ms(), .handler = std::move(handler)});
         send_internal("@_ping", it->first);
     }
 
     void leave(completion<void(boost::system::error_code)> handler) {
-        if (left_)
-            return complete(std::move(handler), boost::system::error_code{});
+        if (left_) {
+            complete(std::move(handler), boost::system::error_code{});
+            return;
+        }
         left_ = true;
         log_("room", "leaving room ", room_id_);
-        for (const auto& [id, p] : peers_)
+        for (const auto& [id, p] : peers_) {
             send_internal("@_leave", id);
+        }
         // Trystero gives the farewell 99 ms to leave before closing the connections.
         leave_timer_ = factory_.make_timer(memory_);
         leave_timer_->start(
@@ -586,10 +627,12 @@ public:
 
     /** Leaves at once, without the farewell's grace period: the room handle was destroyed. */
     void abandon() {
-        if (std::exchange(left_, true))
+        if (std::exchange(left_, true)) {
             return;
-        for (const auto& [id, p] : peers_)
+        }
+        for (const auto& [id, p] : peers_) {
             send_internal("@_leave", id);
+        }
         close_everything();
     }
 
@@ -625,8 +668,10 @@ public:
     template <class Signature, class Handler>
     completion<Signature> erase(Handler&& handler) const {
         const bool here = on_room_executor(handler);
-        return {boost::asio::any_completion_handler<Signature>(std::forward<Handler>(handler)),
-                here};
+        return {
+            boost::asio::any_completion_handler<Signature>(std::forward<Handler>(handler)),
+            here,
+        };
     }
 
     /** `f` as a handler of the room's resource. */
@@ -703,8 +748,9 @@ private:
     /** A handler that several posts call, shared in the room's resource. */
     template <class Signature>
     std::shared_ptr<handler<Signature>> keep_handler(handler<Signature> f) const {
-        if (!f)
+        if (!f) {
             return nullptr;
+        }
         return std::allocate_shared<handler<Signature>>(allocator(), std::move(f));
     }
 
@@ -717,15 +763,17 @@ private:
         std::array<std::uint8_t, 64> random{};
         factory_.random(std::span(random).first(n));
         std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t i = 0; i < n; ++i) {
             id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
+        }
         return id;
     }
 
     action_slot& slot_for(std::string_view name) {
         auto it = actions_.find(name);
-        if (it == actions_.end())
+        if (it == actions_.end()) {
             it = actions_.try_emplace(std::pmr::string(name, memory_), allocator()).first;
+        }
         return it->second;
     }
 
@@ -734,7 +782,7 @@ private:
     }
 
     bool may_receive(std::string_view peer, std::string_view name) const {
-        auto it = peers_.find(peer);
+        const auto it = peers_.find(peer);
         return it != peers_.end() && (it->second.active || is_internal_to_pending(name));
     }
 
@@ -742,16 +790,18 @@ private:
         std::pmr::vector<std::string_view> out(memory_);
         out.reserve(peers_.size());
         for (const auto& [id, p] : peers_) {
-            if (p.active || include_pending)
+            if (p.active || include_pending) {
                 out.emplace_back(id);
+            }
         }
         return out;
     }
 
     std::optional<action_wire::link> link_to(std::string_view peer, bool include_pending) {
-        auto it = peers_.find(peer);
-        if (it == peers_.end() || (!it->second.active && !include_pending))
+        const auto it = peers_.find(peer);
+        if (it == peers_.end() || (!it->second.active && !include_pending)) {
             return std::nullopt;
+        }
         return action_wire::link{std::weak_ptr<channel_link>(it->second.link)};
     }
 
@@ -760,10 +810,13 @@ private:
     void send_internal(std::string_view name, std::string_view peer,
                        protocol::payload_format format = protocol::payload_format::text,
                        std::string_view text = {}) {
-        if (!wire_)
+        if (!wire_) {
             return;
+        }
         const payload_ref ref{
-            std::span(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()), nullptr};
+            .data = std::span(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()),
+            .owner = nullptr,
+        };
         wire_->send(name, format, {}, ref, std::span(&peer, 1), true,
                     bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
     }
@@ -787,8 +840,8 @@ private:
             pc->close();
             return;
         }
-        auto weak = weak_from_this();
-        auto it = peers_.try_emplace(std::pmr::string(peer_view, memory_), allocator()).first;
+        const auto weak = weak_from_this();
+        const auto it = peers_.try_emplace(std::pmr::string(peer_view, memory_), allocator()).first;
         const std::pmr::string& peer = it->first;
         auto& state = it->second;
         state.link = std::allocate_shared<peer_link>(
@@ -798,22 +851,25 @@ private:
                     bind<void(std::string_view, backend::bytes&&, std::span<const std::uint8_t>)>(
                         [weak](std::string_view p, backend::bytes&& frame,
                                std::span<const std::uint8_t> action) {
-                            if (auto self = weak.lock())
+                            if (const auto self = weak.lock()) {
                                 self->wire_->handle(p, std::move(frame), action);
+                            }
                         }),
                 .closed = bind<void(std::string_view, std::string_view)>(
                     [weak](std::string_view p, std::string_view reason) {
-                        if (auto self = weak.lock())
+                        if (const auto self = weak.lock()) {
                             self->remove_peer(p, reason, false);
+                        }
                     }),
             },
             log_, memory_);
         state.handshake_timer = factory_.make_timer(memory_);
         state.handshake_timer->start(
             config_.handshake_timeout, bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
-                auto self = weak.lock();
-                if (!self)
+                const auto self = weak.lock();
+                if (!self) {
                     return;
+                }
                 self->report(peer, make_error_code(error::handshake_timed_out),
                              "handshake timed out");
                 self->kick(peer, "handshake timed out");
@@ -823,8 +879,10 @@ private:
     }
 
     void start_handshake(std::string_view peer, peer_state& state) {
-        if (config_.password.empty())
-            return pass_local(peer);
+        if (config_.password.empty()) {
+            pass_local(peer);
+            return;
+        }
         if (config_.self_id < peer) {
             state.challenge = random_id(36);
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
@@ -835,13 +893,14 @@ private:
     }
 
     void on_handshake_data(std::string_view peer, std::string_view data) {
-        auto it = peers_.find(peer);
-        if (it == peers_.end() || it->second.active || it->second.local_passed)
+        const auto it = peers_.find(peer);
+        if (it == peers_.end() || it->second.active || it->second.local_passed) {
             return;
+        }
         boost::system::error_code ec;
         const auto value = protocol::json::parse(data, json_, ec);
         const auto* o = ec ? nullptr : value.if_object();
-        auto field = [o](std::string_view key) -> std::string_view {
+        const auto field = [o](std::string_view key) -> std::string_view {
             const auto* v = o != nullptr ? o->if_contains(key) : nullptr;
             const auto* s = v != nullptr ? v->if_string() : nullptr;
             return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
@@ -850,11 +909,14 @@ private:
             if (field("__trystero_pw") != "response" ||
                 field("h") != protocol::handshake_proof(it->second.challenge, config_.password,
                                                         config_.app_id, room_id_, memory_)) {
-                return fail_handshake(peer);
+                fail_handshake(peer);
+                return;
             }
         } else {
-            if (field("__trystero_pw") != "challenge" || o->if_contains("c") == nullptr)
-                return fail_handshake(peer);
+            if (field("__trystero_pw") != "challenge" || o->if_contains("c") == nullptr) {
+                fail_handshake(peer);
+                return;
+            }
             std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
             protocol::json::append_string(
                 text, protocol::handshake_proof(field("c"), config_.password, config_.app_id,
@@ -872,40 +934,45 @@ private:
     }
 
     void pass_local(std::string_view peer) {
-        auto it = peers_.find(peer);
-        if (it == peers_.end())
+        const auto it = peers_.find(peer);
+        if (it == peers_.end()) {
             return;
+        }
         it->second.local_passed = true;
         send_internal("@_hsready", it->first);
         maybe_activate(it->first);
     }
 
     void maybe_activate(std::string_view peer) {
-        auto it = peers_.find(peer);
+        const auto it = peers_.find(peer);
         if (it == peers_.end() || it->second.active || !it->second.local_passed ||
-            !it->second.remote_ready)
+            !it->second.remote_ready) {
             return;
+        }
         it->second.active = true;
         it->second.handshake_timer.reset();
         log_("room", "peer joined: ", it->first);
-        if (on_join_)
+        if (on_join_) {
             post([f = on_join_, peer = std::pmr::string(it->first, memory_)] { (*f)(peer); });
+        }
     }
 
     void on_incoming(incoming&& m) {
         const auto name = m.name();
-        auto it_peer = peers_.find(m.peer);
+        const auto it_peer = peers_.find(m.peer);
         if (name == "@_hsready") {
             if (it_peer != peers_.end() && !it_peer->second.active) {
                 it_peer->second.remote_ready = true;
                 maybe_activate(it_peer->first);
             }
         } else if (name == "@_hsdata") {
-            if (it_peer != peers_.end())
+            if (it_peer != peers_.end()) {
                 on_handshake_data(it_peer->first, as_text(m.payload()));
+            }
         } else if (name == "@_ping") {
-            if (it_peer != peers_.end())
+            if (it_peer != peers_.end()) {
                 send_internal("@_pong", it_peer->first);
+            }
         } else if (name == "@_pong") {
             if (it_peer != peers_.end() && !it_peer->second.pings.empty()) {
                 auto ping = std::move(it_peer->second.pings.front());
@@ -918,7 +985,7 @@ private:
             remove_peer(m.peer, "peer left the room", true);
         } else if (name.starts_with("@_")) {
             // Media and renegotiation actions: not implemented yet (the documentation's roadmap).
-        } else if (auto it = actions_.find(name); it != actions_.end()) {
+        } else if (const auto it = actions_.find(name); it != actions_.end()) {
             auto& slot = it->second;
             if (slot.handler) {
                 post_call(slot.handler, std::move(m));
@@ -937,34 +1004,40 @@ private:
     }
 
     void kick(std::string_view peer, std::string_view reason) {
-        auto it = peers_.find(peer);
-        if (it == peers_.end())
+        const auto it = peers_.find(peer);
+        if (it == peers_.end()) {
             return;
+        }
         send_internal("@_leave", it->first);
         remove_peer(it->first, reason, true);
     }
 
     void remove_peer(std::string_view peer_view, std::string_view reason, bool close_link) {
-        auto it = peers_.find(peer_view);
-        if (it == peers_.end())
+        const auto it = peers_.find(peer_view);
+        if (it == peers_.end()) {
             return;
+        }
         // The id is moved out of the map before the entry goes: `peer_view` may refer to it.
-        auto node = peers_.extract(it);
+        const auto node = peers_.extract(it);
         std::pmr::string peer = std::move(node.key());
         auto& state = node.mapped();
         log_("room", "peer ", peer, " gone: ", reason);
-        if (close_link)
+        if (close_link) {
             state.link->close();
-        for (auto& ping : state.pings)
+        }
+        for (auto& ping : state.pings) {
             complete(std::move(ping.handler), make_error_code(error::peer_disconnected),
                      std::chrono::milliseconds{});
+        }
         wire_->clear_peer(peer, make_error_code(error::peer_disconnected));
-        if (left_)
+        if (left_) {
             return;
+        }
         signaling_->forget(peer);
         strategy_->restart_announcements();
-        if (state.active && on_leave_)
+        if (state.active && on_leave_) {
             post([f = on_leave_, peer = std::move(peer)] { (*f)(peer); });
+        }
     }
 
     void close_everything() {
@@ -973,21 +1046,26 @@ private:
         peers_.clear();
         for (auto& [id, state] : peers) {
             state.link->close();
-            for (auto& ping : state.pings)
+            for (auto& ping : state.pings) {
                 complete(std::move(ping.handler), make_error_code(error::room_left),
                          std::chrono::milliseconds{});
-            if (wire_)
+            }
+            if (wire_) {
                 wire_->clear_peer(id, make_error_code(error::room_left));
+            }
         }
         for (auto& [name, slot] : actions_) {
-            for (auto& receiver : slot.receivers)
+            for (auto& receiver : slot.receivers) {
                 complete(std::move(receiver), make_error_code(error::room_left), incoming{});
+            }
             slot.receivers.clear();
         }
-        if (signaling_)
+        if (signaling_) {
             signaling_->close();
-        if (strategy_)
+        }
+        if (strategy_) {
             strategy_->stop();
+        }
     }
 
     std::pmr::memory_resource* memory_;
@@ -1043,21 +1121,26 @@ public:
     room(room&&) noexcept = default;
     room& operator=(room&&) noexcept = default;
 
-    ~room() {
-        if (impl_)
+    // Leaving sends each peer Trystero's farewell, whose frames are allocated in the room's
+    // resource: a resource that fails then ends the program, as in any destructor.
+    ~room() {  // NOLINT(bugprone-exception-escape)
+        if (impl_) {
             impl_->abandon();
+        }
     }
 
-    const executor_type& get_executor() const { return impl_->get_executor(); }
+    [[nodiscard]] const executor_type& get_executor() const { return impl_->get_executor(); }
 
-    std::string_view self_id() const { return impl_->self_id(); }
+    [[nodiscard]] std::string_view self_id() const { return impl_->self_id(); }
 
     /** The Nostr relays this room uses, derived from the app id unless the configuration named
      * them. */
-    std::span<const std::pmr::string> relay_urls() const { return impl_->relay_urls(); }
+    [[nodiscard]] std::span<const std::pmr::string> relay_urls() const {
+        return impl_->relay_urls();
+    }
 
     /** The peers whose handshake completed, in the room's resource. */
-    std::pmr::vector<peer_id> peers() const { return impl_->active_peers(); }
+    [[nodiscard]] std::pmr::vector<peer_id> peers() const { return impl_->active_peers(); }
 
     template <class F>
         requires std::is_invocable_v<F&, std::string_view>
@@ -1134,7 +1217,7 @@ private:
 template <class T>
 class action {
 public:
-    std::string_view name() const { return name_; }
+    [[nodiscard]] std::string_view name() const { return name_; }
 
     /** The handler for every message; with a view type, the view is valid for the duration of the
      * call. */
@@ -1143,25 +1226,32 @@ public:
     void on_message(F&& f) {
         impl_->set_action_handler(
             name_,
-            impl_->bind<void(detail::incoming&)>([f = std::forward<F>(f), memory = impl_->memory()](
-                                                     detail::incoming& m) mutable {
-                // The metadata is read before decoding: a binary payload takes the buffer the
-                // metadata lives in.
-                const message_info info{std::move(m.peer), std::pmr::string(m.metadata(), memory)};
-                if (auto value = detail::payload_traits<T>::decode(m, memory))
-                    f(std::move(*value), info);
-            }));
+            impl_->bind<void(detail::incoming&)>(
+                [f = std::forward<F>(f), memory = impl_->memory()](detail::incoming& m) mutable {
+                    // The metadata is read before decoding: a binary payload takes the buffer the
+                    // metadata lives in.
+                    const message_info info{
+                        .from = std::move(m.peer),
+                        .metadata = std::pmr::string(m.metadata(), memory),
+                    };
+                    if (auto value = detail::payload_traits<T>::decode(m, memory)) {
+                        f(std::move(*value), info);
+                    }
+                }));
     }
 
+    // T is the action's type, taken by value and moved into its encoding, which keeps a value
+    // that owns its storage; a boost::json::value is serialized there at once, from a reference.
     /**
      * Sends to `options.targets`, or every active peer. The value is taken at the call (moved when
      * `T` owns its storage). Completes with `(error_code)` once every target has it.
      */
     template <class CompletionToken>
-    auto async_send(T value, send_options options, CompletionToken&& token) {
+    auto async_send(T value, send_options options,  // NOLINT(performance-unnecessary-value-param)
+                    CompletionToken&& token) {
         return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
             [impl = impl_, name = std::pmr::string(name_, impl_->memory())](
-                auto handler, detail::encoded_payload payload, send_options options) {
+                auto handler, detail::encoded_payload payload, const send_options& options) {
                 impl->send(
                     name, std::move(payload), options,
                     impl->template erase<void(boost::system::error_code)>(std::move(handler)));
@@ -1172,7 +1262,7 @@ public:
 
     template <class CompletionToken>
     auto async_send(T value, CompletionToken&& token) {
-        return async_send(std::move(value), send_options{}, std::forward<CompletionToken>(token));
+        return async_send(std::move(value), send_options(), std::forward<CompletionToken>(token));
     }
 
     /**
@@ -1195,13 +1285,16 @@ public:
                         boost::asio::bind_allocator(allocator, [impl, handler = std::move(handler)](
                                                                    boost::system::error_code ec,
                                                                    detail::incoming m) mutable {
-                            const auto memory = impl->memory();
-                            message_info info{std::move(m.peer),
-                                              std::pmr::string(m.metadata(), memory)};
+                            auto* const memory = impl->memory();
+                            message_info info{
+                                .from = std::move(m.peer),
+                                .metadata = std::pmr::string(m.metadata(), memory),
+                            };
                             auto value =
                                 ec ? std::nullopt : detail::payload_traits<T>::decode(m, memory);
-                            if (!ec && !value)
+                            if (!ec && !value) {
                                 ec = make_error_code(error::transfer_rejected);
+                            }
                             impl->complete(std::move(handler), ec, value ? std::move(*value) : T{},
                                            std::move(info));
                         })));

@@ -32,7 +32,7 @@ public:
     /** The resource this one allocates from. */
     [[nodiscard]] std::pmr::memory_resource* upstream() const noexcept { return upstream_; }
 
-private:
+protected:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         return upstream_->allocate(bytes, alignment);
     }
@@ -53,6 +53,7 @@ private:
         return this == &other;
     }
 
+private:
     std::pmr::memory_resource* upstream_;
 };
 

@@ -1,0 +1,15 @@
+# The examples inherit the superproject's configuration and switch off one
+# option.
+#
+# bugprone-exception-escape.CheckMain treats every example's main as a
+# function that should not throw. An example is a short program that lets
+# what the standard library may throw, a std::bad_alloc or a
+# std::length_error from a container that grows, end the process uncaught,
+# the way Boost's own examples do; that is main's ordinary role, not a
+# defect. The check stays on for everything else: a noexcept function, a
+# destructor, a move or a swap.
+---
+InheritParentConfig: true
+CheckOptions:
+  - key: bugprone-exception-escape.CheckMain
+    value: 'false'

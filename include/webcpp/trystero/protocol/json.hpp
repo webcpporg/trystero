@@ -16,6 +16,7 @@
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <memory_resource>
@@ -38,9 +39,9 @@ namespace detail {
 
 /** Drains a serializer into `out`, in pieces of a buffer on the stack. */
 inline void drain(boost::json::serializer& serializer, std::pmr::string& out) {
-    char buffer[512];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
+    std::array<char, 512> buffer{};
     while (!serializer.done()) {
-        const auto piece = serializer.read(buffer, sizeof buffer);
+        const auto piece = serializer.read(buffer.data(), buffer.size());
         out.append(piece.data(), piece.size());
     }
 }
@@ -69,15 +70,16 @@ inline void append_value(std::pmr::string& out, const boost::json::value& value)
 }
 
 inline void append_integer(std::pmr::string& out, std::int64_t value) {
-    char buffer[24];  // NOLINT(cppcoreguidelines-avoid-c-arrays)
-    const auto [end, ec] = std::to_chars(buffer, buffer + sizeof buffer, value);
-    out.append(buffer, end);
+    std::array<char, 24> buffer{};
+    const auto [end, ec] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), value);
+    out.append(buffer.data(), end);
 }
 
 /** Appends `"key":` with a leading comma unless it opens the object. */
 inline void append_key(std::pmr::string& out, std::string_view key) {
-    if (out.back() != '{')
+    if (out.back() != '{') {
         out += ',';
+    }
     append_string(out, key);
     out += ':';
 }
@@ -93,8 +95,9 @@ inline boost::json::value parse(std::string_view text, const boost::json::storag
     boost::json::parser parser(storage);
     parser.reset(storage);
     parser.write(text.data(), text.size(), ec);
-    if (ec)
+    if (ec) {
         return boost::json::value(storage);
+    }
     return parser.release();
 }
 

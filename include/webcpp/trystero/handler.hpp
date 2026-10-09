@@ -11,6 +11,7 @@
 
 #include <boost/assert.hpp>
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
@@ -45,17 +46,17 @@ public:
     /** An empty handler, which must not be called. */
     handler() noexcept = default;
 
+    // Implicit, as std::function's is: nullptr is passed where a handler is expected.
     /** An empty handler, which must not be called. */
-    handler(std::nullptr_t) noexcept {
-    }  // NOLINT(google-explicit-constructor): as std::function converts
+    handler(std::nullptr_t) noexcept {}  // NOLINT(misc-explicit-constructor)
 
+    // Implicit, as std::function's is: a lambda is passed where a handler is expected.
     /** A handler of `f`, allocated with the default resource when it does not fit inline. */
     template <class F>
         requires(!std::is_same_v<std::remove_cvref_t<F>, handler> &&
                  std::is_invocable_r_v<R, std::decay_t<F>&, Args...> &&
                  std::is_move_constructible_v<std::decay_t<F>>)
-    handler(F&& f)  // NOLINT(google-explicit-constructor,bugprone-forwarding-reference-overload):
-                    // as std::function converts
+    handler(F&& f)  // NOLINT(misc-explicit-constructor)
         : handler(std::allocator_arg, allocator_type(), std::forward<F>(f)) {}
 
     /** A handler of `f`, allocated with `allocator` when it does not fit inline. */
@@ -67,9 +68,9 @@ public:
         : resource_(allocator.resource()) {
         using target = std::decay_t<F>;
         if constexpr (fits_inline<target>) {
-            ::new (static_cast<void*>(storage_)) target(std::forward<F>(f));
+            ::new (static_cast<void*>(storage_.data())) target(std::forward<F>(f));
         } else {
-            ::new (static_cast<void*>(storage_))
+            ::new (static_cast<void*>(storage_.data()))
                 target*(make<target>(allocator, std::forward<F>(f)));
         }
         operations_ = &operations_of<target>;
@@ -83,9 +84,10 @@ public:
             return;
         }
         if (resource_->is_equal(*other.resource_)) {
-            other.operations_->move(other.storage_, storage_);
+            other.operations_->move(other.storage_.data(), storage_.data());
         } else {
-            other.operations_->rehome(other.storage_, *other.resource_, storage_, *resource_);
+            other.operations_->rehome(other.storage_.data(), *other.resource_, storage_.data(),
+                                      *resource_);
         }
         operations_ = std::exchange(other.operations_, nullptr);
     }
@@ -93,7 +95,7 @@ public:
     /** Takes `other`'s target and allocator; `other` is left empty. */
     handler(handler&& other) noexcept : resource_(other.resource_) {
         if (other.operations_ != nullptr) {
-            other.operations_->move(other.storage_, storage_);
+            other.operations_->move(other.storage_.data(), storage_.data());
             operations_ = std::exchange(other.operations_, nullptr);
         }
     }
@@ -104,7 +106,7 @@ public:
             reset();
             resource_ = other.resource_;
             if (other.operations_ != nullptr) {
-                other.operations_->move(other.storage_, storage_);
+                other.operations_->move(other.storage_.data(), storage_.data());
                 operations_ = std::exchange(other.operations_, nullptr);
             }
         }
@@ -122,10 +124,12 @@ public:
 
     ~handler() { reset(); }
 
+    // The parameters are the signature's, as std::function's call operator takes them, and are
+    // forwarded to the target as they are.
     /** Calls the target; the handler must not be empty. */
-    R operator()(Args... args) {
+    R operator()(Args... args) {  // NOLINT(performance-unnecessary-value-param)
         BOOST_ASSERT(operations_ != nullptr);
-        return operations_->invoke(storage_, std::forward<Args>(args)...);
+        return operations_->invoke(storage_.data(), std::forward<Args>(args)...);
     }
 
     /** Whether the handler has a target. */
@@ -185,14 +189,12 @@ private:
 
     template <class T>
     static T* inline_target(unsigned char* storage) noexcept {
-        return std::launder(
-            reinterpret_cast<T*>(storage));  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        return std::launder(reinterpret_cast<T*>(storage));
     }
 
     template <class T>
     static T* allocated_target(unsigned char* storage) noexcept {
-        return *std::launder(
-            reinterpret_cast<T**>(storage));  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+        return *std::launder(reinterpret_cast<T**>(storage));
     }
 
     template <class T>
@@ -203,16 +205,22 @@ private:
                     return static_cast<R>(
                         (*inline_target<T>(storage))(std::forward<Args>(args)...));
                 },
+                // Each of these functions constructs a target in to's storage with placement new,
+                // which readability-non-const-parameter does not count as a write, from the
+                // source, which it moves: misc-const-correctness, seeing a target that a move
+                // copies (a function pointer), would make the source const and every move a copy.
                 .move =
-                    [](unsigned char* from, unsigned char* to) noexcept {
-                        T* const source = inline_target<T>(from);
+                    [](unsigned char* from,
+                       unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
+                        T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
                         ::new (static_cast<void*>(to)) T(std::move(*source));
                         source->~T();
                     },
                 .rehome =
                     [](unsigned char* from, std::pmr::memory_resource& /*from_resource*/,
-                       unsigned char* to, std::pmr::memory_resource& /*to_resource*/) {
-                        T* const source = inline_target<T>(from);
+                       unsigned char* to,  // NOLINT(readability-non-const-parameter)
+                       std::pmr::memory_resource& /*to_resource*/) {
+                        T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
                         ::new (static_cast<void*>(to)) T(std::move(*source));
                         source->~T();
                     },
@@ -227,13 +235,16 @@ private:
                     return static_cast<R>(
                         (*allocated_target<T>(storage))(std::forward<Args>(args)...));
                 },
+                // As above, each constructs in to's storage with placement new.
                 .move =
-                    [](unsigned char* from, unsigned char* to) noexcept {
+                    [](unsigned char* from,
+                       unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
                         ::new (static_cast<void*>(to)) T*(allocated_target<T>(from));
                     },
                 .rehome =
                     [](unsigned char* from, std::pmr::memory_resource& from_resource,
-                       unsigned char* to, std::pmr::memory_resource& to_resource) {
+                       unsigned char* to,  // NOLINT(readability-non-const-parameter)
+                       std::pmr::memory_resource& to_resource) {
                         T* const source = allocated_target<T>(from);
                         ::new (static_cast<void*>(to))
                             T*(make<T>(allocator_type(&to_resource), std::move(*source)));
@@ -252,12 +263,11 @@ private:
 
     void reset() noexcept {
         if (operations_ != nullptr) {
-            std::exchange(operations_, nullptr)->destroy(storage_, *resource_);
+            std::exchange(operations_, nullptr)->destroy(storage_.data(), *resource_);
         }
     }
 
-    alignas(void*) unsigned char storage_[inline_size] =
-        {};  // NOLINT(cppcoreguidelines-avoid-c-arrays)
+    alignas(void*) std::array<unsigned char, inline_size> storage_{};
     const operations* operations_ = nullptr;
     std::pmr::memory_resource* resource_ = std::pmr::get_default_resource();
 };

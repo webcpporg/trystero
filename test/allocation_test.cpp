@@ -312,7 +312,7 @@ public:
     std::size_t foreign = 0;
 
 private:
-    std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20);
+    std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20U);
     std::pmr::monotonic_buffer_resource buffer_{storage_.data(), storage_.size(),
                                                 std::pmr::null_memory_resource()};
 
@@ -415,16 +415,20 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     const boost::json::storage_ptr json_storage =
         boost::json::make_shared_resource<trystero::json_resource>(&a_memory);
     trystero::room a(io.get_executor(), network,
-                     {.app_id = "allocation",
-                      .relay_urls = {relay.data()},
-                      .self_id = "AAAAAAAAAAAAAAAAAAAA",
-                      .memory = &a_memory},
+                     {
+                         .app_id = "allocation",
+                         .relay_urls = {std::pmr::string(relay)},
+                         .self_id = "AAAAAAAAAAAAAAAAAAAA",
+                         .memory = &a_memory,
+                     },
                      "room");
     trystero::room z(io.get_executor(), network,
-                     {.app_id = "allocation",
-                      .relay_urls = {relay.data()},
-                      .self_id = "zzzzzzzzzzzzzzzzzzzz",
-                      .memory = &z_memory},
+                     {
+                         .app_id = "allocation",
+                         .relay_urls = {std::pmr::string(relay)},
+                         .self_id = "zzzzzzzzzzzzzzzzzzzz",
+                         .memory = &z_memory,
+                     },
                      "room");
     std::size_t received = 0;
     auto from_a = a.make_action<Payload>("chat");
@@ -494,8 +498,12 @@ trystero::room_config config_in(counting_resource& memory, std::string_view self
         .relay_urls =
             std::pmr::vector<std::pmr::string>({std::pmr::string(relay, &memory)}, &memory),
         .self_id = std::pmr::string(self_id, &memory),
-        .log = {std::allocator_arg, std::pmr::polymorphic_allocator<>(&memory),
-                [&lines](std::string_view /*category*/, std::string_view /*text*/) { ++lines; }},
+        .log =
+            {
+                std::allocator_arg,
+                std::pmr::polymorphic_allocator<>(&memory),
+                [&lines](std::string_view /*category*/, std::string_view /*text*/) { ++lines; },
+            },
         .memory = &memory,
     };
 }
@@ -591,26 +599,35 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 
 }  // namespace
 
+// The standard library declares the replaceable allocation functions with parameter names reserved
+// to the implementation, which a program may not use, hence the exemption on each.
+
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t size) {
     return allocate(size, alignof(std::max_align_t));
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t size, std::align_val_t alignment) {
     return allocate(size, static_cast<std::size_t>(alignment));
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void operator delete(void* pointer) noexcept {
     release(pointer);
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void operator delete(void* pointer, std::size_t /*size*/) noexcept {
     release(pointer);
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void operator delete(void* pointer, std::align_val_t /*alignment*/) noexcept {
     release(pointer);
 }
 
+// NOLINTNEXTLINE(readability-inconsistent-declaration-parameter-name)
 void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*alignment*/) noexcept {
     release(pointer);
 }

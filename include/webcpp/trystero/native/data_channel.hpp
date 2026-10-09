@@ -60,9 +60,10 @@ public:
 
     ~data_channel() override {
         channel_->resetCallbacks();
+        // A channel whose connection is gone may refuse to close, which leaves nothing to do.
         try {
             channel_->close();
-        } catch (...) {  // a channel whose connection is gone may refuse
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
         }
     }
 
@@ -76,69 +77,88 @@ public:
     bool is_open() const override { return channel_->isOpen(); }
 
     void send(std::span<const std::uint8_t> frame) override {
+        // A channel closed in between refuses the frame, and its close event reports it.
         try {
-            if (channel_->isOpen())
+            if (channel_->isOpen()) {
                 channel_->send(reinterpret_cast<const std::byte*>(frame.data()), frame.size());
-        } catch (...) {  // closed in between: the close event reports it
+            }
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
         }
     }
 
     std::size_t buffered_amount() const override { return channel_->bufferedAmount(); }
 
     void close() override {
+        // A channel whose connection is gone may refuse to close, which leaves nothing to do.
         try {
             channel_->close();
-        } catch (...) {
+        } catch (...) {  // NOLINT(bugprone-empty-catch)
         }
     }
 
 private:
-    void start() {
-        std::weak_ptr<data_channel> weak = shared_from_this();
-        auto ex = ex_;
-        channel_->setBufferedAmountLowThreshold(low_threshold);
-        channel_->onOpen([weak, ex] {
-            boost::asio::post(ex, [weak] {
-                if (auto self = weak.lock()) {
-                    if (auto h = self->h_; h && h->open)
-                        h->open();
-                }
-            });
+    /** Posts `f` from one of libdatachannel's threads to the executor, where it runs on this
+     * channel if the channel still exists then. */
+    template <class F>
+    static void post_to(const boost::asio::any_io_executor& ex,
+                        const std::weak_ptr<data_channel>& weak, F f) {
+        boost::asio::post(ex, [weak, f = std::move(f)]() mutable {
+            if (const auto self = weak.lock()) {
+                f(*self);
+            }
         });
+    }
+
+    void start() {
+        const std::weak_ptr<data_channel> weak = shared_from_this();
+        const auto ex = ex_;
+        channel_->setBufferedAmountLowThreshold(low_threshold);
+        channel_->onOpen(
+            [weak, ex] { post_to(ex, weak, [](data_channel& self) { self.on_open(); }); });
         channel_->onMessage([weak, ex](rtc::message_variant message) {
             auto* binary = std::get_if<rtc::binary>(&message);
-            if (binary == nullptr)
+            if (binary == nullptr) {
                 return;  // Trystero frames are binary
-            boost::asio::post(ex, [weak, binary = std::move(*binary)] {
-                auto self = weak.lock();
-                if (!self)
-                    return;
-                auto h = self->h_;
-                if (!h || !h->message)
-                    return;
-                backend::bytes frame(binary.size(), self->memory_);
-                std::memcpy(frame.data(), binary.data(), binary.size());
-                h->message(std::move(frame));
-            });
+            }
+            post_to(ex, weak,
+                    [binary = std::move(*binary)](data_channel& self) { self.on_message(binary); });
         });
-        channel_->onClosed([weak, ex] {
-            boost::asio::post(ex, [weak] {
-                if (auto self = weak.lock()) {
-                    if (auto h = self->h_) {
-                        if (auto f = std::exchange(h->close, {}))
-                            f();
-                    }
-                }
-            });
-        });
-        channel_->onBufferedAmountLow([weak, ex] {
-            boost::asio::post(ex, [weak] {
-                if (auto self = weak.lock()) {
-                    if (auto h = self->h_; h && h->buffered_amount_low)
-                        h->buffered_amount_low();
-                }
-            });
-        });
+        channel_->onClosed(
+            [weak, ex] { post_to(ex, weak, [](data_channel& self) { self.on_closed(); }); });
+        channel_->onBufferedAmountLow(
+            [weak, ex] { post_to(ex, weak, [](data_channel& self) { self.on_drained(); }); });
+    }
+
+    // The handlers run from a copy of the shared object, which a handler may replace.
+
+    void on_open() {
+        if (const auto h = h_; h && h->open) {
+            h->open();
+        }
+    }
+
+    void on_message(const rtc::binary& binary) {
+        const auto h = h_;
+        if (!h || !h->message) {
+            return;
+        }
+        backend::bytes frame(binary.size(), memory_);
+        std::memcpy(frame.data(), binary.data(), binary.size());
+        h->message(std::move(frame));
+    }
+
+    void on_closed() {
+        if (const auto h = h_) {
+            if (auto f = std::exchange(h->close, {})) {
+                f();
+            }
+        }
+    }
+
+    void on_drained() {
+        if (const auto h = h_; h && h->buffered_amount_low) {
+            h->buffered_amount_low();
+        }
     }
 
     boost::asio::any_io_executor ex_;

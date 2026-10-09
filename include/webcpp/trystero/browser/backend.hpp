@@ -57,10 +57,10 @@ inline backend::bytes from_js(const val& buffer, std::pmr::memory_resource* memo
 }
 
 /** Calls `done(true, value)` or `done(false, reason)` once a promise settles. */
-inline void then(event_loop& loop, val promise, handler<void(bool, val)> done,
+inline void then(event_loop& loop, const val& promise, handler<void(bool, val)> done,
                  std::pmr::memory_resource* memory) {
     const std::pmr::polymorphic_allocator<> allocator(memory);
-    auto id = std::allocate_shared<int>(allocator, 0);
+    const auto id = std::allocate_shared<int>(allocator, 0);
     *id = loop.add({std::allocator_arg, allocator,
                     [&loop, id, done = std::move(done)](int slot, val value) mutable {
                         loop.remove(*id);
@@ -76,7 +76,7 @@ public:
     timer(event_loop& loop, std::pmr::memory_resource* memory)
         : loop_(loop),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int, val) { on_fire(); }})) {}
+                        [this](int /*slot*/, const val& /*value*/) { on_fire(); }})) {}
 
     ~timer() override {
         cancel();
@@ -91,8 +91,9 @@ public:
     }
 
     void cancel() override {
-        if (handle_.isUndefined())
+        if (handle_.isUndefined()) {
             return;
+        }
         val::global("clearTimeout")(handle_);
         handle_ = val::undefined();
         fire_ = nullptr;
@@ -102,8 +103,9 @@ private:
     void on_fire() {
         handle_ = val::undefined();
         auto fire = std::exchange(fire_, nullptr);
-        if (fire)
+        if (fire) {
             fire();  // may destroy this timer
+        }
     }
 
     event_loop& loop_;
@@ -120,7 +122,7 @@ public:
           h_(std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory),
                                             std::move(h))),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, val event) { on_event(slot, std::move(event)); }})) {
+                        [this](int slot, const val& event) { on_event(slot, event); }})) {
         socket_ = val::global("WebSocket").new_(loop_.text(url));
         socket_.set("onopen", loop_.handler(id_, 0));
         socket_.set("onmessage", loop_.handler(id_, 1));
@@ -129,14 +131,16 @@ public:
 
     ~websocket() override {
         loop_.remove(id_);
-        for (const char* name : {"onopen", "onmessage", "onclose"})
+        for (const char* name : {"onopen", "onmessage", "onclose"}) {
             socket_.set(name, val::null());
+        }
         socket_.call<void>("close");
     }
 
     void send(std::string_view text) override {
-        if (socket_["readyState"].as<int>() == 1)
+        if (socket_["readyState"].as<int>() == 1) {
             socket_.call<void>("send", loop_.text(text));
+        }
     }
 
     void close() override { socket_.call<void>("close"); }
@@ -144,11 +148,12 @@ public:
 private:
     /** Calls through a copy of the shared handlers: a handler may destroy this socket during its
      * own call. */
-    void on_event(int slot, val event) {
-        auto h = h_;
+    void on_event(int slot, const val& event) {
+        const auto h = h_;
         if (slot == 0) {
-            if (h->open)
+            if (h->open) {
                 h->open();
+            }
         } else if (slot == 1) {
             const val data = event["data"];
             if (data.isString() && h->message) {
@@ -175,7 +180,7 @@ public:
           memory_(memory),
           channel_(std::move(channel)),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, val event) { on_event(slot, std::move(event)); }})) {
+                        [this](int slot, const val& event) { on_event(slot, event); }})) {
         channel_.set("binaryType", val("arraybuffer"));
         channel_.set("bufferedAmountLowThreshold", val(static_cast<double>(low_threshold)));
         channel_.set("onopen", loop_.handler(id_, 0));
@@ -186,8 +191,9 @@ public:
 
     ~data_channel() override {
         loop_.remove(id_);
-        for (const char* name : {"onopen", "onmessage", "onclose", "onbufferedamountlow"})
+        for (const char* name : {"onopen", "onmessage", "onclose", "onbufferedamountlow"}) {
             channel_.set(name, val::null());
+        }
         channel_.call<void>("close");
     }
 
@@ -198,40 +204,48 @@ public:
                                             std::move(h));
     }
 
-    bool is_open() const override { return channel_["readyState"].strictlyEquals(val("open")); }
-
-    void send(std::span<const std::uint8_t> frame) override {
-        if (is_open())
-            channel_.call<void>("send", detail::to_js(frame));
+    [[nodiscard]] bool is_open() const override {
+        return channel_["readyState"].strictlyEquals(val("open"));
     }
 
-    std::size_t buffered_amount() const override {
+    void send(std::span<const std::uint8_t> frame) override {
+        if (is_open()) {
+            channel_.call<void>("send", detail::to_js(frame));
+        }
+    }
+
+    [[nodiscard]] std::size_t buffered_amount() const override {
         return static_cast<std::size_t>(channel_["bufferedAmount"].as<double>());
     }
 
     void close() override { channel_.call<void>("close"); }
 
 private:
-    void on_event(int slot, val event) {
-        auto h = h_;
-        if (!h)
+    void on_event(int slot, const val& event) {
+        const auto h = h_;
+        if (!h) {
             return;
+        }
         switch (slot) {
             case 0:
-                if (h->open)
+                if (h->open) {
                     h->open();
+                }
                 break;
             case 1:
-                if (h->message)
+                if (h->message) {
                     h->message(detail::from_js(event["data"], memory_));
+                }
                 break;
             case 2:
-                if (auto f = std::exchange(h->close, {}))
+                if (auto f = std::exchange(h->close, {})) {
                     f();
+                }
                 break;
             default:
-                if (h->buffered_amount_low)
+                if (h->buffered_amount_low) {
                     h->buffered_amount_low();
+                }
         }
     }
 
@@ -250,18 +264,21 @@ public:
         : loop_(loop),
           memory_(memory),
           id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, val event) { on_event(slot, std::move(event)); }})) {
+                        [this](int slot, const val& event) { on_event(slot, event); }})) {
         val list = val::array();
         for (const auto& s : servers) {
             val server = val::object();
             val urls = val::array();
-            for (const auto& url : s.urls)
+            for (const auto& url : s.urls) {
                 urls.call<void>("push", loop_.text(url));
+            }
             server.set("urls", urls);
-            if (!s.username.empty())
+            if (!s.username.empty()) {
                 server.set("username", loop_.text(s.username));
-            if (!s.credential.empty())
+            }
+            if (!s.credential.empty()) {
                 server.set("credential", loop_.text(s.credential));
+            }
             list.call<void>("push", server);
         }
         val config = val::object();
@@ -275,9 +292,14 @@ public:
 
     ~peer_connection() override {
         loop_.remove(id_);
-        for (const char* name : {"onicecandidate", "ondatachannel", "onconnectionstatechange",
-                                 "oniceconnectionstatechange"})
+        for (const char* name : {
+                 "onicecandidate",
+                 "ondatachannel",
+                 "onconnectionstatechange",
+                 "oniceconnectionstatechange",
+             }) {
             pc_.set(name, val::null());
+        }
         pc_.call<void>("close");
     }
 
@@ -294,13 +316,15 @@ public:
 
     void set_local_description(
         handler<void(backend::error_code, std::string_view, std::string_view)> done) override {
-        std::weak_ptr<peer_connection> weak = shared_from_this();
+        const std::weak_ptr<peer_connection> weak = shared_from_this();
         detail::then(loop_, pc_.call<val>("setLocalDescription"),
                      {std::allocator_arg, allocator(),
-                      [weak, done = std::move(done)](bool ok, val) mutable {
-                          auto self = weak.lock();
-                          if (!self || !ok)
-                              return done(make_error_code(error::backend_failure), {}, {});
+                      [weak, done = std::move(done)](bool ok, const val& /*value*/) mutable {
+                          const auto self = weak.lock();
+                          if (!self || !ok) {
+                              done(make_error_code(error::backend_failure), {}, {});
+                              return;
+                          }
                           const val local = self->pc_["localDescription"];
                           const auto type = self->loop_.utf8(local["type"], self->memory_);
                           const auto sdp = self->loop_.utf8(local["sdp"], self->memory_);
@@ -317,7 +341,7 @@ public:
         detail::then(
             loop_, pc_.call<val>("setRemoteDescription", description),
             {std::allocator_arg, allocator(),
-             [done = std::move(done)](bool ok, val) mutable {
+             [done = std::move(done)](bool ok, const val& /*value*/) mutable {
                  done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
              }},
             memory_);
@@ -329,7 +353,7 @@ public:
         detail::then(
             loop_, pc_.call<val>("addIceCandidate", candidate),
             {std::allocator_arg, allocator(),
-             [done = std::move(done)](bool ok, val) mutable {
+             [done = std::move(done)](bool ok, const val& /*value*/) mutable {
                  done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
              }},
             memory_);
@@ -344,46 +368,52 @@ public:
     const val& native_handle() const { return pc_; }
 
 private:
-    std::pmr::polymorphic_allocator<> allocator() const {
-        return std::pmr::polymorphic_allocator<>(memory_);
-    }
+    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
     backend::connection_state state() const {
         using backend::connection_state;
         // Compared in JavaScript, so reading a state allocates nothing on the C++ side.
         const val connection = pc_["connectionState"];
         const val ice = pc_["iceConnectionState"];
-        auto is = [](const val& state, const char* name) {
+        const auto is = [](const val& state, const char* name) {
             return state.strictlyEquals(val(name));
         };
-        if (is(connection, "failed") || is(ice, "failed"))
+        if (is(connection, "failed") || is(ice, "failed")) {
             return connection_state::failed;
-        if (is(connection, "closed") || is(ice, "closed"))
+        }
+        if (is(connection, "closed") || is(ice, "closed")) {
             return connection_state::closed;
-        if (is(connection, "disconnected") || is(ice, "disconnected"))
+        }
+        if (is(connection, "disconnected") || is(ice, "disconnected")) {
             return connection_state::disconnected;
-        if (is(connection, "connected") || is(ice, "connected") || is(ice, "completed"))
+        }
+        if (is(connection, "connected") || is(ice, "connected") || is(ice, "completed")) {
             return connection_state::connected;
-        if (is(connection, "connecting") || is(ice, "checking"))
+        }
+        if (is(connection, "connecting") || is(ice, "checking")) {
             return connection_state::connecting;
+        }
         return connection_state::fresh;
     }
 
-    void on_event(int slot, val event) {
-        auto h = h_;
-        if (!h)
+    void on_event(int slot, const val& event) {
+        const auto h = h_;
+        if (!h) {
             return;
+        }
         if (slot == 0) {
             const val candidate = event["candidate"];
-            if (candidate.isNull() || candidate.isUndefined() || !h->ice_candidate)
+            if (candidate.isNull() || candidate.isUndefined() || !h->ice_candidate) {
                 return;
+            }
             const auto json =
                 loop_.utf8(val::global("JSON").call<val>("stringify", candidate), memory_);
             h->ice_candidate(json);
         } else if (slot == 1) {
-            if (h->data_channel)
+            if (h->data_channel) {
                 h->data_channel(std::allocate_shared<data_channel>(allocator(), loop_,
                                                                    event["channel"], memory_));
+            }
         } else if (h->state) {
             h->state(state());
         }
@@ -409,33 +439,39 @@ public:
         : loop_(loop), raw_key_(key), memory_(memory), waiting_(memory) {}
 
     void seal(std::string_view plaintext, done_handler done) override {
-        if (state_ == key_state::ready)
-            return encrypt(plaintext, std::move(done));
+        if (state_ == key_state::ready) {
+            encrypt(plaintext, std::move(done));
+            return;
+        }
         wait_for_key({std::allocator_arg, allocator(),
                       [plaintext = std::pmr::string(plaintext, memory_), done = std::move(done)](
                           sealer& self, bool ok) mutable {
-                          if (!ok)
-                              return done(make_error_code(error::backend_failure), {});
+                          if (!ok) {
+                              done(make_error_code(error::backend_failure), {});
+                              return;
+                          }
                           self.encrypt(plaintext, std::move(done));
                       }});
     }
 
     void open(std::string_view sealed, done_handler done) override {
-        if (state_ == key_state::ready)
-            return decrypt(sealed, std::move(done));
+        if (state_ == key_state::ready) {
+            decrypt(sealed, std::move(done));
+            return;
+        }
         wait_for_key({std::allocator_arg, allocator(),
                       [sealed = std::pmr::string(sealed, memory_), done = std::move(done)](
                           sealer& self, bool ok) mutable {
-                          if (!ok)
-                              return done(make_error_code(error::backend_failure), {});
+                          if (!ok) {
+                              done(make_error_code(error::backend_failure), {});
+                              return;
+                          }
                           self.decrypt(sealed, std::move(done));
                       }});
     }
 
 private:
-    std::pmr::polymorphic_allocator<> allocator() const {
-        return std::pmr::polymorphic_allocator<>(memory_);
-    }
+    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
     static val subtle() { return val::global("crypto")["subtle"]; }
 
@@ -453,56 +489,69 @@ private:
             std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size());
         const val promise =
             subtle().call<val>("encrypt", algorithm(iv), key_, detail::to_js(bytes));
-        detail::then(loop_, promise,
-                     {std::allocator_arg, allocator(),
-                      [iv, done = std::move(done), memory = memory_](bool ok, val cipher) mutable {
-                          if (!ok)
-                              return done(make_error_code(error::backend_failure), {});
-                          const auto sealed =
-                              protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
-                          done({}, sealed);
-                      }},
-                     memory_);
+        detail::then(
+            loop_, promise,
+            {std::allocator_arg, allocator(),
+             [iv, done = std::move(done), memory = memory_](bool ok, const val& cipher) mutable {
+                 if (!ok) {
+                     done(make_error_code(error::backend_failure), {});
+                     return;
+                 }
+                 const auto sealed =
+                     protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
+                 done({}, sealed);
+             }},
+            memory_);
     }
 
     void decrypt(std::string_view sealed, done_handler done) {
         const auto parts = protocol::parse_sealed(sealed, memory_);
-        if (!parts || parts->iv.empty())
-            return done(make_error_code(error::wrong_password), {});
+        if (!parts || parts->iv.empty()) {
+            done(make_error_code(error::wrong_password), {});
+            return;
+        }
         const val promise = subtle().call<val>("decrypt", algorithm(parts->iv), key_,
                                                detail::to_js(parts->ciphertext));
-        detail::then(loop_, promise,
-                     {std::allocator_arg, allocator(),
-                      [done = std::move(done), memory = memory_](bool ok, val plain) mutable {
-                          if (!ok)
-                              return done(make_error_code(error::wrong_password), {});
-                          const auto b = detail::from_js(plain, memory);
-                          done({},
-                               std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
-                      }},
-                     memory_);
+        detail::then(
+            loop_, promise,
+            {std::allocator_arg, allocator(),
+             [done = std::move(done), memory = memory_](bool ok, const val& plain) mutable {
+                 if (!ok) {
+                     done(make_error_code(error::wrong_password), {});
+                     return;
+                 }
+                 const auto b = detail::from_js(plain, memory);
+                 done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+             }},
+            memory_);
     }
 
     void wait_for_key(handler<void(sealer&, bool)> op) {
-        if (state_ == key_state::failed)
-            return op(*this, false);
-        waiting_.push_back(std::move(op));
-        if (state_ == key_state::importing)
+        if (state_ == key_state::failed) {
+            op(*this, false);
             return;
+        }
+        waiting_.push_back(std::move(op));
+        if (state_ == key_state::importing) {
+            return;
+        }
         state_ = key_state::importing;
-        if (subtle().isUndefined())
-            return key_imported(false, val::undefined());  // not a secure context
+        if (subtle().isUndefined()) {
+            key_imported(false, val::undefined());
+            return;  // not a secure context
+        }
         val usages = val::array();
         usages.call<void>("push", val("encrypt"));
         usages.call<void>("push", val("decrypt"));
-        std::weak_ptr<sealer> weak = shared_from_this();
+        const std::weak_ptr<sealer> weak = shared_from_this();
         detail::then(loop_,
                      subtle().call<val>("importKey", val("raw"), detail::to_js(raw_key_),
                                         val("AES-GCM"), val(false), usages),
                      {std::allocator_arg, allocator(),
                       [weak](bool ok, val key) {
-                          if (auto self = weak.lock())
+                          if (const auto self = weak.lock()) {
                               self->key_imported(ok, std::move(key));
+                          }
                       }},
                      memory_);
     }
@@ -510,8 +559,9 @@ private:
     void key_imported(bool ok, val key) {
         state_ = ok ? key_state::ready : key_state::failed;
         key_ = std::move(key);
-        for (auto& op : std::exchange(waiting_, {}))
+        for (auto& op : std::exchange(waiting_, {})) {
             op(*this, ok);
+        }
     }
 
     enum class key_state { none, importing, ready, failed };
@@ -556,8 +606,9 @@ public:
     }
 
     void random(std::span<std::uint8_t> out) override {
-        for (std::size_t at = 0; at < out.size(); at += 256)
+        for (std::size_t at = 0; at < out.size(); at += 256) {
             getentropy(out.data() + at, std::min<std::size_t>(256, out.size() - at));
+        }
     }
 
     std::int64_t unix_seconds() override {

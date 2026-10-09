@@ -48,7 +48,7 @@ enum class frame_kind : std::uint8_t {
     chunk = 2,
     accepted = 3,
     rejected = 4,
-    cancelled = 5
+    cancelled = 5,
 };
 
 inline constexpr std::uint8_t action_wire_version = 2;
@@ -64,15 +64,17 @@ namespace detail {
 
 inline std::uint32_t get_u32(std::span<const std::uint8_t> in, std::size_t at) {
     std::uint32_t v = 0;
-    for (int i = 0; i < 4; ++i)
-        v = (v << 8) | in[at + i];
+    for (int i = 0; i < 4; ++i) {
+        v = (v << 8U) | in[at + i];
+    }
     return v;
 }
 
 inline double get_f64(std::span<const std::uint8_t> in, std::size_t at) {
     std::uint64_t bits = 0;
-    for (int i = 0; i < 8; ++i)
-        bits = (bits << 8) | in[at + i];
+    for (int i = 0; i < 8; ++i) {
+        bits = (bits << 8U) | in[at + i];
+    }
     return std::bit_cast<double>(bits);
 }
 
@@ -97,17 +99,18 @@ inline void append_header(bytes& out, frame_kind kind, std::string_view name, pa
     out.resize(at + header_size, 0);
     out[at] = action_wire_version;
     out[at + 1] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(kind) |
-                                            (static_cast<std::uint8_t>(format) << 4));
+                                            (static_cast<unsigned>(format) << 4U));
     std::memcpy(out.data() + at + 2, name.data(), name.size());
-    out[at + 34] = static_cast<std::uint8_t>(metadata.size() >> 8);
-    out[at + 35] = static_cast<std::uint8_t>(metadata.size() & 0xff);
+    out[at + 34] = static_cast<std::uint8_t>(metadata.size() >> 8U);
+    out[at + 35] = static_cast<std::uint8_t>(metadata.size() & 0xffU);
 }
 
 inline void append_control(bytes& out, frame_kind kind, std::uint32_t id) {
     out.push_back(action_wire_version);
     out.push_back(static_cast<std::uint8_t>(kind));
-    for (int i = 0; i < 4; ++i)
-        out.push_back(static_cast<std::uint8_t>(id >> (24 - 8 * i)));
+    for (int i = 0; i < 4; ++i) {
+        out.push_back(static_cast<std::uint8_t>(id >> (24U - (8 * i))));
+    }
 }
 
 }  // namespace detail
@@ -131,11 +134,13 @@ inline void append_offer(bytes& out, std::string_view name, payload_format forma
     out.reserve(out.size() + offer_header_size + metadata.size());
     const auto at = out.size();
     detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size);
-    for (int i = 0; i < 4; ++i)
-        out[at + 36 + i] = static_cast<std::uint8_t>(id >> (24 - 8 * i));
+    for (int i = 0; i < 4; ++i) {
+        out[at + 36 + i] = static_cast<std::uint8_t>(id >> (24U - (8 * i)));
+    }
     const auto bits = std::bit_cast<std::uint64_t>(static_cast<double>(size));
-    for (int i = 0; i < 8; ++i)
-        out[at + 40 + i] = static_cast<std::uint8_t>(bits >> (56 - 8 * i));
+    for (int i = 0; i < 8; ++i) {
+        out[at + 40 + i] = static_cast<std::uint8_t>(bits >> (56U - (8 * i)));
+    }
     out.insert(out.end(), metadata.begin(), metadata.end());
 }
 
@@ -144,8 +149,9 @@ inline void append_chunk(bytes& out, std::uint32_t id, std::size_t offset,
     out.reserve(out.size() + chunk_header_size + data.size());
     detail::append_control(out, frame_kind::chunk, id);
     const auto bits = std::bit_cast<std::uint64_t>(static_cast<double>(offset));
-    for (int i = 0; i < 8; ++i)
-        out.push_back(static_cast<std::uint8_t>(bits >> (56 - 8 * i)));
+    for (int i = 0; i < 8; ++i) {
+        out.push_back(static_cast<std::uint8_t>(bits >> (56U - (8 * i))));
+    }
     out.insert(out.end(), data.begin(), data.end());
 }
 
@@ -158,8 +164,9 @@ inline void append_cancelled(bytes& out, std::uint32_t id) {
 }
 
 inline void append_rejected(bytes& out, std::uint32_t id, std::string_view reason) {
-    if (reason.size() > max_reject_reason_bytes)
+    if (reason.size() > max_reject_reason_bytes) {
         reason = reason.substr(0, max_reject_reason_bytes);
+    }
     detail::append_control(out, frame_kind::rejected, id);
     out.insert(out.end(), reason.begin(), reason.end());
 }
@@ -240,7 +247,7 @@ enum class wire_error {
     incompatible_version,
     invalid_control,
     invalid_header,
-    invalid_proposal
+    invalid_proposal,
 };
 
 struct decode_result {
@@ -248,68 +255,60 @@ struct decode_result {
     wire_error error = wire_error::invalid_frame;
 };
 
-/** Decodes one action frame with exactly the checks Trystero's `handleData` makes. */
-inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
+namespace detail {
+
+/** Decodes a control frame, a chunk or a transfer's answer, of the kind given. */
+inline decode_result decode_control(std::span<const std::uint8_t> bytes_in, frame_kind k) {
     decode_result result;
-    if (bytes_in.size() < 2 || bytes_in.size() > max_action_frame_bytes)
-        return result;
-    if (bytes_in[0] != action_wire_version) {
-        result.error = wire_error::incompatible_version;
-        return result;
-    }
-    const auto kind = static_cast<std::uint8_t>(bytes_in[1] & 15);
-    const auto format = static_cast<std::uint8_t>(bytes_in[1] >> 4);
-    if (kind > static_cast<std::uint8_t>(frame_kind::cancelled) ||
-        format > static_cast<std::uint8_t>(payload_format::binary) ||
-        (kind > static_cast<std::uint8_t>(frame_kind::offer) && format != 0)) {
+    if (bytes_in.size() < control_header_size ||
+        ((k == frame_kind::accepted || k == frame_kind::cancelled) &&
+         bytes_in.size() != control_header_size) ||
+        (k == frame_kind::rejected &&
+         bytes_in.size() > control_header_size + max_reject_reason_bytes)) {
+        result.error = wire_error::invalid_control;
         return result;
     }
-    if (kind >= static_cast<std::uint8_t>(frame_kind::chunk)) {
-        const auto k = static_cast<frame_kind>(kind);
-        if (bytes_in.size() < control_header_size ||
-            ((k == frame_kind::accepted || k == frame_kind::cancelled) &&
-             bytes_in.size() != control_header_size) ||
-            (k == frame_kind::rejected &&
-             bytes_in.size() > control_header_size + max_reject_reason_bytes)) {
-            result.error = wire_error::invalid_control;
-            return result;
+    const auto id = get_u32(bytes_in, 2);
+    if (k == frame_kind::chunk) {
+        chunk c;
+        c.id = id;
+        c.offset = bytes_in.size() >= chunk_header_size ? get_f64(bytes_in, control_header_size)
+                                                        : std::nan("");
+        if (bytes_in.size() >= chunk_header_size) {
+            c.data = bytes_in.subspan(chunk_header_size);
         }
-        const auto id = detail::get_u32(bytes_in, 2);
-        if (k == frame_kind::chunk) {
-            chunk c;
-            c.id = id;
-            c.offset = bytes_in.size() >= chunk_header_size
-                           ? detail::get_f64(bytes_in, control_header_size)
-                           : std::nan("");
-            if (bytes_in.size() >= chunk_header_size)
-                c.data = bytes_in.subspan(chunk_header_size);
-            result.frame = c;
-        } else {
-            control_message m;
-            m.kind = k;
-            m.id = id;
-            if (k == frame_kind::rejected) {
-                m.reason = std::string_view(
-                    reinterpret_cast<const char*>(bytes_in.data() + control_header_size),
-                    bytes_in.size() - control_header_size);
-            }
-            result.frame = m;
-        }
+        result.frame = c;
         return result;
     }
-    const bool is_inline = kind == static_cast<std::uint8_t>(frame_kind::inline_payload);
+    control_message m;
+    m.kind = k;
+    m.id = id;
+    if (k == frame_kind::rejected) {
+        m.reason =
+            std::string_view(reinterpret_cast<const char*>(bytes_in.data() + control_header_size),
+                             bytes_in.size() - control_header_size);
+    }
+    result.frame = m;
+    return result;
+}
+
+/** Decodes a proposal, a payload inline or the offer of a transfer, of the kind given. */
+inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, frame_kind kind,
+                                     payload_format format) {
+    decode_result result;
+    const bool is_inline = kind == frame_kind::inline_payload;
     const std::size_t header_size = is_inline ? inline_header_size : offer_header_size;
     if (bytes_in.size() < header_size) {
         result.error = wire_error::invalid_header;
         return result;
     }
     proposal p;
-    p.kind = static_cast<frame_kind>(kind);
-    p.format = static_cast<payload_format>(format);
+    p.kind = kind;
+    p.format = format;
     const auto* name = reinterpret_cast<const char*>(bytes_in.data() + 2);
     p.name = std::string_view(
         name, static_cast<std::size_t>(std::find(name, name + max_action_name_bytes, '\0') - name));
-    const std::size_t metadata_size = (bytes_in[34] << 8) | bytes_in[35];
+    const std::size_t metadata_size = (std::size_t{bytes_in[34]} << 8U) | bytes_in[35];
     const std::size_t payload_index = header_size + metadata_size;
     if (p.name.empty() || payload_index > bytes_in.size()) {
         result.error = wire_error::invalid_proposal;
@@ -319,19 +318,45 @@ inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
         p.size = bytes_in.size() - payload_index;
         p.payload = bytes_in.subspan(payload_index);
     } else {
-        const double size = detail::get_f64(bytes_in, 40);
-        if (!(size >= 1 && size <= 9007199254740991.0 && std::floor(size) == size) ||
+        const double size = get_f64(bytes_in, 40);
+        if (size < 1 || size > 9007199254740991.0 || std::floor(size) != size ||
             payload_index != bytes_in.size()) {
             result.error = wire_error::invalid_proposal;
             return result;
         }
-        p.id = detail::get_u32(bytes_in, 36);
+        p.id = get_u32(bytes_in, 36);
         p.size = static_cast<std::size_t>(size);
     }
     p.metadata = std::string_view(reinterpret_cast<const char*>(bytes_in.data() + header_size),
                                   metadata_size);
     result.frame = p;
     return result;
+}
+
+}  // namespace detail
+
+/** Decodes one action frame with exactly the checks Trystero's `handleData` makes. */
+inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
+    decode_result result;
+    if (bytes_in.size() < 2 || bytes_in.size() > max_action_frame_bytes) {
+        return result;
+    }
+    if (bytes_in[0] != action_wire_version) {
+        result.error = wire_error::incompatible_version;
+        return result;
+    }
+    const auto kind = static_cast<std::uint8_t>(bytes_in[1] & 15U);
+    const auto format = static_cast<std::uint8_t>(bytes_in[1] >> 4U);
+    if (kind > static_cast<std::uint8_t>(frame_kind::cancelled) ||
+        format > static_cast<std::uint8_t>(payload_format::binary) ||
+        (kind > static_cast<std::uint8_t>(frame_kind::offer) && format != 0)) {
+        return result;
+    }
+    if (kind >= static_cast<std::uint8_t>(frame_kind::chunk)) {
+        return detail::decode_control(bytes_in, static_cast<frame_kind>(kind));
+    }
+    return detail::decode_proposal(bytes_in, static_cast<frame_kind>(kind),
+                                   static_cast<payload_format>(format));
 }
 
 }  // namespace webcpp::trystero::protocol

@@ -45,10 +45,12 @@
 namespace webcpp::trystero::backend {
 
 using bytes = std::pmr::vector<std::uint8_t>;
-using error_code = boost::system::error_code;
+using boost::system::error_code;
 
+// Its implicit move assignment may allocate: a std::pmr member copies when the two resources
+// differ, which bugprone-exception-escape, expecting every move assignment not to throw, reports.
 /** A STUN or TURN server; a room copies those of its configuration into its own resource. */
-struct ice_server {
+struct ice_server {  // NOLINT(bugprone-exception-escape)
     std::pmr::vector<std::pmr::string> urls;
     std::pmr::string username;
     std::pmr::string credential;
@@ -90,9 +92,9 @@ public:
 
     virtual ~data_channel() = default;
     virtual void set_handlers(handlers h) = 0;
-    virtual bool is_open() const = 0;
+    [[nodiscard]] virtual bool is_open() const = 0;
     virtual void send(std::span<const std::uint8_t> frame) = 0;
-    virtual std::size_t buffered_amount() const = 0;
+    [[nodiscard]] virtual std::size_t buffered_amount() const = 0;
     virtual void close() = 0;
 };
 
@@ -120,7 +122,7 @@ public:
                                         handler<void(error_code)> done) = 0;
     virtual void add_ice_candidate(std::string_view candidate_json,
                                    handler<void(error_code)> done) = 0;
-    virtual bool has_remote_description() const = 0;
+    [[nodiscard]] virtual bool has_remote_description() const = 0;
     virtual void close() = 0;
 };
 

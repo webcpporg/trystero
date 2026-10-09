@@ -40,9 +40,11 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
     std::pmr::vector<backend::ice_server> out(memory);
     out.reserve(servers.size());
     for (const auto& server : servers) {
-        out.push_back({std::pmr::vector<std::pmr::string>(server.urls, memory),
-                       std::pmr::string(server.username, memory),
-                       std::pmr::string(server.credential, memory)});
+        out.push_back({
+            .urls = std::pmr::vector<std::pmr::string>(server.urls, memory),
+            .username = std::pmr::string(server.username, memory),
+            .credential = std::pmr::string(server.credential, memory),
+        });
     }
     return out;
 }
@@ -99,20 +101,24 @@ public:
 
     /** A message on the root or the self topic; `content` is read during the call. */
     void handle(std::size_t relay, std::string_view content) {
-        if (closed_)
+        if (closed_) {
             return;
+        }
         boost::system::error_code ec;
         const auto document = protocol::json::parse(content, json_, ec);
         const auto message = ec ? std::nullopt : protocol::read_signal(document);
-        if (!message || message->peer_id == self_id_)
+        if (!message || message->peer_id == self_id_) {
             return;
+        }
         auto it = peers_.find(message->peer_id);
-        if (it == peers_.end())
+        if (it == peers_.end()) {
             it = peers_.try_emplace(std::pmr::string(message->peer_id, memory_), allocator()).first;
-        std::string_view peer = it->first;
+        }
+        const std::string_view peer = it->first;
         auto& n = it->second;
-        if (n.connected)
+        if (n.connected) {
             return;
+        }
         if (message->is_announcement()) {
             on_announcement(relay, peer, n);
         } else if (!message->offer.empty()) {
@@ -126,7 +132,7 @@ public:
 
     /** The peer left after connecting: its next announcement starts a new negotiation. */
     void forget(std::string_view peer) {
-        if (auto it = peers_.find(peer); it != peers_.end()) {
+        if (const auto it = peers_.find(peer); it != peers_.end()) {
             reset_offer(it->second);
             reset_answer(it->second);
             peers_.erase(it);
@@ -209,7 +215,7 @@ private:
         std::pmr::map<std::size_t, double> counter_announced_ms;
     };
 
-    pmr_allocator allocator() const { return pmr_allocator(memory_); }
+    pmr_allocator allocator() const { return {memory_}; }
 
     std::pmr::string copy(std::string_view text) const { return std::pmr::string(text, memory_); }
 
@@ -227,34 +233,39 @@ private:
         std::array<std::uint8_t, 32> random{};
         factory_.random(std::span(random).first(n));
         std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t i = 0; i < n; ++i) {
             id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
+        }
         return id;
     }
 
     negotiation* find(std::string_view peer) {
-        auto it = peers_.find(peer);
+        const auto it = peers_.find(peer);
         return it == peers_.end() ? nullptr : &it->second;
     }
 
     void on_announcement(std::size_t relay, std::string_view peer, negotiation& n) {
-        if (n.answer.pc || n.answered)
+        if (n.answer.pc || n.answered) {
             return;
+        }
         if (self_id_ > peer) {
-            if (n.offer.pc)
+            if (n.offer.pc) {
                 return;
+            }
             const double now = factory_.now_ms();
-            if (auto it = n.counter_announced_ms.find(relay);
-                it != n.counter_announced_ms.end() && now - it->second < 1000)
+            if (const auto it = n.counter_announced_ms.find(relay);
+                it != n.counter_announced_ms.end() && now - it->second < 1000) {
                 return;
+            }
             n.counter_announced_ms[relay] = now;
             log_("signal", "announcement from ", peer, ": their id is lower, asking them to offer");
             cb_.publish(relay, peer_topic(peer),
                         protocol::write_signal({.peer_id = self_id_}, {}, memory_));
             return;
         }
-        if (n.offer_relays.contains(relay))
+        if (n.offer_relays.contains(relay)) {
             return;
+        }
         n.offer_relays.insert(relay);
         log_("signal", "announcement from ", peer, ": our id is lower, so we offer");
         if (!n.offer.pc) {
@@ -269,60 +280,80 @@ private:
         n.offer.pc = factory_.make_peer_connection(ice_servers_, memory_);
         n.offer.channel = n.offer.pc->create_data_channel("data");
         const auto pc = n.offer.pc;
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         pc->set_handlers({
             .ice_candidate = bind<void(std::string_view)>(
                 [weak, peer = copy(peer), pc](std::string_view candidate) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->on_local_candidate(peer, pc, candidate);
+                    }
                 }),
             .data_channel = {},
             .state = bind<void(backend::connection_state)>(
                 [weak, peer = copy(peer), pc](backend::connection_state state) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->on_state(peer, pc, state);
+                    }
                 }),
         });
         watch_channel(peer, pc, n.offer.channel);
         n.offer_expiry = factory_.make_timer(memory_);
         n.offer_expiry->start(offer_ttl, bind<void()>([weak, peer = copy(peer), pc] {
-                                  auto self = weak.lock();
+                                  const auto self = weak.lock();
                                   auto* m = self ? self->find(peer) : nullptr;
-                                  if (m == nullptr || m->connected || m->offer.pc != pc)
+                                  if (m == nullptr || m->connected || m->offer.pc != pc) {
                                       return;
+                                  }
                                   self->log_("signal", "offer to ", peer, " expired");
-                                  self->reset_offer(*m);
+                                  reset_offer(*m);
                               }));
         pc->set_local_description(
             bind<void(boost::system::error_code, std::string_view, std::string_view)>(
-                [weak, peer = copy(peer), pc](boost::system::error_code ec, std::string_view,
-                                              std::string_view sdp) {
-                    auto self = weak.lock();
-                    auto* m = self ? self->find(peer) : nullptr;
-                    if (m == nullptr || m->offer.pc != pc)
-                        return;
-                    if (ec) {
-                        self->log_("webrtc", "could not create an offer for ", peer, ": ", ec);
-                        self->reset_offer(*m);
-                        return;
+                [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                              std::string_view /*type*/, std::string_view sdp) {
+                    if (const auto self = weak.lock()) {
+                        self->on_offer_created(peer, pc, ec, sdp);
                     }
-                    self->sealer_->seal(
-                        sdp, self->bind<void(boost::system::error_code, std::string_view)>(
-                                 [weak, peer = self->copy(peer), pc](boost::system::error_code ec,
-                                                                     std::string_view sealed) {
-                                     auto self = weak.lock();
-                                     auto* m = self ? self->find(peer) : nullptr;
-                                     if (m == nullptr || m->offer.pc != pc || ec)
-                                         return;
-                                     m->sealed_offer = sealed;
-                                     for (const auto relay : m->offer_relays)
-                                         self->send_offer(relay, peer, *m);
-                                     for (const auto& candidate :
-                                          std::exchange(m->offer_candidates, {})) {
-                                         self->publish_candidate(peer, pc, candidate);
-                                     }
-                                 }));
                 }));
+    }
+
+    /** Seals the offer this side created, once its connection has its local description. */
+    void on_offer_created(std::string_view peer,
+                          const std::shared_ptr<backend::peer_connection>& pc,
+                          boost::system::error_code ec, std::string_view sdp) {
+        auto* m = find(peer);
+        if (m == nullptr || m->offer.pc != pc) {
+            return;
+        }
+        if (ec) {
+            log_("webrtc", "could not create an offer for ", peer, ": ", ec);
+            reset_offer(*m);
+            return;
+        }
+        const auto weak = weak_from_this();
+        sealer_->seal(sdp, bind<void(boost::system::error_code, std::string_view)>(
+                               [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                                             std::string_view sealed) {
+                                   if (const auto self = weak.lock()) {
+                                       self->on_offer_sealed(peer, pc, ec, sealed);
+                                   }
+                               }));
+    }
+
+    /** Sends the sealed offer on every relay that asked for it, then the candidates it held. */
+    void on_offer_sealed(std::string_view peer, const std::shared_ptr<backend::peer_connection>& pc,
+                         boost::system::error_code ec, std::string_view sealed) {
+        auto* m = find(peer);
+        if (m == nullptr || m->offer.pc != pc || ec) {
+            return;
+        }
+        m->sealed_offer = sealed;
+        for (const auto relay : m->offer_relays) {
+            send_offer(relay, peer, *m);
+        }
+        for (const auto& candidate : std::exchange(m->offer_candidates, {})) {
+            publish_candidate(peer, pc, candidate);
+        }
     }
 
     void send_offer(std::size_t relay, std::string_view peer, negotiation& n) {
@@ -334,18 +365,21 @@ private:
         // Discovery can be quiet for a while: repeat the offer on this relay twice before giving up
         // on it.
         auto& retry = n.offer_retry[relay];
-        if (!retry)
+        if (!retry) {
             retry = factory_.make_timer(memory_);
+        }
         const auto pc = n.offer.pc;
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         retry->start(n.offer_retries[relay] == 0 ? first_offer_retry : later_offer_retry,
                      bind<void()>([weak, peer = copy(peer), pc, relay] {
-                         auto self = weak.lock();
+                         const auto self = weak.lock();
                          auto* m = self ? self->find(peer) : nullptr;
-                         if (m == nullptr || m->connected || m->answered || m->offer.pc != pc)
+                         if (m == nullptr || m->connected || m->answered || m->offer.pc != pc) {
                              return;
-                         if (++m->offer_retries[relay] > max_offer_retries)
+                         }
+                         if (++m->offer_retries[relay] > max_offer_retries) {
                              return;
+                         }
                          self->send_offer(relay, peer, *m);
                      }));
     }
@@ -353,24 +387,15 @@ private:
     void on_offer(std::size_t relay, std::string_view peer, std::string_view offer_id,
                   std::string_view offer, negotiation& n) {
         if (n.answer.pc || n.answered) {
-            // The same offer again: Trystero replays its answer on that relay, at most once a
-            // second.
-            const double now = factory_.now_ms();
-            const auto last = n.answer_replayed_ms.find(relay);
-            if (n.answer.pc && n.answered_offer == offer && n.answered_offer_id == offer_id &&
-                (last == n.answer_replayed_ms.end() || now - last->second >= 1000)) {
-                n.answer_replayed_ms[relay] = now;
-                n.answer_relays.insert(relay);
-                const auto topic = peer_topic(peer);
-                for (const auto& message : n.answer_messages)
-                    cb_.publish(relay, topic, message);
-            }
+            replay_answer(relay, peer, offer_id, offer, n);
             return;
         }
-        if (n.offer.pc && self_id_ < peer)
+        if (n.offer.pc && self_id_ < peer) {
             return;  // we lead; our offer stands
-        if (n.offer.pc)
+        }
+        if (n.offer.pc) {
             reset_offer(n);
+        }
         log_("signal", "offer ", offer_id, " from ", peer);
         n.answer.pc = factory_.make_peer_connection(ice_servers_, memory_);
         n.answered_offer_id = offer_id;
@@ -378,140 +403,197 @@ private:
         n.answer_relays.insert(relay);
         n.answer_replayed_ms[relay] = factory_.now_ms();
         const auto pc = n.answer.pc;
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         pc->set_handlers({
             .ice_candidate = bind<void(std::string_view)>(
                 [weak, peer = copy(peer), pc](std::string_view candidate) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->on_local_candidate(peer, pc, candidate);
+                    }
                 }),
             .data_channel = bind<void(std::shared_ptr<backend::data_channel>)>(
-                [weak, peer = copy(peer), pc](std::shared_ptr<backend::data_channel> channel) {
-                    auto self = weak.lock();
+                [weak, peer = copy(peer),
+                 pc](const std::shared_ptr<backend::data_channel>& channel) {
+                    const auto self = weak.lock();
                     auto* m = self ? self->find(peer) : nullptr;
-                    if (m == nullptr || m->answer.pc != pc)
+                    if (m == nullptr || m->answer.pc != pc) {
                         return;
+                    }
                     m->answer.channel = channel;
                     self->watch_channel(peer, pc, channel);
                 }),
             .state = bind<void(backend::connection_state)>(
                 [weak, peer = copy(peer), pc](backend::connection_state state) {
-                    if (auto self = weak.lock())
+                    if (const auto self = weak.lock()) {
                         self->on_state(peer, pc, state);
+                    }
                 }),
         });
         n.answer_expiry = factory_.make_timer(memory_);
         n.answer_expiry->start(answering_ttl, bind<void()>([weak, peer = copy(peer), pc] {
-                                   auto self = weak.lock();
+                                   const auto self = weak.lock();
                                    auto* m = self ? self->find(peer) : nullptr;
-                                   if (m == nullptr || m->connected || m->answer.pc != pc)
+                                   if (m == nullptr || m->connected || m->answer.pc != pc) {
                                        return;
+                                   }
                                    self->log_("signal", "answering ", peer, " timed out");
-                                   self->reset_answer(*m);
+                                   reset_answer(*m);
                                }));
-        sealer_->open(
-            offer,
-            bind<void(boost::system::error_code,
-                      std::string_view)>([weak, peer = copy(peer), pc](boost::system::error_code ec,
-                                                                       std::string_view sdp) {
-                auto self = weak.lock();
-                auto* m = self ? self->find(peer) : nullptr;
-                if (m == nullptr || m->answer.pc != pc)
-                    return;
-                if (ec) {
-                    self->log_("signal", "could not open the offer from ", peer,
-                               ": another password?");
-                    self->reset_answer(*m);
-                    self->cb_.failed(peer, make_error_code(error::wrong_password));
-                    return;
-                }
-                pc->set_remote_description(
-                    "offer", sdp,
-                    self->bind<void(boost::system::error_code)>([weak, peer = self->copy(peer),
-                                                                 pc](boost::system::error_code ec) {
-                        auto self = weak.lock();
-                        auto* m = self ? self->find(peer) : nullptr;
-                        if (m == nullptr || m->answer.pc != pc)
-                            return;
-                        if (ec) {
-                            self->log_("webrtc", "the offer from ", peer, " was refused: ", ec);
-                            self->reset_answer(*m);
-                            return;
-                        }
-                        self->flush_remote_candidates(m->answer);
-                        pc->set_local_description(
-                            self->bind<void(boost::system::error_code, std::string_view,
-                                            std::string_view)>([weak, peer = self->copy(peer), pc](
-                                                                   boost::system::error_code ec,
-                                                                   std::string_view,
-                                                                   std::string_view sdp) {
-                                auto self = weak.lock();
-                                auto* m = self ? self->find(peer) : nullptr;
-                                if (m == nullptr || m->answer.pc != pc || ec)
-                                    return;
-                                self->sealer_->seal(
-                                    sdp,
-                                    self->bind<void(boost::system::error_code, std::string_view)>(
-                                        [weak, peer = self->copy(peer), pc](
-                                            boost::system::error_code ec, std::string_view sealed) {
-                                            auto self = weak.lock();
-                                            auto* m = self ? self->find(peer) : nullptr;
-                                            if (m == nullptr || m->answer.pc != pc || ec)
-                                                return;
-                                            self->log_("signal", "sending answer to ", peer);
-                                            self->send_answer_message(
-                                                peer, *m,
-                                                protocol::write_signal(
-                                                    {.peer_id = self->self_id_,
-                                                     .offer_id = m->answered_offer_id,
-                                                     .answer = sealed},
-                                                    {}, self->memory_));
-                                            m->answer_sent = true;
-                                            for (const auto& candidate :
-                                                 std::exchange(m->answer_candidates, {})) {
-                                                self->publish_candidate(peer, pc, candidate);
-                                            }
-                                        }));
-                            }));
-                    }));
-            }));
+        sealer_->open(offer, bind<void(boost::system::error_code, std::string_view)>(
+                                 [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                                               std::string_view sdp) {
+                                     if (const auto self = weak.lock()) {
+                                         self->on_offer_opened(peer, pc, ec, sdp);
+                                     }
+                                 }));
+    }
+
+    /** The same offer again: Trystero replays its answer on that relay, at most once a second. */
+    void replay_answer(std::size_t relay, std::string_view peer, std::string_view offer_id,
+                       std::string_view offer, negotiation& n) {
+        const double now = factory_.now_ms();
+        const auto last = n.answer_replayed_ms.find(relay);
+        if (!n.answer.pc || n.answered_offer != offer || n.answered_offer_id != offer_id ||
+            (last != n.answer_replayed_ms.end() && now - last->second < 1000)) {
+            return;
+        }
+        n.answer_replayed_ms[relay] = now;
+        n.answer_relays.insert(relay);
+        const auto topic = peer_topic(peer);
+        for (const auto& message : n.answer_messages) {
+            cb_.publish(relay, topic, message);
+        }
+    }
+
+    /** Applies the offer the sealer opened as the answering connection's remote description. */
+    void on_offer_opened(std::string_view peer, const std::shared_ptr<backend::peer_connection>& pc,
+                         boost::system::error_code ec, std::string_view sdp) {
+        auto* m = find(peer);
+        if (m == nullptr || m->answer.pc != pc) {
+            return;
+        }
+        if (ec) {
+            log_("signal", "could not open the offer from ", peer, ": another password?");
+            reset_answer(*m);
+            cb_.failed(peer, make_error_code(error::wrong_password));
+            return;
+        }
+        const auto weak = weak_from_this();
+        pc->set_remote_description("offer", sdp,
+                                   bind<void(boost::system::error_code)>(
+                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
+                                           if (const auto self = weak.lock()) {
+                                               self->on_offer_applied(peer, pc, ec);
+                                           }
+                                       }));
+    }
+
+    /** Creates the answer once the offer is the connection's remote description. */
+    void on_offer_applied(std::string_view peer,
+                          const std::shared_ptr<backend::peer_connection>& pc,
+                          boost::system::error_code ec) {
+        auto* m = find(peer);
+        if (m == nullptr || m->answer.pc != pc) {
+            return;
+        }
+        if (ec) {
+            log_("webrtc", "the offer from ", peer, " was refused: ", ec);
+            reset_answer(*m);
+            return;
+        }
+        flush_remote_candidates(m->answer);
+        const auto weak = weak_from_this();
+        pc->set_local_description(
+            bind<void(boost::system::error_code, std::string_view, std::string_view)>(
+                [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                              std::string_view /*type*/, std::string_view sdp) {
+                    if (const auto self = weak.lock()) {
+                        self->on_answer_created(peer, pc, ec, sdp);
+                    }
+                }));
+    }
+
+    /** Seals the answer this side created. */
+    void on_answer_created(std::string_view peer,
+                           const std::shared_ptr<backend::peer_connection>& pc,
+                           boost::system::error_code ec, std::string_view sdp) {
+        const auto* m = find(peer);
+        if (m == nullptr || m->answer.pc != pc || ec) {
+            return;
+        }
+        const auto weak = weak_from_this();
+        sealer_->seal(sdp, bind<void(boost::system::error_code, std::string_view)>(
+                               [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                                             std::string_view sealed) {
+                                   if (const auto self = weak.lock()) {
+                                       self->on_answer_sealed(peer, pc, ec, sealed);
+                                   }
+                               }));
+    }
+
+    /** Sends the sealed answer on every relay the offer came through, then the candidates it
+     * held. */
+    void on_answer_sealed(std::string_view peer,
+                          const std::shared_ptr<backend::peer_connection>& pc,
+                          boost::system::error_code ec, std::string_view sealed) {
+        auto* m = find(peer);
+        if (m == nullptr || m->answer.pc != pc || ec) {
+            return;
+        }
+        log_("signal", "sending answer to ", peer);
+        send_answer_message(peer, *m,
+                            protocol::write_signal(
+                                {
+                                    .peer_id = self_id_,
+                                    .offer_id = m->answered_offer_id,
+                                    .answer = sealed,
+                                },
+                                {}, memory_));
+        m->answer_sent = true;
+        for (const auto& candidate : std::exchange(m->answer_candidates, {})) {
+            publish_candidate(peer, pc, candidate);
+        }
     }
 
     void send_answer_message(std::string_view peer, negotiation& n, std::pmr::string message) {
         const auto topic = peer_topic(peer);
-        for (const auto relay : n.answer_relays)
+        for (const auto relay : n.answer_relays) {
             cb_.publish(relay, topic, message);
+        }
         n.answer_messages.push_back(std::move(message));
     }
 
     void on_answer(std::string_view peer, std::string_view offer_id, std::string_view answer,
                    negotiation& n) {
-        if (!n.offer.pc || n.answered || (!offer_id.empty() && offer_id != n.offer_id))
+        if (!n.offer.pc || n.answered || (!offer_id.empty() && offer_id != n.offer_id)) {
             return;
+        }
         n.answered = true;
         const auto pc = n.offer.pc;
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         n.offer_expiry->start(answered_offer_ttl, bind<void()>([weak, peer = copy(peer), pc] {
-                                  auto self = weak.lock();
+                                  const auto self = weak.lock();
                                   auto* m = self ? self->find(peer) : nullptr;
-                                  if (m == nullptr || m->connected || m->offer.pc != pc)
+                                  if (m == nullptr || m->connected || m->offer.pc != pc) {
                                       return;
+                                  }
                                   self->log_("signal", peer,
                                              " answered but the connection never opened");
-                                  self->reset_offer(*m);
+                                  reset_offer(*m);
                               }));
         sealer_->open(
             answer,
             bind<void(boost::system::error_code, std::string_view)>(
                 [weak, peer = copy(peer), pc](boost::system::error_code ec, std::string_view sdp) {
-                    auto self = weak.lock();
+                    const auto self = weak.lock();
                     auto* m = self ? self->find(peer) : nullptr;
-                    if (m == nullptr || m->offer.pc != pc)
+                    if (m == nullptr || m->offer.pc != pc) {
                         return;
+                    }
                     if (ec) {
                         self->log_("signal", "could not open the answer from ", peer,
                                    ": another password?");
-                        self->reset_offer(*m);
+                        reset_offer(*m);
                         self->cb_.failed(peer, make_error_code(error::wrong_password));
                         return;
                     }
@@ -520,14 +602,15 @@ private:
                         "answer", sdp,
                         self->bind<void(boost::system::error_code)>(
                             [weak, peer = self->copy(peer), pc](boost::system::error_code ec) {
-                                auto self = weak.lock();
+                                const auto self = weak.lock();
                                 auto* m = self ? self->find(peer) : nullptr;
-                                if (m == nullptr || m->offer.pc != pc)
+                                if (m == nullptr || m->offer.pc != pc) {
                                     return;
+                                }
                                 if (ec) {
                                     self->log_("webrtc", "the answer from ", peer,
                                                " was refused: ", ec);
-                                    self->reset_offer(*m);
+                                    reset_offer(*m);
                                     return;
                                 }
                                 self->flush_remote_candidates(m->offer);
@@ -537,35 +620,42 @@ private:
 
     void on_candidate(std::string_view peer, std::string_view offer_id_view,
                       std::string_view candidate) {
-        auto weak = weak_from_this();
-        sealer_->open(candidate,
-                      bind<void(boost::system::error_code, std::string_view)>(
-                          [weak, peer = copy(peer), offer_id = copy(offer_id_view)](
-                              boost::system::error_code ec, std::string_view plain) {
-                              auto self = weak.lock();
-                              auto* m = self ? self->find(peer) : nullptr;
-                              if (m == nullptr || ec || m->connected)
-                                  return;
-                              side* target = nullptr;
-                              if (!offer_id.empty() && m->offer.pc && offer_id == m->offer_id) {
-                                  target = &m->offer;
-                              } else if (m->answer.pc &&
-                                         (offer_id.empty() || offer_id == m->answered_offer_id)) {
-                                  target = &m->answer;
-                              } else if (offer_id.empty() && m->offer.pc) {
-                                  target = &m->offer;
-                              }
-                              if (target == nullptr)
-                                  return;
-                              if (!target->pc->has_remote_description()) {
-                                  if (target->pending_remote.size() < max_pending_candidates)
-                                      target->pending_remote.emplace_back(plain);
-                                  return;
-                              }
-                              target->pc->add_ice_candidate(
-                                  plain, self->bind<void(boost::system::error_code)>(
-                                             [](boost::system::error_code) {}));
-                          }));
+        const auto weak = weak_from_this();
+        sealer_->open(
+            candidate,
+            bind<void(boost::system::error_code, std::string_view)>(
+                [weak, peer = copy(peer), offer_id = copy(offer_id_view)](
+                    boost::system::error_code ec, std::string_view plain) {
+                    const auto self = weak.lock();
+                    auto* m = self ? self->find(peer) : nullptr;
+                    if (m == nullptr || ec || m->connected) {
+                        return;
+                    }
+                    // A candidate names the offer it belongs to; one that names none
+                    // goes to the connection this side answers, else to its offer.
+                    const bool answers =
+                        m->answer.pc && (offer_id.empty() || offer_id == m->answered_offer_id);
+                    const bool offers =
+                        m->offer.pc && (offer_id.empty() ? !answers : offer_id == m->offer_id);
+                    side* target = nullptr;
+                    if (offers) {
+                        target = &m->offer;
+                    } else if (answers) {
+                        target = &m->answer;
+                    }
+                    if (target == nullptr) {
+                        return;
+                    }
+                    if (!target->pc->has_remote_description()) {
+                        if (target->pending_remote.size() < max_pending_candidates) {
+                            target->pending_remote.emplace_back(plain);
+                        }
+                        return;
+                    }
+                    target->pc->add_ice_candidate(plain,
+                                                  self->bind<void(boost::system::error_code)>(
+                                                      [](boost::system::error_code) {}));
+                }));
     }
 
     void flush_remote_candidates(side& s) {
@@ -576,12 +666,13 @@ private:
     }
 
     void on_local_candidate(std::string_view peer_view,
-                            std::shared_ptr<backend::peer_connection> pc,
+                            const std::shared_ptr<backend::peer_connection>& pc,
                             std::string_view candidate) {
         const auto peer = copy(peer_view);
         auto* n = find(peer);
-        if (n == nullptr || n->connected)
+        if (n == nullptr || n->connected) {
             return;
+        }
         if (pc == n->offer.pc) {
             if (n->sealed_offer.empty()) {
                 n->offer_candidates.emplace_back(candidate);
@@ -600,62 +691,79 @@ private:
     void publish_candidate(std::string_view peer,
                            const std::shared_ptr<backend::peer_connection>& pc,
                            std::string_view candidate) {
-        auto weak = weak_from_this();
-        sealer_->seal(candidate,
-                      bind<void(boost::system::error_code, std::string_view)>(
-                          [weak, peer = copy(peer), pc](boost::system::error_code ec,
-                                                        std::string_view sealed) {
-                              auto self = weak.lock();
-                              auto* m = self ? self->find(peer) : nullptr;
-                              if (m == nullptr || ec || m->connected)
-                                  return;
-                              if (pc == m->offer.pc) {
-                                  const auto message =
-                                      protocol::write_signal({.peer_id = self->self_id_,
-                                                              .offer_id = m->offer_id,
-                                                              .candidate = sealed},
-                                                             {}, self->memory_);
-                                  const auto topic = self->peer_topic(peer);
-                                  for (const auto relay : m->offer_relays)
-                                      self->cb_.publish(relay, topic, message);
-                              } else if (pc == m->answer.pc) {
-                                  self->send_answer_message(
-                                      peer, *m,
-                                      protocol::write_signal({.peer_id = self->self_id_,
-                                                              .offer_id = m->answered_offer_id,
-                                                              .candidate = sealed},
-                                                             {}, self->memory_));
-                              }
-                          }));
+        const auto weak = weak_from_this();
+        sealer_->seal(candidate, bind<void(boost::system::error_code, std::string_view)>(
+                                     [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                                                   std::string_view sealed) {
+                                         const auto self = weak.lock();
+                                         auto* m = self ? self->find(peer) : nullptr;
+                                         if (m == nullptr || ec || m->connected) {
+                                             return;
+                                         }
+                                         if (pc == m->offer.pc) {
+                                             const auto message = protocol::write_signal(
+                                                 {
+                                                     .peer_id = self->self_id_,
+                                                     .offer_id = m->offer_id,
+                                                     .candidate = sealed,
+                                                 },
+                                                 {}, self->memory_);
+                                             const auto topic = self->peer_topic(peer);
+                                             for (const auto relay : m->offer_relays) {
+                                                 self->cb_.publish(relay, topic, message);
+                                             }
+                                         } else if (pc == m->answer.pc) {
+                                             self->send_answer_message(
+                                                 peer, *m,
+                                                 protocol::write_signal(
+                                                     {
+                                                         .peer_id = self->self_id_,
+                                                         .offer_id = m->answered_offer_id,
+                                                         .candidate = sealed,
+                                                     },
+                                                     {}, self->memory_));
+                                         }
+                                     }));
     }
 
     void watch_channel(std::string_view peer, const std::shared_ptr<backend::peer_connection>& pc,
                        const std::shared_ptr<backend::data_channel>& channel) {
-        auto weak = weak_from_this();
+        const auto weak = weak_from_this();
         channel->set_handlers({
             .open = bind<void()>([weak, peer = copy(peer), pc] {
-                if (auto self = weak.lock())
+                if (const auto self = weak.lock()) {
                     self->on_channel_open(peer, pc);
+                }
             }),
             .message = {},
             .close = bind<void()>([weak, peer = copy(peer), pc] {
-                if (auto self = weak.lock())
+                if (const auto self = weak.lock()) {
                     self->on_state(peer, pc, backend::connection_state::closed);
+                }
             }),
             .buffered_amount_low = {},
         });
-        if (channel->is_open())
+        if (channel->is_open()) {
             on_channel_open(peer, pc);
+        }
     }
 
-    void on_channel_open(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc) {
+    void on_channel_open(std::string_view peer_view,
+                         const std::shared_ptr<backend::peer_connection>& pc) {
         const auto peer = copy(peer_view);
         auto* n = find(peer);
-        if (n == nullptr || n->connected)
+        if (n == nullptr || n->connected) {
             return;
-        side* winner = pc == n->offer.pc ? &n->offer : pc == n->answer.pc ? &n->answer : nullptr;
-        if (winner == nullptr || !winner->channel)
+        }
+        side* winner = nullptr;
+        if (pc == n->offer.pc) {
+            winner = &n->offer;
+        } else if (pc == n->answer.pc) {
+            winner = &n->answer;
+        }
+        if (winner == nullptr || !winner->channel) {
             return;
+        }
         n->connected = true;
         auto connected_pc = std::move(winner->pc);
         auto channel = std::move(winner->channel);
@@ -665,15 +773,17 @@ private:
         cb_.connected(peer, std::move(connected_pc), std::move(channel));
     }
 
-    void on_state(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
+    void on_state(std::string_view peer_view, const std::shared_ptr<backend::peer_connection>& pc,
                   backend::connection_state state) {
         const auto peer = copy(peer_view);
         auto* n = find(peer);
-        if (n == nullptr || n->connected)
+        if (n == nullptr || n->connected) {
             return;
+        }
         if (state != backend::connection_state::failed &&
-            state != backend::connection_state::closed)
+            state != backend::connection_state::closed) {
             return;
+        }
         if (pc == n->offer.pc) {
             log_("webrtc", "the connection we offered to ", peer, " failed");
             reset_offer(*n);
@@ -684,8 +794,9 @@ private:
     }
 
     static void close_side(side& s) {
-        if (s.channel)
+        if (s.channel) {
             s.channel->set_handlers({});
+        }
         if (s.pc) {
             s.pc->set_handlers({});
             s.pc->close();
@@ -695,7 +806,7 @@ private:
         s.pending_remote.clear();
     }
 
-    void reset_offer(negotiation& n) {
+    static void reset_offer(negotiation& n) {
         close_side(n.offer);
         n.offer_id.clear();
         n.sealed_offer.clear();
@@ -707,7 +818,7 @@ private:
         n.offer_retries.clear();
     }
 
-    void reset_answer(negotiation& n) {
+    static void reset_answer(negotiation& n) {
         close_side(n.answer);
         n.answered_offer_id.clear();
         n.answered_offer.clear();

@@ -70,8 +70,9 @@ public:
         timer_.async_wait(boost::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [fire = std::move(fire)](boost::system::error_code ec) mutable {
-                if (!ec)
+                if (!ec) {
                     fire();
+                }
             }));
     }
 
@@ -88,7 +89,10 @@ class memory_websocket;
  * for ephemeral kinds. */
 class memory_relay {
 public:
-    struct subscription {
+    // Its implicit move assignment may allocate: a std::pmr member copies when the two resources
+    // differ, which bugprone-exception-escape, expecting every move assignment not to throw,
+    // reports.
+    struct subscription {  // NOLINT(bugprone-exception-escape)
         std::weak_ptr<memory_websocket> socket;
         std::pmr::set<std::int64_t> kinds;
         std::pmr::set<std::pmr::string, std::less<>> topics;
@@ -101,7 +105,7 @@ public:
 
     void drop(const memory_websocket* socket) {
         for (auto it = subscriptions_.begin(); it != subscriptions_.end();) {
-            auto s = it->second.socket.lock();
+            const auto s = it->second.socket.lock();
             it = (!s || s.get() == socket) ? subscriptions_.erase(it) : std::next(it);
         }
     }
@@ -127,52 +131,62 @@ public:
     std::pmr::memory_resource* memory() const { return memory_; }
 
     /** A storage over this socket's resource, for a value parsed and dropped during one call. */
-    boost::json::storage_ptr json() { return boost::json::storage_ptr(&json_); }
+    boost::json::storage_ptr json() { return {&json_}; }
 
     void open() {
         post_in(io_, memory_, [self = shared_from_this()] {
-            if (self->closed_)
+            if (self->closed_) {
                 return;
-            if (!self->relay_)
-                return self->finish();
+            }
+            if (!self->relay_) {
+                self->finish();
+                return;
+            }
             self->open_ = true;
-            if (self->h_.open)
+            if (self->h_.open) {
                 self->h_.open();
+            }
         });
     }
 
     void send(std::string_view text) override {
-        if (!open_)
+        if (!open_) {
             return;
+        }
         post_in(io_, memory_, [self = shared_from_this(), text = std::pmr::string(text, memory_)] {
-            if (self->open_ && self->relay_)
+            if (self->open_ && self->relay_) {
                 self->relay_->receive(self, text);
+            }
         });
     }
 
     /** Delivers a text the relay made in this socket's resource. */
     void deliver(std::pmr::string text) {
         post_in(io_, memory_, [self = shared_from_this(), text = std::move(text)] {
-            if (self->open_ && self->h_.message)
+            if (self->open_ && self->h_.message) {
                 self->h_.message(text);
+            }
         });
     }
 
     void close() override {
-        if (closed_)
+        if (closed_) {
             return;
+        }
         closed_ = true;
         open_ = false;
-        if (relay_)
+        if (relay_ != nullptr) {
             relay_->drop(this);
+        }
         post_in(io_, memory_, [self = shared_from_this()] { self->finish(); });
     }
 
 private:
     void finish() {
         open_ = false;
-        if (auto close = std::exchange(h_.close, {}))
+        if (auto close = std::exchange(h_.close, {})) {
             close();
+        }
     }
 
     boost::asio::io_context& io_;
@@ -189,17 +203,23 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     boost::system::error_code ec;
     const auto value = protocol::json::parse(text, from->json(), ec);
     const auto* message = ec ? nullptr : value.if_array();
-    if (message == nullptr || message->empty() || !message->at(0).is_string())
+    if (message == nullptr || message->empty() || !message->at(0).is_string()) {
         return;
+    }
     const std::string_view type = message->at(0).get_string();
     if (type == "REQ" && message->size() >= 3) {
-        subscription s{from, std::pmr::set<std::int64_t>(memory_),
-                       std::pmr::set<std::pmr::string, std::less<>>(memory_)};
+        subscription s{
+            .socket = from,
+            .kinds = std::pmr::set<std::int64_t>(memory_),
+            .topics = std::pmr::set<std::pmr::string, std::less<>>(memory_),
+        };
         const auto& filter = message->at(2).as_object();
-        for (const auto& k : filter.at("kinds").as_array())
+        for (const auto& k : filter.at("kinds").as_array()) {
             s.kinds.insert(k.as_int64());
-        for (const auto& t : filter.at("#x").as_array())
+        }
+        for (const auto& t : filter.at("#x").as_array()) {
             s.topics.emplace(std::string_view(t.as_string()));
+        }
         subscriptions_.insert_or_assign(
             key{from.get(),
                 std::pmr::string(std::string_view(message->at(1).as_string()), memory_)},
@@ -229,9 +249,10 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         const std::string_view topic =
             event.at("tags").as_array().at(0).as_array().at(1).as_string();
         for (auto& [subscribed, s] : subscriptions_) {
-            auto socket = s.socket.lock();
-            if (!socket || !s.kinds.contains(kind) || !s.topics.contains(topic))
+            const auto socket = s.socket.lock();
+            if (!socket || !s.kinds.contains(kind) || !s.topics.contains(topic)) {
                 continue;
+            }
             // ["EVENT", <subscription>, <event>], as boost::json::serialize writes it, in the
             // receiver's resource.
             std::pmr::string forwarded(R"(["EVENT",)", socket->memory());
@@ -268,29 +289,34 @@ public:
     /** The frame arrives at the other end as a copy in the other end's resource, as a received
      * frame is. */
     void send(std::span<const std::uint8_t> frame) override {
-        auto remote = remote_.lock();
-        if (!open_ || !remote)
+        const auto remote = remote_.lock();
+        if (!open_ || !remote) {
             return;
+        }
         bytes_sent += frame.size();
         post_in(
             io_, remote->memory_,
             [remote, data = backend::bytes(frame.begin(), frame.end(), remote->memory_)]() mutable {
-                if (remote->open_ && remote->h_.message)
+                if (remote->open_ && remote->h_.message) {
                     remote->h_.message(std::move(data));
+                }
             });
     }
 
     void close() override {
-        if (!open_)
+        if (!open_) {
             return;
+        }
         open_ = false;
         post_in(io_, memory_, [self = shared_from_this(), remote = remote_.lock()] {
-            if (auto h = std::exchange(self->h_.close, {}))
+            if (auto h = std::exchange(self->h_.close, {})) {
                 h();
+            }
             if (remote && remote->open_) {
                 remote->open_ = false;
-                if (auto h = std::exchange(remote->h_.close, {}))
+                if (auto h = std::exchange(remote->h_.close, {})) {
                     h();
+                }
             }
         });
     }
@@ -299,8 +325,9 @@ public:
 
     void opened() {
         open_ = true;
-        if (h_.open)
+        if (h_.open) {
             h_.open();
+        }
     }
 
     std::size_t bytes_sent = 0;
@@ -336,7 +363,8 @@ public:
 
     void set_handlers(handlers h) override { h_ = std::move(h); }
 
-    std::shared_ptr<backend::data_channel> create_data_channel(std::string_view) override {
+    std::shared_ptr<backend::data_channel> create_data_channel(
+        std::string_view /*label*/) override {
         channel_ = std::allocate_shared<memory_data_channel>(
             std::pmr::polymorphic_allocator<>(memory_), io_, memory_);
         return channel_;
@@ -345,15 +373,18 @@ public:
     void set_local_description(
         handler<void(backend::error_code, std::string_view, std::string_view)> done) override {
         post_in(io_, memory_, [self = shared_from_this(), done = std::move(done)]() mutable {
-            if (self->closed_)
-                return done(make_error_code(error::backend_failure), {}, {});
+            if (self->closed_) {
+                done(make_error_code(error::backend_failure), {}, {});
+                return;
+            }
             self->local_set_ = true;
             std::pmr::string sdp("mem:", self->memory_);
             protocol::json::append_integer(sdp, self->id_);
             done({}, self->remote_id_ < 0 ? "offer" : "answer", sdp);
             post_in(self->io_, self->memory_, [self] {
-                if (self->closed_ || !self->h_.ice_candidate)
+                if (self->closed_ || !self->h_.ice_candidate) {
                     return;
+                }
                 std::pmr::string candidate(R"({"candidate":"candidate:mem )", self->memory_);
                 protocol::json::append_integer(candidate, self->id_);
                 candidate += R"(","sdpMid":"0","sdpMLineIndex":0})";
@@ -363,7 +394,7 @@ public:
         });
     }
 
-    void set_remote_description(std::string_view, std::string_view sdp_view,
+    void set_remote_description(std::string_view /*type*/, std::string_view sdp_view,
                                 handler<void(backend::error_code)> done) override {
         post_in(io_, memory_,
                 [self = shared_from_this(), sdp = std::pmr::string(sdp_view, memory_),
@@ -373,8 +404,10 @@ public:
                         sdp.starts_with("mem:") &&
                         std::from_chars(sdp.data() + 4, sdp.data() + sdp.size(), remote).ec ==
                             std::errc{};
-                    if (self->closed_ || !ours)
-                        return done(make_error_code(error::backend_failure));
+                    if (self->closed_ || !ours) {
+                        done(make_error_code(error::backend_failure));
+                        return;
+                    }
                     self->remote_id_ = remote;
                     done({});
                     self->try_connect();
@@ -390,11 +423,13 @@ public:
     bool has_remote_description() const override { return remote_id_ >= 0; }
 
     void close() override {
-        if (closed_)
+        if (closed_) {
             return;
+        }
         closed_ = true;
-        if (channel_)
+        if (channel_) {
             channel_->close();
+        }
     }
 
     int id() const { return id_; }
@@ -442,7 +477,7 @@ public:
               std::pmr::polymorphic_allocator<>(memory))) {}
 
     memory_relay& relay(std::string_view url) {
-        auto it = relays_.find(url);
+        const auto it = relays_.find(url);
         return it != relays_.end()
                    ? it->second
                    : relays_.try_emplace(std::pmr::string(url, memory_), memory_).first->second;
@@ -451,7 +486,7 @@ public:
     std::shared_ptr<backend::websocket> connect(std::string_view url,
                                                 backend::websocket::handlers h,
                                                 std::pmr::memory_resource* memory) override {
-        auto it = relays_.find(url);
+        const auto it = relays_.find(url);
         auto* relay = it == relays_.end() || unreachable_.contains(url) ? nullptr : &it->second;
         auto socket = std::allocate_shared<memory_websocket>(
             std::pmr::polymorphic_allocator<>(memory), io_, relay, std::move(h), memory);
@@ -480,8 +515,9 @@ public:
                                                  std::pmr::memory_resource* memory) override;
 
     void random(std::span<std::uint8_t> out) override {
-        for (auto& b : out)
+        for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
+        }
     }
 
     std::int64_t unix_seconds() override {
@@ -494,7 +530,7 @@ public:
     }
 
     std::shared_ptr<memory_peer_connection> find(int id) {
-        auto it = connections_->find(id);
+        const auto it = connections_->find(id);
         return it == connections_->end() ? nullptr : it->second->shared_from_this();
     }
 
@@ -512,28 +548,32 @@ private:
 };
 
 inline memory_peer_connection::~memory_peer_connection() {
-    if (auto registry = registry_.lock())
+    if (const auto registry = registry_.lock()) {
         registry->erase(id_);
+    }
 }
 
 inline void memory_peer_connection::try_connect() {
-    if (connected_ || !ready())
+    if (connected_ || !ready()) {
         return;
-    auto remote = net_.find(remote_id_);
-    if (!remote || !remote->ready() || remote->remote_id() != id_)
+    }
+    const auto remote = net_.find(remote_id_);
+    if (!remote || !remote->ready() || remote->remote_id() != id_) {
         return;
+    }
     // The offerer created the data channel; the answerer receives its end.
     memory_peer_connection& offerer = channel_ ? *this : *remote;
     memory_peer_connection& answerer = channel_ ? *remote : *this;
-    if (!offerer.channel_)
+    if (!offerer.channel_) {
         return;
+    }
     offerer.connect_to(answerer);
 }
 
 inline void memory_peer_connection::connect_to(memory_peer_connection& answerer) {
     connected_ = answerer.connected_ = true;
-    auto offer_end = channel_;
-    auto answer_end = std::allocate_shared<memory_data_channel>(
+    const auto offer_end = channel_;
+    const auto answer_end = std::allocate_shared<memory_data_channel>(
         std::pmr::polymorphic_allocator<>(answerer.memory_), io_, answerer.memory_);
     answerer.channel_ = answer_end;
     offer_end->pair_with(answer_end);
@@ -542,11 +582,13 @@ inline void memory_peer_connection::connect_to(memory_peer_connection& answerer)
         io_, memory_,
         [self = shared_from_this(), other = answerer.shared_from_this(), offer_end, answer_end] {
             for (auto* pc : {self.get(), other.get()}) {
-                if (pc->h_.state)
+                if (pc->h_.state) {
                     pc->h_.state(backend::connection_state::connected);
+                }
             }
-            if (other->h_.data_channel)
+            if (other->h_.data_channel) {
                 other->h_.data_channel(answer_end);
+            }
             post_in(self->io_, self->memory_, [offer_end, answer_end] {
                 offer_end->opened();
                 answer_end->opened();
@@ -579,8 +621,9 @@ public:
         const bool ours =
             parts && std::equal(parts->iv.begin(), parts->iv.end(), iv.begin(), iv.end());
         std::pmr::string plain(memory_);
-        if (ours)
+        if (ours) {
             plain.assign(parts->ciphertext.begin(), parts->ciphertext.end());
+        }
         post_in(io_, memory_, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
             done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
         });

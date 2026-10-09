@@ -83,15 +83,17 @@ public:
                                                    std::pmr::memory_resource* memory) {
         rtc::Configuration config;
         config.disableAutoNegotiation = true;
-        if (!bind_address.empty())
+        if (!bind_address.empty()) {
             config.bindAddress = std::string(bind_address);
+        }
         for (const auto& server : servers) {
             for (const auto& url : server.urls) {
+                // A URL libdatachannel cannot parse is skipped, as a browser skips an unusable
+                // server.
                 try {
                     config.iceServers.emplace_back(
                         with_credentials(url, server.username, server.credential));
-                } catch (...) {  // a URL libdatachannel cannot parse is skipped, as a browser skips
-                                 // an unusable server
+                } catch (...) {  // NOLINT(bugprone-empty-catch)
                 }
             }
         }
@@ -185,19 +187,19 @@ public:
     const std::shared_ptr<rtc::PeerConnection>& native_handle() const { return pc_; }
 
 private:
-    std::pmr::polymorphic_allocator<> allocator() const {
-        return std::pmr::polymorphic_allocator<>(memory_);
-    }
+    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
     /** "turn:host" with a username and credential becomes "turn:user:credential@host", the form
      * libdatachannel parses. */
     static std::string with_credentials(std::string_view url, std::string_view username,
                                         std::string_view credential) {
-        if (username.empty())
+        if (username.empty()) {
             return std::string(url);
+        }
         const auto colon = url.find(':');
-        if (colon == std::string_view::npos)
+        if (colon == std::string_view::npos) {
             return std::string(url);
+        }
         std::string out(url.substr(0, colon + 1));
         out.append(username)
             .append(":")
@@ -213,53 +215,76 @@ private:
         trystero::detail::post(ex_, memory_, std::forward<F>(f));
     }
 
+    /** Posts `f` from one of libdatachannel's threads to the executor, where it runs on this
+     * connection if the connection still exists then. */
+    template <class F>
+    static void post_to(const boost::asio::any_io_executor& ex,
+                        const std::weak_ptr<peer_connection>& weak, F f) {
+        boost::asio::post(ex, [weak, f = std::move(f)]() mutable {
+            if (const auto self = weak.lock()) {
+                f(*self);
+            }
+        });
+    }
+
     void start() {
-        std::weak_ptr<peer_connection> weak = shared_from_this();
-        auto ex = ex_;
+        const std::weak_ptr<peer_connection> weak = shared_from_this();
+        const auto ex = ex_;
         pc_->onLocalDescription([weak, ex](rtc::Description description) {
-            boost::asio::post(ex, [weak, description = std::move(description)] {
-                auto self = weak.lock();
-                if (!self || self->pending_local_.empty())
-                    return;
-                auto done = std::move(self->pending_local_.front());
-                self->pending_local_.pop_front();
-                done({}, description.typeString(), std::string(description));
+            post_to(ex, weak, [description = std::move(description)](peer_connection& self) {
+                self.on_local_description(description);
             });
         });
         pc_->onLocalCandidate([weak, ex](rtc::Candidate candidate) {
-            boost::asio::post(ex, [weak, candidate = std::move(candidate)] {
-                auto self = weak.lock();
-                if (!self)
-                    return;
-                auto h = self->h_;
-                if (!h || !h->ice_candidate)
-                    return;
-                std::pmr::string json(R"({"candidate":)", self->memory_);
-                protocol::json::append_string(json, candidate.candidate());
-                json += R"(,"sdpMid":)";
-                protocol::json::append_string(json, candidate.mid());
-                json += R"(,"sdpMLineIndex":0})";
-                h->ice_candidate(json);
+            post_to(ex, weak, [candidate = std::move(candidate)](peer_connection& self) {
+                self.on_local_candidate(candidate);
             });
         });
         pc_->onDataChannel([weak, ex](std::shared_ptr<rtc::DataChannel> channel) {
-            boost::asio::post(ex, [weak, ex, channel = std::move(channel)]() mutable {
-                auto self = weak.lock();
-                if (!self)
-                    return;
-                auto wrapped = data_channel::create(ex, std::move(channel), self->memory_);
-                if (auto h = self->h_; h && h->data_channel)
-                    h->data_channel(std::move(wrapped));
+            post_to(ex, weak, [channel = std::move(channel)](peer_connection& self) mutable {
+                self.on_data_channel(std::move(channel));
             });
         });
         pc_->onStateChange([weak, ex](rtc::PeerConnection::State state) {
-            boost::asio::post(ex, [weak, state] {
-                if (auto self = weak.lock()) {
-                    if (auto h = self->h_; h && h->state)
-                        h->state(map(state));
-                }
-            });
+            post_to(ex, weak, [state](peer_connection& self) { self.on_state_change(state); });
         });
+    }
+
+    // The handlers run from a copy of the shared object, which a handler may replace.
+
+    void on_local_description(const rtc::Description& description) {
+        if (pending_local_.empty()) {
+            return;
+        }
+        auto done = std::move(pending_local_.front());
+        pending_local_.pop_front();
+        done({}, description.typeString(), std::string(description));
+    }
+
+    void on_local_candidate(const rtc::Candidate& candidate) {
+        const auto h = h_;
+        if (!h || !h->ice_candidate) {
+            return;
+        }
+        std::pmr::string json(R"({"candidate":)", memory_);
+        protocol::json::append_string(json, candidate.candidate());
+        json += R"(,"sdpMid":)";
+        protocol::json::append_string(json, candidate.mid());
+        json += R"(,"sdpMLineIndex":0})";
+        h->ice_candidate(json);
+    }
+
+    void on_data_channel(std::shared_ptr<rtc::DataChannel> channel) {
+        auto wrapped = data_channel::create(ex_, std::move(channel), memory_);
+        if (const auto h = h_; h && h->data_channel) {
+            h->data_channel(std::move(wrapped));
+        }
+    }
+
+    void on_state_change(rtc::PeerConnection::State state) {
+        if (const auto h = h_; h && h->state) {
+            h->state(map(state));
+        }
     }
 
     static backend::connection_state map(rtc::PeerConnection::State state) {
