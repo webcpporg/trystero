@@ -69,23 +69,42 @@ holds only what is specific to trystero.
   into the error its interface has. Every event of the page enters C++
   through a function of the same file that catches what still escapes,
   puts WebAssembly's stack pointer and the loop's depth back as they were
-  before the call, reports it and lets the loop poll again. A message that is not a frame is dropped
-  before it is read. The browser tests run under node with exceptions and
-  without them (`*_no_exceptions`), and the interop lane passes both ways.
+  before the call, reports it and lets the loop poll again. With
+  exceptions, `browser::dispatch` catches a C++ exception first, which
+  frees it: one that reached JavaScript would keep its object for good. A
+  message that is not a frame is dropped before it is read. The browser
+  tests run under node with exceptions and without them
+  (`*_no_exceptions`), and the interop lane passes both ways.
 - **Bounded signaling.** Announcements are not sealed, so anyone who knows
-  the app and room ids can announce any number of peer ids. A room holds at
-  most `detail::signaling::max_unconnected_peers` (32) negotiations with
-  peers it is not connected to, each with at most two pending
-  connections: 64 of the 500 `RTCPeerConnection`s Chromium allows a page
-  (measured with headless Chrome: the 501st throws "Cannot create so many
-  PeerConnections"). A negotiation whose offer and answer expire without a
-  connection is dropped, an idle one gives its place to a new peer, and a
-  new peer beyond the bound is refused and logged once, until a place
-  frees: a legitimate peer is delayed, never refused for good, since
-  Trystero announces again (every 60 s, and at once after a leave).
-  Trystero JS bounds none of this. A signal whose peer id is longer than
-  `protocol::max_peer_id_bytes` (64; Trystero's ids are 20 characters) is
-  ignored.
+  the app and room ids can announce any number of peer ids, and anyone who
+  reads the relays can send any signal in any peer's name.
+  - Nothing a peer sends changes a negotiation before it opens with the
+    room key: an offer, an answer or a candidate that does not open is
+    counted, reported once per negotiation, and changes nothing else.
+  - A room holds at most `detail::signaling::max_unconnected_peers` (32)
+    negotiations with peers it is not connected to. A negotiation whose
+    offer and answer expire without a connection is dropped, an idle one
+    gives its place to a new peer, and a new peer beyond the bound is
+    refused and logged once.
+  - A room makes at most `max_connections_per_window` (64) connections in
+    any 57 s, however soon they end, and a page at most
+    `browser::backend::max_peer_connections` (256), counted from their
+    construction until the garbage collector frees them, as Chromium counts
+    them against its 500 (measured with headless Chrome: the 501st throws
+    "Cannot create so many PeerConnections", and a closed one counts until
+    a collection). The native backend makes at most
+    `backend_config::max_peer_connections_per_minute` (256).
+  - A signal's fields are bounded in `protocol/signal.hpp`: the peer id
+    (64 bytes; Trystero's are 20), the offer id, a sealed offer or answer
+    (64 KiB) and a sealed candidate (16 KiB, above the 8192 bytes of
+    plaintext Trystero takes).
+  - A room asks a peer below it to offer at most once in 5.3 s per relay,
+    Trystero's announce interval, so a flood of low ids does not have the
+    relays rate-limit the room.
+  - What a flood still does: joined peers, memory and connections stay
+    safe, but a flooder who keeps sending new ids takes each place, or each
+    connection of the window, as it frees, so new peers can be kept out for
+    as long as the flood lasts. Trystero JS bounds none of this.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair
@@ -108,16 +127,20 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in ten scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in eleven scenarios each:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
   made to, a Trystero JS peer that also sends text messages on its data
   channel (`text-messages`), a C++ peer given a TURN server without
-  credentials, a flood of announcements from fresh peer ids
-  (`window.flood`), a relay text longer than 1 MiB (`relay.broadcast`), a
-  wrong password, and a mesh of three; and, for the native peer, an
-  eleventh: a room moved over the joined one, which must leave it as
+  credentials, a watcher without the key that answers every offer with
+  garbage in the other peer's name (`forger.html`), a flood of
+  announcements and of unsealed offers from fresh peer ids
+  (`window.flood`, `window.floodOffers`) whose offers the watcher answers
+  too, a relay text longer than 1 MiB, once and then after every
+  subscription (`relay.broadcast`, `relay.options.afterSubscribe`), a
+  wrong password, and a mesh of three; and, for the native peer, a
+  twelfth: a room moved over the joined one, which must leave it as
   destroying it does. Both lanes are of the kind
   `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
@@ -144,7 +167,7 @@ holds only what is specific to trystero.
     interface that holds the default route and leads nowhere, a dummy
     device, to which nothing but the kernel's IPv6 router solicitations was
     sent.
-  - Each driver is bounded by 540 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 600 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A wire string changed in the C++ library
     (`"__trystero_pw"`) fails the password scenario of both.

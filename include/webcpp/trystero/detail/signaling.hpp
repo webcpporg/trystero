@@ -70,10 +70,16 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * ignored until it leaves.
  *
  * Announcements are not sealed, so anyone who knows the app and room ids can announce any number
- * of peer ids. The negotiations under way are bounded (`max_unconnected_peers`): a negotiation is
- * dropped when its offer and its answer expire without a connection, an idle one gives its place
- * to a new peer, and beyond the bound a new peer is refused, logged once, until a place frees.
- * Trystero bounds none of this; a page's connections are (500 in Chromium, measured).
+ * of peer ids, and anyone who reads the relays can send any signal in any peer's name. Nothing a
+ * peer sends changes a negotiation before it opens with the room key: a signal that does not open
+ * is counted, reported once, and changes nothing else. The negotiations under way are bounded
+ * (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer expire without
+ * a connection, an idle one gives its place to a new peer, and beyond the bound a new peer is
+ * refused, logged once. The connections made are bounded too (`max_connections_per_window`),
+ * however soon they end, since a browser counts a closed one until its garbage collector runs.
+ * Joined peers, memory and connections stay safe under a flood; new peers do not: a flooder who
+ * keeps sending fresh ids takes each place, and each connection of the window, as it frees, and
+ * keeps new peers out for as long as the flood lasts. Trystero bounds none of this.
  *
  * Tip: a peer id is copied once, into the map's key, and every asynchronous handler captures its
  * own copy, in the room's resource, because it may outlive the entry. The entry points a handler
