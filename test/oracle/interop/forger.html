@@ -5,9 +5,12 @@ Distributed under the Boost Software License, Version 1.0. (See
 accompanying file LICENSE_1_0.txt or copy at
 https://www.boost.org/LICENSE_1_0.txt)
 
-A watcher of the interop test, which run.mjs opens in headless Chrome: it holds no room key, and answers every
-offer the C++ peer (`target`) publishes with a forged answer in the name of the peer the offer is for. What anyone
-who reads the relays can do: the topics are public, and a peer id proves nothing.
+A watcher of the interop test, which run.mjs opens in headless Chrome: it holds no room key, and with `mode=garbage`
+(the default) answers every offer the C++ peer (`target`) publishes with a forged answer in the name of the peer the
+offer is for. With `mode=replay` it forges nothing: it records the first sealed answer and the first sealed offer each
+peer sends the C++ peer, and resends them in that peer's name later, an answer with each new offer of the C++ peer to
+that peer, an offer as soon as that peer announces itself or is asked to offer. What anyone who reads the relays can
+do: the topics are public, a peer id proves nothing, and a sealed offer or answer names neither its offer nor a peer.
 -->
 <!doctype html>
 <html lang="en">
@@ -35,6 +38,10 @@ window.events = []
 const record = (kind, fields = {}) => window.events.push({kind, ...fields})
 const params = new URLSearchParams(location.search)
 const target = params.get('target')
+const replay = params.get('mode') === 'replay'
+// What each peer sent the target, sealed, recorded once: peer id -> text.
+const answers = new Map()
+const offers = new Map()
 const root = ['Trystero', params.get('app'), params.get('room')].join('@')
 const rootTopic = await sha1(root)
 const targetTopic = await sha1(`${root}@${target}`)
@@ -56,15 +63,37 @@ socket.onmessage = async message => {
     } catch {
         return
     }
+    const publish = async (signal, kind, fields) => {
+        socket.send(await createEvent(targetTopic, JSON.stringify(signal)))
+        record(kind, fields)
+    }
+    const announcement = !content.offer && !content.answer && !content.candidate
     if (topic === rootTopic && content.peerId && content.peerId !== target) {
         owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
-    } else if (content.peerId === target && content.offer && owners.has(topic)) {
+        const offer = replay && announcement && offers.get(content.peerId)
+        if (offer) await publish({peerId: content.peerId, offerId: genOfferId(), offer}, 'replayed', {what: 'offer'})
+    } else if (replay && topic === targetTopic && content.peerId !== target) {
+        for (const [what, recorded] of [['answer', answers], ['offer', offers]]) {
+            if (content[what] && !recorded.has(content.peerId)) {
+                recorded.set(content.peerId, content[what])
+                record('recorded', {what, peer: content.peerId})
+            }
+        }
+    } else if (content.peerId === target && owners.has(topic)) {
         const victim = owners.get(topic)
-        const forged = JSON.stringify({peerId: victim, offerId: content.offerId, answer: 'not a sealed answer'})
-        socket.send(await createEvent(targetTopic, forged))
-        record('forged', {victim, offerId: content.offerId})
+        if (!replay && content.offer) {
+            const forged = {peerId: victim, offerId: content.offerId, answer: 'not a sealed answer'}
+            await publish(forged, 'forged', {victim, offerId: content.offerId})
+        } else if (replay && content.offer && answers.has(victim)) {
+            const replayed = {peerId: victim, offerId: content.offerId, answer: answers.get(victim)}
+            await publish(replayed, 'replayed', {what: 'answer'})
+        } else if (replay && announcement && offers.has(victim)) {
+            await publish({peerId: victim, offerId: genOfferId(), offer: offers.get(victim)}, 'replayed', {what: 'offer'})
+        }
     }
 }
+// A fresh offer id of Trystero's length, as a resender would make one.
+const genOfferId = () => Math.random().toString(36).slice(2, 14).padEnd(12, '0')
 </script>
 </body>
 </html>

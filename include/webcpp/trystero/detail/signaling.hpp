@@ -12,6 +12,7 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/detail/replay_cache.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
@@ -72,7 +73,13 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * Announcements are not sealed, so anyone who knows the app and room ids can announce any number
  * of peer ids, and anyone who reads the relays can send any signal in any peer's name. Nothing a
  * peer sends changes a negotiation before it opens with the room key: a signal that does not open
- * is counted, reported once, and changes nothing else. The negotiations under way are bounded
+ * is counted, reported once, and changes nothing else. A sealed offer or answer holds neither its
+ * offer id nor a peer id (Trystero's wire), so one recorded from the relays still opens when it is
+ * resent in its sender's name: the room remembers the offers and answers it acted on
+ * (`remembered_descriptions`) and refuses one that comes again, which it logs. One it never acted
+ * on (what its sender sent another peer of the room, an offer it set aside for its own, one older
+ * than it remembers) still opens, and keeps the two peers apart for that attempt; only a wire that
+ * seals the offer id and both peer ids closes this. The negotiations under way are bounded
  * (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer expire without
  * a connection, an idle one gives its place to a new peer, and beyond the bound a new peer is
  * refused, logged once. The connections made are bounded too (`max_connections_per_window`),
@@ -101,6 +108,15 @@ public:
      * makes a room add more than this to what a browser counts.
      */
     static constexpr std::size_t max_connections_per_window = 2 * max_unconnected_peers;
+
+    /**
+     * How many of the offers and answers it acted on a room remembers, to refuse one that is sent
+     * again (detail::replay_cache): each stays at least an offer's lifetime, since the room acts on
+     * at most one per connection it makes, and in a quiet room far longer.
+     */
+    static constexpr std::size_t remembered_descriptions = 1024;
+    static_assert(remembered_descriptions >= max_connections_per_window,
+                  "every offer and answer acted on is remembered for at least an offer's lifetime");
 
     /** What the signaling asks of its room. */
     struct callbacks {
@@ -235,6 +251,9 @@ private:
         double last_ms = 0;
         // Whether a signal of this negotiation that did not open was reported.
         bool failed_open_reported = false;
+        // Whether an offer or an answer of this negotiation that the room had used before was
+        // logged.
+        bool replay_logged = false;
         // Our offer.
         side offer;
         std::pmr::string offer_id;
@@ -563,10 +582,15 @@ private:
         if (n.answer.pc || n.answered || (n.offer.pc && self_id_ < peer)) {
             return;  // another offer, or our own, came first
         }
+        if (used_.contains(sdp)) {
+            replayed(peer, n, "offer");
+            return;
+        }
         auto made = make_connection(peer);
         if (!made) {
             return;
         }
+        used_.insert(sdp);
         if (n.offer.pc) {
             reset_offer(n);
         }
@@ -746,6 +770,11 @@ private:
             failed_open(peer, *m, "answer");
             return;
         }
+        if (used_.contains(sdp)) {
+            replayed(peer, *m, "answer");
+            return;
+        }
+        used_.insert(sdp);
         m->answered = true;
         const auto weak = weak_from_this();
         m->offer_expiry->start(answered_offer_ttl, bind<void()>([weak, peer = copy(peer), pc] {
@@ -791,6 +820,23 @@ private:
         log_("signal", "could not open the ", what, " from ", peer,
              ": another password, or forged in its name; ignored");
         cb_.failed(peer, make_error_code(error::wrong_password));
+    }
+
+    /**
+     * Counts an offer or an answer from `peer` that opened but that the room acted on before, and
+     * changes nothing else: someone who read the relays resent it in the peer's name, or the peer
+     * resent one the room already answered. The first of a negotiation is logged.
+     *
+     * Tip: it is not reported to `room::on_error`, whose errors are Trystero's: a resent signal
+     * proves nothing about the peer whose name it carries.
+     */
+    void replayed(std::string_view peer, negotiation& n, std::string_view what) {
+        ++replayed_;
+        if (std::exchange(n.replay_logged, true)) {
+            return;
+        }
+        log_("signal", "refused the ", what, " from ", peer,
+             ": the room used it before, so it was sent again, maybe by someone else in its name");
     }
 
     void on_candidate(std::string_view peer, std::string_view offer_id_view,
@@ -1042,7 +1088,9 @@ private:
     std::pmr::deque<std::pmr::string> refused_{memory_};
     construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
     std::pmr::map<std::size_t, double> counter_announced_ms_{memory_};  // per relay
+    replay_cache used_{remembered_descriptions, memory_};
     std::size_t failed_opens_ = 0;
+    std::size_t replayed_ = 0;
     bool closed_ = false;
 };
 

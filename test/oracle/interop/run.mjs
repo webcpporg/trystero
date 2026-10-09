@@ -514,6 +514,34 @@ const forgedAnswerScenario = (name, cppKind) =>
         return null
     })
 
+// A watcher without the room key (forger.html, mode=replay) records the sealed answer, or the sealed offer, that a
+// Trystero JS peer sends the C++ peer. Then the JS peer's connections drop (js.html's window.drop), as on a network
+// drop, and Trystero meets the C++ peer again with the same id, its sends held 1 s (hold-sends), so that the watcher
+// resends the recording in its name first: with each new offer of the C++ peer (side 'answer': the C++ peer's id is
+// lower, so it offers), or as soon as the JS peer announces itself or is asked to offer (side 'offer': the C++ peer's
+// id is higher). The recording opens with the room key, but the C++ peer used it before: it refuses it, and the JS
+// peer joins it again.
+const replayScenario = (name, cppKind, side) =>
+    scenario(name, async open => {
+        const cppSelf = side === 'answer' ? '00000000000000000000' : 'zzzzzzzzzzzzzzzzzzzz'
+        const params = {room: room(), ...relayParams}
+        const forger = await open('forger', {...params, target: cppSelf, mode: 'replay'})
+        if (!(await until(async () => (await forger.events()).some(e => e.kind === 'watching'), 10_000))) {
+            return 'the forger did not start watching'
+        }
+        const cpp = await open(cppKind, {...params, self: cppSelf})
+        const js = await open('js', {...params, 'hold-sends': '1'})
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
+        if (!(await forger.events()).some(e => e.kind === 'recorded' && e.what === side)) return `the forger recorded no ${side}`
+        await js.value('window.drop()')
+        const back = await until(async () => (await cpp.events()).filter(e => e.kind === 'peer-join').length === 2, 30_000)
+        const replayed = (await forger.events()).filter(e => e.kind === 'replayed' && e.what === side).length
+        if (!replayed) return `the forger resent no ${side}, so nothing was tested`
+        if (!back) return `the Trystero JS peer did not join again in 30 s; the forger resent ${replayed} ${side}s`
+        return (await cpp.log()).includes(`refused the ${side} from`) ? null : `the C++ peer refused no ${side}`
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -525,6 +553,8 @@ const scenarios = async () => {
             await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; C++ goes on', 'cpp')
             await forgedAnswerScenario('A forged answer from a watcher without the key changes nothing; C++ joins', 'cpp')
+            await replayScenario('A resent answer from a watcher without the key is refused; C++ joins again', 'cpp', 'answer')
+            await replayScenario('A resent offer from a watcher without the key is refused; C++ joins again', 'cpp', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
         }
@@ -539,6 +569,10 @@ const scenarios = async () => {
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; native C++ goes on', 'native')
             await forgedAnswerScenario('A forged answer from a watcher without the key changes nothing; native C++ joins', 'native')
+            await replayScenario('A resent answer from a watcher without the key is refused; native C++ joins again', 'native',
+                'answer')
+            await replayScenario('A resent offer from a watcher without the key is refused; native C++ joins again', 'native',
+                'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
             await strikeScenario('A relay that ends the connection during a write: native C++ survives and reconnects', 'native')

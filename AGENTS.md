@@ -81,6 +81,21 @@ holds only what is specific to trystero.
   - Nothing a peer sends changes a negotiation before it opens with the
     room key: an offer, an answer or a candidate that does not open is
     counted, reported once per negotiation, and changes nothing else.
+  - A sealed offer or answer holds neither its offer id nor a peer id
+    (Trystero's wire), so one recorded from the relays still opens when
+    anyone resends it in its sender's name. A room remembers the last
+    `detail::signaling::remembered_descriptions` (1024) offers and answers
+    it acted on, by the SHA-256 of their opened text, and refuses one that
+    comes again: it changes nothing and is logged. It acts on at most one
+    per connection it makes, so each is remembered for at least an offer's
+    lifetime (57 s), and in a quiet room for its whole life. What a
+    resend still does: an offer or an answer this room never acted on
+    (one its sender sent another peer of the room, an offer the room set
+    aside for its own, or one older than what it remembers) opens and is
+    acted on, and keeps the two peers apart for that attempt, up to 23 s
+    each time it is resent. Only a wire that seals the offer id and both
+    peer ids closes this, which Trystero would have to share (reported
+    upstream).
   - A room holds at most `detail::signaling::max_unconnected_peers` (32)
     negotiations with peers it is not connected to. A negotiation whose
     offer and answer expire without a connection is dropped, an idle one
@@ -127,14 +142,17 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in eleven scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in thirteen scenarios each:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
   made to, a Trystero JS peer that also sends text messages on its data
   channel (`text-messages`), a C++ peer given a TURN server without
   credentials, a watcher without the key that answers every offer with
-  garbage in the other peer's name (`forger.html`), a flood of
+  garbage in the other peer's name (`forger.html`), the same watcher
+  resending, after the Trystero JS peer's connections drop
+  (`window.drop`), the sealed answer and then the sealed offer it recorded
+  of that peer (`mode=replay`), which the C++ peer must refuse, a flood of
   announcements and of unsealed offers from fresh peer ids
   (`window.flood`, `window.floodOffers`) whose offers the watcher answers
   too, a relay text longer than 1 MiB, once and then after every
@@ -175,7 +193,7 @@ holds only what is specific to trystero.
     interface that holds the default route and leads nowhere, a dummy
     device, to which nothing but the kernel's IPv6 router solicitations was
     sent.
-  - Each driver is bounded by 660 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 800 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A native peer that dies by a signal the
     driver did not send, as a crash does, is named as soon as it dies

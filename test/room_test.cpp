@@ -48,10 +48,11 @@ namespace {
 
 constexpr const char* relay_a = "wss://relay-a.test";
 constexpr const char* relay_b = "wss://relay-b.test";
+constexpr const char* app_id = "webcpp-trystero-tests";
 
 trystero::room_config config(std::string_view self_id, std::string_view password = {}) {
     trystero::room_config c;
-    c.app_id = "webcpp-trystero-tests";
+    c.app_id = app_id;
     c.password = password;
     c.relay_urls = {relay_a, relay_b};
     c.self_id = self_id;
@@ -391,7 +392,7 @@ private:
 class flooder {
 public:
     flooder(fixture& f, std::string_view room)
-        : f_(f), topic_(trystero::protocol::root_topic("webcpp-trystero-tests", room)) {
+        : f_(f), topic_(trystero::protocol::root_topic(app_id, room)) {
         socket_ = f.net.connect(relay_a,
                                 {
                                     .open = [this] { open_ = true; },
@@ -430,7 +431,7 @@ public:
     /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
      */
     static std::string sealed(std::string_view room, std::string_view plain) {
-        const auto key = trystero::protocol::seal_key("", "webcpp-trystero-tests", room);
+        const auto key = trystero::protocol::seal_key("", app_id, room);
         return std::string(trystero::protocol::format_sealed(
             std::span(key).first(16),
             std::span(reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size())));
@@ -536,7 +537,7 @@ void a_forged_answer_changes_nothing() {
     a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
                    std::string_view /*what*/) { errors.push_back(ec); });
     flooder attacker(f, "forged");
-    const auto a_topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "forged", a_id);
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "forged", a_id);
     int forged = 0;
     attacker.on_text = [&](std::string_view text) {
         boost::system::error_code ec;
@@ -557,7 +558,7 @@ void a_forged_answer_changes_nothing() {
             ++forged;
         }
     };
-    attacker.watch(trystero::protocol::peer_topic("webcpp-trystero-tests", "forged", b_id));
+    attacker.watch(trystero::protocol::peer_topic(app_id, "forged", b_id));
     const trystero::room b(f.io.get_executor(), f.net, config(b_id), "forged");
     BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
     BOOST_TEST_GE(forged, 1);
@@ -570,8 +571,7 @@ void forged_offers_make_no_connection() {
     fixture f;
     const trystero::room a(f.io.get_executor(), f.net, config("zzzzzzzzzzzzzzzzzzzz"), "offers");
     flooder attacker(f, "offers");
-    const auto a_topic =
-        trystero::protocol::peer_topic("webcpp-trystero-tests", "offers", "zzzzzzzzzzzzzzzzzzzz");
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "offers", "zzzzzzzzzzzzzzzzzzzz");
     const auto before = f.net.relay(relay_a).events_seen;
     for (int i = 0; i < 200; ++i) {
         const std::string id = "0offer" + std::to_string(i);
@@ -597,12 +597,13 @@ void sealed_offers_that_fail_at_once_are_bounded() {
     };
     const trystero::room a(f.io.get_executor(), f.net, std::move(c), "churn");
     flooder member(f, "churn");
-    const auto a_topic =
-        trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", "zzzzzzzzzzzzzzzzzzzz");
-    const auto offer = flooder::sealed("churn", "not an SDP the connection takes");
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "churn", "zzzzzzzzzzzzzzzzzzzz");
     // One at a time, each once the previous one made its connection or was refused: sent at once,
-    // the offers would evict each other's negotiations before they open.
+    // the offers would evict each other's negotiations before they open. Each is a text of its
+    // own, as a member makes them: the room refuses an offer it used before.
     for (std::size_t i = 0; i < flood; ++i) {
+        const auto offer =
+            flooder::sealed("churn", "not an SDP the connection takes " + std::to_string(i));
         member.publish(a_topic,
                        {.peer_id = "1churn" + std::to_string(i), .offer_id = "o", .offer = offer});
         if (!BOOST_TEST(run_until(f.io, [&] { return f.net.made_connections + refusals > i; }))) {
@@ -628,7 +629,7 @@ void announcements_with_forged_answers_are_bounded() {
     };
     const trystero::room a(f.io.get_executor(), f.net, std::move(c), "churn");
     flooder attacker(f, "churn");
-    const auto a_topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", a_id);
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "churn", a_id);
     std::map<std::string, std::string, std::less<>> owners;  // peer topic -> its peer id
     std::size_t forged = 0;
     attacker.on_text = [&](std::string_view text) {
@@ -656,13 +657,171 @@ void announcements_with_forged_answers_are_bounded() {
     };
     for (std::size_t i = 0; i < flood; ++i) {
         const auto id = "1churn" + std::to_string(i);
-        const auto topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "churn", id);
+        const auto topic = trystero::protocol::peer_topic(app_id, "churn", id);
         attacker.watch(topic);
         owners.emplace(std::string(topic), id);
         attacker.announce_as(id, 1);
     }
     BOOST_TEST(run_until(f.io, [&] { return forged >= bound && refusals >= flood - bound; }));
     BOOST_TEST_LE(f.net.made_connections, bound);
+}
+
+// The replay cache remembers the last texts it was given, as many as its capacity, the oldest
+// leaving first.
+void the_replay_cache_remembers_the_last_ones() {
+    trystero::detail::replay_cache cache(3, std::pmr::get_default_resource());
+    BOOST_TEST(!cache.contains("one"));
+    for (const char* text : {"one", "two", "three"}) {
+        cache.insert(text);
+    }
+    BOOST_TEST(cache.contains("one") && cache.contains("two") && cache.contains("three"));
+    cache.insert("four");
+    BOOST_TEST(!cache.contains("one"));
+    BOOST_TEST(cache.contains("two") && cache.contains("three") && cache.contains("four"));
+    cache.insert("five");
+    BOOST_TEST(!cache.contains("two"));
+    BOOST_TEST(cache.contains("five"));
+    trystero::detail::replay_cache none(0, std::pmr::get_default_resource());
+    none.insert("one");
+    BOOST_TEST(!none.contains("one"));
+}
+
+/** A relay's event as a watcher reads it: its topic and its signal. */
+struct relayed {
+    std::string topic;
+    std::string peer;
+    std::string offer_id;
+    std::string offer;
+    std::string answer;
+    bool announcement = false;
+};
+
+/** The topic and the signal of a relay's text, when it is an event that carries one. */
+std::optional<relayed> relayed_signal(std::string_view text) {
+    boost::system::error_code ec;
+    const auto document = boost::json::parse(text, ec);
+    const auto message =
+        ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
+    const auto* event =
+        message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
+    if (event == nullptr) {
+        return std::nullopt;
+    }
+    const auto content = boost::json::parse(event->content, ec);
+    const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
+    if (!signal) {
+        return std::nullopt;
+    }
+    return relayed{
+        .topic = std::string(event->topic),
+        .peer = std::string(signal->peer_id),
+        .offer_id = std::string(signal->offer_id),
+        .offer = std::string(signal->offer),
+        .answer = std::string(signal->answer),
+        .announcement = signal->is_announcement(),
+    };
+}
+
+/** Joins B to A, records what `record` keeps of the relays meanwhile, and has B leave. */
+void join_and_leave(fixture& f, std::string_view b_id, std::string_view room_id,
+                    const std::vector<std::string>& joined, const std::vector<std::string>& left,
+                    const std::function<bool()>& recorded) {
+    trystero::room b(f.io.get_executor(), f.net, config(b_id), room_id);
+    webcpp::test::require(
+        BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1 && recorded(); })));
+    bool done = false;
+    b.async_leave([&](boost::system::error_code) { done = true; });
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return done && left.size() == 1; })));
+}
+
+// A watcher without the room key records B's sealed answer to A. Once B has left and come back with
+// the same id, as a Trystero JS page does after a network drop, it sends that answer in B's name
+// with each of A's new offers to B, before B's own answer. The answer opens with the room key, but
+// A used it before: A refuses it, blames no one, and B joins again. The clock runs 10 times
+// faster.
+void a_replayed_answer_is_refused() {
+    fixture f;
+    f.net.time_scale = 10;
+    const std::string a_id = "00000000000000000000";
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    trystero::room a(f.io.get_executor(), f.net, config(a_id), "replay");
+    std::vector<std::string> joined;
+    std::vector<std::string> left;
+    std::vector<boost::system::error_code> errors;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
+                   std::string_view /*what*/) { errors.push_back(ec); });
+    flooder watcher(f, "replay");
+    const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", a_id));
+    const auto b_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", b_id));
+    std::string recorded;
+    bool armed = false;
+    int replays = 0;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (!s) {
+            return;
+        }
+        if (s->topic == a_topic && s->peer == b_id && !s->answer.empty() && recorded.empty()) {
+            recorded = s->answer;
+        }
+        if (armed && s->topic == b_topic && s->peer == a_id && !s->offer.empty()) {
+            watcher.publish(a_topic,
+                            {.peer_id = b_id, .offer_id = s->offer_id, .answer = recorded});
+            ++replays;
+        }
+    };
+    watcher.watch(a_topic);
+    watcher.watch(b_topic);
+    join_and_leave(f, b_id, "replay", joined, left, [&] { return !recorded.empty(); });
+    armed = true;
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "replay");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
+    BOOST_TEST_GE(replays, 1);
+    BOOST_TEST(std::ranges::none_of(errors, [](boost::system::error_code ec) {
+        return ec == trystero::error::wrong_password;
+    }));
+}
+
+// The same for an offer: B is lower and offers. The watcher records B's sealed offer to A, and once
+// B is back, sends it in B's name every 0.5 s of the rooms' time, with fresh offer ids. A answered
+// that offer before, so it refuses each replay, and B's own offer joins them. The clock runs 10
+// times faster.
+void a_replayed_offer_is_refused() {
+    fixture f;
+    f.net.time_scale = 10;
+    const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    trystero::room a(f.io.get_executor(), f.net, config(a_id), "replayo");
+    std::vector<std::string> joined;
+    std::vector<std::string> left;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    flooder watcher(f, "replayo");
+    const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "replayo", a_id));
+    std::string recorded;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (s && s->topic == a_topic && s->peer == b_id && !s->offer.empty() && recorded.empty()) {
+            recorded = s->offer;
+        }
+    };
+    watcher.watch(a_topic);
+    join_and_leave(f, b_id, "replayo", joined, left, [&] { return !recorded.empty(); });
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "replayo");
+    int replays = 0;
+    const auto end = std::chrono::steady_clock::now() + 10s;
+    while (joined.size() < 2 && std::chrono::steady_clock::now() < end) {
+        watcher.publish(a_topic, {
+                                     .peer_id = b_id,
+                                     .offer_id = "replay" + std::to_string(replays++),
+                                     .offer = recorded,
+                                 });
+        run_until(f.io, [] { return false; }, 50ms);
+    }
+    BOOST_TEST_EQ(joined.size(), 2U);
+    BOOST_TEST_GE(replays, 1);
 }
 
 // A relay that closes each connection right after its subscription, as one does after a text
@@ -890,6 +1049,9 @@ int main() {
     forged_offers_make_no_connection();
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();
+    the_replay_cache_remembers_the_last_ones();
+    a_replayed_answer_is_refused();
+    a_replayed_offer_is_refused();
     a_relay_that_closes_at_once_is_tried_less_and_less_often();
     counter_announcements_are_paced();
     three_peers_form_a_mesh();

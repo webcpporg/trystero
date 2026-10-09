@@ -22,17 +22,18 @@ webcpp.lane oracle : cases-protocol ;
 # exists only with them, since libdatachannel reports errors by throwing. It
 # is built with the standard libraries' own checks, so that a completion
 # that touches a container its socket cleared fails at once. Each driver has
-# 660 s, beyond its scenarios' own limits (563 s on native: thirteen waits
-# of 30 s, nine of 10 s, twelve of 5 s, one of 15 s and one of 8 s) and
+# 800 s, beyond its scenarios' own limits (703 s on native: seventeen waits
+# of 30 s, eleven of 10 s, twelve of 5 s, one of 15 s and one of 8 s) and
 # Chrome's start, so that a scenario that does not complete fails by name,
 # with what each peer saw, before the bound stops it; a run where every page
 # also hangs, each of its DevTools calls waiting 10 s, may still meet the
 # bound. They pass in about 30 s.
 webcpp.drive interop_browser : interop/peer.cpp
-  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>660
+  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>800
   : interop/run.mjs : --browser : emscripten ;
 webcpp.drive interop_native : interop/native_peer.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on <webcpp-drive-timeout>660
-    <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
+  : <library>/webcpp/trystero//native <exception-handling>on <webcpp-drive-timeout>800
+    <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
+    <define>_GLIBCXX_ASSERTIONS
   : interop/run.mjs : --native : native ;
 webcpp.lane interop : interop_browser interop_native : native emscripten ;

@@ -50,6 +50,15 @@ if (malformedTo || params.get('hold-sends')) {
         setTimeout(() => sendNow.call(this, data), 1000)
     }
 }
+// Every RTCPeerConnection the page makes, for window.drop.
+const connections = []
+const PeerConnection = window.RTCPeerConnection
+window.RTCPeerConnection = class extends PeerConnection {
+    constructor(...args) {
+        super(...args)
+        connections.push(this)
+    }
+}
 // With `text-messages`, this peer also sends each C++ peer, once it joins, two text messages on the data channel, as
 // a broken or hostile peer can, then a chat message the C++ peer must still receive. Its channels are found by
 // watching createDataChannel: this peer offers, so it opens them.
@@ -63,62 +72,74 @@ if (textMessages) {
         return channel
     }
 }
-const room = joinRoom(
-    {
-        appId: params.get('app'),
-        // No ICE server: Chrome gathers its host candidates alone, and asks no public STUN server.
-        rtcConfig: {iceServers: []},
-        ...(params.get('password') ? {password: params.get('password')} : {}),
-        ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
-    },
-    params.get('room'),
-    {onJoinError: details => record('error', {peer: details.peerId, error: details.error})}
-)
-record('joined', {self: selfId})
-log('room', 'self id ' + selfId)
-
 const checksum = bytes => {
     let sum = 0
     for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i + 1)) >>> 0
     return sum
 }
-const chat = room.makeAction('chat')
-const drink = room.makeAction('drink')
-const file = room.makeAction('file')
-chat.onMessage = (text, {peerId}) => {
-    record('chat', {from: peerId, text})
-    if (!text.startsWith('echo: ')) chat.send('echo: ' + text, {target: peerId})
-}
-drink.onMessage = (value, {peerId}) => record('drink', {from: peerId, value})
-file.onMessage = (data, {peerId, metadata}) => {
-    const bytes = new Uint8Array(data)
-    record('file', {from: peerId, size: bytes.length, checksum: checksum(bytes), metadata: JSON.stringify(metadata ?? null)})
-}
 const sent = (what, peer) => [() => record('sent', {what, peer, error: ''}), e => record('sent', {what, peer, error: String(e)})]
-room.onPeerJoin = peer => {
-    log('room', 'peer joined: ' + peer)
-    record('peer-join', {peer})
-    chat.send('hello from Trystero JS', {target: peer}).then(...sent('chat', peer))
-    drink.send({drink: 'negroni', withIce: true, from: 'js'}, {target: peer}).then(...sent('drink', peer))
-    const big = new Uint8Array(100_000).map((_, i) => (i * 7) % 256)
-    file.send(big, {target: peer, metadata: {name: 'from-js.bin'}}).then(...sent('file', peer))
-    room.ping(peer).then(ms => record('ping', {peer, ms, error: ''}), e => record('ping', {peer, error: String(e)}))
-    if (textMessages) {
-        // "1e300" is no typed array length, and "300000000" one of 300 MB: neither is a frame.
-        const open = channels.filter(c => c.readyState === 'open')
-        for (const channel of open) {
-            channel.send('1e300')
-            channel.send('300000000')
+// Joins the room, with the actions and the handlers every scenario relies on; the page's peer id is Trystero's
+// selfId, the same for every join of the page.
+let room
+const join = () => {
+    room = joinRoom(
+        {
+            appId: params.get('app'),
+            // No ICE server: Chrome gathers its host candidates alone, and asks no public STUN server.
+            rtcConfig: {iceServers: []},
+            ...(params.get('password') ? {password: params.get('password')} : {}),
+            ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
+        },
+        params.get('room'),
+        {onJoinError: details => record('error', {peer: details.peerId, error: details.error})}
+    )
+    record('joined', {self: selfId})
+    log('room', 'self id ' + selfId)
+
+    const chat = room.makeAction('chat')
+    const drink = room.makeAction('drink')
+    const file = room.makeAction('file')
+    chat.onMessage = (text, {peerId}) => {
+        record('chat', {from: peerId, text})
+        if (!text.startsWith('echo: ')) chat.send('echo: ' + text, {target: peerId})
+    }
+    drink.onMessage = (value, {peerId}) => record('drink', {from: peerId, value})
+    file.onMessage = (data, {peerId, metadata}) => {
+        const bytes = new Uint8Array(data)
+        record('file', {from: peerId, size: bytes.length, checksum: checksum(bytes), metadata: JSON.stringify(metadata ?? null)})
+    }
+    room.onPeerJoin = peer => {
+        log('room', 'peer joined: ' + peer)
+        record('peer-join', {peer})
+        chat.send('hello from Trystero JS', {target: peer}).then(...sent('chat', peer))
+        drink.send({drink: 'negroni', withIce: true, from: 'js'}, {target: peer}).then(...sent('drink', peer))
+        const big = new Uint8Array(100_000).map((_, i) => (i * 7) % 256)
+        file.send(big, {target: peer, metadata: {name: 'from-js.bin'}}).then(...sent('file', peer))
+        room.ping(peer).then(ms => record('ping', {peer, ms, error: ''}), e => record('ping', {peer, error: String(e)}))
+        if (textMessages) {
+            // "1e300" is no typed array length, and "300000000" one of 300 MB: neither is a frame.
+            const open = channels.filter(c => c.readyState === 'open')
+            for (const channel of open) {
+                channel.send('1e300')
+                channel.send('300000000')
+            }
+            record('text-sent', {peer, channels: open.length})
+            chat.send('after text', {target: peer}).then(...sent('after-text', peer))
         }
-        record('text-sent', {peer, channels: open.length})
-        chat.send('after text', {target: peer}).then(...sent('after-text', peer))
+    }
+    room.onPeerLeave = peer => {
+        log('room', 'peer left: ' + peer)
+        record('peer-leave', {peer})
     }
 }
-room.onPeerLeave = peer => {
-    log('room', 'peer left: ' + peer)
-    record('peer-leave', {peer})
-}
+join()
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
+// window.drop(): closes every connection the page made, as a network drop ends them; Trystero then meets its peers
+// again, with the same peer id.
+window.drop = () => {
+    for (const connection of connections.splice(0)) connection.close()
+    record('dropped')
+}
 
 // Publishes `count` signals, each from a fresh peer id that starts with `prefix`, on the topic of the room's peer
 // `to`, or on the room's own topic, through a WebSocket of its own to the first relay. Records `kind` once every one is
