@@ -508,6 +508,7 @@ public:
                 }
             }
         }
+        ++made_connections;
         if (refuse_peer_connections > 0) {
             --refuse_peer_connections;
             return nullptr;
@@ -554,6 +555,8 @@ public:
     /** How many peer connections are open now. */
     [[nodiscard]] std::size_t live_connections() const { return connections_->size(); }
 
+    /** How many peer connections were asked for, refused ones included: what a browser counts. */
+    std::size_t made_connections = 0;
     /** The most peer connections that were open at once. */
     std::size_t peak_connections = 0;
     /** How much faster than real time the timers and the clock run, for tests of long timeouts. */

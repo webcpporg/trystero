@@ -16,6 +16,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <boost/core/lightweight_test.hpp>
+#include <boost/json/parse.hpp>
 #include <boost/json/serialize.hpp>
 
 #include <algorithm>
@@ -393,7 +394,12 @@ public:
         socket_ = f.net.connect(relay_a,
                                 {
                                     .open = [this] { open_ = true; },
-                                    .message = {},
+                                    .message =
+                                        [this](std::string_view text) {
+                                            if (on_text) {
+                                                on_text(text);
+                                            }
+                                        },
                                     .close = {},
                                 },
                                 std::pmr::get_default_resource());
@@ -401,6 +407,23 @@ public:
         std::array<std::uint8_t, 32> secret{};
         secret.fill(9);
         signer_.emplace(*trystero::protocol::nostr::signer::from_secret(secret));
+    }
+
+    /** What the relay sends the flooder: the events of the topics it watches. */
+    std::function<void(std::string_view)> on_text;
+
+    /** Subscribes to a topic's events, which then reach `on_text`. */
+    void watch(std::string_view topic) {
+        const std::array<std::pmr::string, 1> topics{std::pmr::string(topic)};
+        socket_->send(trystero::protocol::nostr::subscribe_message(
+            "watch" + std::to_string(next_++), topics, 0));
+    }
+
+    /** Publishes a signal on a topic, in any peer's name. */
+    void publish(std::string_view topic, const trystero::protocol::signal_message& m) {
+        const std::array<std::uint8_t, 32> aux{};
+        socket_->send(trystero::protocol::nostr::event_message(
+            *signer_, f_.net.unix_seconds(), topic, trystero::protocol::write_signal(m), aux));
     }
 
     /** Announces one id `times` times. */
@@ -487,6 +510,67 @@ void a_flood_of_announcements_is_bounded() {
     chat_a.async_send("after the second flood", [](boost::system::error_code) {});
     BOOST_TEST(run_until(f.io, [&] { return heard.size() == 2; }));
     BOOST_TEST_LE(memory.in_use, joined_in_use + bounded);
+}
+
+// A watcher without the room key answers every offer of A to B with garbage, in B's name, before
+// B's own answer: A opens an answer before acting on it, so the forged ones change nothing, A and
+// B join, and A reports the failed open at most once for B.
+void a_forged_answer_changes_nothing() {
+    fixture f;
+    const std::string_view a_id = "AAAAAAAAAAAAAAAAAAAA";
+    const std::string_view b_id = "BBBBBBBBBBBBBBBBBBBB";
+    trystero::room a(f.io.get_executor(), f.net, config(a_id), "forged");
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    std::vector<boost::system::error_code> errors;
+    a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
+                   std::string_view /*what*/) { errors.push_back(ec); });
+    flooder attacker(f, "forged");
+    const auto a_topic = trystero::protocol::peer_topic("webcpp-trystero-tests", "forged", a_id);
+    int forged = 0;
+    attacker.on_text = [&](std::string_view text) {
+        boost::system::error_code ec;
+        const auto document = boost::json::parse(text, ec);
+        const auto message =
+            ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
+        const auto* event =
+            message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
+        if (event == nullptr) {
+            return;
+        }
+        const auto content = boost::json::parse(event->content, ec);
+        const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
+        if (signal && signal->peer_id == a_id && !signal->offer.empty()) {
+            attacker.publish(
+                a_topic,
+                {.peer_id = b_id, .offer_id = signal->offer_id, .answer = "not a sealed answer"});
+            ++forged;
+        }
+    };
+    attacker.watch(trystero::protocol::peer_topic("webcpp-trystero-tests", "forged", b_id));
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "forged");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
+    BOOST_TEST_GE(forged, 1);
+    BOOST_TEST_LE(errors.size(), 1U);
+}
+
+// Offers from fresh ids that are not sealed with the room key make no connection: a negotiation
+// changes only once its offer opened.
+void forged_offers_make_no_connection() {
+    fixture f;
+    const trystero::room a(f.io.get_executor(), f.net, config("zzzzzzzzzzzzzzzzzzzz"), "offers");
+    flooder attacker(f, "offers");
+    const auto a_topic =
+        trystero::protocol::peer_topic("webcpp-trystero-tests", "offers", "zzzzzzzzzzzzzzzzzzzz");
+    const auto before = f.net.relay(relay_a).events_seen;
+    for (int i = 0; i < 200; ++i) {
+        const std::string id = "0offer" + std::to_string(i);
+        attacker.publish(a_topic,
+                         {.peer_id = id, .offer_id = "offer", .offer = "not a sealed offer"});
+    }
+    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + 200; }));
+    run_until(f.io, [] { return false; }, 200ms);  // the opens complete
+    BOOST_TEST_EQ(f.net.made_connections, 0U);
 }
 
 // Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
@@ -646,6 +730,8 @@ int main() {
     a_flood_of_announcements_is_bounded();
     long_peer_ids_are_bounded();
     a_refused_peer_is_logged_once();
+    a_forged_answer_changes_nothing();
+    forged_offers_make_no_connection();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

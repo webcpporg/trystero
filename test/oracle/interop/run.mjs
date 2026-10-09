@@ -417,6 +417,26 @@ const oversizedRelayTextScenario = (name, cppKind) =>
         return null
     })
 
+// A watcher without the room key (forger.html) answers each offer of the C++ peer with garbage in the name of the peer
+// the offer is for, before that peer's own answer (whose sends js.html holds 1 s): the C++ peer opens an answer before
+// acting on it, so the forged one changes nothing, and the real one joins them.
+const forgedAnswerScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const cppSelf = '00000000000000000000'
+        const params = {room: room(), ...relayParams}
+        const forger = await open('forger', {...params, target: cppSelf})
+        if (!(await until(async () => (await forger.events()).some(e => e.kind === 'watching'), 10_000))) {
+            return 'the forger did not start watching'
+        }
+        const cpp = await open(cppKind, {...params, self: cppSelf})
+        const js = await open('js', {...params, 'hold-sends': '1'})
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        const forged = (await forger.events()).filter(e => e.kind === 'forged').length
+        if (!forged) return 'the forger never answered an offer, so nothing was tested'
+        if (!ok) return `the exchange did not complete in 30 s; the forger answered ${forged} offers`
+        return null
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -427,6 +447,7 @@ const scenarios = async () => {
             await refusedRelayScenario('A relay URL the browser refuses reports a close; C++ goes on', 'cpp')
             await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; C++ goes on', 'cpp')
+            await forgedAnswerScenario('A forged answer from a watcher without the key changes nothing; C++ joins', 'cpp')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
         }
@@ -440,6 +461,7 @@ const scenarios = async () => {
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
             await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; native C++ goes on', 'native')
+            await forgedAnswerScenario('A forged answer from a watcher without the key changes nothing; native C++ joins', 'native')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {

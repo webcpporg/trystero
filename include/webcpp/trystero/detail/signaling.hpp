@@ -215,6 +215,8 @@ private:
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
         double last_ms = 0;
+        // Whether a signal of this negotiation that did not open was reported.
+        bool failed_open_reported = false;
         // Our offer.
         side offer;
         std::pmr::string offer_id;
@@ -471,6 +473,38 @@ private:
         if (n.offer.pc && self_id_ < peer) {
             return;  // we lead; our offer stands
         }
+        // Nothing changes until the offer opens with the room key: a forged one, which anyone who
+        // reads the relays can send in any peer's name, makes no connection and resets no offer.
+        const auto weak = weak_from_this();
+        sealer_->open(
+            offer, bind<void(boost::system::error_code, std::string_view)>(
+                       [weak, relay, peer = copy(peer), offer_id = copy(offer_id),
+                        offer = copy(offer)](boost::system::error_code ec, std::string_view sdp) {
+                           if (const auto self = weak.lock()) {
+                               self->on_offer_opened(relay, peer, offer_id, offer, ec, sdp);
+                           }
+                       }));
+    }
+
+    /**
+     * Answers an offer the sealer opened: makes the answering connection and applies the offer as
+     * its remote description. An offer that did not open changes nothing.
+     */
+    void on_offer_opened(std::size_t relay, std::string_view peer, std::string_view offer_id,
+                         std::string_view offer, boost::system::error_code ec,
+                         std::string_view sdp) {
+        auto* found = find(peer);
+        if (found == nullptr || found->connected) {
+            return;
+        }
+        auto& n = *found;
+        if (ec) {
+            failed_open(peer, n, "offer");
+            return;
+        }
+        if (n.answer.pc || n.answered || (n.offer.pc && self_id_ < peer)) {
+            return;  // another offer, or our own, came first
+        }
         if (n.offer.pc) {
             reset_offer(n);
         }
@@ -522,13 +556,13 @@ private:
                                    reset_answer(*m);
                                    self->drop_if_done(peer);
                                }));
-        sealer_->open(offer, bind<void(boost::system::error_code, std::string_view)>(
-                                 [weak, peer = copy(peer), pc](boost::system::error_code ec,
-                                                               std::string_view sdp) {
-                                     if (const auto self = weak.lock()) {
-                                         self->on_offer_opened(peer, pc, ec, sdp);
-                                     }
-                                 }));
+        pc->set_remote_description("offer", sdp,
+                                   bind<void(boost::system::error_code)>(
+                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
+                                           if (const auto self = weak.lock()) {
+                                               self->on_offer_applied(peer, pc, ec);
+                                           }
+                                       }));
     }
 
     /** The same offer again: Trystero replays its answer on that relay, at most once a second. */
@@ -546,29 +580,6 @@ private:
         for (const auto& message : n.answer_messages) {
             cb_.publish(relay, topic, message);
         }
-    }
-
-    /** Applies the offer the sealer opened as the answering connection's remote description. */
-    void on_offer_opened(std::string_view peer, const std::shared_ptr<backend::peer_connection>& pc,
-                         boost::system::error_code ec, std::string_view sdp) {
-        auto* m = find(peer);
-        if (m == nullptr || m->answer.pc != pc) {
-            return;
-        }
-        if (ec) {
-            log_("signal", "could not open the offer from ", peer, ": another password?");
-            reset_answer(*m);
-            cb_.failed(peer, make_error_code(error::wrong_password));
-            return;
-        }
-        const auto weak = weak_from_this();
-        pc->set_remote_description("offer", sdp,
-                                   bind<void(boost::system::error_code)>(
-                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
-                                           if (const auto self = weak.lock()) {
-                                               self->on_offer_applied(peer, pc, ec);
-                                           }
-                                       }));
     }
 
     /** Creates the answer once the offer is the connection's remote description. */
@@ -647,59 +658,81 @@ private:
     }
 
     void on_answer(std::string_view peer, std::string_view offer_id, std::string_view answer,
-                   negotiation& n) {
+                   const negotiation& n) {
         if (!n.offer.pc || n.answered || (!offer_id.empty() && offer_id != n.offer_id)) {
             return;
         }
-        n.answered = true;
+        // Nothing changes until the answer opens with the room key: a forged one, sent in this
+        // peer's name, must not reset the offer the peer's own answer is on its way to.
         const auto pc = n.offer.pc;
         const auto weak = weak_from_this();
-        n.offer_expiry->start(answered_offer_ttl, bind<void()>([weak, peer = copy(peer), pc] {
-                                  const auto self = weak.lock();
-                                  auto* m = self ? self->find(peer) : nullptr;
-                                  if (m == nullptr || m->connected || m->offer.pc != pc) {
-                                      return;
-                                  }
-                                  self->log_("signal", peer,
-                                             " answered but the connection never opened");
-                                  reset_offer(*m);
-                                  self->drop_if_done(peer);
-                              }));
-        sealer_->open(
-            answer,
-            bind<void(boost::system::error_code, std::string_view)>(
-                [weak, peer = copy(peer), pc](boost::system::error_code ec, std::string_view sdp) {
-                    const auto self = weak.lock();
-                    auto* m = self ? self->find(peer) : nullptr;
-                    if (m == nullptr || m->offer.pc != pc) {
-                        return;
-                    }
-                    if (ec) {
-                        self->log_("signal", "could not open the answer from ", peer,
-                                   ": another password?");
-                        reset_offer(*m);
-                        self->cb_.failed(peer, make_error_code(error::wrong_password));
-                        return;
-                    }
-                    self->log_("signal", "answer from ", peer);
-                    pc->set_remote_description(
-                        "answer", sdp,
-                        self->bind<void(boost::system::error_code)>(
-                            [weak, peer = self->copy(peer), pc](boost::system::error_code ec) {
-                                const auto self = weak.lock();
-                                auto* m = self ? self->find(peer) : nullptr;
-                                if (m == nullptr || m->offer.pc != pc) {
-                                    return;
-                                }
-                                if (ec) {
-                                    self->log_("webrtc", "the answer from ", peer,
-                                               " was refused: ", ec);
-                                    reset_offer(*m);
-                                    return;
-                                }
-                                self->flush_remote_candidates(peer, m->offer);
-                            }));
-                }));
+        sealer_->open(answer, bind<void(boost::system::error_code, std::string_view)>(
+                                  [weak, peer = copy(peer), pc](boost::system::error_code ec,
+                                                                std::string_view sdp) {
+                                      if (const auto self = weak.lock()) {
+                                          self->on_answer_opened(peer, pc, ec, sdp);
+                                      }
+                                  }));
+    }
+
+    /** Applies an answer the sealer opened to our offer. An answer that did not open changes
+     * nothing. */
+    void on_answer_opened(std::string_view peer,
+                          const std::shared_ptr<backend::peer_connection>& pc,
+                          boost::system::error_code ec, std::string_view sdp) {
+        auto* m = find(peer);
+        if (m == nullptr || m->offer.pc != pc || m->answered || m->connected) {
+            return;
+        }
+        if (ec) {
+            failed_open(peer, *m, "answer");
+            return;
+        }
+        m->answered = true;
+        const auto weak = weak_from_this();
+        m->offer_expiry->start(answered_offer_ttl, bind<void()>([weak, peer = copy(peer), pc] {
+                                   const auto self = weak.lock();
+                                   auto* n = self ? self->find(peer) : nullptr;
+                                   if (n == nullptr || n->connected || n->offer.pc != pc) {
+                                       return;
+                                   }
+                                   self->log_("signal", peer,
+                                              " answered but the connection never opened");
+                                   reset_offer(*n);
+                                   self->drop_if_done(peer);
+                               }));
+        log_("signal", "answer from ", peer);
+        pc->set_remote_description("answer", sdp,
+                                   bind<void(boost::system::error_code)>(
+                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
+                                           const auto self = weak.lock();
+                                           auto* n = self ? self->find(peer) : nullptr;
+                                           if (n == nullptr || n->offer.pc != pc) {
+                                               return;
+                                           }
+                                           if (ec) {
+                                               self->log_("webrtc", "the answer from ", peer,
+                                                          " was refused: ", ec);
+                                               reset_offer(*n);
+                                               return;
+                                           }
+                                           self->flush_remote_candidates(peer, n->offer);
+                                       }));
+    }
+
+    /**
+     * Counts a sealed signal from `peer` that did not open with the room key, and changes nothing
+     * else: the peer used another password, or someone forged it in the peer's name. The first of
+     * a negotiation is logged and reported as `wrong_password`; the rest only counted.
+     */
+    void failed_open(std::string_view peer, negotiation& n, std::string_view what) {
+        ++failed_opens_;
+        if (std::exchange(n.failed_open_reported, true)) {
+            return;
+        }
+        log_("signal", "could not open the ", what, " from ", peer,
+             ": another password, or forged in its name; ignored");
+        cb_.failed(peer, make_error_code(error::wrong_password));
     }
 
     void on_candidate(std::string_view peer, std::string_view offer_id_view,
@@ -712,7 +745,11 @@ private:
                     boost::system::error_code ec, std::string_view plain) {
                     const auto self = weak.lock();
                     auto* m = self ? self->find(peer) : nullptr;
-                    if (m == nullptr || ec || m->connected) {
+                    if (m == nullptr || m->connected) {
+                        return;
+                    }
+                    if (ec) {
+                        self->failed_open(peer, *m, "candidate");
                         return;
                     }
                     // A candidate names the offer it belongs to; one that names none
@@ -945,6 +982,7 @@ private:
     logger log_;
     std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
     std::pmr::deque<std::pmr::string> refused_{memory_};
+    std::size_t failed_opens_ = 0;
     bool closed_ = false;
 };
 

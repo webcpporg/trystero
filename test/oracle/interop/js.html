@@ -41,9 +41,11 @@ const relays = params.get('relays')
 // With `malformed-candidate-to` (below), Trystero's own messages to the relays wait 1 s each, so that the C++ peer
 // holds its offer to this peer for at least that long: the malformed candidates, sent at once, reach it then, and it
 // keeps them until the answer arrives, as a candidate of a real negotiation.
+// `hold-sends` holds them the same way, so that a forged answer to the C++ peer's offer reaches it before this
+// peer's own answer.
 const malformedTo = params.get('malformed-candidate-to')
 const sendNow = WebSocket.prototype.send
-if (malformedTo) {
+if (malformedTo || params.get('hold-sends')) {
     WebSocket.prototype.send = function (data) {
         setTimeout(() => sendNow.call(this, data), 1000)
     }

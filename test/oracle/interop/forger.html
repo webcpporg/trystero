@@ -1,0 +1,70 @@
+<!--
+Copyright (c) 2026 WebCpp.org
+
+Distributed under the Boost Software License, Version 1.0. (See
+accompanying file LICENSE_1_0.txt or copy at
+https://www.boost.org/LICENSE_1_0.txt)
+
+A watcher of the interop test, which run.mjs opens in headless Chrome: it holds no room key, and answers every
+offer the C++ peer (`target`) publishes with a forged answer in the name of the peer the offer is for. What anyone
+who reads the relays can do: the topics are public, and a peer id proves nothing.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Forger</title>
+<script type="importmap">
+{
+    "imports": {
+        "trystero": "/node_modules/trystero/dist/index.mjs",
+        "@trystero-p2p/core": "/node_modules/@trystero-p2p/core/dist/index.mjs",
+        "@trystero-p2p/nostr": "/node_modules/@trystero-p2p/nostr/dist/index.mjs",
+        "@noble/secp256k1": "/node_modules/@noble/secp256k1/index.js"
+    }
+}
+</script>
+</head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+import {createEvent} from '@trystero-p2p/nostr'
+import {sha1} from '@trystero-p2p/core'
+
+window.events = []
+const record = (kind, fields = {}) => window.events.push({kind, ...fields})
+const params = new URLSearchParams(location.search)
+const target = params.get('target')
+const root = ['Trystero', params.get('app'), params.get('room')].join('@')
+const rootTopic = await sha1(root)
+const targetTopic = await sha1(`${root}@${target}`)
+// The peer each peer topic belongs to, learnt from the announcements on the room's topic.
+const owners = new Map()
+const socket = new WebSocket(params.get('relays').split(',')[0])
+socket.onopen = () => {
+    // Every event the relay forwards: a watcher needs no topic of its own.
+    socket.send(JSON.stringify(['REQ', 'all', {}]))
+    record('watching')
+}
+socket.onmessage = async message => {
+    const [type, , event] = JSON.parse(message.data)
+    if (type !== 'EVENT') return
+    const topic = event.tags.find(t => t[0] === 'x')?.[1]
+    let content
+    try {
+        content = JSON.parse(event.content)
+    } catch {
+        return
+    }
+    if (topic === rootTopic && content.peerId && content.peerId !== target) {
+        owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
+    } else if (content.peerId === target && content.offer && owners.has(topic)) {
+        const victim = owners.get(topic)
+        const forged = JSON.stringify({peerId: victim, offerId: content.offerId, answer: 'not a sealed answer'})
+        socket.send(await createEvent(targetTopic, forged))
+        record('forged', {victim, offerId: content.offerId})
+    }
+}
+</script>
+</body>
+</html>
