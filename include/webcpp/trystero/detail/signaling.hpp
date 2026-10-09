@@ -24,8 +24,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -73,9 +75,11 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * Announcements are not sealed, so anyone who knows the app and room ids can announce any number
  * of peer ids, and anyone who reads the relays can send any signal in any peer's name. Nothing a
  * peer sends changes a negotiation before it opens with the room key: a signal that does not open
- * is counted, reported once, and changes nothing else. A sealed offer or answer holds neither its
- * offer id nor a peer id (Trystero's wire), so one recorded from the relays still opens when it is
- * resent in its sender's name: the room remembers the offers and answers it acted on
+ * is counted, reported once per negotiation, and changes nothing else; and since a flood of fresh
+ * ids makes each a negotiation, the reports are paced too: the first of a quiet interval at once,
+ * the rest together when it ends (`failed_open_report_interval`). A sealed offer or answer holds
+ * neither its offer id nor a peer id (Trystero's wire), so one recorded from the relays still opens
+ * when it is resent in its sender's name: the room remembers the offers and answers it acted on
  * (`remembered_descriptions`) and refuses one that comes again, which it logs. One it never acted
  * on (what its sender sent another peer of the room, an offer it set aside for its own, one older
  * than it remembers) still opens, and keeps the two peers apart for that attempt; only a wire that
@@ -126,8 +130,12 @@ public:
         handler<void(std::string_view peer, std::shared_ptr<backend::peer_connection>,
                      std::shared_ptr<backend::data_channel>)>
             connected;
-        /** A negotiation with a peer failed, with the error. */
-        handler<void(std::string_view peer, boost::system::error_code)> failed;
+        /**
+         * A negotiation with a peer failed, with the error and what happened, or an empty text
+         * for the error's own message; several, with an empty peer, when `what` counts them.
+         */
+        handler<void(std::string_view peer, boost::system::error_code, std::string_view what)>
+            failed;
     };
 
     /** Every allocation goes through `memory`, the parsed signals through `json`, a storage of that
@@ -217,6 +225,8 @@ private:
     static constexpr auto counter_announce_interval = std::chrono::milliseconds(5'333);
     /** How many refused peer ids are remembered, so that each is logged once. */
     static constexpr std::size_t remembered_refusals = 64;
+    /** The least time between two reports of signals that did not open. */
+    static constexpr auto failed_open_report_interval = std::chrono::milliseconds(10'000);
 
     /** One side of a negotiation: a connection, the remote candidates waiting for its remote
      * description. */
@@ -810,7 +820,12 @@ private:
     /**
      * Counts a sealed signal from `peer` that did not open with the room key, and changes nothing
      * else: the peer used another password, or someone forged it in the peer's name. The first of
-     * a negotiation is logged and reported as `wrong_password`; the rest only counted.
+     * a negotiation is logged and reported as `wrong_password`; the rest only counted. Reports are
+     * paced: the first of a quiet interval goes at once, with its peer, and the others of the
+     * interval in one report when it ends, with no peer and their number.
+     *
+     * Tip: anyone who reads the relays can send garbage from any number of fresh ids, each a
+     * negotiation of its own; the application then gets one report per interval, not one per id.
      */
     void failed_open(std::string_view peer, negotiation& n, std::string_view what) {
         ++failed_opens_;
@@ -819,7 +834,39 @@ private:
         }
         log_("signal", "could not open the ", what, " from ", peer,
              ": another password, or forged in its name; ignored");
-        cb_.failed(peer, make_error_code(error::wrong_password));
+        const double now = factory_.now_ms();
+        const auto interval = static_cast<double>(failed_open_report_interval.count());
+        if (unreported_failed_opens_ == 0 && now - failed_open_reported_ms_ >= interval) {
+            failed_open_reported_ms_ = now;
+            cb_.failed(peer, make_error_code(error::wrong_password), {});
+            return;
+        }
+        if (unreported_failed_opens_++ != 0) {
+            return;  // the report of the interval is already due
+        }
+        failed_open_report_ = factory_.make_timer(memory_);
+        const auto delay = std::chrono::milliseconds(
+            static_cast<long long>(std::max(0.0, failed_open_reported_ms_ + interval - now)));
+        failed_open_report_->start(delay, bind<void()>([weak = weak_from_this()] {
+                                       if (const auto self = weak.lock()) {
+                                           self->report_failed_opens();
+                                       }
+                                   }));
+    }
+
+    /** Reports, in one, the negotiations whose signals did not open since the last report. */
+    void report_failed_opens() {
+        const auto count = std::exchange(unreported_failed_opens_, 0);
+        if (closed_ || count == 0) {
+            return;
+        }
+        failed_open_reported_ms_ = factory_.now_ms();
+        std::pmr::string what(memory_);
+        protocol::json::append_integer(what, static_cast<std::int64_t>(count));
+        what += " more peers sent signals that did not open with the room key, in the last ";
+        protocol::json::append_integer(what, failed_open_report_interval.count() / 1000);
+        what += " s: another password, or forged in their names";
+        cb_.failed({}, make_error_code(error::wrong_password), what);
     }
 
     /**
@@ -1047,7 +1094,7 @@ private:
      */
     void refused(std::string_view peer) {
         log_("webrtc", "the backend made no connection for ", peer);
-        cb_.failed(peer, make_error_code(error::backend_failure));
+        cb_.failed(peer, make_error_code(error::backend_failure), {});
     }
 
     static void reset_offer(negotiation& n) {
@@ -1090,6 +1137,11 @@ private:
     std::pmr::map<std::size_t, double> counter_announced_ms_{memory_};  // per relay
     replay_cache used_{remembered_descriptions, memory_};
     std::size_t failed_opens_ = 0;
+    // Negotiations whose failed open waits for the next report, when it was last made, and the
+    // timer of the next.
+    std::size_t unreported_failed_opens_ = 0;
+    double failed_open_reported_ms_ = -std::numeric_limits<double>::infinity();
+    std::shared_ptr<backend::timer> failed_open_report_;
     std::size_t replayed_ = 0;
     bool closed_ = false;
 };

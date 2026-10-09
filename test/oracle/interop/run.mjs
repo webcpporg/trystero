@@ -392,7 +392,8 @@ const unusableIceScenario = (name, cppKind) =>
 // garbage in the flooders' names as soon as the C++ peer offers to them, and offers that no key sealed, from fresh ids.
 // The C++ peer offers to at most the room's bound of them at once, makes no connection for a forged offer or answer,
 // logs each id it refuses once, makes at most the room's bound of connections in the window (counted as Chromium
-// counts them, every one made), and goes on with the peer that joined.
+// counts them, every one made), reports the forged signals once, not once per id, and goes on with the peer that
+// joined.
 const floodCount = 300
 const unconnectedBound = 32
 const floodScenario = (name, cppKind) =>
@@ -420,16 +421,19 @@ const floodScenario = (name, cppKind) =>
             ? (await cpp.events()).filter(e => e.kind === 'made-connection').length
             : await cpp.value('window.madePeerConnections')
         const peak = await cpp.value('window.peakPeerConnections')
+        const reports = (await cpp.events()).filter(e => e.kind === 'error' && e.error === 'the peer uses another room password').length
         const facts = `the C++ peer logged ${(await floodIds()).size} of ${floodCount} announcing ids and ` +
             `${(await offerIds()).size} of ${floodCount} offering ids, offered to ${offered.size}, refused ${refused.size}, ` +
             `made ${made} connections` + (peak === undefined ? '' : `, held at most ${peak}`) +
-            `; the watcher forged ${forged} answers`
+            `, reported ${reports} wrong passwords; the watcher forged ${forged} answers`
         console.log(`  ${facts}`)
         if (!seen) return `${facts}; not every flooding signal was handled in 30 s`
         if (offered.size > unconnectedBound) return `${facts}; offered to more than ${unconnectedBound}`
         if (forged < 1) return `${facts}; the watcher forged no answer`
         // The flooders' offers, and at most two for the peer that joined.
         if (made > unconnectedBound + 2) return `${facts}; more than ${unconnectedBound + 2} connections`
+        // The forged signals are reported once per 10 s, not once per fresh id: the first at once, the rest together.
+        if (reports > 2) return `${facts}; more than 2 reports of signals that did not open`
         if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return `${facts}; a peer left`
         return null
     })

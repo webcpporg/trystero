@@ -645,11 +645,14 @@ public:
                             self->on_connected(peer, std::move(pc), std::move(channel));
                         }
                     }),
-                .failed = bind<void(std::string_view, boost::system::error_code)>(
-                    [weak](std::string_view peer, boost::system::error_code ec) {
+                .failed = bind<void(std::string_view, boost::system::error_code, std::string_view)>(
+                    [weak](std::string_view peer, boost::system::error_code ec,
+                           std::string_view what) {
                         if (const auto self = weak.lock()) {
                             std::array<char, 128> buffer{};  // the message without a std::string
-                            self->report(peer, ec, ec.message(buffer.data(), buffer.size()));
+                            self->report(
+                                peer, ec,
+                                what.empty() ? ec.message(buffer.data(), buffer.size()) : what);
                         }
                     }),
             },
@@ -1468,7 +1471,11 @@ public:
      *
      * It is called too, with an empty peer id, for each part of the configuration the room dropped
      * when it joined (`error::invalid_configuration`): a handler set right after the room is
-     * constructed sees those.
+     * constructed sees those. Signals that do not open with the room key (`error::wrong_password`)
+     * are reported once per negotiation, and paced: the first of a quiet 10 s at once, with its
+     * peer, and the others of those 10 s in one report, with an empty peer id and a description
+     * that starts with their number, since anyone who reads the relays can send them from any
+     * number of fresh ids.
      *
      * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
      * for the call.

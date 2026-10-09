@@ -583,6 +583,60 @@ void forged_offers_make_no_connection() {
     BOOST_TEST_EQ(f.net.made_connections, 0U);
 }
 
+// Unsealed offers from 2000 fresh ids, which anyone who reads the relays can send: the room reports
+// the first at once, with its peer, and the rest together, at most once per interval, with no peer
+// and their number, so that the application is not handed one report per id. The clock runs 10
+// times faster.
+void signals_that_do_not_open_are_reported_once_per_interval() {
+    constexpr int flood = 2000;
+    fixture f;
+    f.net.time_scale = 10;
+    const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
+    trystero::room a(f.io.get_executor(), f.net, config(a_id), "reports");
+
+    struct report {
+        std::string peer;
+        std::string what;
+    };
+
+    std::vector<report> reports;
+    a.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+        if (ec == trystero::error::wrong_password) {
+            reports.push_back({.peer = std::string(peer), .what = std::string(what)});
+        }
+    });
+    flooder attacker(f, "reports");
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
+    const auto started = f.net.now_ms();
+    const auto before = f.net.relay(relay_a).events_seen;
+    // Paced, so that each offer's open completes before later ids evict its negotiation.
+    for (int i = 0; i < flood; ++i) {
+        attacker.publish(a_topic, {
+                                      .peer_id = "0garbage" + std::to_string(i),
+                                      .offer_id = "o",
+                                      .offer = "not a sealed offer",
+                                  });
+        if (i % 20 == 19) {
+            run_until(f.io, [] { return false; }, 5ms);
+        }
+    }
+    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
+    // Every failed open is counted once its interval ends.
+    const auto counted = [&] {
+        std::size_t sum = 0;
+        for (const auto& r : reports) {
+            sum += r.peer.empty() ? std::stoul(r.what) : 1;
+        }
+        return sum;
+    };
+    BOOST_TEST(run_until(f.io, [&] { return counted() == flood; }));
+    const double elapsed = f.net.now_ms() - started;
+    BOOST_TEST_LE(static_cast<double>(reports.size()), 2 + (elapsed / 10'000));
+    if (BOOST_TEST(!reports.empty())) {
+        BOOST_TEST_EQ(reports.front().peer, "0garbage0");
+    }
+}
+
 // A room member, who holds the key, sends offers from fresh ids whose SDP every connection refuses:
 // each ends its negotiation at once and frees its place, but the room makes no more than
 // max_connections_per_window connections in the window, and refuses the rest.
@@ -1047,6 +1101,7 @@ int main() {
     a_refused_peer_is_logged_once();
     a_forged_answer_changes_nothing();
     forged_offers_make_no_connection();
+    signals_that_do_not_open_are_reported_once_per_interval();
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();
     the_replay_cache_remembers_the_last_ones();
