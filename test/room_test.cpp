@@ -878,6 +878,83 @@ void a_replayed_offer_is_refused() {
     BOOST_TEST_GE(replays, 1);
 }
 
+// A watcher without the room key sends A's own sealed offer to B back to A, at once, as B's answer
+// to it. It opens with the room key, but A made it: A refuses it, and B's own answer joins them.
+void a_reflected_offer_is_refused_as_an_answer() {
+    fixture f;
+    const std::string a_id = "00000000000000000000";
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    trystero::room a(f.io.get_executor(), f.net, config(a_id), "reflect");
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    flooder watcher(f, "reflect");
+    const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "reflect", a_id));
+    const auto b_topic = std::string(trystero::protocol::peer_topic(app_id, "reflect", b_id));
+    int reflected = 0;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (s && s->topic == b_topic && s->peer == a_id && !s->offer.empty()) {
+            watcher.publish(a_topic,
+                            {.peer_id = b_id, .offer_id = s->offer_id, .answer = s->offer});
+            ++reflected;
+        }
+    };
+    watcher.watch(b_topic);
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "reflect");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
+    BOOST_TEST_GE(reflected, 1);
+}
+
+// A watcher without the room key announces a decoy id above A, records A's sealed offer to it, and
+// sends that offer to A in B's name whenever B announces itself, before B's own offer. A made that
+// offer: A refuses it, never answers one in B's name but B's own, and B's own offer joins them.
+// The clock runs 10 times faster.
+void a_reflected_offer_is_refused_as_an_offer() {
+    fixture f;
+    f.net.time_scale = 10;
+    const std::string a_id = "yyyyyyyyyyyyyyyyyyyy";
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    const std::string decoy = "zzzzzzzzzzzzzzzzzzzz";
+    auto c = config(a_id);
+    int answered_reflections = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        answered_reflections += text.starts_with("offer reflected") ? 1 : 0;
+    };
+    trystero::room a(f.io.get_executor(), f.net, std::move(c), "reflecto");
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    flooder watcher(f, "reflecto");
+    const auto root = std::string(trystero::protocol::root_topic(app_id, "reflecto"));
+    const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "reflecto", a_id));
+    const auto decoy_topic = std::string(trystero::protocol::peer_topic(app_id, "reflecto", decoy));
+    std::string recorded;
+    int reflected = 0;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (!s) {
+            return;
+        }
+        if (s->topic == decoy_topic && s->peer == a_id && !s->offer.empty() && recorded.empty()) {
+            recorded = s->offer;
+        }
+        if (!recorded.empty() && s->topic == root && s->peer == b_id && s->announcement) {
+            watcher.publish(a_topic, {
+                                         .peer_id = b_id,
+                                         .offer_id = "reflected" + std::to_string(reflected++),
+                                         .offer = recorded,
+                                     });
+        }
+    };
+    watcher.watch(root);
+    watcher.watch(decoy_topic);
+    watcher.announce_as(decoy, 1);
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return !recorded.empty(); })));
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "reflecto");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
+    BOOST_TEST_GE(reflected, 1);
+    BOOST_TEST_EQ(answered_reflections, 0);
+}
+
 // A relay that closes each connection right after its subscription, as one does after a text
 // longer than a room reads, is tried again within a bound that doubles every time, to 60 s; the
 // bound comes back to 3.3 s only after a connection that stayed open for 60 s. The clock runs 100
@@ -1107,6 +1184,8 @@ int main() {
     the_replay_cache_remembers_the_last_ones();
     a_replayed_answer_is_refused();
     a_replayed_offer_is_refused();
+    a_reflected_offer_is_refused_as_an_answer();
+    a_reflected_offer_is_refused_as_an_offer();
     a_relay_that_closes_at_once_is_tried_less_and_less_often();
     counter_announcements_are_paced();
     three_peers_form_a_mesh();

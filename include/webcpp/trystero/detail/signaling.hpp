@@ -79,8 +79,9 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * ids makes each a negotiation, the reports are paced too: the first of a quiet interval at once,
  * the rest together when it ends (`failed_open_report_interval`). A sealed offer or answer holds
  * neither its offer id nor a peer id (Trystero's wire), so one recorded from the relays still opens
- * when it is resent in its sender's name: the room remembers the offers and answers it acted on
- * (`remembered_descriptions`) and refuses one that comes again, which it logs. One it never acted
+ * when it is resent in its sender's name: the room remembers the offers and answers it made or
+ * acted on (`remembered_descriptions`) and refuses one that comes to it as a peer's, which it logs:
+ * a resent one, or its own sent back. One it never acted
  * on (what its sender sent another peer of the room, an offer it set aside for its own, one older
  * than it remembers) still opens, and keeps the two peers apart for that attempt; only a wire that
  * seals the offer id and both peer ids closes this. The negotiations under way are bounded
@@ -116,13 +117,14 @@ public:
     static constexpr std::size_t max_connections_per_window = 2 * max_unconnected_peers;
 
     /**
-     * How many of the offers and answers it acted on a room remembers, to refuse one that is sent
-     * again (detail::replay_cache): each stays at least an offer's lifetime, since the room acts on
-     * at most one per connection it makes, and in a quiet room far longer.
+     * How many of the offers and answers it made or acted on a room remembers, to refuse one that
+     * comes to it as a peer's (detail::replay_cache): each stays at least an offer's lifetime,
+     * since the room makes or acts on at most two per connection it makes (an offer and the answer
+     * to it), and in a quiet room far longer.
      */
     static constexpr std::size_t remembered_descriptions = 1024;
-    static_assert(remembered_descriptions >= max_connections_per_window,
-                  "every offer and answer acted on is remembered for at least an offer's lifetime");
+    static_assert(remembered_descriptions >= 2 * max_connections_per_window,
+                  "every offer and answer made or acted on is remembered for an offer's lifetime");
 
     /** What the signaling asks of its room. */
     struct callbacks {
@@ -499,6 +501,7 @@ private:
             reset_offer(*m);
             return;
         }
+        used_.insert(sdp);  // sent back to the room in a peer's name, it is refused
         const auto weak = weak_from_this();
         sealer_->seal(sdp, bind<void(boost::system::error_code, std::string_view)>(
                                [weak, peer = copy(peer), pc](boost::system::error_code ec,
@@ -709,6 +712,7 @@ private:
         if (m == nullptr || m->answer.pc != pc || ec) {
             return;
         }
+        used_.insert(sdp);  // sent back to the room in a peer's name, it is refused
         const auto weak = weak_from_this();
         sealer_->seal(sdp, bind<void(boost::system::error_code, std::string_view)>(
                                [weak, peer = copy(peer), pc](boost::system::error_code ec,
@@ -872,9 +876,9 @@ private:
     }
 
     /**
-     * Counts an offer or an answer from `peer` that opened but that the room acted on before, and
-     * changes nothing else: someone who read the relays resent it in the peer's name, or the peer
-     * resent one the room already answered. The first of a negotiation is logged.
+     * Counts an offer or an answer from `peer` that opened but that the room made, or acted on
+     * before, and changes nothing else: someone who read the relays sent it in the peer's name, or
+     * the peer resent one the room already answered. The first of a negotiation is logged.
      *
      * Tip: it is not reported to `room::on_error`, whose errors are Trystero's: a resent signal
      * proves nothing about the peer whose name it carries.
@@ -885,7 +889,7 @@ private:
             return;
         }
         log_("signal", "refused the ", what, " from ", peer,
-             ": the room used it before, so it was sent again, maybe by someone else in its name");
+             ": the room made or used it before, so someone sent it again, maybe in its name");
     }
 
     void on_candidate(std::string_view peer, std::string_view offer_id_view,

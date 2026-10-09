@@ -9,8 +9,14 @@ A watcher of the interop test, which run.mjs opens in headless Chrome: it holds 
 (the default) answers every offer the C++ peer (`target`) publishes with a forged answer in the name of the peer the
 offer is for. With `mode=replay` it forges nothing: it records the first sealed answer and the first sealed offer each
 peer sends the C++ peer, and resends them in that peer's name later, an answer with each new offer of the C++ peer to
-that peer, an offer as soon as that peer announces itself or is asked to offer. What anyone who reads the relays can
-do: the topics are public, a peer id proves nothing, and a sealed offer or answer names neither its offer nor a peer.
+that peer, an offer as soon as that peer announces itself or is asked to offer. With `mode=reflect` it sends the
+target its own sealed texts back: each offer the target publishes to a peer comes back at once as that peer's answer;
+with `decoy`, an id it announces above the target, the target's sealed offer to the decoy comes back as an offer in the
+name of each other peer that announces itself. With `mode=mint` (the upstream reproduction, trystero-upstream-replay.md
+in the plan's directory; no scenario uses it) it announces a fresh id above every peer every 2 s, keeps each sealed
+offer a peer makes to one, and delivers it to the target in that peer's name when the target or that peer announces.
+What anyone who reads the relays can do: the topics are public, a peer id proves nothing, and a sealed offer or answer
+names neither its offer nor a peer.
 -->
 <!doctype html>
 <html lang="en">
@@ -39,6 +45,14 @@ const record = (kind, fields = {}) => window.events.push({kind, ...fields})
 const params = new URLSearchParams(location.search)
 const target = params.get('target')
 const replay = params.get('mode') === 'replay'
+const reflect = params.get('mode') === 'reflect'
+const mint = params.get('mode') === 'mint'
+const decoy = params.get('decoy')
+// mode=reflect with a decoy: the target's sealed offer to the decoy, once it sent one.
+let decoyOffer = null
+// mode=mint: the topics of the fresh ids announced, and each peer's sealed offers to them, not yet delivered.
+const mintTopics = new Set()
+const minted = new Map()
 // What each peer sent the target, sealed, recorded once: peer id -> text.
 const answers = new Map()
 const offers = new Map()
@@ -52,6 +66,18 @@ socket.onopen = () => {
     // Every event the relay forwards: a watcher needs no topic of its own.
     socket.send(JSON.stringify(['REQ', 'all', {}]))
     record('watching')
+    const announce = async id => socket.send(await createEvent(rootTopic, JSON.stringify({peerId: id})))
+    if (reflect && decoy) {
+        announce(decoy)
+        setInterval(() => announce(decoy), 3000)
+    }
+    if (mint) {
+        setInterval(async () => {
+            const id = ('zz' + Math.random().toString(36).slice(2) + '000000000000000000').slice(0, 20)
+            mintTopics.add(await sha1(`${root}@${id}`))
+            announce(id)
+        }, 2000)
+    }
 }
 socket.onmessage = async message => {
     const [type, , event] = JSON.parse(message.data)
@@ -68,6 +94,36 @@ socket.onmessage = async message => {
         record(kind, fields)
     }
     const announcement = !content.offer && !content.answer && !content.candidate
+    if (reflect) {
+        if (topic === rootTopic && content.peerId && content.peerId !== target) {
+            owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
+        }
+        if (decoy && !decoyOffer && content.peerId === target && content.offer && topic === await sha1(`${root}@${decoy}`)) {
+            decoyOffer = content.offer
+            record('recorded', {what: 'decoy-offer'})
+        } else if (!decoy && content.peerId === target && content.offer && owners.has(topic)) {
+            const victim = owners.get(topic)
+            await publish({peerId: victim, offerId: content.offerId, answer: content.offer}, 'reflected', {what: 'answer', victim})
+        } else if (decoyOffer && topic === rootTopic && announcement && ![target, decoy].includes(content.peerId)) {
+            const victim = content.peerId
+            await publish({peerId: victim, offerId: genOfferId(), offer: decoyOffer}, 'reflected', {what: 'offer', victim})
+        }
+        return
+    }
+    if (mint) {
+        if (mintTopics.has(topic) && content.offer && content.peerId !== target) {
+            if (!minted.has(content.peerId)) minted.set(content.peerId, [])
+            minted.get(content.peerId).push(content.offer)
+            record('recorded', {what: 'minted-offer', peer: content.peerId})
+        } else if (topic === rootTopic && announcement && content.peerId && !content.peerId.startsWith('zz')) {
+            const peers = content.peerId === target ? [...minted.keys()] : [content.peerId]
+            for (const victim of peers) {
+                const offer = minted.get(victim)?.shift()
+                if (offer) await publish({peerId: victim, offerId: genOfferId(), offer}, 'minted', {what: 'offer', victim})
+            }
+        }
+        return
+    }
     if (topic === rootTopic && content.peerId && content.peerId !== target) {
         owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
         const offer = replay && announcement && offers.get(content.peerId)

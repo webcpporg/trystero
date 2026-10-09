@@ -22,12 +22,12 @@
 namespace webcpp::trystero::detail {
 
 /**
- * The digests of the last `capacity` offers and answers a room acted on, so that it refuses one
- * that comes again.
+ * The digests of the last `capacity` offers and answers a room made or acted on, so that it refuses
+ * one that comes to it as a peer's.
  *
- * Tip: each offer or answer a peer sends describes a connection made for it, with ICE credentials
- * and a DTLS fingerprint of its own, so a room never acts on the same one twice: one that opens
- * with the room key and was used before was resent by someone who read the relays. The digest is
+ * Tip: each offer or answer describes a connection made for it, with ICE credentials and a DTLS
+ * fingerprint of its own, so a room never acts on the same one twice, nor on its own: one that
+ * opens with the room key and is known was sent by someone who read the relays. The digest is
  * the SHA-256 of the opened text, not of the sealed one, whose encoding a resender can vary (the
  * base64's padding, the IV's digits) while it still opens to the same text.
  */
