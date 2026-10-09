@@ -10,11 +10,12 @@
 // opening a text that is not a sealed one, and every operation when the key cannot be imported,
 // here because there is no crypto.subtle, as on a page that is not a secure context.
 //
-// main sets the test up and returns with node's exit code at 1; each step runs from a timer, and
-// the last sets the exit code to `boost::report_errors()`; node exits once nothing is pending.
+// main starts the first step and returns with node's exit code at 1; each step starts from the
+// completions of the one before, the last sets the exit code to `boost::report_errors()`, and a
+// deadline fails by name if the chain stops. Node exits once nothing is pending.
 
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
+#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 
 #include <emscripten/val.h>
 #include <boost/asio/io_context.hpp>
@@ -51,6 +52,7 @@ struct state {
     std::optional<outcome> garbage;
     std::optional<outcome> without_subtle;
     std::optional<outcome> after_failure;
+    val deadline = val::undefined();
 };
 
 state& the_state() {
@@ -62,19 +64,12 @@ void set_exit_code(int code) {
     val::global("process").set("exitCode", val(code));
 }
 
-/** Calls `setTimeout` with a function that runs `f` through the loop, as the page's events do. */
-void after(int milliseconds, trystero::browser::event_loop::callback f) {
-    auto& loop = the_state().loop;
-    const int id = loop.add(std::move(f));
-    // The handler takes one argument, which setTimeout passes when given one.
-    val::global("setTimeout")(loop.handler(id, 0), val(milliseconds), val::undefined());
-}
-
-/** A completion that records what it saw into `into`. */
+/** A completion that records what it saw into `into`, then runs `next`. */
 trystero::handler<void(boost::system::error_code, std::string_view)> record(
-    std::optional<outcome>& into) {
-    return [&into](boost::system::error_code ec, std::string_view text) {
+    std::optional<outcome>& into, void (*next)()) {
+    return [&into, next](boost::system::error_code ec, std::string_view text) {
         into = outcome{.ec = ec, .text = std::string(text), .inline_call = the_state().in_call};
+        next();
     };
 }
 
@@ -100,35 +95,7 @@ void expect(const std::optional<outcome>& got, boost::system::error_code expecte
     }
 }
 
-/** Once the key is imported: the sealed text opens, and a text that is not a sealed one is refused
- * after the call. */
-void open_once_imported(int /*slot*/, const val& /*event*/) {
-    auto& s = the_state();
-    if (!BOOST_TEST(s.sealed.has_value()) || !BOOST_TEST(!s.sealed->ec)) {
-        set_exit_code(boost::report_errors());
-        return;
-    }
-    call([] {
-        auto& s = the_state();
-        s.sealer->open(s.sealed->text, record(s.opened));
-        s.sealer->open("not a sealed text", record(s.garbage));
-    });
-}
-
-/** Without crypto.subtle, as outside a secure context: the key cannot be imported, and both the
- * first operation and one after the failure complete after the call. */
-void without_subtle(int /*slot*/, const val& /*event*/) {
-    val descriptor = val::object();
-    descriptor.set("value", val::object());
-    val::global("Object").call<void>("defineProperty", val::global(), val("crypto"), descriptor);
-    the_state().sealer = make_sealer();
-    call([] { the_state().sealer->seal("hello", record(the_state().without_subtle)); });
-    after(100, [](int /*slot*/, const val& /*event*/) {
-        call([] { the_state().sealer->open("x$AAAA", record(the_state().after_failure)); });
-    });
-}
-
-void verdict(int /*slot*/, const val& /*event*/) {
+void verdict() {
     const auto& s = the_state();
     expect(s.opened, {});
     if (s.opened) {
@@ -137,17 +104,64 @@ void verdict(int /*slot*/, const val& /*event*/) {
     expect(s.garbage, trystero::error::wrong_password);
     expect(s.without_subtle, trystero::error::backend_failure);
     expect(s.after_failure, trystero::error::backend_failure);
+    val::global("clearTimeout")(s.deadline);
     set_exit_code(boost::report_errors());
+}
+
+/** Once the key could not be imported: an operation after the failure completes after its call. */
+void open_after_failure() {
+    call([] { the_state().sealer->open("x$AAAA", record(the_state().after_failure, verdict)); });
+}
+
+/**
+ * Without crypto.subtle, as outside a secure context: the key cannot be imported, and the first
+ * operation completes after its call.
+ */
+void seal_without_subtle() {
+    val descriptor = val::object();
+    descriptor.set("value", val::object());
+    val::global("Object").call<void>("defineProperty", val::global(), val("crypto"), descriptor);
+    the_state().sealer = make_sealer();
+    call([] {
+        the_state().sealer->seal("hello", record(the_state().without_subtle, open_after_failure));
+    });
+}
+
+/** Once both opens completed, the next step. */
+void opened() {
+    const auto& s = the_state();
+    if (s.opened && s.garbage) {
+        seal_without_subtle();
+    }
+}
+
+/**
+ * Once the key is imported and the text sealed: the sealed text opens, and a text that is not a
+ * sealed one is refused after the call.
+ */
+void open_sealed() {
+    if (!BOOST_TEST(!the_state().sealed->ec)) {
+        verdict();
+        return;
+    }
+    call([] {
+        auto& s = the_state();
+        s.sealer->open(s.sealed->text, record(s.opened, opened));
+        s.sealer->open("not a sealed text", record(s.garbage, opened));
+    });
 }
 
 }  // namespace
 
 int main() {
-    the_state().sealer = make_sealer();
-    call([] { the_state().sealer->seal("hello", record(the_state().sealed)); });
-    after(300, open_once_imported);
-    after(600, without_subtle);
-    after(900, verdict);
+    auto& s = the_state();
+    s.sealer = make_sealer();
+    call([] { the_state().sealer->seal("hello", record(the_state().sealed, open_sealed)); });
+    const int id = s.loop.add([](int /*slot*/, const val& /*event*/) {
+        BOOST_ERROR("the steps stopped before the verdict");
+        set_exit_code(boost::report_errors());
+    });
+    s.deadline = val::global("setTimeout")(s.loop.handler(id, 0), val(10'000), val::undefined());
     set_exit_code(1);  // until the verdict
     return 0;
 }

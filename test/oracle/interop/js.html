@@ -116,9 +116,9 @@ room.onPeerLeave = peer => {
 }
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
 
-// With `malformed-candidate-to`, this peer also sends that peer, for 10 s, a candidate whose plaintext is not JSON,
-// sealed under the room's key as Trystero seals a candidate, through a WebSocket of its own to the first relay: what
-// a broken or hostile peer of the room can send. The C++ peer must drop it and go on.
+// With `malformed-candidate-to`, this peer also sends that peer, until it joins, a candidate whose plaintext is not
+// JSON, sealed under the room's key as Trystero seals a candidate, through a WebSocket of its own to the first relay:
+// what a broken or hostile peer of the room can send. The C++ peer must drop it and go on.
 if (malformedTo && relays) {
     const {createEvent} = await import('@trystero-p2p/nostr')
     const {sha1} = await import('@trystero-p2p/core')
@@ -127,9 +127,9 @@ if (malformedTo && relays) {
     const topic = await sha1(['Trystero', params.get('app'), params.get('room'), malformedTo].join('@'))
     const socket = new WebSocket(relays.split(',')[0])
     socket.onopen = () => {
-        const until = performance.now() + 10_000
+        const joined = () => window.events.some(e => e.kind === 'peer-join' && e.peer === malformedTo)
         const send = async () => {
-            if (performance.now() > until || socket.readyState !== 1) return socket.close()
+            if (joined() || socket.readyState !== 1) return socket.close()
             const content = JSON.stringify({peerId: selfId, candidate: await encrypt(key, 'not JSON at all')})
             sendNow.call(socket, await createEvent(topic, content))
             setTimeout(send, 150)

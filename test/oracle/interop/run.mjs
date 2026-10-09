@@ -303,8 +303,8 @@ const pairScenario = (name, {cppKind = 'cpp', cppSelf, password, leaver}) =>
         const params = {room: room(), ...relayParams, ...(password ? {password} : {})}
         const cpp = await open(cppKind, {...params, self: cppSelf})
         const js = await open('js', params)
-        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 60_000)
-        if (!ok) return 'the exchange did not complete in 60 s'
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
         const [stays, goes] = leaver === 'cpp' ? [js, cpp] : [cpp, js]
         await goes.leave()
         const left = await until(async () => (await stays.events()).some(e => e.kind === 'peer-leave') && (await goes.events()).some(e => e.kind === 'left'), 10_000)
@@ -319,9 +319,10 @@ const malformedCandidateScenario = (name, cppKind) =>
         const params = {room: room(), ...relayParams}
         const cpp = await open(cppKind, {...params, self: cppSelf})
         const js = await open('js', {...params, 'malformed-candidate-to': cppSelf})
-        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 60_000)
-        if (!ok) return 'the exchange did not complete in 60 s'
-        return (await cpp.log()).includes('dropped a candidate') ? null : 'no malformed candidate reached the C++ peer'
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
+        const jsSelf = (await js.events()).find(e => e.kind === 'joined')?.self
+        return (await cpp.log()).includes(`dropped a candidate from ${jsSelf}`) ? null : 'no malformed candidate reached the C++ peer'
     })
 
 // The C++ peer's relays begin with a URL no WebSocket can be made to: that relay reports a close, as an unreachable
@@ -332,8 +333,8 @@ const refusedRelayScenario = (name, cppKind) =>
         const params = {room: room(), ...relayParams}
         const cpp = await open(cppKind, {...params, relays: `${refusedRelay},${relayParams.relays}`})
         const js = await open('js', params)
-        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 60_000)
-        if (!ok) return 'the exchange did not complete in 60 s'
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
         return (await cpp.log()).includes(`could not reach ${refusedRelay}`) ? null : 'the C++ peer did not report the refused relay'
     })
 
@@ -389,8 +390,8 @@ const scenarios = async () => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)
                 const js = await open('js', params)
-                const ok = await until(async () => exchangeComplete(await native.events(), false) && exchangeComplete(await js.events(), true), 60_000)
-                if (!ok) return 'the exchange did not complete in 60 s'
+                const ok = await until(async () => exchangeComplete(await native.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+                if (!ok) return 'the exchange did not complete in 30 s'
                 await native.replace()
                 const left = await until(async () => (await js.events()).some(e => e.kind === 'peer-leave') &&
                     (await native.events()).some(e => e.kind === 'pending' && e.error === 'room left'), 10_000)
@@ -415,8 +416,8 @@ const scenarios = async () => {
                         if (events.filter(e => e.kind === 'file').length !== 2) return false
                     }
                     return true
-                }, 60_000)
-                return ok ? null : 'not every peer joined both others and received both files in 60 s'
+                }, 30_000)
+                return ok ? null : 'not every peer joined both others and received both files in 30 s'
             })
         }
     }
@@ -444,8 +445,8 @@ const scenarios = async () => {
                     if (events.filter(e => e.kind === 'file').length !== 2) return false
                 }
                 return true
-            }, 60_000)
-            return ok ? null : 'not every peer joined both others and received both files in 60 s'
+            }, 30_000)
+            return ok ? null : 'not every peer joined both others and received both files in 30 s'
         })
     }
 }

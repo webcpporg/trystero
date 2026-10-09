@@ -219,9 +219,10 @@ holds only what is specific to trystero.
     with the allocator-extended move, which makes `room_config` move-only:
     a room is given its configuration by value, moved
     (`room(ex, factory, std::move(config), id)`). A move assignment carries
-    the source's allocator with its target. Where a handler must survive its own
-    replacement during its call, its owner keeps it in a `std::shared_ptr`
-    made in the resource and calls it through a copy of that pointer.
+    the source's allocator with its target. Where a handler must survive its
+    own replacement during its call, its owner keeps it in a
+    `std::shared_ptr` made in the resource and calls it through a copy of
+    that pointer.
   - **The backend.** Each method of `backend::factory` that makes an object
     takes the room's `std::pmr::memory_resource*` as its last parameter, and
     the backend allocates its objects, their handlers and the frames and
