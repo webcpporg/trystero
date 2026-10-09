@@ -30,19 +30,23 @@ holds only what is specific to trystero.
   the embind registration of `trystero_dispatch`, which a program includes
   once. `native/` is the native backend, over libdatachannel, Boost.Beast
   and OpenSSL, which builds only natively. `test/Jamfile` compiles each
-  header alone on the targets that build it, in three calls.
+  header alone on the targets that build it, in four calls.
 - **The native backend's exceptions.** libdatachannel reports errors by
   throwing, and `native/data_channel.hpp` and `native/peer_connection.hpp`
   catch them, so they, and `native::backend`, which makes their objects, sit
   behind `#ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS` and do not exist without
   exceptions: code that uses them does not compile there. The native timer,
   sealer and WebSockets, and everything else of trystero, compile without
-  exceptions. Every headers-alone call, test and program of the native
-  backend declares `<exception-handling>on`, with the reason in a comment:
+  exceptions. Every test and program that uses the native backend's WebRTC
+  declares `<exception-handling>on`, with the reason in a comment, and so
+  does the headers-alone call of `data_channel.hpp` and
+  `peer_connection.hpp`, which declare nothing without exceptions:
   `/webcpp/trystero//native` cannot, since b2 ignores a non-free feature among
   usage requirements, so a user's `exception-handling=off` would reach them.
-  The lint names those headers as left out of its analysis without
-  exceptions. trystero raises nothing of its own; a raise would go through
+  The lint names those two headers as left out of its analysis without
+  exceptions; `backend.hpp`, `sealer.hpp` and `websocket.hpp` are compiled
+  alone in a call of their own, without it, so the lint analyses the timer,
+  the sealer and the WebSockets without exceptions too. trystero raises nothing of its own; a raise would go through
   `boost::throw_exception`.
 - **The external dependencies.** libsecp256k1 (every room), libdatachannel
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds

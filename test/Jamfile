@@ -12,11 +12,19 @@ webcpp.targets native emscripten ;
 
 # The headers that build on both targets, the native backend's, against
 # libdatachannel and OpenSSL, and the browser backend's, on emscripten. The
-# native backend needs exceptions whatever the build asks: libdatachannel
-# reports errors by throwing.
+# native timer (backend.hpp), sealer and WebSockets compile without
+# exceptions, so the lint analyses them so too. data_channel.hpp and
+# peer_connection.hpp declare nothing without exceptions, so they are
+# compiled with them whatever the build asks: libdatachannel reports errors
+# by throwing.
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
-webcpp.headers-alone trystero : ../include : trystero/native/*.hpp
+webcpp.headers-alone trystero : ../include
+  : trystero/native/backend.hpp trystero/native/sealer.hpp
+    trystero/native/websocket.hpp
+  : <library>/webcpp/trystero//native : native ;
+webcpp.headers-alone trystero : ../include
+  : trystero/native/data_channel.hpp trystero/native/peer_connection.hpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
 webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
 
