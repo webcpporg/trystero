@@ -499,8 +499,18 @@ public:
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
 
     std::shared_ptr<backend::peer_connection> make_peer_connection(
-        std::span<const backend::ice_server> /*servers*/,
-        std::pmr::memory_resource* memory) override {
+        std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) override {
+        if (record_servers) {
+            for (const auto& server : servers) {
+                for (const auto& url : server.urls) {
+                    server_urls.emplace_back(url);
+                }
+            }
+        }
+        if (refuse_peer_connections > 0) {
+            --refuse_peer_connections;
+            return nullptr;
+        }
         auto pc = std::allocate_shared<memory_peer_connection>(
             std::pmr::polymorphic_allocator<>(memory), io_, *this, connections_, next_pc_++,
             memory);
@@ -537,6 +547,13 @@ public:
     }
 
     boost::asio::io_context& io() { return io_; }
+
+    /** How many of the next peer connections to refuse, as a browser at its limit does. */
+    int refuse_peer_connections = 0;
+    /** Whether to record the URL of every ICE server a peer connection is made with. */
+    bool record_servers = false;
+    /** The URLs recorded, in the default resource: only a test that records them allocates. */
+    std::pmr::vector<std::pmr::string> server_urls;
 
 private:
     boost::asio::io_context& io_;

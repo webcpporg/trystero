@@ -59,6 +59,11 @@ enum class error {
     handshake_failed,
     /** The browser or the native stack refused an operation. */
     backend_failure,
+    /**
+     * The room's configuration names something no backend can use, as an ICE server whose URL
+     * WebRTC refuses; the room goes on without it, and `room::on_error` reports it with no peer.
+     */
+    invalid_configuration,
 };
 
 /**
@@ -112,6 +117,7 @@ private:
             case error::handshake_timed_out: return "the handshake timed out";
             case error::handshake_failed: return "the handshake failed";
             case error::backend_failure: return "the WebRTC backend refused an operation";
+            case error::invalid_configuration: return "the room's configuration is unusable";
         }
         return "unknown webcpp.trystero error";
     }

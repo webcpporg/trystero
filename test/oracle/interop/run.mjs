@@ -351,6 +351,19 @@ const textMessagesScenario = (name, cppKind) =>
         return (await cpp.log()).includes('invalid or incompatible room frame') ? 'the C++ peer took a text message for a frame' : null
     })
 
+// The C++ peer is given a TURN server without credentials, which WebRTC refuses: the room drops it when it joins and
+// reports it, and the exchange completes over the host candidates.
+const unusableIceScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, ice: 'turn:127.0.0.1:9'})
+        const js = await open('js', params)
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
+        if (!ok) return 'the exchange did not complete in 30 s'
+        const reported = (await cpp.events()).some(e => e.kind === 'error' && e.error === "the room's configuration is unusable")
+        return reported ? null : 'the C++ peer did not report the unusable ICE server'
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
@@ -360,6 +373,7 @@ const scenarios = async () => {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop C++', 'cpp')
             await refusedRelayScenario('A relay URL the browser refuses reports a close; C++ goes on', 'cpp')
             await textMessagesScenario('Text messages on the data channel do not reach or stop C++', 'cpp')
+            await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; C++ goes on', 'cpp')
         }
     }
 
@@ -370,6 +384,7 @@ const scenarios = async () => {
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')
+            await unusableIceScenario('An ICE server WebRTC refuses is reported and dropped; native C++ goes on', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', params)

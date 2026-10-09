@@ -18,6 +18,8 @@
 #include <boost/core/lightweight_test.hpp>
 #include <boost/json/serialize.hpp>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -264,6 +266,94 @@ void moving_a_room_over_a_joined_one_leaves_it() {
     }
 }
 
+// The URLs WebRTC accepts for an ICE server, and some it refuses.
+void ice_urls_are_checked_as_webrtc_checks_them() {
+    constexpr std::array<std::string_view, 5> accepted{
+        "stun:stun.l.google.com:19302",
+        "stun:127.0.0.1",
+        "stuns:host:5349",
+        "turn:[::1]:3478?transport=udp",
+        "turns:relay.example?transport=tcp",
+    };
+    for (const auto url : accepted) {
+        BOOST_TEST(trystero::detail::ice_url_fault(url).empty());
+    }
+    constexpr std::array<std::string_view, 12> refused{
+        "http://host",
+        "stun:",
+        "stun:host:",
+        "stun:host:0",
+        "stun:host:70000",
+        "stun:host:x",
+        "stun://host",
+        "stun:host?transport=udp",
+        "turn:host?transport=sctp",
+        "stun:[::1",
+        "stun:::1",
+        "no scheme",
+    };
+    for (const auto url : refused) {
+        BOOST_TEST(!trystero::detail::ice_url_fault(url).empty());
+    }
+}
+
+// A server WebRTC would refuse is dropped when the room joins, and reported to on_error with no
+// peer, after the constructor returns; the room goes on with the usable one, and joins.
+void unusable_ice_servers_are_dropped_and_reported() {
+    fixture f;
+    f.net.record_servers = true;
+    auto c = config("NNNNNNNNNNNNNNNNNNNN");
+    const auto server = [](const char* url, const char* username, const char* credential) {
+        return trystero::backend::ice_server{
+            .urls = {std::pmr::string(url)},
+            .username = std::pmr::string(username),
+            .credential = std::pmr::string(credential),
+        };
+    };
+    c.ice_servers.push_back(server("stun:127.0.0.1:9", "", ""));
+    c.ice_servers.push_back(server("http://127.0.0.1:9", "", ""));  // not stun: or turn:
+    c.ice_servers.push_back(server("turn:127.0.0.1:9", "", ""));    // no credentials
+    c.ice_servers.push_back(server("turn:127.0.0.1:9", "user", "secret"));
+    trystero::room a(f.io.get_executor(), f.net, std::move(c), "ice");
+    std::vector<std::pair<std::string, boost::system::error_code>> errors;
+    a.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view /*what*/) {
+        errors.emplace_back(peer, ec);
+    });
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    const trystero::room b(f.io.get_executor(), f.net, config("OOOOOOOOOOOOOOOOOOOO"), "ice");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1 && errors.size() == 2; }));
+    for (const auto& [peer, ec] : errors) {
+        BOOST_TEST(peer.empty());
+        BOOST_TEST(ec == trystero::error::invalid_configuration);
+    }
+    for (const auto& url : f.net.server_urls) {
+        BOOST_TEST(url != "http://127.0.0.1:9");
+    }
+    BOOST_TEST(std::ranges::count(f.net.server_urls, "turn:127.0.0.1:9") > 0);
+}
+
+// A backend that makes no connection, as a browser at its limit of connections, has the
+// negotiation with that peer reported to on_error; the next announcement starts another, which
+// connects.
+void a_refused_peer_connection_is_reported_and_tried_again() {
+    fixture f;
+    f.net.refuse_peer_connections = 1;
+    trystero::room a(f.io.get_executor(), f.net, config("PPPPPPPPPPPPPPPPPPPP"), "refused");
+    trystero::room b(f.io.get_executor(), f.net, config("QQQQQQQQQQQQQQQQQQQQ"), "refused");
+    std::vector<boost::system::error_code> errors;
+    const auto on_error = [&](std::string_view /*peer*/, boost::system::error_code ec,
+                              std::string_view /*what*/) { errors.push_back(ec); };
+    a.on_error(on_error);
+    b.on_error(on_error);
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }, 30s));
+    if (BOOST_TEST_EQ(errors.size(), 1U)) {
+        BOOST_TEST(errors.at(0) == trystero::error::backend_failure);
+    }
+}
+
 void three_peers_form_a_mesh() {
     fixture f;
     std::vector<std::unique_ptr<trystero::room>> rooms;
@@ -368,6 +458,9 @@ int main() {
     the_same_password_joins_and_another_does_not();
     leaving_is_seen_by_the_others_and_a_return_reconnects();
     moving_a_room_over_a_joined_one_leaves_it();
+    ice_urls_are_checked_as_webrtc_checks_them();
+    unusable_ice_servers_are_dropped_and_reported();
+    a_refused_peer_connection_is_reported_and_tried_again();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

@@ -97,8 +97,8 @@ public:
         }
         for (const auto& server : servers) {
             for (const auto& url : server.urls) {
-                // A URL libdatachannel cannot parse is skipped, as a browser skips an unusable
-                // server.
+                // A room has dropped every server WebRTC refuses when it joined; a URL
+                // libdatachannel still cannot parse is skipped here, where a browser would throw.
                 try {
                     config.iceServers.emplace_back(
                         with_credentials(url, server.username, server.credential));
@@ -149,12 +149,16 @@ public:
      * Opens a data channel.
      *
      * @param label The channel's label, read during the call.
-     * @return The channel, made in the connection's resource.
-     * @throws std::exception What libdatachannel throws when it cannot open the channel, as on a
-     * closed connection.
+     * @return The channel, made in the connection's resource, or null when libdatachannel refuses
+     * to open one, as on a closed connection.
      */
     std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
-        return data_channel::create(ex_, pc_->createDataChannel(std::string(label)), memory_);
+        // libdatachannel refuses a channel by throwing, as on a closed connection.
+        try {
+            return data_channel::create(ex_, pc_->createDataChannel(std::string(label)), memory_);
+        } catch (...) {
+            return nullptr;
+        }
     }
 
     /**

@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/action_wire.hpp>
+#include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
 #include <webcpp/trystero/detail/peer_link.hpp>
@@ -116,7 +117,14 @@ struct room_config {
      * ignored when `relay_urls` names the relays.
      */
     std::size_t relay_redundancy = 5;
-    /** The STUN and TURN servers; empty means Trystero's defaults, @ref default_ice_servers. */
+    /**
+     * The STUN and TURN servers; empty means Trystero's defaults, @ref default_ice_servers.
+     *
+     * A server WebRTC would refuse (a URL that is not `stun:`, `stuns:`, `turn:` or `turns:`
+     * `host[:port]`, or a TURN server without a user name and a credential) is dropped when the
+     * room joins, and `room::on_error` reports it with `error::invalid_configuration`; the room
+     * goes on with the others, on every backend.
+     */
     std::pmr::vector<backend::ice_server> ice_servers = {};
     /** This peer's id in the room, Trystero's `selfId`; empty means 20 random characters. */
     std::pmr::string self_id = {};
@@ -569,6 +577,7 @@ public:
     /** Joins: makes the sealer, the action wire, the signaling and the strategy, and starts it. */
     void start() {
         const auto weak = weak_from_this();
+        drop_unusable_ice_servers();
         sealer_ = factory_.make_sealer(
             protocol::seal_key(config_.password, config_.app_id, room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
@@ -990,6 +999,34 @@ private:
         post([handler, m = std::move(m)]() mutable { (*handler)(m); });
     }
 
+    /**
+     * Drops each ICE server of the configuration no peer connection could be made with, logs it,
+     * and reports it to `on_error` once the constructor has returned, so that a handler set right
+     * after it sees it.
+     */
+    void drop_unusable_ice_servers() {
+        auto& servers = config_.ice_servers;
+        for (auto it = servers.begin(); it != servers.end();) {
+            const auto fault = ice_server_fault(*it);
+            if (fault.empty()) {
+                ++it;
+                continue;
+            }
+            std::pmr::string what("the ICE server ", memory_);
+            what += it->urls.empty() ? std::string_view("(no URL)") : std::string_view(it->urls[0]);
+            what += ' ';
+            what += fault;
+            what += ", so the room goes on without it";
+            log_("room", what);
+            post([weak = weak_from_this(), what = std::move(what)] {
+                if (const auto self = weak.lock(); self && self->on_error_) {
+                    (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
+                }
+            });
+            it = servers.erase(it);
+        }
+    }
+
     void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
         log_("room", "peer ", peer, ": ", what);
         if (on_error_) {
@@ -1401,6 +1438,10 @@ public:
     /**
      * Sets what is called with each problem with one peer that the room handled itself, as a
      * wrong password or a timed-out handshake, Trystero's `onPeerError`.
+     *
+     * It is called too, with an empty peer id, for each part of the configuration the room dropped
+     * when it joined (`error::invalid_configuration`): a handler set right after the room is
+     * constructed sees those.
      *
      * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
      * for the call.

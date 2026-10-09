@@ -157,13 +157,16 @@ public:
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
-     * @return The connection.
-     * @throws std::exception What libdatachannel throws when it cannot make the connection.
+     * @return The connection, or null when libdatachannel refuses to make one, by throwing.
      */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        return peer_connection::create(ex_, servers, config_.bind_address, memory);
+        try {
+            return peer_connection::create(ex_, servers, config_.bind_address, memory);
+        } catch (...) {
+            return nullptr;
+        }
     }
 
     /**
