@@ -11,10 +11,30 @@
 
 #include <webcpp/trystero/backend.hpp>
 
+#include <algorithm>
 #include <cstddef>
+#include <memory_resource>
+#include <string>
 #include <string_view>
 
 namespace webcpp::trystero::detail {
+
+/** Whether a URL's scheme is `name`, without regard to case, as a URL parser reads it. */
+inline bool same_scheme(std::string_view scheme, std::string_view name) {
+    return std::ranges::equal(scheme, name, [](char a, char b) {
+        return (a >= 'A' && a <= 'Z' ? static_cast<char>(a - 'A' + 'a') : a) == b;
+    });
+}
+
+/** Writes the scheme of a URL in lowercase, as a URL parser does, and as the backends read it. */
+inline void lowercase_scheme(std::pmr::string& url) {
+    const auto colon = url.find(':');
+    for (std::size_t i = 0; i < colon && i < url.size(); ++i) {
+        if (url[i] >= 'A' && url[i] <= 'Z') {
+            url[i] = static_cast<char>(url[i] - 'A' + 'a');
+        }
+    }
+}
 
 /** Why the port of an ICE server URL cannot be used, or an empty view when it can: 1 to 65535. */
 inline std::string_view ice_port_fault(std::string_view port) {
@@ -66,6 +86,8 @@ inline std::string_view ice_authority_fault(std::string_view authority) {
  * (an IPv6 one in brackets), the port 1 to 65535, and for `turn` and `turns` an optional
  * `?transport=udp` or `?transport=tcp`.
  *
+ * The scheme is compared without regard to case, as a URL parser lowercases it.
+ *
  * Tip: these are the URLs WebRTC's "validate an ICE server" accepts; `RTCPeerConnection` throws
  * for any other, and a room checks its servers when it joins so that no backend meets one.
  */
@@ -75,8 +97,8 @@ inline std::string_view ice_url_fault(std::string_view url) {
         return "has no scheme";
     }
     const std::string_view scheme = url.substr(0, colon);
-    const bool turn = scheme == "turn" || scheme == "turns";
-    if (!turn && scheme != "stun" && scheme != "stuns") {
+    const bool turn = same_scheme(scheme, "turn") || same_scheme(scheme, "turns");
+    if (!turn && !same_scheme(scheme, "stun") && !same_scheme(scheme, "stuns")) {
         return "is not stun:, stuns:, turn: or turns:";
     }
     std::string_view authority = url.substr(colon + 1);
@@ -101,7 +123,7 @@ inline std::string_view ice_server_fault(const backend::ice_server& server) {
         if (const auto fault = ice_url_fault(url); !fault.empty()) {
             return fault;
         }
-        turn = turn || url.starts_with("turn");
+        turn = turn || same_scheme(std::string_view(url).substr(0, 4), "turn");
     }
     if (turn && (server.username.empty() || server.credential.empty())) {
         return "is a TURN server without a user name and a credential";

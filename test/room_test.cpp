@@ -270,7 +270,10 @@ void moving_a_room_over_a_joined_one_leaves_it() {
 
 // The URLs WebRTC accepts for an ICE server, and some it refuses.
 void ice_urls_are_checked_as_webrtc_checks_them() {
-    constexpr std::array<std::string_view, 5> accepted{
+    constexpr std::array<std::string_view, 8> accepted{
+        "STUN:stun.example",
+        "Turn:host:3478?transport=udp",
+        "TURNS:relay.example",
         "stun:stun.l.google.com:19302",
         "stun:127.0.0.1",
         "stuns:host:5349",
@@ -316,6 +319,7 @@ void unusable_ice_servers_are_dropped_and_reported() {
     c.ice_servers.push_back(server("http://127.0.0.1:9", "", ""));  // not stun: or turn:
     c.ice_servers.push_back(server("turn:127.0.0.1:9", "", ""));    // no credentials
     c.ice_servers.push_back(server("turn:127.0.0.1:9", "user", "secret"));
+    c.ice_servers.push_back(server("STUN:127.0.0.2:9", "", ""));  // a scheme in capitals
     trystero::room a(f.io.get_executor(), f.net, std::move(c), "ice");
     std::vector<std::pair<std::string, boost::system::error_code>> errors;
     a.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view /*what*/) {
@@ -333,6 +337,8 @@ void unusable_ice_servers_are_dropped_and_reported() {
         BOOST_TEST(url != "http://127.0.0.1:9");
     }
     BOOST_TEST(std::ranges::count(f.net.server_urls, "turn:127.0.0.1:9") > 0);
+    // The backends are given the scheme in lowercase, as a URL parser writes it.
+    BOOST_TEST(std::ranges::count(f.net.server_urls, "stun:127.0.0.2:9") > 0);
 }
 
 // A backend that makes no connection, as a browser at its limit of connections, has the

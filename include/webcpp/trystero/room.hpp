@@ -1021,6 +1021,11 @@ private:
                 "self_id is longer than any peer accepts, so the room uses a random one", memory_));
         }
         auto& servers = config_.ice_servers;
+        for (auto& server : servers) {
+            for (auto& url : server.urls) {
+                lowercase_scheme(url);
+            }
+        }
         for (auto it = servers.begin(); it != servers.end();) {
             const auto fault = ice_server_fault(*it);
             if (fault.empty()) {
