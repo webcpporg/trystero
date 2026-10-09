@@ -18,7 +18,12 @@
 // where nothing answers, in place of Trystero's public ones, the native peer binds its connections to 127.0.0.1, and
 // the Trystero JS peers have no ICE server at all.
 // Chrome is --chrome, the CHROME environment variable, or, on macOS, the newest chrome-headless-shell in Playwright's
-// cache; elsewhere CHROME is required.
+// cache; elsewhere CHROME is required. Whichever it is, a full Chrome or the headless shell, it runs headless, and
+// makes no request of its own beyond the machine.
+//
+// Chrome, its profile, the relay, the server and the native peers are gone when the run ends, however it ends: the
+// scenarios' verdict, a failure outside every scenario, or SIGTERM, SIGINT or SIGHUP (the bound of b2's driven test
+// sends SIGTERM). A SIGKILL leaves the profile, which the next run removes.
 import {spawn} from 'node:child_process'
 import {createInterface} from 'node:readline'
 import {existsSync, mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs'
@@ -55,6 +60,44 @@ const findChrome = () => {
     throw new Error(`no Chrome found: set CHROME, pass --chrome, or install Playwright's chrome-headless-shell in ${cache}`)
 }
 
+// ---- what a run leaves behind, removed however it ends ------------------------------------------------------------
+const left = {chrome: null, profile: null, server: null, relay: null, natives: new Set()}
+const exited = child => child.exitCode !== null || child.signalCode !== null
+const exit = child => new Promise(resolve => (exited(child) ? resolve() : child.once('exit', resolve)))
+let cleaning = null
+// The profile goes only once Chrome has exited: Chrome writes into it as it shuts down, and removing it meanwhile fails
+// with ENOTEMPTY (measured: 40 of 40 runs of the headless shell killed right after a page opened).
+const cleanUp = () => (cleaning ??= (async () => {
+    for (const child of left.natives) child.kill()
+    left.relay?.close()
+    left.server?.close()
+    if (left.chrome && !exited(left.chrome)) {
+        const stubborn = setTimeout(() => left.chrome.kill('SIGKILL'), 5_000)
+        left.chrome.kill()
+        await exit(left.chrome)
+        clearTimeout(stubborn)
+    }
+    if (left.profile) rmSync(left.profile, {recursive: true, force: true, maxRetries: 3})
+})())
+for (const [signal, number] of [['SIGHUP', 1], ['SIGINT', 2], ['SIGTERM', 15]]) {
+    process.on(signal, () => cleanUp().finally(() => process.exit(128 + number)))
+}
+
+// A profile is named after its run's process id: one whose run is no longer alive, killed with SIGKILL, goes now.
+const profiles = join(tmpdir(), 'trystero-interop-')
+const alive = pid => {
+    try {
+        process.kill(pid, 0)
+        return true
+    } catch (error) {
+        return error.code === 'EPERM'
+    }
+}
+for (const name of readdirSync(tmpdir())) {
+    const pid = Number(/^trystero-interop-([0-9]+)-/.exec(name)?.[1])
+    if (pid && !alive(pid)) rmSync(join(tmpdir(), name), {recursive: true, force: true, maxRetries: 3})
+}
+
 // ---- static files: the pages, the wasm build, and Trystero from test/oracle/node_modules ---------------------------
 const types = {'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json'}
 const roots = {...(buildDir ? {'/build/': buildDir} : {}), '/node_modules/': join(here, '../node_modules'), '/': here}
@@ -68,33 +111,46 @@ const server = createServer((req, res) => {
     }
     res.writeHead(200, {'content-type': types[extname(file)] ?? 'application/octet-stream'}).end(readFileSync(file))
 })
-await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-const base = `http://127.0.0.1:${server.address().port}`
+let base
 
 // ---- Chrome over the DevTools protocol -----------------------------------------------------------------------------
-const profile = mkdtempSync(join(tmpdir(), 'trystero-interop-'))
-const chrome = spawn(findChrome(), [
-    // The port Chrome chooses, which it writes into the profile's DevToolsActivePort: no two runs collide.
-    '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
-    // Host candidates as IP addresses: headless Chrome cannot resolve its own mDNS names.
-    '--disable-features=WebRtcHideLocalIpsWithMdns',
-    // Chrome's sandbox refuses to start as root, as in a container.
-    ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-    'about:blank',
-], {stdio: 'ignore'})
 let devtools
-for (let i = 0; ; i++) {
-    const active = join(profile, 'DevToolsActivePort')
-    const port = existsSync(active) ? readFileSync(active, 'utf8').split('\n')[0] : ''
-    if (/^[0-9]+$/.test(port)) {
-        devtools = `http://127.0.0.1:${port}`
-        try {
-            await fetch(`${devtools}/json/version`)
-            break
-        } catch {}
+const startChrome = async () => {
+    left.profile = mkdtempSync(`${profiles}${process.pid}-`)
+    const chrome = spawn(findChrome(), [
+        // Headless whatever the binary: the headless shell is, and a full Chrome would want a display.
+        '--headless=new',
+        // The port Chrome chooses, which it writes into the profile's DevToolsActivePort: no two runs collide.
+        '--remote-debugging-port=0', `--user-data-dir=${left.profile}`,
+        // None of Chrome's own requests. A full Chrome for Testing 156 still asks Google for accounts, update checks
+        // and the component updater's downloads with these five flags (measured), so no host resolves but 127.0.0.1,
+        // which makes those fail at once: every address of the test is 127.0.0.1. With --public, the pages resolve
+        // Trystero's relays.
+        '--no-first-run', '--no-default-browser-check', '--disable-component-update', '--disable-background-networking',
+        '--disable-sync', ...(usePublic ? [] : ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1']),
+        // Host candidates as IP addresses: headless Chrome cannot resolve its own mDNS names.
+        '--disable-features=WebRtcHideLocalIpsWithMdns',
+        // Chrome's sandbox refuses to start as root, as in a container.
+        ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
+        'about:blank',
+    ], {stdio: ['ignore', 'ignore', 'pipe']})
+    left.chrome = chrome
+    // What Chrome says on standard error, the last of it, for a Chrome that does not start.
+    let said = ''
+    chrome.stderr.on('data', data => (said = (said + data).slice(-2000)))
+    for (let i = 0; ; i++) {
+        const active = join(left.profile, 'DevToolsActivePort')
+        const port = existsSync(active) ? readFileSync(active, 'utf8').split('\n')[0] : ''
+        if (/^[0-9]+$/.test(port)) {
+            devtools = `http://127.0.0.1:${port}`
+            try {
+                await fetch(`${devtools}/json/version`)
+                return
+            } catch {}
+        }
+        if (i > 100 || exited(chrome)) throw new Error(`Chrome did not start; it said:\n${said}`)
+        await new Promise(r => setTimeout(r, 100))
     }
-    if (i > 100) throw new Error('Chrome did not start')
-    await new Promise(r => setTimeout(r, 100))
 }
 
 const openPage = async (path, label) => {
@@ -146,6 +202,8 @@ const openPage = async (path, label) => {
 const openNative = (params, label) => {
     const args = Object.entries(params).flatMap(([k, v]) => [`--${k}`, String(v)])
     const child = spawn(nativePeer, args, {stdio: ['pipe', 'pipe', 'pipe']})
+    left.natives.add(child)
+    child.on('exit', () => left.natives.delete(child))
     const events = []
     const lines = []
     const problems = []
@@ -199,7 +257,8 @@ const exchangeComplete = (events, partnerIsCpp) => {
 }
 
 const results = []
-// The C++ peers' STUN server: the discard port of the loopback, where nothing answers, so that no peer asks a public one.
+// The C++ peers' STUN server: the discard port of the loopback, where nothing answers, so that no peer asks a public
+// one.
 const ice = 'stun:127.0.0.1:9'
 
 const scenario = async (name, body) => {
@@ -235,9 +294,8 @@ const scenario = async (name, body) => {
     for (const p of pages) await p.close()
 }
 
-const relay = await startRelay()
 const room = () => 'room-' + Math.random().toString(36).slice(2, 10)
-const relayParams = usePublic ? {} : {relays: relay.url}
+let relayParams
 
 const pairScenario = (name, {cppKind = 'cpp', cppSelf, password, leaver}) =>
     scenario(name, async open => {
@@ -252,27 +310,58 @@ const pairScenario = (name, {cppKind = 'cpp', cppSelf, password, leaver}) =>
         return left ? null : `the ${leaver} peer left but the other did not see it`
     })
 
-if (browserPeer) {
-await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
-await pairScenario('Trystero JS offers, C++ answers (higher id), with a password; JS leaves', {cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
-}
+// Every scenario the options ask for, in turn.
+const scenarios = async () => {
+    if (browserPeer) {
+        await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
+        await pairScenario('Trystero JS offers, C++ answers (higher id), with a password; JS leaves', {cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
+    }
 
-if (nativePeer) {
-    await pairScenario('Native C++ offers (lower id), Trystero JS answers; native leaves', {cppKind: 'native', cppSelf: '00000000000000000000', leaver: 'cpp'})
-    await pairScenario('Trystero JS offers, native C++ answers (higher id), with a password; JS leaves', {cppKind: 'native', cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
-    if (!usePublic) {
-        await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
+    if (nativePeer) {
+        await pairScenario('Native C++ offers (lower id), Trystero JS answers; native leaves', {cppKind: 'native', cppSelf: '00000000000000000000', leaver: 'cpp'})
+        await pairScenario('Trystero JS offers, native C++ answers (higher id), with a password; JS leaves', {cppKind: 'native', cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
+        if (!usePublic) {
+            await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
+                const params = {room: room(), ...relayParams}
+                const native = await open('native', {...params, password: 'secret'})
+                const js = await open('js', {...params, password: 'another'})
+                await new Promise(r => setTimeout(r, 8000))
+                const all = [...(await native.events()), ...(await js.events())]
+                if (all.some(e => e.kind === 'peer-join')) return 'peers with different passwords joined'
+                return all.some(e => e.kind === 'error') ? null : 'neither peer reported the wrong password'
+            })
+            await scenario('Two Trystero JS peers and a native C++ peer form a mesh', async open => {
+                const params = {room: room(), ...relayParams}
+                const peers = [await open('js', params), await open('native', params), await open('js', params)]
+                const ok = await until(async () => {
+                    for (const p of peers) {
+                        const events = await p.events()
+                        if (events.filter(e => e.kind === 'peer-join').length !== 2) return false
+                        if (events.filter(e => e.kind === 'file').length !== 2) return false
+                    }
+                    return true
+                }, 60_000)
+                return ok ? null : 'not every peer joined both others and received both files in 60 s'
+            })
+        }
+    }
+
+    if (!usePublic && browserPeer) {
+        await scenario('A wrong password keeps the peers apart', async open => {
             const params = {room: room(), ...relayParams}
-            const native = await open('native', {...params, password: 'secret'})
+            const cpp = await open('cpp', {...params, password: 'secret'})
             const js = await open('js', {...params, password: 'another'})
             await new Promise(r => setTimeout(r, 8000))
-            const all = [...(await native.events()), ...(await js.events())]
-            if (all.some(e => e.kind === 'peer-join')) return 'peers with different passwords joined'
-            return all.some(e => e.kind === 'error') ? null : 'neither peer reported the wrong password'
+            const joined = [...(await cpp.events()), ...(await js.events())].filter(e => e.kind === 'peer-join')
+            const errors = [...(await cpp.events()), ...(await js.events())].filter(e => e.kind === 'error')
+            if (joined.length) return 'peers with different passwords joined'
+            if (!errors.length) return 'neither peer reported the wrong password'
+            return null
         })
-        await scenario('Two Trystero JS peers and a native C++ peer form a mesh', async open => {
+
+        await scenario('Two Trystero JS peers and a C++ peer form a mesh', async open => {
             const params = {room: room(), ...relayParams}
-            const peers = [await open('js', params), await open('native', params), await open('js', params)]
+            const peers = [await open('js', params), await open('cpp', params), await open('js', params)]
             const ok = await until(async () => {
                 for (const p of peers) {
                     const events = await p.events()
@@ -286,39 +375,22 @@ if (nativePeer) {
     }
 }
 
-if (!usePublic && browserPeer) {
-    await scenario('A wrong password keeps the peers apart', async open => {
-        const params = {room: room(), ...relayParams}
-        const cpp = await open('cpp', {...params, password: 'secret'})
-        const js = await open('js', {...params, password: 'another'})
-        await new Promise(r => setTimeout(r, 8000))
-        const joined = [...(await cpp.events()), ...(await js.events())].filter(e => e.kind === 'peer-join')
-        const errors = [...(await cpp.events()), ...(await js.events())].filter(e => e.kind === 'error')
-        if (joined.length) return 'peers with different passwords joined'
-        if (!errors.length) return 'neither peer reported the wrong password'
-        return null
-    })
-
-    await scenario('Two Trystero JS peers and a C++ peer form a mesh', async open => {
-        const params = {room: room(), ...relayParams}
-        const peers = [await open('js', params), await open('cpp', params), await open('js', params)]
-        const ok = await until(async () => {
-            for (const p of peers) {
-                const events = await p.events()
-                if (events.filter(e => e.kind === 'peer-join').length !== 2) return false
-                if (events.filter(e => e.kind === 'file').length !== 2) return false
-            }
-            return true
-        }, 60_000)
-        return ok ? null : 'not every peer joined both others and received both files in 60 s'
-    })
+let status = 1
+try {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    left.server = server
+    base = `http://127.0.0.1:${server.address().port}`
+    await startChrome()
+    left.relay = await startRelay()
+    relayParams = usePublic ? {} : {relays: left.relay.url}
+    await scenarios()
+    console.log(`relay: ${left.relay.stats.events} events forwarded, ${left.relay.stats.rejected} rejected`)
+    const failed = results.filter(r => !r.ok).length
+    console.log(failed ? `${failed} of ${results.length} scenarios failed` : `all ${results.length} scenarios passed`)
+    status = failed ? 1 : 0
+} catch (error) {
+    console.log(`the run failed outside every scenario: ${error?.stack ?? error}`)
+} finally {
+    await cleanUp()
 }
-
-console.log(`relay: ${relay.stats.events} events forwarded, ${relay.stats.rejected} rejected`)
-relay.close()
-server.close()
-chrome.kill()
-rmSync(profile, {recursive: true, force: true})
-const failed = results.filter(r => !r.ok).length
-console.log(failed ? `${failed} of ${results.length} scenarios failed` : `all ${results.length} scenarios passed`)
-process.exit(failed ? 1 : 0)
+process.exit(status)

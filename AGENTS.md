@@ -78,8 +78,9 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in four scenarios each: both
-  offer orders, a password, a wrong password, and a mesh of three. Both
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in four scenarios each: C++
+  offering, Trystero JS offering with a password, a wrong password, and a
+  mesh of three. Both
   lanes are of the kind `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
@@ -88,13 +89,23 @@ holds only what is specific to trystero.
     peers have `rtcConfig: {iceServers: []}`.
   - Chrome is `--chrome`, `CHROME`, or on macOS Playwright's
     `chrome-headless-shell` from its cache; elsewhere `CHROME` is required,
-    and the driver fails naming it. Chrome offers host candidates only on
+    and the driver fails naming it. A full Chrome serves as well as the
+    headless shell: the driver starts either with `--headless=new`, and with
+    the flags that stop Chrome's own requests, `--no-first-run`,
+    `--no-default-browser-check`, `--disable-component-update`,
+    `--disable-background-networking` and `--disable-sync`. Those five do
+    not stop a full Chrome for Testing 156 from asking Google for accounts,
+    update checks and component downloads (measured), so the driver also
+    resolves no host but 127.0.0.1 (`--host-resolver-rules`); the headless
+    shell asks nothing with or without any of them. The driver removes
+    Chrome's profile once Chrome has exited, on every way the run ends but
+    a SIGKILL, whose profile the next run removes. Chrome offers host candidates only on
     the interface of its default route, so in a container whose only
     interface is the loopback its peers gather none and never connect: the
     lanes were measured passing under `--network none` with one interface
     that holds the default route and leads nowhere, a dummy device, to which
     nothing but the kernel's IPv6 router solicitations was sent.
-  - Each driver is bounded by 240 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 300 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A wire string changed in the C++ library
     (`"__trystero_pw"`) fails the password scenario of both.
