@@ -17,6 +17,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -53,10 +54,10 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 struct pair {
     asio::io_context io;
     std::thread::id io_thread = std::this_thread::get_id();
-    std::shared_ptr<backend::peer_connection> offerer =
-        trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
-    std::shared_ptr<backend::peer_connection> answerer =
-        trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
+    std::shared_ptr<backend::peer_connection> offerer = trystero::native::peer_connection::create(
+        io.get_executor(), {}, loopback, std::pmr::get_default_resource());
+    std::shared_ptr<backend::peer_connection> answerer = trystero::native::peer_connection::create(
+        io.get_executor(), {}, loopback, std::pmr::get_default_resource());
     std::shared_ptr<backend::data_channel> offer_end;
     std::shared_ptr<backend::data_channel> answer_end;
     std::vector<backend::bytes> at_offerer, at_answerer;
@@ -180,7 +181,8 @@ void closing_one_end_is_seen_by_the_other() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback);
+    auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback,
+                                                        std::pmr::get_default_resource());
     std::optional<backend::error_code> result;
     pc->add_ice_candidate("not json", [&](backend::error_code ec) { result = ec; });
     if (!BOOST_TEST(run_until(io, [&] { return result.has_value(); }))) {

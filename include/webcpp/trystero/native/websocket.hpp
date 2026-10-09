@@ -226,8 +226,7 @@ private:
  * the connection and should verify peers. A URL it cannot parse reports a close, as an unreachable relay does.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(boost::asio::any_io_executor ex, boost::asio::ssl::context& tls, std::string_view url,
-                                                            backend::websocket::handlers h,
-                                                            std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+                                                            backend::websocket::handlers h, std::pmr::memory_resource* memory) {
     auto parts = detail::parse_url(url, memory);
     if (!parts) parts = detail::url_parts{false, std::pmr::string(memory), std::pmr::string(memory), std::pmr::string(memory)};
     const std::pmr::polymorphic_allocator<> allocator(memory);

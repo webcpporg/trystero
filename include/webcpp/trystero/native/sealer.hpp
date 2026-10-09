@@ -74,7 +74,7 @@ class sealer : public backend::sealer {
 public:
     using done_handler = handler<void(backend::error_code, std::string_view)>;
 
-    sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory = std::pmr::get_default_resource())
+    sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory)
         : ex_(std::move(ex)), key_(key), memory_(memory) {}
 
     void seal(std::string_view plaintext, done_handler done) override {

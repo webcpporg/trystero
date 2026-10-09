@@ -24,6 +24,7 @@
 #include <boost/throw_exception.hpp>
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -36,7 +37,10 @@
 #include <vector>
 #ifdef _MSC_VER
 #include <malloc.h>
-#elif defined(__EMSCRIPTEN__)
+#else
+#include <pthread.h>
+#endif
+#ifdef __EMSCRIPTEN__
 #include <emscripten/heap.h>
 #include <poll.h>
 #include <sys/select.h>
@@ -61,6 +65,31 @@ bool counting = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+
+#ifdef _MSC_VER
+/** Whether the calling thread is the one the test counts on: MSVC counts every thread. */
+bool on_counted_thread() noexcept {
+    return true;
+}
+
+void count_this_thread() noexcept {}
+#else
+// The thread main runs on: the C library's allocations are reported from every thread
+// (malloc_logger is process-wide, the replaced functions serve every thread), and a
+// system thread allocating during a window is not the rooms', nor may it touch the
+// counts. Atomic, since every thread reads it.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::atomic<pthread_t> counted_thread{};
+
+/** Whether the calling thread is the one the test counts on. */
+bool on_counted_thread() noexcept {
+    return pthread_equal(pthread_self(), counted_thread.load(std::memory_order_relaxed)) != 0;
+}
+
+void count_this_thread() noexcept {
+    counted_thread.store(pthread_self(), std::memory_order_relaxed);
+}
+#endif
 
 }  // namespace
 
@@ -94,7 +123,7 @@ void __libc_free(void* pointer);
 namespace {
 
 void* counted(void* pointer) {
-    if (counting && !inside_operator_new) {
+    if (on_counted_thread() && counting && !inside_operator_new) {
         ++c_allocations;
     }
     return pointer;
@@ -212,7 +241,8 @@ constexpr std::uint32_t malloc_log_allocate = 2;
 void count_c_allocation(std::uint32_t type, std::uintptr_t /*zone*/, std::uintptr_t /*size*/,
                         std::uintptr_t /*other*/, std::uintptr_t /*result*/,
                         std::uint32_t /*frames*/) {
-    if (counting && !inside_operator_new && (type & malloc_log_allocate) != 0) {
+    if (on_counted_thread() && counting && !inside_operator_new &&
+        (type & malloc_log_allocate) != 0) {
         ++c_allocations;
     }
 }
@@ -257,7 +287,7 @@ void release(void* pointer) noexcept {
  * form, so the alignment is raised and the size rounded up.
  */
 void* allocate(std::size_t size, std::size_t alignment) {
-    if (counting) {
+    if (on_counted_thread() && counting) {
         ++global_allocations;
     }
     alignment = alignment < sizeof(void*) ? sizeof(void*) : alignment;
@@ -270,10 +300,16 @@ void* allocate(std::size_t size, std::size_t alignment) {
     return pointer;
 }
 
-/** A resource that counts what it gives, from a buffer made before the exchange. */
+/**
+ * A resource that counts what it gives, from a buffer made before the exchange, and what is
+ * given back: how many bytes are still out, and how many returns name memory it never gave,
+ * which a pmr object freed through the wrong resource would do.
+ */
 class counting_resource final : public std::pmr::memory_resource {
 public:
     std::size_t allocations = 0;
+    std::size_t outstanding = 0;
+    std::size_t foreign = 0;
 
 private:
     std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20);
@@ -282,11 +318,18 @@ private:
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         ++allocations;
+        outstanding += bytes;
         return buffer_.allocate(bytes, alignment);
     }
 
-    void do_deallocate(void* /*pointer*/, std::size_t /*bytes*/,
-                       std::size_t /*alignment*/) override {}
+    void do_deallocate(void* pointer, std::size_t bytes, std::size_t /*alignment*/) override {
+        const auto* at = static_cast<const std::byte*>(pointer);
+        if (at < storage_.data() || at >= storage_.data() + storage_.size()) {
+            ++foreign;
+            return;
+        }
+        outstanding -= bytes;
+    }
 
     [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
         return this == &other;
@@ -345,6 +388,16 @@ void the_counts_see_an_allocation() {
 #endif
     global_allocations = 0;
     c_allocations = 0;
+    // A return of memory a resource never gave, and what is still out.
+    counting_resource giver;
+    counting_resource other;
+    void* given = giver.allocate(48, 8);
+    BOOST_TEST_EQ(giver.outstanding, 48U);
+    other.deallocate(given, 48, 8);
+    BOOST_TEST_EQ(other.foreign, 1U);
+    giver.deallocate(given, 48, 8);
+    BOOST_TEST_EQ(giver.outstanding, 0U);
+    BOOST_TEST_EQ(giver.foreign, 0U);
 }
 
 /** Two rooms exchange two payloads that make builds; the second is counted. */
@@ -401,6 +454,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     BOOST_TEST_EQ(global_allocations, 0U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
+    BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign, 0U);
     global_allocations = 0;
     c_allocations = 0;
 }
@@ -505,8 +559,24 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
             farewell = run_until(io, [&] { return gone && left == 1; });
         }
     }
+    // Both rooms are gone, and operations they left are still pending on the io_context,
+    // holding memory of their resources: why a resource must outlive them (doc:
+    // #trystero-allocation). The order that holds:
+    //
+    //     std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
+    //     boost::asio::io_context io;                     // destroyed before the resource
+    //     {
+    //         trystero::room room(io.get_executor(), factory, {.memory = &memory}, "id");
+    //         ...
+    //     }
+    //     io.run();  // or destroy io: the room's pending operations free into memory
+    const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
     run_for(io, 300);
     counting = false;
+    BOOST_TEST_GT(left_behind, 0U);
+    BOOST_TEST_EQ(a_memory.outstanding, 0U);
+    BOOST_TEST_EQ(z_memory.outstanding, 0U);
+    BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign + network_memory.foreign, 0U);
     BOOST_TEST(joined);
     BOOST_TEST(exchanged);
     BOOST_TEST(farewell);
@@ -546,6 +616,7 @@ void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*ali
 }
 
 int main() {
+    count_this_thread();
 #if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
     malloc_logger = &count_c_allocation;
 #endif

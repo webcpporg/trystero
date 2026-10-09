@@ -31,6 +31,7 @@
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/async_result.hpp>
 #include <boost/asio/bind_allocator.hpp>
+#include <boost/assert.hpp>
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 
@@ -75,8 +76,14 @@ struct room_config {
     /** Diagnostics, by category; see detail::logger. The room moves the sink into `memory`. */
     detail::logger::sink log = {};
     /**
-     * The resource every allocation of the room goes through, from its construction to its destruction; it must
-     * outlive the room and every value the room hands out.
+     * The resource every allocation of the room goes through, from its construction to its destruction; not null.
+     *
+     * It must outlive the room, every value the room hands out (a `std::pmr::string`, a `pmr_bytes`, a
+     * `boost::json::value`), and every operation the room leaves pending: on Asio, until the io_context the room's
+     * executor belongs to has run out of the room's work or has been destroyed, so a resource is declared before its
+     * io_context; in the browser, until the room's pending promises have settled. A room allocates and frees per
+     * event, so a resource that reuses what is freed (a pool) suits a long-lived room, and a monotonic one only a
+     * short-lived one.
      */
     std::pmr::memory_resource* memory = std::pmr::get_default_resource();
 };
@@ -849,7 +856,9 @@ class action;
  *
  * Tip: every handler the room calls, and every completion, runs on the executor it was constructed with. The views a
  * handler receives are valid for the duration of the call. Every allocation of the room goes through
- * `room_config::memory`; a completion handler is allocated as its own associated allocator says.
+ * `room_config::memory`; a completion handler is allocated as its own associated allocator says. Destroying the room
+ * leaves operations pending on its executor, which free into that resource: it must outlive them (see
+ * `room_config::memory`).
  */
 class room {
 public:
@@ -926,6 +935,7 @@ public:
 private:
     static std::shared_ptr<detail::room_impl> make(executor_type ex, backend::factory& factory, room_config config, std::string_view room_id) {
         std::pmr::memory_resource* const memory = config.memory;
+        BOOST_ASSERT_MSG(memory != nullptr, "room_config::memory names no resource");
         return std::allocate_shared<detail::room_impl>(std::pmr::polymorphic_allocator<>(memory), std::move(ex), factory, std::move(config),
                                                        room_id);
     }

@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <functional>
+#include <memory_resource>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -132,7 +133,8 @@ void opens_sends_in_order_receives_and_closes_once() {
             .open = [&] { opened = true; },
             .message = [&](std::string_view text) { received.emplace_back(text); },
             .close = [&] { ++closes; },
-        });
+        },
+        std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }
@@ -165,7 +167,8 @@ void an_unreachable_relay_closes_without_opening() {
                                                           .open = [&] { opened = true; },
                                                           .message = {},
                                                           .close = [&] { ++closes; },
-                                                      });
+                                                      },
+                                                      std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return closes == 1; }));
     BOOST_TEST(!opened);
 }
@@ -182,7 +185,8 @@ void a_dropped_socket_reports_nothing() {
                                                     .open = [&] { ++events; },
                                                     .message = [&](std::string_view) { ++events; },
                                                     .close = [&] { ++events; },
-                                                });
+                                                },
+                                                std::pmr::get_default_resource());
     }
     run_until(io, [] { return false; }, 200ms);
     BOOST_TEST_EQ(events, 0);
@@ -199,7 +203,8 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
                                                           .open = [&] { opened = true; },
                                                           .message = {},
                                                           .close = [&] { ++closes; },
-                                                      });
+                                                      },
+                                                      std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }

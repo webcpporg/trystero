@@ -34,7 +34,12 @@ a message an action's handler receives as a `std::pmr::string`, a
 `trystero::pmr_bytes` or a `boost::json::value`. A completion handler is
 allocated as its own associated allocator says, which
 `boost::asio::bind_allocator` sets. What libdatachannel, OpenSSL and the
-browser's JavaScript allocate stays theirs.
+browser's JavaScript allocate stays theirs. The resource must outlive the
+room, every value it handed out, and the operations it leaves pending when
+it is destroyed: declare it before the io_context, which then drains or is
+destroyed first; in the browser, keep it for the page's life. A room
+allocates and frees on every event, so a pool suits a long-lived room better
+than a monotonic buffer. `room_config` is move-only: pass it moved.
 
 ## Building inside the superproject
 

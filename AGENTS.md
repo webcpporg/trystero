@@ -127,12 +127,48 @@ holds only what is specific to trystero.
     frames, transfers, negotiations and relays, its handlers, the text it
     composes for its log, the objects its backend makes for it, the context
     libsecp256k1 signs with (`secp256k1_context_preallocated_create`, in the
-    resource), and the JSON it parses and writes. The resource must outlive
-    the room and every value the room handed out (a `std::pmr::string`, a
-    `pmr_bytes` or a `boost::json::value` a handler kept). trystero touches
-    it only from the room's executor, so it need not be thread-safe when
-    that executor runs on one thread.
-  - **Containers.** Every container trystero declares is a `std::pmr` one:
+    resource), and the JSON it parses and writes. trystero touches it only
+    from the room's executor, so it need not be thread-safe when that
+    executor runs on one thread. A null `memory` is a programming error,
+    which `BOOST_ASSERT` catches when the room is constructed.
+  - **The resource's lifetime.** The resource must outlive the room, every
+    value the room handed out (a `std::pmr::string`, a `pmr_bytes` or a
+    `boost::json::value` a handler kept), and every operation the room left
+    pending: destroying a room closes everything, but what it closed still
+    has operations queued that free into the resource. On Asio, the resource
+    lives until the io_context of the room's executor has run out of the
+    room's work or has been destroyed, so it is declared before the
+    io_context; in the browser, until the room's pending promises have
+    settled (a promise's registration with the page's `event_loop` keeps its
+    handler, in the room's resource), in practice for the page's life. The
+    order that holds:
+
+    ```cpp
+    std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
+    boost::asio::io_context io;                     // destroyed before memory
+    {
+        trystero::room room(io.get_executor(), backend, {.memory = &memory}, "lobby");
+        // ...
+    }
+    io.run();  // or destroy io: the room's pending operations free into memory
+    ```
+
+    The test measures it: once two rooms are destroyed, their resources
+    still have memory out, and none once the io_context has drained. No
+    check in debug builds catches the misuse: trystero holds a raw pointer
+    and cannot see the resource end, and the use comes after the room is
+    gone, from an operation of Asio's or the browser's; a resource that
+    asserts nothing is out when it is destroyed, as the test's counts, is
+    the check, and it is the user's.
+  - **Which resource.** A room allocates and frees on every event (a frame,
+    a parsed text, a post, a log line), so a resource that reuses what is
+    freed, a pool, suits a long-lived room; a
+    `std::pmr::monotonic_buffer_resource` grows with every event and suits
+    a short-lived one, or a test.
+  - **Containers.** Every container trystero declares is a `std::pmr` one,
+    but `trystero::bytes` (a `std::vector<std::uint8_t>`) and
+    `trystero::payload` (a variant of `std::string`, `boost::json::value` and
+    `bytes`), the user's choice of `std::allocator`:
     `std::pmr::string` (and `peer_id`), `std::pmr::vector` (and
     `backend::bytes`, `protocol::bytes` and `pmr_bytes`), `std::pmr::deque`,
     `std::pmr::map`, `std::pmr::set`, `std::pmr::unordered_map` and
@@ -158,8 +194,10 @@ holds only what is specific to trystero.
     `detail::logger::sink`, since `std::function` takes no allocator since
     C++17. Constructed from `f` alone it uses the default resource; the room
     moves a handler it is given (`room_config::log`) into its own resource
-    with the allocator-extended move. A move assignment carries the source's
-    allocator with its target. Where a handler must survive its own
+    with the allocator-extended move, which makes `room_config` move-only:
+    a room is given its configuration by value, moved
+    (`room(ex, factory, std::move(config), id)`). A move assignment carries
+    the source's allocator with its target. Where a handler must survive its own
     replacement during its call, its owner keeps it in a `std::shared_ptr`
     made in the resource and calls it through a copy of that pointer.
   - **The backend.** Each method of `backend::factory` that makes an object
@@ -204,8 +242,10 @@ holds only what is specific to trystero.
     the standard types, and `decode(incoming& message,
     std::pmr::memory_resource* memory)` takes the resource for every type:
     the `std::pmr` types are built in it, and `boost::json::value` in the
-    room's JSON storage, which the message carries. `std::string` and `bytes`
-    stay as they are, with `std::allocator`: the user's choice. `encode`
+    room's JSON storage, which the message carries. `std::string`, `bytes`
+    and `payload` stay as they are, with `std::allocator`: the user's
+    choice, and a received `bytes`, or the binary of a `payload`, is a copy
+    of the frame, which is in the room's resource. `encode`
     takes the resource too, for what keeps the payload alive.
   - **The protocol** (`protocol/`) takes a `std::pmr::memory_resource*` as
     the last parameter of every function that returns what it allocates,
@@ -222,10 +262,15 @@ holds only what is specific to trystero.
     native backend's posts from libdatachannel's threads, which carry Asio's
     default allocator, since the resource is touched only on the room's
     executor; and Boost.Beast's and Asio's state inside the native WebSocket
-    (its stream, its resolver's results, its coroutines' frames). The
-    browser's `event_loop` and the test's `memory_network` are shared by
-    every room of a page or of a test, and allocate their own registrations
-    and relays through the resource they are constructed with.
+    (its stream, its resolver's results, its coroutines' frames); the
+    payload types `std::string`, `bytes` and `payload`, with
+    `std::allocator`; and, on Emscripten, the C library's `select()`, which
+    Asio's reactor calls on every wait of an io_context with a timer or a
+    socket, and which callocs an array on every call (the test replaces it,
+    below). The browser's `event_loop` and the test's `memory_network` are
+    shared by every room of a page or of a test, and allocate the entries
+    of their registrations and their relays through the resource they are
+    constructed with; a registered callback stays in its own resource.
   - **The proof** is `test/allocation_test.cpp`, on both targets, which
     counts the global `operator new`, replaced, and the C library's
     allocation functions, where the platform lets a program see them:
@@ -240,7 +285,12 @@ holds only what is specific to trystero.
     exchange a payload that travels in chunks, measure a round trip, one says
     goodbye, both are destroyed and the io_context is drained, while
     `operator new` sees exactly the two rooms' JSON storage counters and the
-    C library nothing. Asio's once-per-context allocations are made first
+    C library nothing, and the rooms' resources have nothing out once the
+    io_context has drained. The counting resources also count a return of
+    memory they never gave, a pmr object freed through the wrong resource,
+    which must be none. Only the thread `main` runs on is counted: the C
+    library reports allocations from every thread, and a system thread's are
+    not the rooms'. Asio's once-per-context allocations are made first
     (its timer service, its reactor, the scheduler's first operation, and room
     in its timer queue for 256 waits); without them the count is 8, not 2.
     The replaced `operator new` raises an alignment below `sizeof(void*)` and

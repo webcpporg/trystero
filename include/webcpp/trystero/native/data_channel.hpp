@@ -42,7 +42,7 @@ class data_channel : public backend::data_channel, public std::enable_shared_fro
 
 public:
     static std::shared_ptr<data_channel> create(boost::asio::any_io_executor ex, std::shared_ptr<rtc::DataChannel> channel,
-                                                std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+                                                std::pmr::memory_resource* memory) {
         auto self = std::allocate_shared<data_channel>(std::pmr::polymorphic_allocator<>(memory), private_tag{}, std::move(ex), std::move(channel),
                                                        memory);
         self->start();

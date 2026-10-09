@@ -16,6 +16,7 @@
 #include <boost/json.hpp>
 
 #include <fstream>
+#include <memory_resource>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -58,7 +59,8 @@ outcome run(boost::asio::io_context& io, Operation operation) {
 
 void opens_what_trystero_js_sealed(const json::object& sealed) {
     boost::asio::io_context io;
-    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"));
+    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"),
+                                    std::pmr::get_default_resource());
     const auto opened =
         run(io, [&](auto done) { sealer.open(sealed.at("text").as_string(), done); });
     BOOST_TEST(!opened.ec);
@@ -67,7 +69,8 @@ void opens_what_trystero_js_sealed(const json::object& sealed) {
 
 void seals_in_trystero_form_and_opens_it_back() {
     boost::asio::io_context io;
-    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("", "app", "room"));
+    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("", "app", "room"),
+                                    std::pmr::get_default_resource());
     const std::string plaintext =
         R"({"candidate":"candidate:1 1 udp 2122260223 192.0.2.1 54321 typ host"})";
     const auto sealed = run(io, [&](auto done) { sealer.seal(plaintext, done); });
@@ -86,8 +89,10 @@ void seals_in_trystero_form_and_opens_it_back() {
 
 void another_key_is_a_wrong_password(const json::object& sealed) {
     boost::asio::io_context io;
-    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"));
-    trystero::native::sealer intruder(io.get_executor(), tp::seal_key("guess", "my-app", "room-1"));
+    trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"),
+                                    std::pmr::get_default_resource());
+    trystero::native::sealer intruder(io.get_executor(), tp::seal_key("guess", "my-app", "room-1"),
+                                      std::pmr::get_default_resource());
     const auto opened =
         run(io, [&](auto done) { intruder.open(sealed.at("text").as_string(), done); });
     BOOST_TEST(opened.ec == trystero::error::wrong_password);

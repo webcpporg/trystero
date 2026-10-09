@@ -246,6 +246,13 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
 
 class memory_peer_connection;
 
+/**
+ * The network's record of its peer connections, by id: a connection enters it when it is made
+ * and leaves it when it is destroyed, through a weak reference, since a connection may outlive
+ * the network while the io_context it posted to still holds it.
+ */
+using connection_registry = std::pmr::map<int, memory_peer_connection*>;
+
 class memory_data_channel : public backend::data_channel,
                             public std::enable_shared_from_this<memory_data_channel> {
 public:
@@ -311,9 +318,21 @@ private:
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
-    memory_peer_connection(boost::asio::io_context& io, memory_network& net, int id,
+    memory_peer_connection(boost::asio::io_context& io, memory_network& net,
+                           std::weak_ptr<connection_registry> registry, int id,
                            std::pmr::memory_resource* memory)
-        : io_(io), net_(net), id_(id), memory_(memory), candidates_received(memory) {}
+        : io_(io),
+          net_(net),
+          registry_(std::move(registry)),
+          id_(id),
+          memory_(memory),
+          candidates_received(memory) {}
+
+    memory_peer_connection(const memory_peer_connection&) = delete;
+    memory_peer_connection& operator=(const memory_peer_connection&) = delete;
+
+    /** Leaves the network's record, if the network is still there. */
+    ~memory_peer_connection() override;
 
     void set_handlers(handlers h) override { h_ = std::move(h); }
 
@@ -391,6 +410,7 @@ private:
 
     boost::asio::io_context& io_;
     memory_network& net_;
+    std::weak_ptr<connection_registry> registry_;
     int id_;
     std::pmr::memory_resource* memory_;
     int remote_id_ = -1;
@@ -418,7 +438,8 @@ public:
           memory_(memory),
           relays_(memory),
           unreachable_(memory),
-          connections_(memory) {}
+          connections_(std::allocate_shared<connection_registry>(
+              std::pmr::polymorphic_allocator<>(memory))) {}
 
     memory_relay& relay(std::string_view url) {
         auto it = relays_.find(url);
@@ -444,8 +465,9 @@ public:
         std::span<const backend::ice_server> /*servers*/,
         std::pmr::memory_resource* memory) override {
         auto pc = std::allocate_shared<memory_peer_connection>(
-            std::pmr::polymorphic_allocator<>(memory), io_, *this, next_pc_++, memory);
-        connections_.insert_or_assign(pc->id(), pc);
+            std::pmr::polymorphic_allocator<>(memory), io_, *this, connections_, next_pc_++,
+            memory);
+        connections_->insert_or_assign(pc->id(), pc.get());
         return pc;
     }
 
@@ -472,8 +494,8 @@ public:
     }
 
     std::shared_ptr<memory_peer_connection> find(int id) {
-        auto it = connections_.find(id);
-        return it == connections_.end() ? nullptr : it->second.lock();
+        auto it = connections_->find(id);
+        return it == connections_->end() ? nullptr : it->second->shared_from_this();
     }
 
     boost::asio::io_context& io() { return io_; }
@@ -485,9 +507,14 @@ private:
     std::pmr::memory_resource* memory_;
     std::pmr::map<std::pmr::string, memory_relay, std::less<>> relays_;
     std::pmr::set<std::pmr::string, std::less<>> unreachable_;
-    std::pmr::map<int, std::weak_ptr<memory_peer_connection>> connections_;
+    std::shared_ptr<connection_registry> connections_;
     int next_pc_ = 0;
 };
+
+inline memory_peer_connection::~memory_peer_connection() {
+    if (auto registry = registry_.lock())
+        registry->erase(id_);
+}
 
 inline void memory_peer_connection::try_connect() {
     if (connected_ || !ready())

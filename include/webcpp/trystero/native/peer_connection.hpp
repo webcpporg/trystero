@@ -71,8 +71,7 @@ public:
      * @return The new connection.
      */
     static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex, std::span<const backend::ice_server> servers,
-                                                   std::string_view bind_address = {},
-                                                   std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+                                                   std::string_view bind_address, std::pmr::memory_resource* memory) {
         rtc::Configuration config;
         config.disableAutoNegotiation = true;
         if (!bind_address.empty()) config.bindAddress = std::string(bind_address);

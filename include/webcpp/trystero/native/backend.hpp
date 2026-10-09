@@ -37,7 +37,7 @@ namespace webcpp::trystero::native {
 /** An Asio timer whose waits are allocated in the room's resource. */
 class timer : public trystero::backend::timer {
 public:
-    explicit timer(boost::asio::any_io_executor ex, std::pmr::memory_resource* memory = std::pmr::get_default_resource())
+    timer(boost::asio::any_io_executor ex, std::pmr::memory_resource* memory)
         : timer_(std::move(ex)), memory_(memory) {}
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
