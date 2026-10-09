@@ -93,11 +93,24 @@ void count_this_thread() noexcept {
 
 }  // namespace
 
+// AddressSanitizer replaces the C library's allocation functions with its own
+// allocator, which none of the hooks below sees, so a build with it counts none.
+#ifdef __SANITIZE_ADDRESS__
+#define WEBCPP_TEST_TRYSTERO_ADDRESS_SANITIZER 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define WEBCPP_TEST_TRYSTERO_ADDRESS_SANITIZER 1
+#endif
+#endif
+
 // The C library's allocations, seen where a program can see them: glibc's
 // functions are replaced and forward to glibc's own (__libc_*), Emscripten's
 // dlmalloc defines its functions weak and keeps emscripten_builtin_*, and
-// macOS reports every allocation to malloc_logger. MSVC's are not counted.
-#if defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+// macOS reports every allocation to malloc_logger. MSVC's are not counted, nor
+// any under AddressSanitizer.
+#ifdef WEBCPP_TEST_TRYSTERO_ADDRESS_SANITIZER
+// Nothing of the C library is counted.
+#elif defined(__GLIBC__) || defined(__EMSCRIPTEN__)
 #define WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS 1
 #ifdef __GLIBC__
 extern "C" {
@@ -638,7 +651,8 @@ void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*ali
 
 int main() {
     count_this_thread();
-#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+#if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
+    !defined(__EMSCRIPTEN__)
     malloc_logger = &count_c_allocation;
 #endif
     the_replaced_operators_serve_every_alignment();

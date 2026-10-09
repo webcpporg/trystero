@@ -376,7 +376,8 @@ holds only what is specific to trystero.
     glibc's functions are replaced and forward to `__libc_*`, Emscripten's
     dlmalloc has weak definitions the test replaces and forwards to
     `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and
-    MSVC's are not counted. Two rooms over the memory relays exchange a
+    MSVC's are not counted, nor any under AddressSanitizer, whose own
+    allocator reports to none of these. Two rooms over the memory relays exchange a
     payload, a `std::pmr::string`, a `pmr_bytes` and a `boost::json::value`
     in turn, while both counts see none and the counting resources of the
     two configurations see the rooms'; and two rooms with a password, a log
