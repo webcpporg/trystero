@@ -83,10 +83,11 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in four scenarios each: C++
-  offering, Trystero JS offering with a password, a wrong password, and a
-  mesh of three. Both
-  lanes are of the kind `original`, so the CI gives them its Node.
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in five scenarios each: C++
+  offering, Trystero JS offering with a password, a Trystero JS peer that
+  also sends malformed candidates (`js.html`'s `malformed-candidate-to`), a
+  wrong password, and a mesh of three. Both lanes are of the kind
+  `original`, so the CI gives them its Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to

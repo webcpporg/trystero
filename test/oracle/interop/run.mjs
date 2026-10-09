@@ -310,17 +310,32 @@ const pairScenario = (name, {cppKind = 'cpp', cppSelf, password, leaver}) =>
         return left ? null : `the ${leaver} peer left but the other did not see it`
     })
 
+// A Trystero JS peer that also sends the C++ peer malformed candidates (js.html, malformed-candidate-to): the C++
+// peer drops at least one, which its log says, and the exchange completes as it does without them.
+const malformedCandidateScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const cppSelf = '00000000000000000000'
+        const params = {room: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, self: cppSelf})
+        const js = await open('js', {...params, 'malformed-candidate-to': cppSelf})
+        const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 60_000)
+        if (!ok) return 'the exchange did not complete in 60 s'
+        return (await cpp.log()).includes('dropped a candidate') ? null : 'no malformed candidate reached the C++ peer'
+    })
+
 // Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
         await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
         await pairScenario('Trystero JS offers, C++ answers (higher id), with a password; JS leaves', {cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
+        if (!usePublic) await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop C++', 'cpp')
     }
 
     if (nativePeer) {
         await pairScenario('Native C++ offers (lower id), Trystero JS answers; native leaves', {cppKind: 'native', cppSelf: '00000000000000000000', leaver: 'cpp'})
         await pairScenario('Trystero JS offers, native C++ answers (higher id), with a password; JS leaves', {cppKind: 'native', cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
         if (!usePublic) {
+            await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
             await scenario('A wrong password keeps native C++ and Trystero JS apart', async open => {
                 const params = {room: room(), ...relayParams}
                 const native = await open('native', {...params, password: 'secret'})

@@ -57,3 +57,7 @@ webcpp.run native_room : native_room_test.cpp
 # library's allocation functions see none. Its two counting resources hold
 # 64 MiB each, beyond Emscripten's 16 MiB unless the memory grows.
 webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+
+# The browser backend's own tests, under node, which has the page's
+# WebSocket, Web Crypto and microtasks but no WebRTC.
+webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;

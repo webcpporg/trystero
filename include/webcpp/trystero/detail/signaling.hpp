@@ -506,7 +506,7 @@ private:
             reset_answer(*m);
             return;
         }
-        flush_remote_candidates(m->answer);
+        flush_remote_candidates(peer, m->answer);
         const auto weak = weak_from_this();
         pc->set_local_description(
             bind<void(boost::system::error_code, std::string_view, std::string_view)>(
@@ -618,7 +618,7 @@ private:
                                     reset_offer(*m);
                                     return;
                                 }
-                                self->flush_remote_candidates(m->offer);
+                                self->flush_remote_candidates(peer, m->offer);
                             }));
                 }));
     }
@@ -657,17 +657,27 @@ private:
                         }
                         return;
                     }
-                    target->pc->add_ice_candidate(plain,
-                                                  self->bind<void(boost::system::error_code)>(
-                                                      [](boost::system::error_code) {}));
+                    target->pc->add_ice_candidate(plain, self->candidate_added(peer));
                 }));
     }
 
-    void flush_remote_candidates(side& s) {
+    void flush_remote_candidates(std::string_view peer, side& s) {
         for (const auto& candidate : std::exchange(s.pending_remote, {})) {
-            s.pc->add_ice_candidate(
-                candidate, bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
+            s.pc->add_ice_candidate(candidate, candidate_added(peer));
         }
+    }
+
+    /**
+     * What a remote candidate completes with: one the backend refused, as a peer's text that is
+     * not a candidate, is dropped and logged, and the negotiation goes on with the others.
+     */
+    handler<void(boost::system::error_code)> candidate_added(std::string_view peer) {
+        return bind<void(boost::system::error_code)>(
+            [weak = weak_from_this(), peer = copy(peer)](boost::system::error_code ec) {
+                if (const auto self = weak.lock(); self && ec) {
+                    self->log_("signal", "dropped a candidate from ", peer, ": ", ec);
+                }
+            });
     }
 
     void on_local_candidate(std::string_view peer_view,

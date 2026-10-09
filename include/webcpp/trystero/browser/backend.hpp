@@ -13,10 +13,15 @@
 #include <webcpp/trystero/browser/event_loop.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/json_resource.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <emscripten/val.h>
-#include <sys/random.h>  // lint-world: getentropy, the page's entropy
+#include <sys/random.h>                   // lint-world: getentropy, the page's entropy
+#include <boost/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
+#include <boost/asio/post.hpp>            // lint-world: posts handlers only
+#include <boost/json/storage_ptr.hpp>
 
 #include <cmath>
 #include <deque>
@@ -55,6 +60,19 @@ inline backend::bytes from_js(const val& buffer, std::pmr::memory_resource* memo
     backend::bytes out(view["length"].as<std::size_t>(), memory);
     val(emscripten::typed_memory_view(out.size(), out.data())).call<void>("set", view);
     return out;
+}
+
+/**
+ * Runs `f` on the loop's io_context after the current call, allocated in `memory`: how a
+ * completion that is known at once still reaches its handler later, never inside the call that
+ * started the operation.
+ */
+template <class F>
+void defer(event_loop& loop, std::pmr::memory_resource* memory, F&& f) {
+    boost::asio::post(
+        loop.io(),
+        boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory), std::forward<F>(f)));
+    loop.schedule_poll();
 }
 
 /** Calls `done(true, value)` or `done(false, reason)` once a promise settles. */
@@ -467,12 +485,28 @@ public:
     /**
      * Adds a remote ICE candidate, with `addIceCandidate()`.
      *
+     * The text comes from a peer: one that is not a JSON object is dropped, and never reaches
+     * `JSON.parse`, whose exception would stop the page's loop.
+     *
      * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
-     * @param done Called once the promise settles, or with `error::backend_failure` when it is
-     * rejected.
+     * @param done Called once the promise settles, or with `error::backend_failure` when the text
+     * is not a JSON object or the promise is rejected.
      */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
+        // The text is a peer's: JSON.parse would throw on one that is not JSON, and the exception
+        // would unwind through the room to the page. It is read in C++ first, and only an object
+        // reaches JSON.parse, which accepts every text Boost.JSON does.
+        json_resource resource(memory_);
+        boost::system::error_code ec;
+        const auto document =
+            protocol::json::parse(candidate_json, boost::json::storage_ptr(&resource), ec);
+        if (ec || !document.is_object()) {
+            detail::defer(loop_, memory_, [done = std::move(done)]() mutable {
+                done(make_error_code(error::backend_failure));
+            });
+            return;
+        }
         const val candidate = val::global("JSON").call<val>("parse", loop_.text(candidate_json));
         detail::then(
             loop_, pc_.call<val>("addIceCandidate", candidate),

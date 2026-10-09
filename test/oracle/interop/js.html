@@ -38,6 +38,16 @@ const log = (category, text) => {
 }
 const params = new URLSearchParams(location.search)
 const relays = params.get('relays')
+// With `malformed-candidate-to` (below), Trystero's own messages to the relays wait 1 s each, so that the C++ peer
+// holds its offer to this peer for at least that long: the malformed candidates, sent at once, reach it then, and it
+// keeps them until the answer arrives, as a candidate of a real negotiation.
+const malformedTo = params.get('malformed-candidate-to')
+const sendNow = WebSocket.prototype.send
+if (malformedTo) {
+    WebSocket.prototype.send = function (data) {
+        setTimeout(() => sendNow.call(this, data), 1000)
+    }
+}
 const room = joinRoom(
     {
         appId: params.get('app'),
@@ -84,6 +94,28 @@ room.onPeerLeave = peer => {
     record('peer-leave', {peer})
 }
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
+
+// With `malformed-candidate-to`, this peer also sends that peer, for 10 s, a candidate whose plaintext is not JSON,
+// sealed under the room's key as Trystero seals a candidate, through a WebSocket of its own to the first relay: what
+// a broken or hostile peer of the room can send. The C++ peer must drop it and go on.
+if (malformedTo && relays) {
+    const {createEvent} = await import('@trystero-p2p/nostr')
+    const {sha1} = await import('@trystero-p2p/core')
+    const {encrypt, genKey} = await import('/node_modules/@trystero-p2p/core/dist/crypto.mjs')
+    const key = genKey(params.get('password') ?? '', params.get('app'), params.get('room'))
+    const topic = await sha1(['Trystero', params.get('app'), params.get('room'), malformedTo].join('@'))
+    const socket = new WebSocket(relays.split(',')[0])
+    socket.onopen = () => {
+        const until = performance.now() + 10_000
+        const send = async () => {
+            if (performance.now() > until || socket.readyState !== 1) return socket.close()
+            const content = JSON.stringify({peerId: selfId, candidate: await encrypt(key, 'not JSON at all')})
+            sendNow.call(socket, await createEvent(topic, content))
+            setTimeout(send, 150)
+        }
+        send()
+    }
+}
 </script>
 </body>
 </html>

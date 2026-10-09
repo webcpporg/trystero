@@ -252,14 +252,15 @@ public:
      * @param event The event.
      */
     void dispatch(int id, int slot, emscripten::val event) {
-        ++depth_;
-        if (id == poll_id) {
-            poll_scheduled_ = false;
-        } else if (const auto it = callbacks_.find(id); it != callbacks_.end()) {
-            const auto f = it->second;  // the callback may remove itself
-            (*f)(slot, std::move(event));
+        {
+            const running call(depth_);
+            if (id == poll_id) {
+                poll_scheduled_ = false;
+            } else if (const auto it = callbacks_.find(id); it != callbacks_.end()) {
+                const auto f = it->second;  // the callback may remove itself
+                (*f)(slot, std::move(event));
+            }
         }
-        --depth_;
         if (depth_ == 0) {
             poll();
         }
@@ -267,12 +268,11 @@ public:
 
     /** Runs every ready handler; what they post runs too. */
     void poll() {
-        ++depth_;
+        const running call(depth_);
         if (io_.stopped()) {
             io_.restart();
         }
         io_.poll();
-        --depth_;
     }
 
     /** Schedules a `poll()` in a microtask unless one is pending or a poll is running, which will
@@ -282,10 +282,35 @@ public:
             return;
         }
         poll_scheduled_ = true;
-        emscripten::val::global("queueMicrotask")(handler(poll_id, 0));
+        // A microtask's function is called with no argument, and the handler's takes one: bound
+        // to undefined, or embind refuses the call with a BindingError and the poll never runs.
+        const emscripten::val next_poll = handler(poll_id, 0);
+        emscripten::val::global("queueMicrotask")(next_poll.call<emscripten::val>(
+            "bind", emscripten::val::null(), emscripten::val::undefined()));
     }
 
 private:
+    /**
+     * Counts a call into C++ for as long as it runs, however it ends.
+     *
+     * Tip: a JavaScript exception thrown inside a callback unwinds through the call to the page;
+     * the build's WebAssembly exceptions run this destructor on the way, so the depth comes back
+     * down and the loop goes on polling. Counted by hand, the depth stayed raised and the loop
+     * never polled again: every room of the page stopped.
+     */
+    class running {
+    public:
+        explicit running(int& depth) noexcept : depth_(depth) { ++depth_; }
+
+        running(const running&) = delete;
+        running& operator=(const running&) = delete;
+
+        ~running() { --depth_; }
+
+    private:
+        int& depth_;
+    };
+
     static constexpr int poll_id = 0;
 
     boost::asio::io_context& io_;

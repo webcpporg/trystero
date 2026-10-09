@@ -20,12 +20,12 @@ webcpp.lane oracle : cases-protocol ;
 # browser's peer in headless Chrome, and the native peer as a process. The
 # native peer needs exceptions whatever the build asks: native::backend
 # exists only with them, since libdatachannel reports errors by throwing.
-# Each driver has 300 s, beyond its four scenarios' own limits (two
-# exchanges of 70 s, a wait of 8 s and a mesh of 60 s) and Chrome's start, so
-# that a scenario that does not complete fails by name, with what each peer
-# saw, before the bound stops it; a run where every page also hangs, each of
-# its DevTools calls waiting 10 s, may still meet the bound. They pass in
-# about 10 s.
+# Each driver has 300 s, beyond its five scenarios' own limits (three
+# exchanges of 60 to 70 s, a wait of 8 s and a mesh of 60 s) and Chrome's
+# start, so that a scenario that does not complete fails by name, with what
+# each peer saw, before the bound stops it; a run where every page also
+# hangs, each of its DevTools calls waiting 10 s, may still meet the bound.
+# They pass in about 12 s.
 webcpp.drive interop_browser : interop/peer.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>300
   : interop/run.mjs : --browser : emscripten ;
