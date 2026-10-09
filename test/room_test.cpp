@@ -708,6 +708,27 @@ void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
     }
 }
 
+// A flood of fresh ids below ours asks the room for a counter-announcement each: the room sends
+// at most one per relay in 5.3 s, Trystero's announce interval, so that no relay rate-limits it.
+void counter_announcements_are_paced() {
+    constexpr std::size_t flood = 300;
+    fixture f;
+    auto c = config("zzzzzzzzzzzzzzzzzzzz");
+    std::size_t asked = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        asked += text.ends_with("asking them to offer") ? 1 : 0;
+    };
+    const trystero::room a(f.io.get_executor(), f.net, std::move(c), "counter");
+    flooder attacker(f, "counter");
+    const auto start = std::chrono::steady_clock::now();
+    const auto before = f.net.relay(relay_a).events_seen;
+    attacker.announce(flood, "0low");
+    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    BOOST_TEST_GE(asked, 1U);
+    BOOST_TEST_LE(asked, 1 + static_cast<std::size_t>(elapsed / 5333ms));
+}
+
 // Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
 // offers to the first ids hold their places (the clock runs at its own pace here).
 void a_refused_peer_is_logged_once() {
@@ -870,6 +891,7 @@ int main() {
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();
     a_relay_that_closes_at_once_is_tried_less_and_less_often();
+    counter_announcements_are_paced();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();

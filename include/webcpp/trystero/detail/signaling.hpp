@@ -58,7 +58,7 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * | Message      | What this side does                                                            |
  * | announcement | the lower peer id offers on the relay that carried it; the higher one asks the |
  * |              | other to offer by announcing itself on the other's topic, at most once a       |
- * |              | second                                                                         |
+ * |              | second per peer and once in 5.3 s per relay for the whole room                 |
  * | offer        | answers it, unless it already answers one, or offers itself and its id is      |
  * |              | lower                                                                          |
  * | answer       | applies it to the matching offer                                               |
@@ -190,6 +190,9 @@ private:
     static constexpr auto later_offer_retry = std::chrono::milliseconds(4'800);
     static constexpr int max_offer_retries = 2;
     static constexpr std::size_t max_pending_candidates = 128;
+    /** The least time between two counter-announcements of the room on a relay: Trystero's
+     * `announceIntervalMs`, the pace at which it announces. */
+    static constexpr auto counter_announce_interval = std::chrono::milliseconds(5'333);
     /** How many refused peer ids are remembered, so that each is logged once. */
     static constexpr std::size_t remembered_refusals = 64;
 
@@ -368,6 +371,14 @@ private:
                 it != n.counter_announced_ms.end() && now - it->second < 1000) {
                 return;
             }
+            // Room-wide too: a flood of fresh ids below ours must not have the relay rate-limit
+            // the room. A peer not asked offers on our next announcement instead.
+            if (const auto it = counter_announced_ms_.find(relay);
+                it != counter_announced_ms_.end() &&
+                now - it->second < static_cast<double>(counter_announce_interval.count())) {
+                return;
+            }
+            counter_announced_ms_[relay] = now;
             n.counter_announced_ms[relay] = now;
             log_("signal", "announcement from ", peer, ": their id is lower, asking them to offer");
             cb_.publish(relay, peer_topic(peer),
@@ -1024,6 +1035,7 @@ private:
     std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
     std::pmr::deque<std::pmr::string> refused_{memory_};
     construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
+    std::pmr::map<std::size_t, double> counter_announced_ms_{memory_};  // per relay
     std::size_t failed_opens_ = 0;
     bool closed_ = false;
 };
