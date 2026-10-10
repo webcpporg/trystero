@@ -87,14 +87,14 @@ holds only what is specific to trystero.
     number.
   - A sealed offer or answer holds neither its offer id nor a peer id
     (Trystero's wire), so one recorded from the relays still opens when
-    anyone resends it in its sender's name, and so does the room's own,
-    sent back to it. A room remembers the last
-    `detail::signaling::remembered_descriptions` (1024) offers and answers
-    it made or acted on, by the SHA-256 of their opened text, and refuses
-    one that comes to it as a peer's: it changes nothing and is logged. It
-    makes or acts on at most two per connection it makes, so each is
-    remembered for at least an offer's lifetime (57 s), and in a quiet
-    room for its whole life.
+    anyone resends it in its sender's name, and so does the room's own, sent
+    back to it. A room remembers, by the SHA-256 of their opened text, the
+    last 1024 offers and answers it made or acted on
+    (`detail::signaling::remembered_descriptions`), and refuses one that
+    comes to it as a peer's: it changes nothing and is logged. It makes or
+    acts on at most two per connection it makes, so each is remembered for
+    at least an offer's lifetime (57 s), and in a quiet room for its whole
+    life.
   - What remains: a sealed offer or answer the room neither made nor
     acted on still opens and is acted on. Such texts are not scarce:
     every peer seals a fresh offer for any id announced above its own, and
@@ -389,40 +389,39 @@ holds only what is specific to trystero.
     constructed with; a registered callback stays in its own resource.
   - **The proof** is `test/allocation_test.cpp`, on both targets, which
     counts the global `operator new`, replaced, and the C library's
-    allocation functions, where the platform lets a program see them:
-    glibc's functions are replaced and forward to `__libc_*`, Emscripten's
-    dlmalloc has weak definitions the test replaces and forwards to
-    `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and
-    MSVC's are not counted, nor any under AddressSanitizer, whose own
-    allocator reports to none of these. Two rooms over the memory relays
-    exchange a payload, a `std::pmr::string`, a `pmr_bytes` and a
-    `boost::json::value`
-    in turn, while both counts see none and the counting resources of the
-    two configurations see the rooms'; and two rooms with a password, a log
-    sink and the network's state in a resource of its own are made, join,
-    exchange a payload that travels in chunks, measure a round trip, one says
-    goodbye, both are destroyed and the io_context is drained, while
-    `operator new` sees exactly the two rooms' JSON storage counters and the
-    C library nothing, and the rooms' resources have nothing out once the
-    io_context has drained. The counting resources also count a return of
-    memory they never gave, a pmr object freed through the wrong resource,
-    which must be none. Only the thread `main` runs on is counted: the C
-    library reports allocations from every thread, and a system thread's are
-    not the rooms'. Asio's once-per-context allocations are made first
-    (its timer service, its reactor, the scheduler's first operation, and room
-    in its timer queue for 256 waits); without them the count is 8, not 2.
-    The replaced `operator new` raises an alignment below `sizeof(void*)` and
-    rounds the size to a multiple of the alignment, since
-    `std::aligned_alloc` refuses both (measured: macOS refuses the alignments
-    1, 2 and 4, Emscripten 1 and 2, and both a size that is not a multiple of
-    the alignment), throws `std::bad_alloc` where there are exceptions, uses
-    `_aligned_malloc` on MSVC, and checks itself for every alignment from 1
-    to 64. On Emscripten the test also replaces `select()`, which Emscripten
-    implements over `poll()` with an array it callocs on every call, and
-    which Asio's reactor calls on every wait of the io_context the test
-    drives (measured: thousands of calls while two rooms exchange one
-    payload): the replacement keeps the array on the stack, so that the count
-    sees the rooms' allocations rather than the C library's wait.
+    allocation functions, where the platform lets a program see them: glibc's
+    functions are replaced and forward to `__libc_*`, Emscripten's dlmalloc
+    has weak definitions the test replaces and forwards to
+    `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and MSVC's
+    are not counted, nor any under AddressSanitizer, whose own allocator
+    reports to none of these. Two rooms over the memory relays exchange a
+    payload, a `std::pmr::string`, a `pmr_bytes` and a `boost::json::value`
+    in turn, while both counts see none and the counting resources of the two
+    configurations see the rooms'; and two rooms with a password, a log sink
+    and the network's state in a resource of its own are made, join, exchange
+    a payload that travels in chunks, measure a round trip, one says goodbye,
+    both are destroyed and the io_context is drained, while `operator new`
+    sees exactly the two rooms' JSON storage counters and the C library
+    nothing, and the rooms' resources have nothing out once the io_context
+    has drained. The counting resources also count a return of memory they
+    never gave, a pmr object freed through the wrong resource, which must be
+    none. Only the thread `main` runs on is counted: the C library reports
+    allocations from every thread, and a system thread's are not the rooms'.
+    Asio's once-per-context allocations are made first (its timer service,
+    its reactor, the scheduler's first operation, and room in its timer queue
+    for 256 waits); without them the count is 8, not 2. The replaced
+    `operator new` raises an alignment below `sizeof(void*)` and rounds the
+    size to a multiple of the alignment, since `std::aligned_alloc` refuses
+    both (measured: macOS refuses the alignments 1, 2 and 4, Emscripten 1 and
+    2, and both a size that is not a multiple of the alignment), throws
+    `std::bad_alloc` where there are exceptions, uses `_aligned_malloc` on
+    MSVC, and checks itself for every alignment from 1 to 64. On Emscripten
+    the test also replaces `select()`, which Emscripten implements over
+    `poll()` with an array it callocs on every call, and which Asio's reactor
+    calls on every wait of the io_context the test drives (measured:
+    thousands of calls while two rooms exchange one payload): the replacement
+    keeps the array on the stack, so that the count sees the rooms'
+    allocations rather than the C library's wait.
 - **No twins.** Every example needs the public relays or a browser, so each
   is a `webcpp.link`, linked and never run, and has no `.expected` and no
   twin in Trystero's language. The chat page's site is written by

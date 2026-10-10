@@ -86,16 +86,15 @@ inline std::pmr::vector<backend::ice_server> copy_ice_servers(
  * and publishes on the relays, without the key, can keep two peers apart from their first meeting
  * for as long as it keeps at it, though it can neither read nor join anything, nor touch joined
  * peers. Only a wire that seals the offer id and both peer ids closes this. The negotiations under
- * way are bounded
- * (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer expire without
- * a connection, an idle one gives its place to a new peer, and beyond the bound a new peer is
- * refused, logged once. The connections made are bounded too (`max_connections_per_window`),
- * however soon they end, since a browser counts a closed one until its garbage collector runs.
- * Joined peers, memory and connections stay safe under a flood; new peers do not: a flooder who
- * keeps sending fresh ids takes each place, and each connection of the window, as it frees, and
- * keeps new peers out for as long as the flood lasts. A joined peer whose connection drops is a new
- * peer when it comes back, with the same id, and is kept out the same way: there is no
- * renegotiation of a joined peer's connection. Trystero bounds none of this.
+ * way are bounded (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer
+ * expire without a connection, an idle one gives its place to a new peer, and beyond the bound a
+ * new peer is refused, logged once. The connections made are bounded too
+ * (`max_connections_per_window`), however soon they end, since a browser counts a closed one until
+ * its garbage collector runs. Joined peers, memory and connections stay safe under a flood; new
+ * peers do not: a flooder who keeps sending fresh ids takes each place, and each connection of the
+ * window, as it frees, and keeps new peers out for as long as the flood lasts. A joined peer whose
+ * connection drops is a new peer when it comes back, with the same id, and is kept out the same
+ * way: there is no renegotiation of a joined peer's connection. Trystero bounds none of this.
  *
  * Tip: a peer id is copied once, into the map's key, and every asynchronous handler captures its
  * own copy, in the room's resource, because it may outlive the entry. The entry points a handler
