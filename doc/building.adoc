@@ -195,7 +195,7 @@ python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -
 ----
 
 At http://localhost:8000, joining the app `webcpp-trystero-quick-start`, in
-place of the page's `webcpp-trystero-chat`, and the room `lobby` brings the native quick start in as a peer within seconds:
-its greeting appears in the chat, and what the page sends is printed in its
-terminal. On another toolset, `site` stops the build, saying that the page is
+place of the page's `webcpp-trystero-chat`, and the room `lobby` brings the
+native quick start in as a peer within seconds: its greeting appears in the
+chat, and what the page sends is printed in its terminal. On another toolset, `site` stops the build, saying that the page is
 built on emscripten alone.
