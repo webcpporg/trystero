@@ -29,9 +29,11 @@ JS 0.26, is now `test/fixtures/expected/expected.json`, byte for byte. `protocol
 libdatachannel reports errors by throwing. `protocol`, `room`, `native_sealer` and
 `native_websocket` pass built with `exception-handling=off`.
 
-The old suite had no variant without exceptions, and the new one has none either: webcpp builds
-none (owner decision, 2026-10-08). The lint analyses each test a second time without
-exceptions, except the two that declare them.
+The old suite had no variant without exceptions. The new one runs the browser backend's
+recovery tests a second time without exceptions (`browser_*_no_exceptions`), since whether a
+build has exceptions is the user's choice and a library supports both (owner decision,
+2026-10-10). The lint analyses each test a second time without exceptions, except the two
+that declare them.
 
 ## How each form was converted
 
