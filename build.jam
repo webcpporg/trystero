@@ -14,9 +14,10 @@ project /webcpp/trystero ;
 # until it builds them from third_party/, are found where
 # -sSECP256K1_ROOT=<dir>, -sSECP256K1_EMSCRIPTEN_ROOT=<dir>,
 # -sLIBDATACHANNEL_ROOT=<dir> and -sOPENSSL_ROOT=<dir> on b2's command line
-# say, else in the superproject's .local/, where webcpp's CI installs them,
-# else on the compiler's default search path, where a system install is
-# legitimate (webcpp.external-root and webcpp.external-found). The
+# say, a relative one from b2's working directory, else in the
+# superproject's .local/, where webcpp's CI installs them, else, natively
+# outside Windows, in /usr/include or /usr/local/include, where a system
+# install is legitimate (webcpp.external and webcpp.external-found). The
 # environment is never read. When none holds a library, trystero is left
 # out, with one message that names it, unless the build gives
 # webcpp-require-external=on, as the CI does, which stops it instead.
@@ -28,14 +29,14 @@ import webcpp ;
 # libsecp256k1 on Windows needs SECP256K1_STATIC, or its header declares
 # every function imported from a DLL.
 # tag::dependencies[]
-local secp256k1-root = [ webcpp.external-root SECP256K1_ROOT : secp256k1-native
-    : secp256k1.h ] ;
-local secp256k1-emscripten-root = [ webcpp.external-root SECP256K1_EMSCRIPTEN_ROOT
-    : secp256k1-emscripten : secp256k1.h ] ;
-local libdatachannel-root = [ webcpp.external-root LIBDATACHANNEL_ROOT
-    : libdatachannel : rtc/rtc.hpp ] ;
-local openssl-root = [ webcpp.external-root OPENSSL_ROOT : openssl
-    : openssl/ssl.h ] ;
+local secp256k1-root = [ webcpp.external trystero : libsecp256k1
+    : SECP256K1_ROOT : secp256k1-native : secp256k1.h : native ] ;
+local secp256k1-emscripten-root = [ webcpp.external trystero : libsecp256k1
+    : SECP256K1_EMSCRIPTEN_ROOT : secp256k1-emscripten : secp256k1.h : emscripten ] ;
+local libdatachannel-root = [ webcpp.external trystero : libdatachannel
+    : LIBDATACHANNEL_ROOT : libdatachannel : rtc/rtc.hpp : native ] ;
+local openssl-root = [ webcpp.external trystero : OpenSSL : OPENSSL_ROOT : openssl
+    : openssl/ssl.h : native ] ;
 lib secp256k1 : : <name>secp256k1 <toolset>emscripten
     <search>$(secp256k1-emscripten-root)/lib
   : : <include>$(secp256k1-emscripten-root)/include ;
@@ -63,29 +64,15 @@ lib crypto : : <name>crypto <search>$(openssl-root)/lib
 # emscripten. Checked only when a target that uses trystero is built.
 rule trystero-dependencies ( properties * )
 {
-    if <toolset>emscripten in $(properties)
-    {
-        return [ webcpp.external-found trystero : libsecp256k1
-            : SECP256K1_EMSCRIPTEN_ROOT : secp256k1-emscripten : secp256k1.h
-            : : $(properties) ] ;
-    }
-    else
-    {
-        return [ webcpp.external-found trystero : libsecp256k1 : SECP256K1_ROOT
-            : secp256k1-native : secp256k1.h : system : $(properties) ] ;
-    }
+    return [ webcpp.external-found trystero : libsecp256k1 : $(properties) ] ;
 }
 
 # The native backend's own dependencies, checked only when a target that
 # uses it is built.
 rule native-dependencies ( properties * )
 {
-    local skipped = [ webcpp.external-found trystero : libdatachannel
-        : LIBDATACHANNEL_ROOT : libdatachannel : rtc/rtc.hpp : system
+    return [ webcpp.external-found trystero : libdatachannel OpenSSL
         : $(properties) ] ;
-    skipped += [ webcpp.external-found trystero : OpenSSL : OPENSSL_ROOT
-        : openssl : openssl/ssl.h : system : $(properties) ] ;
-    return $(skipped[1]) ;
 }
 
 # On emscripten, the browser has no threads (the event loop drives Asio), and

@@ -56,8 +56,9 @@ part of it, until webcpp builds them from `third_party/`:
 Each `-s`, on b2's command line, names a directory with the library's
 `include/` and `lib/`; the environment is never read. Without it, the library
 is looked for in the superproject's `.local/` directory the table names,
-where webcpp's CI installs it, and else on the compiler's default search
-path, where a system install is legitimate. A `-s` that names a directory
+where webcpp's CI installs it, and else, natively outside Windows, in
+`/usr/include` or `/usr/local/include`, where a system install is
+legitimate; a relative `-s` is read from b2's working directory. A `-s` that names a directory
 without the library's header stops the build, naming it. A library found
 nowhere leaves trystero out: its tests and examples are skipped, b2 says so
 once, naming the library and where it looked, and every other library

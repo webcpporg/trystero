@@ -50,17 +50,18 @@ holds only what is specific to trystero.
   nothing of its own; a raise would go through `boost::throw_exception`.
 - **The external dependencies.** libsecp256k1 (every room), libdatachannel
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
-  them with webcpp's `webcpp.external-root` and `webcpp.external-found`
+  them with webcpp's `webcpp.external` and `webcpp.external-found`
   (`tools/webcpp.jam`): where `-sSECP256K1_ROOT=<dir>`,
   `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, `-sLIBDATACHANNEL_ROOT=<dir>` and
-  `-sOPENSSL_ROOT=<dir>` on b2's command line say, never the environment,
+  `-sOPENSSL_ROOT=<dir>` on b2's command line say, a relative one from b2's
+  working directory, never the environment,
   else in the superproject's `.local/secp256k1-native`,
   `.local/secp256k1-emscripten`, `.local/libdatachannel` and
   `.local/openssl` when it holds the library's header, where webcpp's CI
   actions install them, until webcpp builds them from `third_party/`; so the
-  reference and the lint need no `-s`. A library found in neither is left to
-  the compiler's default search path, where a system install is legitimate
-  (natively, outside Windows, `/usr/include` or `/usr/local/include`). A `-s`
+  reference and the lint need no `-s`. A library found in neither is looked
+  for, natively outside Windows, in `/usr/include` or `/usr/local/include`,
+  where a system install is legitimate. A `-s`
   that names a directory without its library's header stops the build,
   naming it. A library that no candidate holds leaves trystero out, its
   targets skipped, with one message that names the library and every place
