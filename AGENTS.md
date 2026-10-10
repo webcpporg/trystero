@@ -168,7 +168,7 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in fifteen scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, in sixteen scenarios each:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
@@ -185,7 +185,10 @@ holds only what is specific to trystero.
   unsealed offers from fresh peer ids (`window.flood`,
   `window.floodOffers`) whose offers the watcher answers too, a relay text
   longer than 1 MiB, once and then after every subscription
-  (`relay.broadcast`, `relay.options.afterSubscribe`), a wrong password,
+  (`relay.broadcast`, `relay.options.afterSubscribe`), the C++ peer and a
+  Trystero JS page each in two rooms of one app (`room2`), every C++ room
+  with its own peer id, since Trystero keeps one connection per app and
+  peer id, which its rooms share, and drops a second one, a wrong password,
   and a mesh of three; and, for the native peer, three
   more: a room moved over the joined one, which must leave it as
   destroying it does; a relay that ends the connection just as the peer

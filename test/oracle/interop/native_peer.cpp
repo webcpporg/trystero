@@ -18,6 +18,7 @@
 // | --self        | this peer's id, optional                                         |
 // | --relays      | comma-separated relay URLs, optional (Trystero's default list)   |
 // | --ice         | a STUN or TURN server's URL, optional (Trystero's default list)  |
+// | --room2       | a second room of the same app to join too, optional              |
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -110,6 +111,55 @@ trystero::room room_of(boost::asio::io_context& io, trystero::native::backend& b
 }
 
 /**
+ * A second room of the same app, with the configuration of the first but its room id: it sends each
+ * peer that joins a chat message and a 100 KB file, and records what it sees with `room: second`.
+ */
+struct second_room {
+    trystero::room room;
+    trystero::action<std::string> chat = room.make_action<std::string>("chat");
+    trystero::action<trystero::bytes> file = room.make_action<trystero::bytes>("file");
+
+    second_room(boost::asio::io_context& io, trystero::native::backend& backend,
+                std::map<std::string, std::string>& args)
+        : room(io.get_executor(), backend, config_of(args), args["room2"]) {
+        record("joined", {{"room", "second"}, {"self", room.self_id()}});
+        room.on_peer_join([this](std::string_view peer_view) {
+            const trystero::peer_id peer(peer_view);
+            record("peer-join", {{"room", "second"}, {"peer", peer}});
+            chat.async_send("hello from C++",
+                            trystero::send_options{.targets = {peer}, .metadata = {}},
+                            [](boost::system::error_code) {});
+            trystero::bytes big(100'000);
+            for (std::size_t i = 0; i < big.size(); ++i) {
+                big[i] = static_cast<std::uint8_t>((i * 13) % 256);
+            }
+            file.async_send(std::move(big),
+                            trystero::send_options{.targets = {peer}, .metadata = {}},
+                            [](boost::system::error_code) {});
+        });
+        room.on_peer_leave([](std::string_view peer) {
+            record("peer-leave", {{"room", "second"}, {"peer", peer}});
+        });
+        room.on_error([](std::string_view peer, boost::system::error_code ec,
+                         std::string_view what) {
+            record("error",
+                   {{"room", "second"}, {"peer", peer}, {"error", ec.message()}, {"what", what}});
+        });
+        chat.on_message([](std::string text, const trystero::message_info& info) {
+            record("chat", {{"room", "second"}, {"from", info.from}, {"text", text}});
+        });
+        file.on_message([](const trystero::bytes& data, const trystero::message_info& info) {
+            record("file", {
+                               {"room", "second"},
+                               {"from", info.from},
+                               {"size", data.size()},
+                               {"checksum", checksum(data)},
+                           });
+        });
+    }
+};
+
+/**
  * Moves `next` over `joined`, with a receive pending on the joined room: the receive, on an action
  * no peer sends, completes when the joined room is left, while the action keeps its state alive.
  */
@@ -200,6 +250,9 @@ int main(int argc, char* argv[]) {
                            {"metadata", info.metadata},
                        });
     });
+
+    const std::unique_ptr<second_room> second =
+        args["room2"].empty() ? nullptr : std::make_unique<second_room>(io, backend, args);
 
     // "leave" on stdin: Trystero's farewell, then the process ends; "replace": a room moved over;
     // "abort": SIGABRT, for the scenario that checks the driver names a peer killed by a signal.

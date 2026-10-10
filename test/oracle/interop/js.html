@@ -133,6 +133,33 @@ const join = () => {
     }
 }
 join()
+// With `room2`, this page also joins that room of the same app, as one Trystero JS page does: Trystero keeps one
+// connection per app and peer id, which both rooms share. Its events carry `room: 'second'`.
+if (params.get('room2')) {
+    const second = joinRoom(
+        {
+            appId: params.get('app'),
+            rtcConfig: {iceServers: []},
+            ...(params.get('password') ? {password: params.get('password')} : {}),
+            ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
+        },
+        params.get('room2'),
+        {onJoinError: details => record('error', {room: 'second', peer: details.peerId, error: details.error})}
+    )
+    const chat = second.makeAction('chat')
+    const file = second.makeAction('file')
+    chat.onMessage = (text, {peerId}) => record('chat', {room: 'second', from: peerId, text})
+    file.onMessage = (data, {peerId}) => {
+        const bytes = new Uint8Array(data)
+        record('file', {room: 'second', from: peerId, size: bytes.length, checksum: checksum(bytes)})
+    }
+    second.onPeerJoin = peer => {
+        record('peer-join', {room: 'second', peer})
+        chat.send('hello from Trystero JS', {target: peer})
+        file.send(new Uint8Array(100_000).map((_, i) => (i * 7) % 256), {target: peer})
+    }
+    second.onPeerLeave = peer => record('peer-leave', {room: 'second', peer})
+}
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
 // window.drop(): closes every connection the page made, as a network drop ends them; Trystero then meets its peers
 // again, with the same peer id.

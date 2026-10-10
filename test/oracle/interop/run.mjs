@@ -575,6 +575,31 @@ const reflectScenario = (name, cppKind, side) =>
     })
 
 // Every scenario the options ask for, in turn.
+// A C++ peer and a Trystero JS page, each in two rooms of one app (room2 of peer.cpp, native_peer.cpp and js.html).
+// Trystero keeps one connection per app and peer id, which the page's two rooms share, and drops a second one to the
+// same id; a C++ room makes its own connections, so each C++ room needs a peer id of its own, which a room draws when
+// its configuration names none. With them both rooms meet, as these check: the first room's whole exchange, and the
+// second room's join, chat message and 100 KB file, both ways. Given one self_id for both rooms, the second room
+// never joins: the page drops its connection and sends its frames over the first room's, which the C++ room drops.
+const twoRoomsScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), room2: room(), ...relayParams}
+        const cpp = await open(cppKind, params)
+        const js = await open('js', params)
+        const first = events => events.filter(e => e.room === undefined)
+        const second = (events, file) => events.some(e => e.room === 'second' && e.kind === 'peer-join') &&
+            events.some(e => e.room === 'second' && e.kind === 'chat') &&
+            events.some(e => e.room === 'second' && e.kind === 'file' && e.size === file.size && e.checksum === file.checksum)
+        const ok = await until(async () => {
+            const c = await cpp.events(), j = await js.events()
+            return exchangeComplete(first(c), false) && exchangeComplete(first(j), true) && second(c, fromJs) && second(j, fromCpp)
+        }, 45_000)
+        if (ok) return null
+        const c = await cpp.events(), j = await js.events()
+        return `the two rooms did not both complete in 45 s: first room ${exchangeComplete(first(c), false)} for C++, ` +
+            `${exchangeComplete(first(j), true)} for JS; second room ${second(c, fromJs)} for C++, ${second(j, fromCpp)} for JS`
+    })
+
 const scenarios = async () => {
     if (browserPeer) {
         await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
@@ -591,6 +616,7 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; C++ joins', 'cpp', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
+            await twoRoomsScenario('C++ and Trystero JS meet in two rooms of one app, each C++ room with its own id', 'cpp')
         }
     }
 
@@ -611,6 +637,8 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; native C++ joins', 'native', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
+            await twoRoomsScenario('Native C++ and Trystero JS meet in two rooms of one app, each C++ room with its own id',
+                'native')
             await strikeScenario('A relay that ends the connection during a write: native C++ survives and reconnects', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}

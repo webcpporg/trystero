@@ -14,6 +14,7 @@
 // | self            | this peer's id, optional                                         |
 // | relays          | comma-separated relay URLs, optional (Trystero's default list)   |
 // | ice             | a STUN or TURN server's URL, optional (Trystero's default list)  |
+// | room2           | a second room of the same app to join too, optional              |
 // | program         | the program's JavaScript, which cpp.html loads; not read here    |
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/browser/backend.hpp>
@@ -43,6 +44,10 @@ struct page {
     std::unique_ptr<trystero::action<std::string>> chat;
     std::unique_ptr<trystero::action<boost::json::value>> drink;
     std::unique_ptr<trystero::action<trystero::bytes>> file;
+    // The second room, with `room2`, and its actions.
+    std::unique_ptr<trystero::room> second;
+    std::unique_ptr<trystero::action<std::string>> second_chat;
+    std::unique_ptr<trystero::action<trystero::bytes>> second_file;
 };
 
 /** The page's one state, made when the driver starts the peer, kept as long as the tab. */
@@ -80,8 +85,8 @@ std::uint32_t checksum(const trystero::bytes& data) {
     return sum;
 }
 
-void start() {
-    page& app = the_page();
+/** The page's configuration, from the URL. */
+trystero::room_config config_of_page() {
     trystero::room_config config;
     config.app_id = param("app");
     config.password = param("password");
@@ -96,8 +101,62 @@ void start() {
             {.urls = {std::pmr::string(ice)}, .username = {}, .credential = {}});
     }
     config.log = log;
+    return config;
+}
+
+/**
+ * Joins `room2`, a second room of the same app, with the configuration of the first but its room
+ * id: it sends each peer that joins a chat message and a 100 KB file, and records what it sees with
+ * `room: second`.
+ */
+void join_second() {
+    page& app = the_page();
+    app.second = std::make_unique<trystero::room>(app.loop.get_executor(), app.backend,
+                                                  config_of_page(), param("room2"));
+    app.second_chat = std::make_unique<trystero::action<std::string>>(
+        app.second->make_action<std::string>("chat"));
+    app.second_file = std::make_unique<trystero::action<trystero::bytes>>(
+        app.second->make_action<trystero::bytes>("file"));
+    record("joined", {{"room", "second"}, {"self", app.second->self_id()}});
+    app.second->on_peer_join([](std::string_view peer_view) {
+        const trystero::peer_id peer(peer_view);
+        record("peer-join", {{"room", "second"}, {"peer", peer}});
+        the_page().second_chat->async_send(
+            "hello from C++", trystero::send_options{.targets = {peer}, .metadata = {}},
+            [](boost::system::error_code) {});
+        trystero::bytes big(100'000);
+        for (std::size_t i = 0; i < big.size(); ++i) {
+            big[i] = static_cast<std::uint8_t>((i * 13) % 256);
+        }
+        the_page().second_file->async_send(
+            std::move(big), trystero::send_options{.targets = {peer}, .metadata = {}},
+            [](boost::system::error_code) {});
+    });
+    app.second->on_peer_leave(
+        [](std::string_view peer) { record("peer-leave", {{"room", "second"}, {"peer", peer}}); });
+    app.second->on_error(
+        [](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+            record("error",
+                   {{"room", "second"}, {"peer", peer}, {"error", ec.message()}, {"what", what}});
+        });
+    app.second_chat->on_message([](std::string text, const trystero::message_info& info) {
+        record("chat", {{"room", "second"}, {"from", info.from}, {"text", text}});
+    });
+    app.second_file->on_message(
+        [](const trystero::bytes& data, const trystero::message_info& info) {
+            record("file", {
+                               {"room", "second"},
+                               {"from", info.from},
+                               {"size", data.size()},
+                               {"checksum", checksum(data)},
+                           });
+        });
+}
+
+void start() {
+    page& app = the_page();
     app.room = std::make_unique<trystero::room>(app.loop.get_executor(), app.backend,
-                                                std::move(config), param("room"));
+                                                config_of_page(), param("room"));
     auto& room = *app.room;
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {
@@ -164,6 +223,9 @@ void start() {
                            {"metadata", info.metadata},
                        });
     });
+    if (!param("room2").empty()) {
+        join_second();
+    }
 }
 
 /** Called by the driver: leave the room with Trystero's farewell. */
