@@ -23,5 +23,6 @@ decisions on incoming transfers and their progress, the application's own
 handshake, passive rooms, one connection shared between several rooms of an
 app, and the other strategies, among them MQTT and BitTorrent trackers.
 . *The external libraries from webcpp's own build.* libsecp256k1,
-libdatachannel and OpenSSL are found through the environment until webcpp
-builds them from `third_party/` (<<trystero-building>>).
+libdatachannel and OpenSSL are found where b2's command line or the
+superproject's `.local/` says until webcpp builds them from `third_party/`
+(<<trystero-building>>).

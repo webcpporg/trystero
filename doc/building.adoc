@@ -9,9 +9,9 @@
 
 trystero is header-only, and is developed inside the webcpp superproject, as
 a Boost library is developed inside Boost. Besides Boost, it needs three
-libraries that are not part of it, which the build finds where four
-variables of the environment say, else in the superproject's `.local/`,
-until webcpp builds them from `third_party/`:
+libraries that are not part of it, which the build finds where b2's command
+line says, else in the superproject's `.local/`, until webcpp builds them
+from `third_party/`:
 
 [cols="2,2,3",options="header"]
 |===
@@ -19,28 +19,32 @@ until webcpp builds them from `third_party/`:
 
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules
 | every room: it signs the Nostr events peers meet through
-| `SECP256K1_ROOT` natively, else `.local/secp256k1-native`;
-  `SECP256K1_EMSCRIPTEN_ROOT` for its emscripten build, else
+| `-sSECP256K1_ROOT=<dir>` natively, else `.local/secp256k1-native`;
+  `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else
   `.local/secp256k1-emscripten`
 
 | libdatachannel 0.24.6
 | the native backend
-| `LIBDATACHANNEL_ROOT`, else `.local/libdatachannel`
+| `-sLIBDATACHANNEL_ROOT=<dir>`, else `.local/libdatachannel`
 
 | OpenSSL 3
 | the native backend
-| `OPENSSL_ROOT`, else `.local/openssl`
+| `-sOPENSSL_ROOT=<dir>`, else `.local/openssl`
 |===
 
-Each variable names a directory with the library's `include/` and `lib/`.
-A variable that is not set has the library looked for in the directory of
-`.local/` that the table names, where webcpp's continuous integration installs
-it, when that directory holds the library's header, and else leaves it to the
-compiler's default search path, where a system install is legitimate; one
-that names a directory without the library's header stops the build, naming
-the variable, when a target that needs the library is built, and so does a
-library found in none of them, natively in neither `/usr/include` nor
-`/usr/local/include`, naming the library and where it looked. With MSVC, the libraries are CMake's
+Each `-s` names a directory with the library's `include/` and `lib/`, on b2's
+command line; the environment is never read, so that a variable a shell keeps
+from another day never replaces `.local/` without a word. Without it, the
+library is looked for in the directory of `.local/` that the table names,
+where webcpp's continuous integration installs it, when that directory holds
+the library's header, and else on the compiler's default search path, where a
+system install is legitimate, natively in `/usr/include` or
+`/usr/local/include`. A `-s` that names a directory without the library's
+header stops the build, naming it. A library found nowhere leaves trystero
+out: its tests and examples are skipped, the build says so once, naming the
+library and where it looked, and every other library builds; with
+`webcpp-require-external=on`, as the continuous integration builds, it stops
+the build instead. With MSVC, the libraries are CMake's
 `libsecp256k1.lib`, which a program links statically with `SECP256K1_STATIC`
 defined, and OpenSSL's `libssl.lib` and `libcrypto.lib`, also looked for in
 `lib/VC/x64/MD`, where the installer of Shining Light Productions puts them.
@@ -140,36 +144,36 @@ options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
   -DSECP256K1_BUILD_BENCHMARK=OFF"
 
 cmake -S secp256k1 -B build-secp256k1-native $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-native
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-native
 cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
 
 emcmake cmake -S secp256k1 -B build-secp256k1-emscripten $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-emscripten
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-emscripten
 cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
-
-export SECP256K1_ROOT=$PWD/secp256k1-native
-export SECP256K1_EMSCRIPTEN_ROOT=$PWD/secp256k1-emscripten
 ----
+
+where `webcpp` is the checkout of the superproject: each is installed in the
+directory of `.local/` where the build looks for it.
 
 libdatachannel is built with the compiler and the standard library that
 build the programs: a program built with GCC and `libstdc{plus}{plus}` does
 not link against a libdatachannel built with `libc{plus}{plus}`, though the
 native headers still compile alone. Its own WebSocket is not used, so it is
 built without it, and its CMake finds OpenSSL where `OPENSSL_ROOT_DIR` says,
-which Homebrew's OpenSSL needs:
+which Homebrew's OpenSSL needs, and which `.local/openssl` links for the build
+too:
 
 [source,bash]
 ----
-export OPENSSL_ROOT=$(brew --prefix openssl@3)  # or wherever OpenSSL 3 is
+openssl=$(brew --prefix openssl@3)  # or wherever OpenSSL 3 is
+ln -s "$openssl" webcpp/.local/openssl
 
 git clone --recurse-submodules --branch v0.24.6 \
   https://github.com/paullouisageneau/libdatachannel.git
 cmake -S libdatachannel -B build-libdatachannel -DCMAKE_BUILD_TYPE=Release \
-  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT \
-  -DCMAKE_INSTALL_PREFIX=$PWD/libdatachannel-install
+  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$openssl \
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/libdatachannel
 cmake --build build-libdatachannel && cmake --install build-libdatachannel
-
-export LIBDATACHANNEL_ROOT=$PWD/libdatachannel-install
 ----
 
 [#trystero-building-examples]

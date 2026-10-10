@@ -50,19 +50,23 @@ holds only what is specific to trystero.
   nothing of its own; a raise would go through `boost::throw_exception`.
 - **The external dependencies.** libsecp256k1 (every room), libdatachannel
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
-  them where `SECP256K1_ROOT`, `SECP256K1_EMSCRIPTEN_ROOT`,
-  `LIBDATACHANNEL_ROOT` and `OPENSSL_ROOT` say, else in the superproject's
-  `.local/secp256k1-native`, `.local/secp256k1-emscripten`,
-  `.local/libdatachannel` and `.local/openssl` when it holds the library's
-  header, where webcpp's CI actions install them, until webcpp builds them
-  from `third_party/`; so the reference and the lint need no variable. A
-  library found in neither is left to the compiler's default search path,
-  where a system install is legitimate (natively, outside Windows,
-  `/usr/include` or `/usr/local/include`); a variable that names a directory
-  without its library's header stops the build, naming the variable, and so
-  does a library that no candidate holds, naming the library and every place
-  it looked (`check-found`), rather than leave the compiler to fail on a
-  missing header or take another copy without a word. With MSVC the names are CMake's and Shining
+  them with webcpp's `webcpp.external-root` and `webcpp.external-found`
+  (`tools/webcpp.jam`): where `-sSECP256K1_ROOT=<dir>`,
+  `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, `-sLIBDATACHANNEL_ROOT=<dir>` and
+  `-sOPENSSL_ROOT=<dir>` on b2's command line say, never the environment,
+  else in the superproject's `.local/secp256k1-native`,
+  `.local/secp256k1-emscripten`, `.local/libdatachannel` and
+  `.local/openssl` when it holds the library's header, where webcpp's CI
+  actions install them, until webcpp builds them from `third_party/`; so the
+  reference and the lint need no `-s`. A library found in neither is left to
+  the compiler's default search path, where a system install is legitimate
+  (natively, outside Windows, `/usr/include` or `/usr/local/include`). A `-s`
+  that names a directory without its library's header stops the build,
+  naming it. A library that no candidate holds leaves trystero out, its
+  targets skipped, with one message that names the library and every place
+  it looked, so that `b2 test` builds every other library; with
+  `webcpp-require-external=on`, as the CI builds, it stops the build
+  instead. With MSVC the names are CMake's and Shining
   Light's: `libsecp256k1`, linked with `SECP256K1_STATIC` defined, which a
   static libsecp256k1 needs on Windows, and `libssl` and `libcrypto`, also
   searched in `lib/VC/x64/MD`. libdatachannel is a

@@ -49,19 +49,20 @@ part of it, until webcpp builds them from `third_party/`:
 
 | Library | Needed by | Found where |
 | --- | --- | --- |
-| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `SECP256K1_ROOT` natively, `SECP256K1_EMSCRIPTEN_ROOT` for its emscripten build |
-| libdatachannel 0.24.6 | the native backend | `LIBDATACHANNEL_ROOT` |
-| OpenSSL 3 | the native backend | `OPENSSL_ROOT` |
+| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `-sSECP256K1_ROOT=<dir>` natively, `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else `.local/secp256k1-native` and `.local/secp256k1-emscripten` |
+| libdatachannel 0.24.6 | the native backend | `-sLIBDATACHANNEL_ROOT=<dir>`, else `.local/libdatachannel` |
+| OpenSSL 3 | the native backend | `-sOPENSSL_ROOT=<dir>`, else `.local/openssl` |
 
-Each variable names a directory with the library's `include/` and `lib/`. A
-variable that is not set has the library looked for in the superproject's
-`.local/secp256k1-native`, `.local/secp256k1-emscripten`,
-`.local/libdatachannel` and `.local/openssl`, where webcpp's CI installs it,
-and else leaves it to the compiler's default search path, where a system
-install is legitimate; one that names a directory without the library's header
-stops the build, naming the variable, when a target that needs the library is
-built, and so does a library found in none of them, naming it and where it
-looked. With them found,
+Each `-s`, on b2's command line, names a directory with the library's
+`include/` and `lib/`; the environment is never read. Without it, the library
+is looked for in the superproject's `.local/` directory the table names,
+where webcpp's CI installs it, and else on the compiler's default search
+path, where a system install is legitimate. A `-s` that names a directory
+without the library's header stops the build, naming it. A library found
+nowhere leaves trystero out: its tests and examples are skipped, b2 says so
+once, naming the library and where it looked, and every other library
+builds; `webcpp-require-external=on`, which the CI gives, stops the build
+instead. With them found,
 
     b2 libs/trystero/test libs/trystero/example
     b2 toolset=emscripten libs/trystero/test libs/trystero/example
@@ -208,48 +209,38 @@ options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
   -DSECP256K1_BUILD_BENCHMARK=OFF"
 
 cmake -S secp256k1 -B build-secp256k1-native $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-native
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-native
 cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
 
 ./emsdk/upstream/emscripten/emcmake cmake -S secp256k1 -B build-secp256k1-emscripten $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-emscripten
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-emscripten
 cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
 ```
 
 ### 6. Build libdatachannel
 
 libdatachannel's CMake finds OpenSSL where `OPENSSL_ROOT_DIR` says, which
-Homebrew's OpenSSL needs. It is built with the compiler that builds the
+Homebrew's OpenSSL needs, and the build where `webcpp/.local/openssl` links. It is built with the compiler that builds the
 programs, clang: a program built with GCC and libstdc++ does not link against
 a libdatachannel built with libc++.
 
 ```sh
-export OPENSSL_ROOT=$(brew --prefix openssl@3)
+openssl=$(brew --prefix openssl@3)
+ln -s "$openssl" webcpp/.local/openssl
 
 git clone --recurse-submodules --branch v0.24.6 \
   https://github.com/paullouisageneau/libdatachannel.git
 cmake -S libdatachannel -B build-libdatachannel -DCMAKE_BUILD_TYPE=Release \
-  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT \
-  -DCMAKE_INSTALL_PREFIX=$PWD/libdatachannel-install
+  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$openssl \
+  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/libdatachannel
 cmake --build build-libdatachannel && cmake --install build-libdatachannel
 ```
 
-### 7. Write the environment
+The three libraries are now where the build looks for them, in
+`webcpp/.local/`, which git ignores: no variable is needed, in this terminal
+or another.
 
-The build finds the three libraries through the environment, which `env.sh`
-keeps for every new terminal:
-
-```sh
-cat > env.sh <<EOF
-export SECP256K1_ROOT=$PWD/secp256k1-native
-export SECP256K1_EMSCRIPTEN_ROOT=$PWD/secp256k1-emscripten
-export LIBDATACHANNEL_ROOT=$PWD/libdatachannel-install
-export OPENSSL_ROOT=$OPENSSL_ROOT
-EOF
-source env.sh
-```
-
-### 8. Tell b2 its compilers and Boost
+### 7. Tell b2 its compilers and Boost
 
 ```sh
 cat > user-config.jam <<EOF
@@ -260,7 +251,7 @@ using emscripten : : $PWD/emsdk/upstream/emscripten/em++
 EOF
 ```
 
-### 9. Build the native quick start and the chat page
+### 8. Build the native quick start and the chat page
 
 ```sh
 cd webcpp
@@ -274,7 +265,7 @@ The second command ends by printing the chat site's directory,
 `bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,
 which holds `index.html`, `chat-program.js` and `chat-program.wasm`.
 
-### 10. Run them
+### 9. Run them
 
 In a terminal, from `webcpp`, start the native quick start. It runs until you
 stop it with Ctrl-C:
@@ -286,7 +277,7 @@ stop it with Ctrl-C:
 In a second terminal, from the workspace, serve the chat page:
 
 ```sh
-source env.sh && cd webcpp
+cd webcpp
 python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
 ```
 
@@ -304,10 +295,11 @@ Every browser tab that joins the same app and room joins the same chat.
 
 ### When something goes wrong
 
-- **b2 cannot find libsecp256k1 or libdatachannel**: the terminal does not
-  have the environment. Run `source env.sh` from the workspace.
-- **b2 stops naming one of the variables**: it names a directory without the
-  library's header; point it at the directory that `cmake --install` wrote.
+- **b2 says trystero is left out**: a library is not in the directory of
+  `webcpp/.local/` it names; install it there as steps 5 and 6 do, or give
+  b2 `-s<VARIABLE>=<dir>` with the directory that `cmake --install` wrote.
+- **b2 stops naming a `-s`**: it names a directory without the library's
+  header; give the directory that `cmake --install` wrote.
 - **b2 prints `node: bad option: --experimental-wasm-threads`** when it
   configures the emscripten toolset: b2's toolset probes node with a flag that
   recent Node removed. It is harmless.
