@@ -12,11 +12,8 @@ peer sends the C++ peer, and resends them in that peer's name later, an answer w
 that peer, an offer as soon as that peer announces itself or is asked to offer. With `mode=reflect` it sends the
 target its own sealed texts back: each offer the target publishes to a peer comes back at once as that peer's answer;
 with `decoy`, an id it announces above the target, the target's sealed offer to the decoy comes back as an offer in the
-name of each other peer that announces itself. With `mode=mint` (the upstream reproduction, trystero-upstream-replay.md
-in the plan's directory; no scenario uses it) it announces a fresh id above every peer every 2 s, keeps each sealed
-offer a peer makes to one, and delivers it to the target in that peer's name when the target or that peer announces.
-What anyone who reads the relays can do: the topics are public, a peer id proves nothing, and a sealed offer or answer
-names neither its offer nor a peer.
+name of each other peer that announces itself. What anyone who reads the relays can do: the topics are public, a peer
+id proves nothing, and a sealed offer or answer names neither its offer nor a peer.
 -->
 <!doctype html>
 <html lang="en">
@@ -46,13 +43,9 @@ const params = new URLSearchParams(location.search)
 const target = params.get('target')
 const replay = params.get('mode') === 'replay'
 const reflect = params.get('mode') === 'reflect'
-const mint = params.get('mode') === 'mint'
 const decoy = params.get('decoy')
 // mode=reflect with a decoy: the target's sealed offer to the decoy, once it sent one.
 let decoyOffer = null
-// mode=mint: the topics of the fresh ids announced, and each peer's sealed offers to them, not yet delivered.
-const mintTopics = new Set()
-const minted = new Map()
 // What each peer sent the target, sealed, recorded once: peer id -> text.
 const answers = new Map()
 const offers = new Map()
@@ -70,13 +63,6 @@ socket.onopen = () => {
     if (reflect && decoy) {
         announce(decoy)
         setInterval(() => announce(decoy), 3000)
-    }
-    if (mint) {
-        setInterval(async () => {
-            const id = ('zz' + Math.random().toString(36).slice(2) + '000000000000000000').slice(0, 20)
-            mintTopics.add(await sha1(`${root}@${id}`))
-            announce(id)
-        }, 2000)
     }
 }
 socket.onmessage = async message => {
@@ -107,20 +93,6 @@ socket.onmessage = async message => {
         } else if (decoyOffer && topic === rootTopic && announcement && ![target, decoy].includes(content.peerId)) {
             const victim = content.peerId
             await publish({peerId: victim, offerId: genOfferId(), offer: decoyOffer}, 'reflected', {what: 'offer', victim})
-        }
-        return
-    }
-    if (mint) {
-        if (mintTopics.has(topic) && content.offer && content.peerId !== target) {
-            if (!minted.has(content.peerId)) minted.set(content.peerId, [])
-            minted.get(content.peerId).push(content.offer)
-            record('recorded', {what: 'minted-offer', peer: content.peerId})
-        } else if (topic === rootTopic && announcement && content.peerId && !content.peerId.startsWith('zz')) {
-            const peers = content.peerId === target ? [...minted.keys()] : [content.peerId]
-            for (const victim of peers) {
-                const offer = minted.get(victim)?.shift()
-                if (offer) await publish({peerId: victim, offerId: genOfferId(), offer}, 'minted', {what: 'offer', victim})
-            }
         }
         return
     }
