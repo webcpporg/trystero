@@ -32,6 +32,15 @@ namespace webcpp::trystero::protocol {
 inline constexpr std::size_t max_relay_message_bytes = std::size_t{1} << 20U;
 
 /**
+ * The most text a room holds unsent for one relay, in UTF-8 bytes: 4 MiB, a thousand signals and
+ * more.
+ *
+ * A relay that stops reading lets the texts pile up; beyond this, both backends drop its
+ * connection, which reports a close, and the room reconnects with its backoff.
+ */
+inline constexpr std::size_t max_queued_relay_bytes = std::size_t{4} << 20U;
+
+/**
  * Trystero 0.26's default Nostr relays, its `defaultRelayUrls`, in its order: the order is part of
  * the relay derivation.
  */

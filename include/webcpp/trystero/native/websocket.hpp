@@ -49,11 +49,14 @@ struct websocket_limits {
      * text beyond this drops the connection, which reports a close, so that the room reconnects
      * with its backoff.
      */
-    std::size_t max_queued_bytes = std::size_t{4} << 20U;
+    std::size_t max_queued_bytes = protocol::max_queued_relay_bytes;
 
     /**
      * How long the connection may stay silent: half of it, a keep-alive ping is sent, and a relay
      * that answers nothing within the whole of it is closed, which reports a close.
+     *
+     * It counts the bytes received, and a ping waits for the write in flight. Native only: a page's
+     * `WebSocket` cannot ping, so the browser backend has no idle timeout.
      */
     std::chrono::seconds idle_timeout = std::chrono::seconds(30);
 };

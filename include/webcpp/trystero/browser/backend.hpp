@@ -175,7 +175,9 @@ private:
  * A WebSocket over the page's `WebSocket`.
  *
  * A text longer than `protocol::max_relay_message_bytes` is not copied into WebAssembly: the
- * socket closes, and reports the close.
+ * socket closes, and reports the close. A text that would take the socket's `bufferedAmount`
+ * beyond `protocol::max_queued_relay_bytes`, as when a relay stops reading, drops the socket,
+ * which reports one close at once. A page has no idle timeout: its `WebSocket` cannot ping.
  *
  * @see "The browser backend", in the guide.
  */
@@ -234,12 +236,21 @@ public:
      * Sends a text message when the socket is open, its `readyState` 1; otherwise, or when the
      * socket refuses it, drops it.
      *
+     * A text that would take the bytes the socket holds unsent beyond
+     * `protocol::max_queued_relay_bytes` drops the socket instead, which reports its close.
+     *
      * @param text The message, read during the call.
      */
     void send(std::string_view text) override {
-        if (!socket_.isUndefined() && socket_["readyState"].as<int>() == 1) {
-            detail::js_call(socket_, "send", loop_.text(text));
+        if (socket_.isUndefined() || socket_["readyState"].as<int>() != 1) {
+            return;
         }
+        const auto held = static_cast<std::size_t>(socket_["bufferedAmount"].as<double>());
+        if (held + text.size() > protocol::max_queued_relay_bytes) {
+            drop();
+            return;
+        }
+        detail::js_call(socket_, "send", loop_.text(text));
     }
 
     /** Closes the socket, which the handler `close` reports; one never made has reported it. */
@@ -250,6 +261,25 @@ public:
     }
 
 private:
+    /**
+     * Drops a socket whose relay stopped reading: its close handshake could never complete, so the
+     * socket is detached and closed, and its close reported after the call, once.
+     */
+    void drop() {
+        for (const char* name : {"onopen", "onmessage", "onclose"}) {
+            socket_.set(name, val::null());
+        }
+        socket_.call<void>("close");
+        socket_ = val::undefined();
+        detail::defer(loop_, memory_, [weak = std::weak_ptr<handlers>(h_)] {
+            if (const auto h = weak.lock()) {
+                if (auto f = std::exchange(h->close, {})) {
+                    f();
+                }
+            }
+        });
+    }
+
     /** Calls through a copy of the shared handlers: a handler may destroy this socket during its
      * own call. */
     void on_event(int slot, const val& event) {
