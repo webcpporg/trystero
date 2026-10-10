@@ -195,9 +195,10 @@ public:
           incoming_(memory) {}
 
     /**
-     * Sends one payload to `targets`, or to every peer when empty. `done` runs once every target
-     * has its copy or has failed, with the first failure. The name, the metadata and the targets
-     * are read during the call.
+     * Sends one payload to `targets`, or to every peer when empty. `done` runs once each target's
+     * data channel has taken the inline frame, or the last chunk of an accepted transfer, or the
+     * send to it has failed, with the first failure. The name, the metadata and the targets are
+     * read during the call.
      */
     void send(std::string_view name, protocol::payload_format format, std::string_view metadata,
               payload_ref payload, std::span<const std::string_view> targets, bool include_pending,

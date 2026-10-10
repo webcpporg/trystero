@@ -129,6 +129,11 @@ struct room_config {
     /**
      * This peer's id in the room, Trystero's `selfId`; empty means 20 random characters.
      *
+     * Rooms of one app that meet a Trystero JS peer need ids of their own: Trystero keeps one
+     * connection per app and peer id, which all its rooms share, and drops a second one to the
+     * same id, while each room here makes its own. Given one id, two rooms meet a Trystero JS peer
+     * in one of them only; left empty, each room draws its own.
+     *
      * Other peers ignore an id longer than `protocol::max_peer_id_bytes` (64): the room replaces
      * one with 20 random characters, and `room::on_error` reports it with
      * `error::invalid_configuration`.
@@ -756,7 +761,10 @@ public:
         slot.receivers.push_back(std::move(handler));
     }
 
-    /** Sends an action's payload through the wire, and completes once every target has it. */
+    /**
+     * Sends an action's payload through the wire, and completes once every target's data channel
+     * has taken it.
+     */
     void send(std::string_view name, encoded_payload payload, const send_options& options,
               completion<void(boost::system::error_code)> handler) {
         if (left_) {
@@ -1621,8 +1629,10 @@ public:
      * Sends a message to `options.targets`, or every active peer, Trystero's `send`.
      *
      * A payload that fits one frame is sent inline; a larger one is offered, accepted by each
-     * receiver, and sent in chunks. Completes with `(error_code)` once every target has it, with
-     * the first failure: `error::invalid_action_name`, `error::metadata_too_large`,
+     * receiver, and sent in chunks. Completes with `(error_code)` once each target's local data
+     * channel has taken the inline frame, or the last chunk of a transfer the receiver accepted,
+     * as Trystero's `send` resolves: nothing confirms that the receiver has the message. It
+     * completes with the first failure: `error::invalid_action_name`, `error::metadata_too_large`,
      * `error::no_such_peer`, `error::transfer_rejected`, `error::transfer_timed_out`,
      * `error::channel_stalled`, `error::peer_disconnected` or `error::room_left`.
      *
