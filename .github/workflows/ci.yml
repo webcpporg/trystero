@@ -1,0 +1,33 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+# trystero's CI: the superproject's reusable workflow, which builds this commit inside a checkout of
+# webcpp, on every lane trystero declares and its own lanes, oracle and interop, with libsecp256k1,
+# libdatachannel and OpenSSL, which the workflow's actions install, its page, the lint and the test
+# matrix.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # As the superproject's: a run on main is the record of main, and is never cut short by the
+  # next; a pull request's newer push replaces its older run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  ci:
+    name: CI
+    uses: webcpporg/webcpp/.github/workflows/library.yml@main
+    with:
+      library: trystero
