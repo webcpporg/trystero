@@ -59,7 +59,11 @@ as a peer's changes nothing (<<trystero-protocol-replay>>). _Held by_ `room`
 `a_reflected_answer_is_refused_as_an_answer`), and the replay and
 reflection scenarios of the `interop` lane.
 . [[trystero-invariant-8]]*A relay that stops reading is dropped.* Once the
-text held unsent for it would pass 4 MiB, the connection is dropped, which
-reports one close, and the room reconnects. _Held by_ `native_websocket`
-(`a_relay_that_stops_reading_is_dropped_at_the_queue_bound`) natively, and
-`browser_websocket_bound` on emscripten, with exceptions and without them.
+text held unsent for it would pass 4 MiB, the connection is dropped, and
+reports one close, after which the room reconnects with its backoff, as it
+does to any relay that closes. _Held by_ `native_websocket`
+(`a_relay_that_stops_reading_is_dropped_at_the_queue_bound`, a close before
+2000 texts of 64 KiB, and one only) natively, and `browser_websocket_bound`
+on emscripten, with exceptions and without them, which also checks that the
+socket never holds more than 4 MiB; the reconnection by `room`
+(`a_relay_that_closes_at_once_is_tried_less_and_less_often`).

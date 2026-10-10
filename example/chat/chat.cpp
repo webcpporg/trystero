@@ -29,9 +29,9 @@ struct chat {
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
     std::unique_ptr<trystero::room> room;
-    std::unique_ptr<trystero::action<std::string_view>> messages;  // received as views of the frame
-    std::unique_ptr<trystero::action<std::string>>
-        outgoing;  // the same action, sent by moving the text
+    // The action "chat" twice: received as views of the frame, and sent by moving the text.
+    std::unique_ptr<trystero::action<std::string_view>> messages;
+    std::unique_ptr<trystero::action<std::string>> outgoing;
 };
 
 // end::state[]

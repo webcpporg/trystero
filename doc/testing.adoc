@@ -155,8 +155,10 @@ server without credentials; a watcher without the key that answers every
 offer with garbage in the other peer's name, that resends a sealed answer
 and offer it recorded, and that sends the {cpp} peer its own sealed offer
 back, which the {cpp} peer must refuse; a flood of announcements and of
-unsealed offers from fresh peer ids; a relay text longer than 1 MiB; a wrong
-password; and a mesh of three. The native peer meets three more: a room
+unsealed offers from fresh peer ids; a relay text longer than 1 MiB; a {cpp}
+peer and a Trystero JS page each in two rooms of one app, every {cpp} room
+with its own peer id (<<trystero-differences-behaviour>>); a wrong password;
+and a mesh of three. The native peer meets three more: a room
 moved over the joined one, which must leave it as destroying it does; a
 relay that ends the connection just as the peer writes, which twelve peers in
 turn must survive; and the driver's own check that a peer killed by a signal

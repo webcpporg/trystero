@@ -49,7 +49,8 @@ These features of Trystero are not ported, each for its reason:
 
 | One connection shared by every room of an app between two peers
 | Not ported yet: each room makes its own connections, and ignores a frame
-  that names another room's token.
+  that names another room's token. So rooms of one app that meet a Trystero
+  JS peer need peer ids of their own, which they draw by default (below).
 
 | The BitTorrent, MQTT, Firebase, Supabase, IPFS and WebSocket relay
   strategies
@@ -66,6 +67,35 @@ These features of Trystero are not ported, each for its reason:
   default; `ice_servers` names every STUN and TURN server, in place of
   Trystero's defaults; and the backend is what a polyfill would be.
 |===
+
+[#trystero-differences-behaviour]
+=== Where a ported feature behaves otherwise
+
+*A peer id per room, not per app.* Trystero's `selfId` is one id for the
+whole page, and `joinRoom` returns the same room when it is called again for
+the same app and room. A `room` is an object of its own, with its own
+membership, connections and `self_id`, drawn for each room unless the
+configuration names one. Trystero keeps one connection per app and peer id,
+which all its rooms share, and drops a second connection to the same id. So
+two rooms of one app given the same `self_id` meet a Trystero JS peer in one
+of them only: the page drops the second room's connection and sends that
+room's frames over the first room's, which the first room ignores. Given an
+id of its own each, or none, both rooms meet it, which the `interop` lane
+checks, natively and in the browser.
+
+*`on_peer_join` does not replay the joined peers.* Trystero calls a newly
+assigned `onPeerJoin` with each peer already joined. A room reports a join
+from its executor, after the call that constructed it has returned, so a
+handler set right after the constructor sees every join; `peers()` lists the
+joined peers for a handler set later.
+
+*`peers()` lists ids.* Trystero's `getPeers` maps each id to its
+`RTCPeerConnection`. A connection is the backend's, a page's object in the
+browser and libdatachannel's natively, and the room does not hand it out.
+
+*A send to a peer that has not joined fails.* Trystero warns on the console
+and resolves; `async_send` completes with `error::no_such_peer`, since an
+operation that fails says so with its error code.
 
 No example of trystero runs under the build, since each needs the public
 relays or a browser, so none has a twin in Trystero's language, and the

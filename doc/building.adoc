@@ -169,9 +169,11 @@ export LIBDATACHANNEL_ROOT=$PWD/libdatachannel-install
 The three examples need the public relays or a browser, so the build links
 them and never runs them: `native_quick_start.cpp`, natively;
 `quick_start.cpp`, a `.js` and a `.wasm` to embed in a page; and the chat,
-a page whose room is {cpp} (<<trystero-browser-chat>>). The quick starts and
-the chat meet in the same room, `lobby` of the app
-`webcpp-trystero-quick-start`, over the public relays.
+a page whose room is {cpp} (<<trystero-browser-chat>>). The quick starts
+meet in the room `lobby` of the app `webcpp-trystero-quick-start`, over the
+public relays; the chat joins the app and the room its user types, the room
+`lobby` of the app `webcpp-trystero-chat` unless the user changes them, and
+meets the quick starts when the user types theirs.
 
 The native quick start is built as a program of its own, and runs until it
 is stopped:
@@ -192,8 +194,8 @@ b2 toolset=emscripten libs/trystero/example/chat//site
 python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
 ----
 
-At http://localhost:8000, joining the app `webcpp-trystero-quick-start` and
-the room `lobby` brings the native quick start in as a peer within seconds:
+At http://localhost:8000, joining the app `webcpp-trystero-quick-start`, in
+place of the page's `webcpp-trystero-chat`, and the room `lobby` brings the native quick start in as a peer within seconds:
 its greeting appears in the chat, and what the page sends is printed in its
 terminal. On another toolset, `site` stops the build, saying that the page is
 built on emscripten alone.

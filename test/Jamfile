@@ -76,20 +76,19 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # WebSocket, Web Crypto and microtasks but no WebRTC.
 # tag::browser[]
 webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;
-# end::browser[]
 webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
 webcpp.run browser_websocket_bound : browser_websocket_bound_test.cpp : : emscripten ;
 webcpp.run browser_websocket_late_events : browser_websocket_late_events_test.cpp : : emscripten ;
 webcpp.run browser_sealer : browser_sealer_test.cpp : : emscripten ;
 webcpp.run browser_data_channel : browser_data_channel_test.cpp : : emscripten ;
 webcpp.run browser_peer_connection : browser_peer_connection_test.cpp : : emscripten ;
+# end::browser[]
 
 # The same, built without exceptions, as a program that uses the browser
 # backend may be: no exception may enter WebAssembly there either.
 # tag::no-exceptions[]
 webcpp.run browser_event_loop_no_exceptions : browser_event_loop_test.cpp
   : <exception-handling>off : emscripten ;
-# end::no-exceptions[]
 webcpp.run browser_websocket_no_exceptions : browser_websocket_test.cpp
   : <exception-handling>off : emscripten ;
 webcpp.run browser_websocket_bound_no_exceptions : browser_websocket_bound_test.cpp
@@ -102,3 +101,4 @@ webcpp.run browser_data_channel_no_exceptions : browser_data_channel_test.cpp
   : <exception-handling>off : emscripten ;
 webcpp.run browser_peer_connection_no_exceptions : browser_peer_connection_test.cpp
   : <exception-handling>off : emscripten ;
+# end::no-exceptions[]

@@ -125,7 +125,7 @@ Shared objects are made with `std::allocate_shared` over
 === Handlers
 
 `std::function` takes no allocator since {cpp}17, so trystero holds every
-handler it keeps in `handler<R(Args...)>`, a move-only callable that
+handler it keeps in `+handler<R(Args...)>+`, a move-only callable that
 allocates through a `std::pmr::polymorphic_allocator<>`. Constructed with
 `handler(std::allocator_arg, allocator, f)`, it holds `f` inline when `f`
 fits in three pointers and is nothrow-movable, and in storage of the

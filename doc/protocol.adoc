@@ -38,7 +38,7 @@ in their order.
 | one per relay, to the root topic and the peer's own topic
 
 | Announcement
-| `{"peerId":...,"nonce":...}` on the root topic: at once, then after 233,
+| `+{"peerId":...,"nonce":...}+` on the root topic: at once, then after 233,
   533, 1333 and 5333 ms, then every 60 s
 
 | Relays

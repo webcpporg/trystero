@@ -48,9 +48,14 @@ builds one in place with designated initializers
   reported with `error::invalid_configuration`.
 
 | `self_id`
-| This peer's id, Trystero's `selfId`; empty, 20 random characters. One
-  longer than 64 bytes, which other peers would ignore, is replaced and
-  reported.
+| This peer's id in the room, Trystero's `selfId`; empty, 20 random
+  characters, drawn for each room. One longer than 64 bytes, which other
+  peers would ignore, is replaced and reported. Rooms of one app that meet
+  a Trystero JS peer need ids of their own: Trystero keeps one connection
+  per app and peer id, which all its rooms share, and drops a second one to
+  the same id, while each room here makes its own, so two rooms given one
+  id meet a Trystero JS peer in one of them only
+  (<<trystero-differences>>).
 
 | `handshake_timeout`
 | How long a connected peer has to finish the handshake, 10 s.
@@ -133,12 +138,15 @@ arrived before it was made are kept, 64 per peer for 120 s, and delivered
 to it once it is.
 
 `async_send` sends to `send_options::targets`, or to every joined peer, with
-optional JSON metadata. It completes once every target has the message, with
-the first failure if any. A payload that fits one 16 KiB frame with its
-header and metadata travels inline; a larger one is offered, accepted by the
-receiver within 120 s, and sent in chunks of at most 16,370 bytes, each only
-while the data channel buffers at most 64 KiB, waiting at most 10 s for it to
-drain. A receiver takes one transfer per peer at a time, accepts it only for
+optional JSON metadata. A payload that fits one 16 KiB frame with its header
+and metadata travels inline; a larger one is offered, accepted by the
+receiver within 120 s, and sent in chunks of at most 16,370 bytes. A frame
+or a chunk is handed to the data channel only while the channel buffers at
+most 64 KiB, waiting at most 10 s for it to drain. `async_send` completes
+once each target's local data channel has taken the inline frame, or the
+last chunk of the transfer the receiver accepted, with the first failure if
+any, as Trystero's `send` resolves: nothing confirms that the receiver has
+the message. A receiver takes one transfer per peer at a time, accepts it only for
 an action with a receiver, and reserves at most `max_receive_bytes` across
 peers.
 
