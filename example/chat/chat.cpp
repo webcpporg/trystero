@@ -23,6 +23,7 @@ namespace trystero = webcpp::trystero;
 
 namespace {
 
+// tag::state[]
 struct chat {
     boost::asio::io_context io;
     trystero::browser::event_loop loop{io};
@@ -32,6 +33,8 @@ struct chat {
     std::unique_ptr<trystero::action<std::string>>
         outgoing;  // the same action, sent by moving the text
 };
+
+// end::state[]
 
 chat& the_chat() {
     static chat c;  // the page's one chat; it lives as long as the tab
@@ -52,6 +55,7 @@ void ui(const char* name, const Args&... args) {
     val::global("chatUi").call<void>(name, js(args)...);
 }
 
+// tag::join[]
 void join_room(const std::string& app_id, const std::string& room_id) {
     auto& c = the_chat();
     if (c.room) {
@@ -77,6 +81,9 @@ void join_room(const std::string& app_id, const std::string& room_id) {
     ui("joined", c.room->self_id(), std::string_view(room_id));
 }
 
+// end::join[]
+
+// tag::send[]
 void send_message(std::string text) {
     auto& c = the_chat();
     if (!c.room || text.empty()) {
@@ -90,9 +97,14 @@ void send_message(std::string text) {
     });
 }
 
+// end::send[]
+
 }  // namespace
 
+// tag::bindings[]
 EMSCRIPTEN_BINDINGS(chat_example) {
     emscripten::function("join", &join_room);
     emscripten::function("send", &send_message);
 }
+
+// end::bindings[]

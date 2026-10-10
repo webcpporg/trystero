@@ -1,0 +1,73 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[appendix]
+[#trystero-differences]
+== Differences from Trystero
+
+trystero ports the part of Trystero 0.26.0 that rooms of messages need: the
+Nostr strategy, the signaling, the password handshake, the action wire and
+the room's API. Where it keeps a feature, it keeps Trystero's wire and its
+defaults; where it bounds what a peer or a relay can make a room hold, it
+says so in <<trystero-protocol-bounds>>, since Trystero JS bounds none of it.
+These features of Trystero are not ported, each for its reason:
+
+[cols="2,3",options="header"]
+|===
+| Not ported | Why
+
+| Audio and video: `addStream`, `removeStream`, `addTrack`, `removeTrack`,
+  `replaceTrack`, `onPeerStream` and `onPeerTrack`, with the actions
+  `@_stream`, `@_track` and `@_signal` and their renegotiation
+| The largest part left, on the roadmap
+  (<<trystero-roadmap>>): in the browser, the page's `MediaStream` objects;
+  natively, libdatachannel's RTP tracks, whose capture, encoding and
+  decoding would be the application's. A room ignores a frame of one of
+  these actions.
+
+| Request actions, `kind: 'request'`: `request`, `requestMany` and
+  `onRequest`
+| Not ported yet: an application answers a message with another, to its
+  sender's id.
+
+| `onReceive`, which accepts or declines an incoming transfer; the progress
+  callbacks `onProgress` and `onReceiveProgress`; and cancelling a send with
+  an `AbortSignal`
+| Not ported yet: a room accepts every transfer for an action with a
+  receiver within `max_receive_bytes`, as Trystero does when no `onReceive`
+  is set, and reports a transfer only when it completes.
+
+| `onPeerHandshake`, a handshake of the application's own
+| Not ported yet: the password handshake, which runs on the same internal
+  action, `@_hsdata`, is.
+
+| Passive rooms, `passive: true`
+| Not ported yet: a room always announces itself.
+
+| One connection shared by every room of an app between two peers
+| Not ported yet: each room makes its own connections, and ignores a frame
+  that names another room's token.
+
+| The BitTorrent, MQTT, Firebase, Supabase, IPFS and WebSocket relay
+  strategies
+| Each is a strategy of its own to port; Nostr's public relays need no
+  account and no server of the application's own.
+
+| `getRelaySockets`, `pauseRelayReconnection`, `resumeRelayReconnection`,
+  `manualReconnection` and `warnOnRelayFailure`
+| Not ported yet: a room reconnects with its backoff, and reports what its
+  relays do through its log.
+
+| `trickleIce: false`, `turnConfig` and `rtcPolyfill`
+| Candidates are always trickled, as Trystero's Nostr strategy does by
+  default; `ice_servers` names every STUN and TURN server, in place of
+  Trystero's defaults; and the backend is what a polyfill would be.
+|===
+
+No example of trystero runs under the build, since each needs the public
+relays or a browser, so none has a twin in Trystero's language, and the
+interop lane, not a twin, compares trystero with Trystero
+(<<trystero-testing-lanes>>).

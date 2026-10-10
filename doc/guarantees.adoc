@@ -1,0 +1,65 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-guarantees]
+== Guarantees
+
+What trystero promises, and the test that holds each promise, which fails
+when the promise breaks. A guarantee keeps its number, and the anchor named
+after it, so a comment of the code or of a test cites it by that anchor:
+`+(doc: #trystero-invariant-3)+` sends its reader to the third.
+`b2 libs/trystero/doc`, which builds this page, fails on a citation that
+names no anchor of it. The tests are those of <<trystero-testing>>.
+
+. [[trystero-invariant-1]]*The wire is Trystero 0.26.0's.* A {cpp} peer,
+in the browser or native, and Trystero JS peers in one room join, exchange
+text, JSON and binary messages, files both ways with metadata, and pings,
+leave, and form a mesh, with either side offering. _Held by_ the `interop`
+lane, `interop_browser` on emscripten and `interop_native` natively, against
+Trystero 0.26.0 itself in headless Chrome.
+. [[trystero-invariant-2]]*Every protocol value equals Trystero JS's.*
+Topics, room tokens, the relay shuffle, sealed text, Nostr event ids, inline
+and chunked action frames, control frames, envelopes and presence are what
+Trystero's own functions compute from the same inputs, byte for byte. _Held
+by_ `protocol`, against the values the `oracle` lane has Trystero 0.26.0
+write, and by the `oracle` lane, which fails when Trystero would write
+other values than those committed; and by `native_sealer`, which opens what
+Trystero JS sealed with Web Crypto.
+. [[trystero-invariant-3]]*A peer with another password never joins.* Its
+signals do not open, and its handshake fails, so neither side reports it
+joined. _Held by_ `room` (`the_same_password_joins_and_another_does_not`),
+`native_room` (`another_password_never_joins`), and the wrong-password
+scenario of the `interop` lane.
+. [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
+both ways.* It is offered, accepted and sent in chunks of at most 16,370
+bytes, and arrives whole, from either peer. _Held by_ `room`
+(`large_payloads_travel_in_chunks_both_ways`, 100 KB each way), and the
+file transfers of the `interop` lane.
+. [[trystero-invariant-5]]*Every allocation of a room goes through its
+resource,* but what <<trystero-allocation-outside>> lists: from its
+construction until its `io_context` has drained, the global `operator new`
+sees only the room's JSON storage counter, and the C library nothing. _Held
+by_ `allocation`, natively and on emscripten.
+. [[trystero-invariant-6]]*No unit test reaches beyond the loopback.* The
+rooms of the unit tests meet over the memory relays, the native tests' peer
+connections bind to 127.0.0.1 and gather their candidates there alone, and
+the WebSocket test talks to a server of its own on 127.0.0.1. _Held by_ the
+container lane: every unit test, built with clang 18 and with GCC 14 against
+`libstdc{plus}{plus}`, passes in a Linux container that has no network but
+the loopback (`docker run` with the network `none`).
+. [[trystero-invariant-7]]*A room refuses a replayed or reflected offer or
+answer.* A sealed offer or answer it made, or acted on, that comes back to it
+as a peer's changes nothing (<<trystero-protocol-replay>>). _Held by_ `room`
+(`a_replayed_answer_is_refused`, `a_replayed_offer_is_refused`,
+`a_reflected_offer_is_refused_as_an_answer`,
+`a_reflected_offer_is_refused_as_an_offer` and
+`a_reflected_answer_is_refused_as_an_answer`), and the replay and
+reflection scenarios of the `interop` lane.
+. [[trystero-invariant-8]]*A relay that stops reading is dropped.* Once the
+text held unsent for it would pass 4 MiB, the connection is dropped, which
+reports one close, and the room reconnects. _Held by_ `native_websocket`
+(`a_relay_that_stops_reading_is_dropped_at_the_queue_bound`) natively, and
+`browser_websocket_bound` on emscripten, with exceptions and without them.

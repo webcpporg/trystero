@@ -1,0 +1,185 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-protocol]
+== The protocol
+
+A room keeps Trystero 0.26.0's wire byte for byte. The protocol's pure
+functions are in `<webcpp/trystero/protocol/>`; their tests compare them,
+byte for byte, with values Trystero JS computed itself
+(<<trystero-testing>>). What a Trystero JS peer or a page sees never changes:
+the topic prefixes `Trystero@` and `Trystero:`, the handshake's
+`+__trystero_pw+`, every constant and message layout, and the default relays
+in their order.
+
+[#trystero-protocol-discovery]
+=== Discovery over Nostr
+
+[cols="1,3",options="header"]
+|===
+| Part | What it is
+
+| Root topic
+| Trystero's `sha1` of `Trystero@<app>@<room>`: each SHA-1 byte in base 36,
+  unpadded, concatenated
+
+| Peer topic
+| the same of `Trystero@<app>@<room>@<peer id>`, where a peer receives its
+  offers, answers and candidates
+
+| Event
+| kind 20000 plus the sum of the topic's UTF-16 code units modulo 10000,
+  ephemeral; the topic in an `x` tag; signed with BIP-340
+
+| Subscription
+| one per relay, to the root topic and the peer's own topic
+
+| Announcement
+| `{"peerId":...,"nonce":...}` on the root topic: at once, then after 233,
+  533, 1333 and 5333 ms, then every 60 s
+
+| Relays
+| the configured ones, or 5 of Trystero's 29 defaults, shuffled with
+  `sin(seed{plus}{plus}) * 10000` seeded by the app id
+|===
+
+A relay that answers `rate-limited:` is skipped for 60 s, doubling to 15
+minutes while the replies persist; one that answers `blocked:`,
+`restricted:`, `auth-required:` or `pow:` is retired. A lost relay is
+reconnected after a random share of 3.3 s, doubling to 60 s, and the delay
+comes back to 3.3 s only once a connection stayed open for 60 s, so that a
+relay that closes the room at once after each open is tried less and less
+often.
+
+[#trystero-protocol-signaling]
+=== Signaling
+
+Of two peers, the one with the lower id offers, on the relay that carried the
+other's announcement. The higher one answers an announcement by announcing
+itself on the other's peer topic, so the lower one offers: at most once a
+second per peer, and once in 5.3 s per relay for the whole room, Trystero's
+announce interval, so that a flood of low ids does not have the relays
+rate-limit the room. Offers, answers and candidates are sealed with AES-GCM
+under the SHA-256 of `<password>:<app>:<room>`, the password empty when there
+is none, with a 16-byte IV, as the text `<iv>$<ciphertext>`: the IV's bytes
+in decimal joined by commas, and the ciphertext with its tag in base64.
+Candidates follow their offer or answer, trickled. A negotiation ends when
+the data channel opens: the connection is the room's, and signals from that
+peer are ignored until it leaves.
+
+[#trystero-protocol-channel]
+=== The data channel
+
+Every message is a room frame: `1`, the length of the room token (16 bits,
+big-endian), the token, the hexadecimal SHA-256 of `Trystero:<app>:<room>`,
+then an action frame. A presence frame, `2`, present or not, the token's
+length and the token, announces or withdraws the room.
+
+Action frames are Trystero's action wire, version 2: an inline frame carries
+the payload whole; a larger payload is an offer, accepted or refused by the
+receiver, then chunks of at most 16,370 bytes, in order. Integers and
+float64 values are big-endian, as JavaScript's `DataView` writes them.
+
+[cols="1,3",options="header"]
+|===
+| Frame | Bytes
+
+| inline (kind 0) | 2, the kind and the format shifted by four, the name (32 bytes, NUL padded), the metadata's length (uint16), the metadata, the payload
+| offer (kind 1) | the inline header, the transfer's id (uint32), the payload's size (float64), the metadata
+| chunk (kind 2) | 2, 2, the transfer's id (uint32), the offset (float64), the bytes
+| accepted (kind 3) | 2, 3, the transfer's id (uint32)
+| rejected (kind 4) | 2, 4, the transfer's id (uint32), the reason (UTF-8, at most 200 bytes)
+| cancelled (kind 5) | 2, 5, the transfer's id (uint32)
+|===
+
+The payload's format is text (0), JSON (1) or binary (2). Internal actions
+run the room:
+
+[cols="1,3",options="header"]
+|===
+| Action | What it carries
+
+| `@_hsdata` | the password handshake: the lower id sends a challenge, and the other answers with the hexadecimal SHA-256 of `<challenge>:<password>:<app>:<room>`
+| `@_hsready` | the sender's side of the handshake passed; a peer joins when both sides sent it
+| `@_ping`, `@_pong` | round trips
+| `@_leave` | the sender leaves the room
+|===
+
+The media actions, `@_stream`, `@_track` and `@_signal`, are not ported
+(<<trystero-differences>>): a frame of one is ignored.
+
+[#trystero-protocol-bounds]
+=== Bounded signaling
+
+Announcements are not sealed, so anyone who knows the app and room ids can
+announce any number of peer ids, and anyone who reads the relays can send any
+signal in any peer's name. Trystero JS bounds none of this; trystero bounds
+what each costs a room.
+
+* Nothing a peer sends changes a negotiation before it opens with the room
+  key: an offer, an answer or a candidate that does not open is counted,
+  reported once per negotiation, and changes nothing else. A flood of fresh
+  ids makes each a negotiation, so the reports are paced: the first of a
+  quiet 10 s goes to `on_error` at once, with its peer, and the others of
+  those 10 s in one report, with no peer and their number.
+* A room holds at most `detail::signaling::max_unconnected_peers` (32)
+  negotiations with peers it is not connected to. A negotiation whose offer
+  and answer expire without a connection is dropped, an idle one gives its
+  place to a new peer, and a new peer beyond the bound is refused and logged
+  once.
+* A room makes at most `max_connections_per_window` (64) connections in any
+  57 s, however soon they end, and a page at most 256
+  (<<trystero-browser-bounds>>); the native backend makes at most 256 a
+  minute (<<trystero-native-config>>).
+* A signal's fields are bounded in `protocol/signal.hpp`: the peer id (64
+  bytes; Trystero's are 20), the offer id (64 bytes), a sealed offer or
+  answer (64 KiB) and a sealed candidate (16 KiB, above the 8192 bytes of
+  plaintext Trystero takes).
+* A relay is a third party too: its texts are bounded at 1 MiB, what the room
+  holds unsent for it at 4 MiB, and, natively, its silence at 30 s
+  (<<trystero-native-relays>>).
+
+[#trystero-protocol-replay]
+=== Replayed offers and answers
+
+A sealed offer or answer holds neither its offer id nor a peer id
+(Trystero's wire), so one recorded from the relays still opens when anyone
+resends it in its sender's name, and so does the room's own, sent back to it.
+A room remembers, by the SHA-256 of their opened text, the last 1024 offers
+and answers it made or acted on
+(`detail::signaling::remembered_descriptions`), and refuses one that comes to
+it as a peer's: it changes nothing and is logged. It makes or acts on at most
+two per connection it makes, so each is remembered for at least an offer's
+lifetime (57 s), and in a quiet room for its whole life. So a room refuses a
+sealed offer or answer it acted on, resent, and one it made itself, sent back
+as a peer's offer or answer.
+
+[#trystero-protocol-limitations]
+=== What remains
+
+Two limitations remain, both of Trystero's wire, which only a change that
+Trystero JS shares can close.
+
+*A watcher without the key can keep two peers apart.* A sealed offer or
+answer the room neither made nor acted on still opens and is acted on. Such
+texts are not scarce: every peer seals a fresh offer for any id announced
+above its own, and announcements need no key. So anyone who reads and
+publishes on the relays, without the key, can keep any two peers of a room
+apart from their first meeting for as long as it keeps at it, each attempt
+costing the other peer a connection of its window. It cannot read or alter
+anything the peers exchange, join the room, or touch peers already joined; a
+joined peer that drops is a new peer again. The room refuses only what it
+made or already acted on. Only a wire that seals the offer id and both peer
+ids closes this, which Trystero would have to share (reported upstream).
+
+*A flooder can delay new peers.* Joined peers, memory and connections stay
+safe under a flood, but a flooder who keeps sending new ids takes each place,
+or each connection of the window, as it frees, so new peers can be kept out
+for as long as the flood lasts, each place up to one offer's lifetime (57 s)
+at a time. A joined peer whose connection drops comes back as a new peer,
+with the same id, and is kept out the same way: the room has no
+renegotiation that would keep its place. Closing it needs announcements that
+prove the room key, a wire change Trystero would have to share.

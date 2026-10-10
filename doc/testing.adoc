@@ -1,0 +1,200 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-testing]
+== Testing
+
+[#trystero-testing-program]
+=== Testing a program that uses trystero
+
+A room needs relays and peers, and a test needs neither the network nor
+another machine. The backend interface is the seam: a program's tests run its
+rooms over a backend of their own, in memory, as trystero's own tests run
+whole rooms over `test/support/memory_backend.hpp`, a backend whose Nostr
+relays forward ephemeral events to matching subscriptions, whose peer
+connections pair through their descriptions, whose data channels deliver in
+order, and whose sealer opens only what was sealed under the same key, each
+event posted to the `io_context`. It is in the namespace
+`webcpp::trystero::test`, outside the library's public headers, and a
+program may copy it.
+
+A test of the native backend's own WebRTC binds its connections to the
+loopback, `native::backend_config::bind_address` set to `"127.0.0.1"`, and
+names a STUN server where nothing answers, `stun:127.0.0.1:9`, in place of
+Trystero's public ones: the loopback's host candidate is then the only one,
+and it is enough.
+
+[#trystero-testing-library]
+=== How trystero is tested
+
+trystero's tests are under `test/`, each declared in `test/Jamfile`, and each
+guarantee of <<trystero-guarantees>> names the tests that hold it. They run
+on two targets: {n-tests} tests in all, {n-tests-native} natively and
+{n-tests-emscripten} on emscripten, under node. The protocol, the rooms and
+the allocation test run on both:
+
+[listing]
+----
+include::{library-root}/test/Jamfile[tag=both-targets]
+include::{library-root}/test/Jamfile[tag=allocation]
+----
+
+[cols="1,3",options="header"]
+|===
+| Test | What it checks
+
+| the public headers
+| Each compiled alone, on each target that builds it: the core on both, the
+  native backend natively, against libdatachannel and OpenSSL, and the
+  browser backend on emscripten.
+
+| `config`, `config_developer_defined`
+| `<webcpp/trystero/config.hpp>` defines `WEBCPP_TRYSTERO_NO_EXCEPTIONS`
+  exactly when the build has no exceptions, and keeps it when a developer
+  defines it in a build that has them.
+
+| `protocol`
+| The protocol against values Trystero JS 0.26.0 computed itself: topics,
+  room tokens, the relay shuffle, sealed text, Nostr event ids, inline and
+  chunked action frames, control frames, envelopes and presence, and the
+  bounds of a signal's fields.
+
+| `room`
+| Whole rooms in one process, over the memory relays: every payload format,
+  100 KB transfers both ways, ping, passwords right and wrong, leaving and
+  returning, a room moved over a joined one, ICE servers checked as WebRTC
+  checks them, floods of announcements and of forged, replayed and reflected
+  signals, a relay that closes at once or rate-limits, a three-peer mesh,
+  coroutines and view handlers.
+
+| `allocation`
+| Every allocation of two rooms goes through their resources
+  (<<trystero-allocation-proof>>).
+
+| `native_sealer`, `native_websocket`, `native_timer`
+| The native backend, part by part, natively: the sealer opens what Trystero
+  JS sealed with Web Crypto; the WebSocket, against a Beast server in the
+  same process, opens, sends in order, closes once, and drops a relay that
+  sends too much, stops reading or stops answering, while one that answers
+  its pings stays; the timer never fires once cancelled, restarted or
+  destroyed.
+
+| `native_peer_connection`, `native_room`
+| Two libdatachannel connections wired to each other, each handler on the
+  executor, and whole native rooms over real libdatachannel connections,
+  bound to 127.0.0.1.
+
+| `browser_event_loop`, `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`
+| The browser backend, on emscripten under node, which has the page's
+  WebSocket, Web Crypto and microtasks but no WebRTC: the loop and its
+  recovery from exceptions that escape a callback, the WebSocket's URLs, its
+  bound on what a relay holds unsent and its silence once dropped, the
+  sealer's completions, a data channel's refusal of what is no frame, and
+  the page's peer connections, made or refused, and their census.
+|===
+
+The native backend's connections need exceptions whatever the build asks
+(<<trystero-native-exceptions>>), and each browser test is also built
+without exceptions, as a program that uses the browser backend may be:
+
+[listing]
+----
+include::{library-root}/test/Jamfile[tag=browser]
+include::{library-root}/test/Jamfile[tag=no-exceptions]
+----
+
+From the root of a webcpp checkout, with the four variables of
+<<trystero-building>> set, each of these builds and runs the tests, natively,
+under AddressSanitizer and UndefinedBehaviorSanitizer, and on emscripten:
+
+[source,bash]
+----
+b2 libs/trystero/test
+b2 libs/trystero/test address-sanitizer=norecover undefined-sanitizer=norecover
+b2 toolset=emscripten libs/trystero/test
+----
+
+The {n-linked} examples are linked and never run, since each needs the
+public relays or a browser. b2 compares timestamps, so a result that counts
+is built from scratch, with `b2 -a`.
+
+[#trystero-testing-lanes]
+=== The oracle and the interop lanes
+
+Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
+against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
+`package-lock.json`, with Node:
+
+[listing]
+----
+include::{library-root}/test/oracle/Jamfile[tag=oracle]
+----
+
+`oracle`, which names no target, runs Trystero's own functions over the
+inputs of `test/fixtures/cases/protocol.json` and checks that they still
+write `test/fixtures/expected/expected.json` byte for byte, the values the
+`protocol` and `native_sealer` tests reproduce; `update-expected` is its only
+writer.
+
+[listing]
+----
+include::{library-root}/test/oracle/Jamfile[tag=interop]
+----
+
+`interop`, natively and on emscripten, meets each {cpp} peer, the native one
+as a process and the browser's in headless Chrome, with Trystero JS peers in
+Chrome, over an in-memory Nostr relay on 127.0.0.1 that verifies every
+event's id and signature as a public relay does. Its scenarios: the {cpp}
+peer offering; Trystero JS offering, with a password; a Trystero JS peer that
+also sends malformed candidates, or text messages on its data channel; a
+first relay to which no WebSocket can be made; a {cpp} peer given a TURN
+server without credentials; a watcher without the key that answers every
+offer with garbage in the other peer's name, that resends a sealed answer
+and offer it recorded, and that sends the {cpp} peer its own sealed offer
+back, which the {cpp} peer must refuse; a flood of announcements and of
+unsealed offers from fresh peer ids; a relay text longer than 1 MiB; a wrong
+password; and a mesh of three. The native peer meets three more: a room
+moved over the joined one, which must leave it as destroying it does; a
+relay that ends the connection just as the peer writes, which twelve peers in
+turn must survive; and the driver's own check that a peer killed by a signal
+is named at once.
+
+Every peer gathers its ICE candidates on the machine alone: the {cpp} peers
+get `stun:127.0.0.1:9` in place of Trystero's public STUN servers, the
+native peer binds its connections to 127.0.0.1, and the Trystero JS peers
+have no ICE server. Chrome is the one `CHROME` names, else on macOS
+Playwright's `chrome-headless-shell`. Each driver is bounded by 900 s,
+beyond its scenarios' own limits, so that a scenario that does not complete
+fails by name with what each peer saw.
+
+[source,bash]
+----
+b2 -a libs/trystero/test/oracle//oracle
+b2 -a --dump-tests --out-xml=native.trystero.interop.xml libs/trystero/test/oracle//interop
+b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten libs/trystero/test/oracle//interop
+----
+
+[#trystero-testing-container]
+=== The container lane
+
+The unit tests are also built with clang 18 and with GCC 14 against
+`libstdc{plus}{plus}`, in a Linux container, with libsecp256k1,
+libdatachannel and OpenSSL built there with the same compiler, and run in it
+with `docker run` and the network `none`, which leaves the loopback alone:
+every test passes, which shows that none reaches beyond the machine
+(<<trystero-invariant-6,guarantee 6>>).
+
+[#trystero-testing-report]
+=== The test matrix
+
+The continuous integration runs trystero's tests in lanes, one toolset each,
+and its own lanes, the oracle once and the interop natively and on
+emscripten, as `native.trystero.interop` and `emscripten.trystero.interop`.
+Each lane builds from scratch and records what b2 built and ran; webcpp's
+`tools/report/report.py` merges the files of every lane into a matrix, where
+each cell says whether that program passed in that lane, or how it failed.
+The matrix is published with the documentation, at
+https://webcpporg.github.io/webcpp/report/.

@@ -1,0 +1,199 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-building]
+== Building
+
+trystero is header-only, and is developed inside the webcpp superproject, as
+a Boost library is developed inside Boost. Besides Boost, it needs three
+libraries that are not part of it, which the build finds where four
+variables of the environment say, until webcpp builds them from
+`third_party/`:
+
+[cols="2,2,3",options="header"]
+|===
+| Library | Needed by | Found where
+
+| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules
+| every room: it signs the Nostr events peers meet through
+| `SECP256K1_ROOT` natively, `SECP256K1_EMSCRIPTEN_ROOT` for its emscripten
+  build
+
+| libdatachannel 0.24.6
+| the native backend
+| `LIBDATACHANNEL_ROOT`
+
+| OpenSSL 3
+| the native backend
+| `OPENSSL_ROOT`
+|===
+
+Each variable names a directory with the library's `include/` and `lib/`.
+A variable that is not set leaves the library to the compiler's default
+search path; one that names a directory without the library's header stops
+the build, naming the variable, when a target that needs the library is
+built. trystero's `build.jam` declares them so:
+
+[listing]
+----
+include::{library-root}/build.jam[tag=dependencies]
+----
+
+[#trystero-building-project]
+=== In a b2 project
+
+A b2 project uses the rooms and the browser backend through
+`/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
+libsecp256k1 and Boost.JSON's definitions, compiled once per variant, and,
+on emscripten, embind and `BOOST_ASIO_DISABLE_THREADS`, since the page has no
+threads:
+
+[listing]
+----
+include::{library-root}/build.jam[tag=trystero]
+----
+
+embind is linked as a flag, `-lembind`, rather than with b2's own
+`<embind>on`: that feature is not free, and b2 ignores a feature that is not
+free among usage requirements, so a program that used it would not link.
+
+A native program uses `/webcpp/trystero//native`, which adds libdatachannel
+and OpenSSL:
+
+[listing]
+----
+include::{library-root}/build.jam[tag=native]
+----
+
+The native backend's WebRTC needs exceptions (<<trystero-native-exceptions>>),
+and b2 lets no usage requirement override a build's
+`exception-handling=off`, so each program and test that uses it declares
+`<exception-handling>on` itself, as the examples do:
+
+[listing]
+----
+include::{examples}/Jamfile[tag=native]
+----
+
+and as trystero's own tests of the native backend's connections do:
+
+[listing]
+----
+include::{library-root}/test/Jamfile[tag=native]
+----
+
+A browser program is linked for the web, with a memory that grows:
+
+[listing]
+----
+include::{examples}/Jamfile[tag=browser]
+----
+
+[#trystero-building-emscripten]
+=== The emscripten toolset
+
+The emscripten target is b2's `emscripten` toolset, registered against
+Emscripten 6.0.11 from emsdk, as a `user-config.jam` declares it, where
+`$(emsdk)` is the emsdk's directory and `$(node)` the node that runs a
+program:
+
+[listing]
+----
+include::{webcpp-root}/tools/ci/emsdk.jam[tag=emsdk]
+include::{webcpp-root}/tools/ci/emsdk.jam[tag=emscripten]
+----
+
+With it and the four variables, from the root of a webcpp checkout, these
+build the tests and the examples, natively and on emscripten:
+
+[source,bash]
+----
+b2 libs/trystero/test libs/trystero/example
+b2 toolset=emscripten libs/trystero/test libs/trystero/example
+----
+
+[#trystero-building-dependencies]
+=== The three libraries
+
+libsecp256k1 is built twice: natively, and with Emscripten for the browser.
+Its small tables keep the browser's download small:
+
+[source,bash]
+----
+git clone --branch v0.8.0 https://github.com/bitcoin-core/secp256k1.git
+options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+  -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_EXTRAKEYS=ON \
+  -DSECP256K1_ECMULT_WINDOW_SIZE=4 -DSECP256K1_ECMULT_GEN_KB=2 \
+  -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF \
+  -DSECP256K1_BUILD_BENCHMARK=OFF"
+
+cmake -S secp256k1 -B build-secp256k1-native $options \
+  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-native
+cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
+
+emcmake cmake -S secp256k1 -B build-secp256k1-emscripten $options \
+  -DCMAKE_INSTALL_PREFIX=$PWD/secp256k1-emscripten
+cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
+
+export SECP256K1_ROOT=$PWD/secp256k1-native
+export SECP256K1_EMSCRIPTEN_ROOT=$PWD/secp256k1-emscripten
+----
+
+libdatachannel is built with the compiler and the standard library that
+build the programs: a program built with GCC and `libstdc{plus}{plus}` does
+not link against a libdatachannel built with `libc{plus}{plus}`, though the
+native headers still compile alone. Its own WebSocket is not used, so it is
+built without it, and its CMake finds OpenSSL where `OPENSSL_ROOT_DIR` says,
+which Homebrew's OpenSSL needs:
+
+[source,bash]
+----
+export OPENSSL_ROOT=$(brew --prefix openssl@3)  # or wherever OpenSSL 3 is
+
+git clone --recurse-submodules --branch v0.24.6 \
+  https://github.com/paullouisageneau/libdatachannel.git
+cmake -S libdatachannel -B build-libdatachannel -DCMAKE_BUILD_TYPE=Release \
+  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$OPENSSL_ROOT \
+  -DCMAKE_INSTALL_PREFIX=$PWD/libdatachannel-install
+cmake --build build-libdatachannel && cmake --install build-libdatachannel
+
+export LIBDATACHANNEL_ROOT=$PWD/libdatachannel-install
+----
+
+[#trystero-building-examples]
+=== Running the examples
+
+The three examples need the public relays or a browser, so the build links
+them and never runs them: `native_quick_start.cpp`, natively;
+`quick_start.cpp`, a `.js` and a `.wasm` to embed in a page; and the chat,
+a page whose room is {cpp} (<<trystero-browser-chat>>). The quick starts and
+the chat meet in the same room, `lobby` of the app
+`webcpp-trystero-quick-start`, over the public relays.
+
+The native quick start is built as a program of its own, and runs until it
+is stopped:
+
+[source,bash]
+----
+b2 libs/trystero/example//native_quick_start-program
+`find bin/libs/trystero/example -name native_quick_start-program -type f`
+----
+
+The chat is a page and its program, which the target `site` copies into a
+directory of its own under the build directory, out of the tree, and prints.
+The page is served from `localhost`, where `crypto.subtle` exists:
+
+[source,bash]
+----
+b2 toolset=emscripten libs/trystero/example/chat//site
+python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
+----
+
+At http://localhost:8000, joining the app `webcpp-trystero-quick-start` and
+the room `lobby` brings the native quick start in as a peer within seconds:
+its greeting appears in the chat, and what the page sends is printed in its
+terminal. On another toolset, `site` stops the build, saying that the page is
+built on emscripten alone.

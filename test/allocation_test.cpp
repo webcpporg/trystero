@@ -506,6 +506,7 @@ void warm(boost::asio::io_context& io) {
     run_for(io, 20);
 }
 
+// tag::config[]
 /** A room's configuration, every part of it in `memory`, made before the window. */
 trystero::room_config config_in(counting_resource& memory, std::string_view self_id,
                                 std::string_view relay, std::size_t& lines) {
@@ -524,6 +525,8 @@ trystero::room_config config_in(counting_resource& memory, std::string_view self
         .memory = &memory,
     };
 }
+
+// end::config[]
 
 /**
  * Two rooms with a password, a log and a relay of their own are made one after
@@ -552,9 +555,11 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     bool joined = false;
     bool exchanged = false;
     bool farewell = false;
+    // tag::allocator[]
     const auto in = [](counting_resource& memory) {
         return std::pmr::polymorphic_allocator<>(&memory);
     };
+    // end::allocator[]
     counting = true;
     {
         // z is subscribed and announcing before a arrives, so that z, whose id is
@@ -569,6 +574,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
                     files += data.size() == 100'000 ? 1 : 0;
                 });
             joined = run_until(io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; });
+            // tag::bind-allocator[]
             a.make_action<trystero::pmr_bytes>("file").async_send(
                 trystero::pmr_bytes(100'000, 7, &a_memory),
                 boost::asio::bind_allocator(in(a_memory), [](boost::system::error_code /*ec*/) {}));
@@ -577,6 +583,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
                              in(a_memory),
                              [&pings](boost::system::error_code ec,
                                       std::chrono::milliseconds /*rtt*/) { pings += ec ? 0 : 1; }));
+            // end::bind-allocator[]
             exchanged = run_until(io, [&] { return files == 1 && pings == 1; });
             bool gone = false;
             z.async_leave(boost::asio::bind_allocator(

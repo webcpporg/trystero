@@ -4,9 +4,9 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// The native quick start of the documentation (doc/trystero/native.adoc), which includes the tagged
-// regions below: the browser quick start's room, as a native program. Trystero JS and browser peers
-// in the same room are its peers.
+// The native quick start of the documentation (doc: #trystero-quick-start), which includes the
+// tagged regions below: the browser quick start's room, as a native program. Trystero JS and
+// browser peers in the same room are its peers.
 
 // tag::program[]
 #include <webcpp/trystero/native/backend.hpp>

@@ -19,91 +19,50 @@ public Nostr relays and exchange messages directly, over WebRTC data
 channels. The wire is Trystero's: a room joined from {cpp} and the same room
 joined from Trystero's JavaScript are one room.
 
-[#trystero-overview]
-== Overview
+This page teaches trystero section by section: what a room is, how a program
+joins one in the browser and natively, how its actions carry messages, where
+its memory comes from, what each backend asks of its platform, the wire it
+speaks, and what it guarantees. Every program it shows is one of the
+library's examples, which the build compiles and links on its target. None
+is run by the build, since each needs the public relays or a browser, so the
+page shows no output of theirs. The <<reference,reference>> lists every name
+the headers declare.
 
-What a room is, what an action is, and the two backends a room runs on.
+include::overview.adoc[]
 
-[#trystero-quick-start]
-== Quick start
+include::quick-start.adoc[]
 
-The smallest program that joins a room and exchanges a message.
+include::building.adoc[]
 
-[#trystero-building]
-== Building
+include::usage.adoc[]
 
-How a b2 project uses trystero, natively and on emscripten, and the three
-libraries it needs besides Boost.
+include::allocation.adoc[]
 
-[#trystero-usage]
-== Rooms and actions
+include::browser.adoc[]
 
-Joining a room, its peers and their events, actions and their transfers,
-pings, and leaving.
+include::native.adoc[]
 
-[#trystero-allocation]
-== Allocation
+include::protocol.adoc[]
 
-The memory resource of a room, what it allocates from it, and how long it
-must live.
+include::design.adoc[]
 
-[#trystero-browser]
-== The browser backend
+include::guarantees.adoc[]
 
-The backend over the page's WebSockets, WebRTC and Web Crypto, through
-embind, and the event loop that runs a room's executor in the browser.
-
-[#trystero-native]
-== The native backend
-
-The backend over libdatachannel, Boost.Beast and OpenSSL, its
-configuration, and the exceptions it needs.
-
-[#trystero-protocol]
-== The protocol
-
-Trystero's wire, byte for byte: the topics, the Nostr events, the signals,
-the sealed envelope and the frames of an action.
-
-[#trystero-design]
-== Design
-
-How a room is built: the signaling over Nostr, the peer links, the actions'
-frames and the backend interface.
-
-[#trystero-guarantees]
-== Guarantees
-
-What trystero guarantees, numbered.
-
-[#trystero-testing]
-== Testing
-
-How trystero is tested, on which targets, with which commands, and where the
-test matrix is.
+include::testing.adoc[]
 
 [#reference]
 == Reference
 
 Every name trystero declares, in the namespace `webcpp::trystero` and those
-nested in it, from the Doc Comments of its headers.
+nested in it, from the Doc Comments of its headers: each class, function,
+type and enumerator with its declaration, what it does, what it asks of its
+caller and how it fails, and the part of Trystero 0.26.0 it ports. The other
+sections teach the library; this one is where a name is looked up.
 
 include::{reference}[leveloffset=+1]
 
-[appendix]
-[#trystero-differences]
-== Differences from Trystero
+include::differences.adoc[]
 
-Where trystero differs from Trystero 0.26.0, and why.
+include::roadmap.adoc[]
 
-[appendix]
-[#trystero-roadmap]
-== Roadmap
-
-What trystero does not port yet.
-
-[appendix]
-[#trystero-acknowledgements]
-== Acknowledgements
-
-Trystero, by Dan Motzenbecker, under the MIT license.
+include::acknowledgements.adoc[]

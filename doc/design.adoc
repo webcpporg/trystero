@@ -1,0 +1,100 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-design]
+== Design
+
+[#trystero-design-layers]
+=== Layers
+
+[cols="1,2,3",options="header"]
+|===
+| Layer | Headers | Knows
+
+| Protocol
+| `protocol/*.hpp`
+| pure functions over bytes and text: no I/O, no platform
+
+| Backend interface
+| `backend.hpp`
+| the WebSocket, peer connection, data channel, timer and AES-GCM sealer a
+  platform provides
+
+| Room
+| `room.hpp`, `detail/*.hpp`
+| the Nostr strategy, the signaling, the peer links, the action wire and the
+  public API
+
+| Browser backend
+| `browser/*.hpp`
+| `emscripten::val` over the browser's APIs, and the event loop
+
+| Native backend
+| `native/*.hpp`
+| libdatachannel, Boost.Beast, OpenSSL and Asio's timers
+|===
+
+Everything above the backend interface is the core, which builds on both
+targets: the same room runs over the browser's APIs, over libdatachannel, and
+over the memory relays of the tests (<<trystero-testing>>). The core never
+includes a backend, libdatachannel, OpenSSL or Emscripten: a boundary of the
+library's own, which webcpp's lint checks, keeps it so.
+
+[#trystero-design-backend]
+=== Why abstract classes for the backend
+
+The backend is a handful of abstract classes rather than template
+parameters. Each of its operations is a call into JavaScript or into a
+network stack, so a virtual call costs nothing measurable, while the room's
+code stays free of templates over the platform and of `#ifdef`, and the test
+backend and the browser backend are interchangeable at run time. Every
+handler a backend invokes runs on the room's executor, after the call that
+caused it has returned, never inside it: the room calls these operations from
+inside handlers whose state a completion run there would change under them.
+
+[#trystero-design-webrtc]
+=== Why the browser's own WebRTC
+
+libdatachannel's WebAssembly port, datachannel-wasm, has no media and hides
+the `RTCPeerConnection` it wraps. Binding the browser's objects directly
+through `emscripten::val` is smaller than that wrapper, reports every error,
+and leaves the browser's whole WebRTC stack (capture, codecs, playout) within
+reach for media.
+
+[#trystero-design-text]
+=== Text is a view, a copy is a decision
+
+A parameter that only reads text is a `std::string_view`, bytes are a
+`std::span`, and a string is used where something must own the text: a map
+key, a member, a capture of a handler that runs later.
+
+* The digests the protocol takes are fed the parts of their input: nothing is
+  concatenated to hash it.
+* Signals and relay messages are read as views into the parsed document; the
+  JSON the room writes goes into one reserved buffer, escaped by Boost.JSON's
+  serializer, and a Nostr event's id is hashed over those same bytes.
+* A frame is written once, inside its room envelope, and shared by every
+  target; a received frame becomes the buffer of the message delivered from
+  it, and a view handler reads it in place.
+* A sentence of the log is composed only when there is a sink.
+
+The asynchronous operations are the exception, for the reason
+<<trystero-usage-tokens>> gives.
+
+[#trystero-design-dependencies]
+=== Optional native dependencies
+
+libdatachannel is under the MPL 2.0 and OpenSSL under the Apache License
+2.0. Both are needed only by the native backend, which a browser program
+never includes: `/webcpp/trystero//trystero` depends on neither, and
+`/webcpp/trystero//native` adds them, as OpenSSL is optional for Asio.
+
+[#trystero-design-licensing]
+=== Licensing
+
+The library is distributed under the Boost Software License. It ports
+Trystero's protocol and was written with Trystero's source open, so
+Trystero's MIT notice comes with it (<<trystero-acknowledgements>>).

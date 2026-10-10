@@ -4,7 +4,7 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// The quick start of the documentation (doc/trystero/quick_start.adoc), which includes the tagged
+// The quick start of the documentation (doc: #trystero-quick-start), which includes the tagged
 // regions below: a browser program that joins a room, greets every peer that joins, prints what it
 // receives, and echoes another action from a coroutine.
 

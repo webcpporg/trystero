@@ -18,6 +18,7 @@ import errors ;
 import os ;
 import path ;
 
+# tag::dependencies[]
 local secp256k1-root = [ os.environ SECP256K1_ROOT ] ;
 local secp256k1-emscripten-root = [ os.environ SECP256K1_EMSCRIPTEN_ROOT ] ;
 local libdatachannel-root = [ os.environ LIBDATACHANNEL_ROOT ] ;
@@ -30,6 +31,7 @@ lib datachannel : : <name>datachannel <search>$(libdatachannel-root)/lib
   : : <include>$(libdatachannel-root)/include <dll-path>$(libdatachannel-root)/lib ;
 lib ssl : : <name>ssl <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
 lib crypto : : <name>crypto <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
+# end::dependencies[]
 
 # Stops the build, naming the variable, when it is set and its directory
 # does not hold the header of its library. A variable that is not set is
@@ -77,16 +79,20 @@ rule native-dependencies ( properties * )
 # <embind>on links, which as a usage requirement it would drop (measured: a
 # program then fails to link, undefined _embind_register_function), since
 # b2 takes only free features from usage requirements.
+# tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
   : : <include>include <library>/boost//headers <library>/webcpp//boost_json
   <library>secp256k1
   <toolset>emscripten:<define>BOOST_ASIO_DISABLE_THREADS
   <toolset>emscripten:<linkflags>-lembind ;
+# end::trystero[]
 
 # The native backend needs exceptions: libdatachannel reports errors by
 # throwing, and data_channel.hpp and peer_connection.hpp catch them. Each
 # headers-alone call, test and program of it declares
 # <exception-handling>on itself, since b2 lets no usage requirement override
 # a build's exception-handling=off.
+# tag::native[]
 alias native : : <conditional>@native-dependencies
   : : <library>trystero <library>datachannel <library>ssl <library>crypto ;
+# end::native[]

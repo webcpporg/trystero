@@ -1,0 +1,72 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-quick-start]
+== Quick start
+
+The two smallest programs that join a room: one for the browser, one native.
+Both join the room `lobby` of the app `webcpp-trystero-quick-start`, so they
+meet each other, and any Trystero JS page that joins the same room,
+`joinRoom({appId: 'webcpp-trystero-quick-start'}, 'lobby')`, meets them
+both. <<trystero-building-examples>> builds and runs them.
+
+[#trystero-quick-start-browser]
+=== In the browser
+
+A browser program keeps four things alive for as long as its page: an
+`io_context`, the `browser::event_loop` that drives it from the page's
+JavaScript events, the `browser::backend` that implements the platform over
+the browser's APIs, and the room. Actions are made from the room by name and
+payload type:
+
+[source]
+----
+include::{examples}/quick_start.cpp[tag=includes]
+
+include::{examples}/quick_start.cpp[tag=application]
+----
+
+`<webcpp/trystero/browser/src.hpp>` is included in exactly one source file
+of the program: it defines the functions the page calls into the library
+with.
+
+Handlers are set once the application exists. This program greets every peer
+that completes the handshake, prints every `chat` message, and starts a
+coroutine that answers the `echo` action:
+
+[source]
+----
+include::{examples}/quick_start.cpp[tag=main]
+----
+
+The coroutine awaits messages with `async_receive` and answers with
+`async_send`. `boost::asio::as_tuple` turns the error into a value, so
+leaving the room ends the loop instead of throwing:
+
+[source]
+----
+include::{examples}/quick_start.cpp[tag=coroutine]
+----
+
+`main` returns at once. Nothing blocks in a browser: every JavaScript event
+that reaches the library runs its handlers and then whatever became ready on
+the `io_context` (<<trystero-browser>>).
+
+[#trystero-quick-start-native]
+=== Natively
+
+The same room, natively, whole: a program that greets every peer that joins
+and prints what it receives on `chat`. A native program runs its
+`io_context` itself, since there is no event loop of a page to drive it, and
+the native backend posts what libdatachannel's threads report to it:
+
+[source]
+----
+include::{examples}/native_quick_start.cpp[tag=program]
+----
+
+`io.run()` returns only when the program is stopped: the room keeps its
+relays and its peers for as long as it lives.

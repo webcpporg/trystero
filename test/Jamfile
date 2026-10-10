@@ -42,8 +42,10 @@ webcpp.compile config_developer_defined : config_test.cpp
 # need exceptions whatever the build asks: the types of data_channel.hpp,
 # peer_connection.hpp and backend.hpp exist only with them, since
 # libdatachannel reports errors by throwing.
+# tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
+# end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
 # The WebSocket test is built with the standard libraries' own checks, libc++'s
@@ -55,20 +57,26 @@ webcpp.run native_websocket : native_websocket_test.cpp
     <define>_GLIBCXX_ASSERTIONS
   : native ;
 webcpp.run native_timer : native_timer_test.cpp : <library>/webcpp/trystero//native : native ;
+# tag::native[]
 webcpp.run native_peer_connection : native_peer_connection_test.cpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
 webcpp.run native_room : native_room_test.cpp
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
+# end::native[]
 
 # Every allocation of two rooms that exchange a payload goes through the
 # resources of their configurations, and the global operator new and the C
 # library's allocation functions see none. Its two counting resources hold
 # 64 MiB each, beyond Emscripten's 16 MiB unless the memory grows.
+# tag::allocation[]
 webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+# end::allocation[]
 
 # The browser backend's own tests, under node, which has the page's
 # WebSocket, Web Crypto and microtasks but no WebRTC.
+# tag::browser[]
 webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;
+# end::browser[]
 webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
 webcpp.run browser_websocket_bound : browser_websocket_bound_test.cpp : : emscripten ;
 webcpp.run browser_websocket_late_events : browser_websocket_late_events_test.cpp : : emscripten ;
@@ -78,8 +86,10 @@ webcpp.run browser_peer_connection : browser_peer_connection_test.cpp : : emscri
 
 # The same, built without exceptions, as a program that uses the browser
 # backend may be: no exception may enter WebAssembly there either.
+# tag::no-exceptions[]
 webcpp.run browser_event_loop_no_exceptions : browser_event_loop_test.cpp
   : <exception-handling>off : emscripten ;
+# end::no-exceptions[]
 webcpp.run browser_websocket_no_exceptions : browser_websocket_test.cpp
   : <exception-handling>off : emscripten ;
 webcpp.run browser_websocket_bound_no_exceptions : browser_websocket_bound_test.cpp

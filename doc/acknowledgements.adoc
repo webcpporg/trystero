@@ -1,0 +1,25 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[appendix]
+[#trystero-acknowledgements]
+== Acknowledgements
+
+trystero ports the wire protocol of https://github.com/dmotz/trystero[Trystero]
+0.26.0, Copyright (c) 2021 Dan Motzenbecker, so that its rooms are
+Trystero's rooms. It was written with Trystero's source open: its protocol
+constants, its message layouts, its default relays in their order, with the
+shuffle that derives an app's relays from its id, and its default STUN
+servers come from it. Trystero is distributed under the MIT License, whose
+text and copyright notice are in `LICENSE-TRYSTERO.txt`, at the root of the
+library, exactly as Trystero 0.26.0 ships them. That adds no licence to
+trystero's own code, which is under the Boost Software License alone.
+
+The BIP-340 signatures of the Nostr events are
+https://github.com/bitcoin-core/secp256k1[libsecp256k1]'s, by the Bitcoin
+Core contributors, under the MIT License. The native backend's WebRTC is
+https://github.com/paullouisageneau/libdatachannel[libdatachannel]'s, by
+Paul-Louis Ageneau, under the Mozilla Public License 2.0.

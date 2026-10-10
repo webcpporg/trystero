@@ -1,0 +1,184 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-usage]
+== Rooms and actions
+
+A room is what Trystero's `joinRoom` returns, and an action what its
+`makeAction` returns: this section is the {cpp} form of both.
+
+[#trystero-usage-joining]
+=== Joining
+
+Constructing a `room` joins it: it connects to the relays and announces its
+peer on the room's topic. It takes the executor every handler and completion
+of the room runs on, the backend, which must outlive it, its configuration,
+moved, and the room's id. Its configuration, `room_config`, names the
+application, and everything else has Trystero's default; the quick start
+builds one in place with designated initializers
+(<<trystero-quick-start-browser>>):
+
+[cols="1,3",options="header"]
+|===
+| Member | What it is
+
+| `app_id`
+| The application's id, Trystero's `appId`: rooms of different apps never
+  meet.
+
+| `password`
+| Trystero's `password`: part of the key the signals are sealed with, and a
+  challenge added to the handshake, so peers with another password never
+  join. Empty, the signals are still sealed, under a key of the app and the
+  room alone, and the handshake has no challenge.
+
+| `relay_urls`
+| The Nostr relays. Empty, the room uses `relay_redundancy` (5) of
+  Trystero's 29 default relays, chosen by a shuffle seeded with the app id,
+  so that every peer of the app picks the same ones, as Trystero JS does.
+
+| `ice_servers`
+| The STUN and TURN servers; empty, Trystero's STUN servers,
+  `default_ice_servers()`. A server WebRTC would refuse, a URL that is not
+  `stun:`, `stuns:`, `turn:` or `turns:` `host[:port]`, or a TURN server
+  without a user name and a credential, is dropped when the room joins and
+  reported with `error::invalid_configuration`.
+
+| `self_id`
+| This peer's id, Trystero's `selfId`; empty, 20 random characters. One
+  longer than 64 bytes, which other peers would ignore, is replaced and
+  reported.
+
+| `handshake_timeout`
+| How long a connected peer has to finish the handshake, 10 s.
+
+| `max_receive_bytes`
+| The most bytes the room reserves at once for the transfers it receives,
+  across peers, 256 MiB.
+
+| `log`
+| Where the room's diagnostics go, called with a category (`nostr`,
+  `signal`, `webrtc`, `room` or `action`) and a sentence. Empty, no text is
+  composed.
+
+| `memory`
+| The resource every allocation of the room goes through
+  (<<trystero-allocation>>).
+|===
+
+`room_config` is move-only, since its `log` is a `handler`
+(<<trystero-allocation-handlers>>): a room is given its configuration moved,
+or built in place.
+
+[#trystero-usage-peers]
+=== Peers
+
+`on_peer_join` and `on_peer_leave` set what is called with each peer whose
+handshake completed, and with each joined peer that leaves; `peers()` lists
+the joined peers. `on_error` sets what is called with each problem with one
+peer that the room handled itself, as Trystero's `onPeerError`: a peer with
+another password, a handshake that timed out, a connection the backend
+refused. It is called with an empty peer id for each part of the
+configuration the room dropped when it joined, and for a count of signals
+that did not open with the room key (<<trystero-protocol-bounds>>). Each
+handler replaces the one set before, and every view it receives is valid for
+the call.
+
+`async_ping` measures the round trip to a joined peer, from sending
+`@_ping` to receiving its `@_pong`.
+
+`async_leave` says goodbye to every peer, Trystero's `@_leave`, gives the
+farewell 99 ms, as Trystero waits, then closes the connections and the relay
+sockets, and every pending operation completes with `error::room_left`.
+Destroying a room leaves at once, without the 99 ms, and so does assigning
+another room over a joined one: every peer is told, and every pending
+operation completes with `error::room_left`, even while an `action` of it
+lives.
+
+[#trystero-usage-actions]
+=== Actions
+
+An action is a named channel of messages, wire compatible with Trystero's
+`makeAction`. Its name has 1 to 32 UTF-8 bytes and no NUL; with another,
+every send fails with `error::invalid_action_name`. Its type says how
+messages travel and how they are received:
+
+[cols="2,1,3",options="header"]
+|===
+| Type | Trystero format | Received as
+
+| `std::string` | text | a copy of the bytes
+| `std::pmr::string` | text | a copy of the bytes, in the room's resource
+| `std::string_view` | text | a view of the frame it arrived in, valid during the handler
+| `boost::json::value` | JSON | parsed, in the room's JSON storage
+| `trystero::bytes` | binary | a copy of the bytes
+| `trystero::pmr_bytes` | binary | the transfer's buffer, moved, in the room's resource
+| `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the handler
+| `trystero::payload` | any | a `std::variant` of `std::string`, `boost::json::value` and `bytes`, by format
+|===
+
+A message of another format than the action's type is not delivered to it.
+Several actions of different types may share a name: one receives as views,
+another sends by moving strings, as the chat does
+(<<trystero-browser-chat>>).
+
+Messages arrive at the handler `on_message` sets, with a `message_info`: the
+sender's id and the metadata it passed. Without a handler they queue, up to
+1024 per action, the oldest dropped first, for `async_receive`, which needs
+an owning type: a view would outlive the message. Frames of an action that
+arrived before it was made are kept, 64 per peer for 120 s, and delivered
+to it once it is.
+
+`async_send` sends to `send_options::targets`, or to every joined peer, with
+optional JSON metadata. It completes once every target has the message, with
+the first failure if any. A payload that fits one 16 KiB frame with its
+header and metadata travels inline; a larger one is offered, accepted by the
+receiver within 120 s, and sent in chunks of at most 16,370 bytes, each only
+while the data channel buffers at most 64 KiB, waiting at most 10 s for it to
+drain. A receiver takes one transfer per peer at a time, accepts it only for
+an action with a receiver, and reserves at most `max_receive_bytes` across
+peers.
+
+[#trystero-usage-tokens]
+=== Completion tokens and ownership
+
+Every asynchronous operation is an Asio initiating function. With a callback
+it calls it on the room's executor; with `boost::asio::use_awaitable` it
+resumes a coroutine; with `boost::asio::deferred` it returns an operation
+started later.
+
+Because a deferred operation starts after the call, the arguments of an
+asynchronous operation are owned: `async_send` takes its value by value,
+moved when the type owns its storage, copied once at the call into the room's
+resource when it is a view, and serialized at once when it is a
+`boost::json::value`; `send_options` owns its strings; and `async_ping`
+copies the peer id at the call. Everything else that only reads text takes a
+`std::string_view`.
+
+[#trystero-usage-errors]
+=== Errors
+
+Operations complete with a `boost::system::error_code` in the category
+`webcpp.trystero`, of the enumeration `error`:
+
+[cols="1,3",options="header"]
+|===
+| Value | Meaning
+
+| `room_left` | the room was left while the operation was pending
+| `no_such_peer` | the target is not a joined peer
+| `peer_disconnected` | the peer went away before the operation finished
+| `invalid_action_name` | an action's name is not 1 to 32 UTF-8 bytes without NUL
+| `metadata_too_large` | the metadata does not fit one frame
+| `transfer_rejected` | the receiver refused the transfer, or a message had another format than the awaited type
+| `transfer_timed_out` | the receiver neither accepted nor refused within 120 s
+| `channel_stalled` | the data channel stopped draining for 10 s
+| `wrong_password` | a peer's signals or handshake used another password, or a handshake message had the wrong shape
+| `handshake_timed_out` | a connected peer did not finish the handshake in time
+| `handshake_failed` | reserved: nothing reports it today
+| `backend_failure` | the browser or the native stack refused an operation
+| `invalid_configuration` | the configuration names something no backend can use; the room goes on without it
+|===

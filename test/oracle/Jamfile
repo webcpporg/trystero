@@ -12,9 +12,11 @@ import webcpp ;
 
 webcpp.targets native emscripten ;
 
+# tag::oracle[]
 webcpp.original node ;
 webcpp.cases protocol : oracle.mjs : ../fixtures/cases : ../fixtures/expected ;
 webcpp.lane oracle : cases-protocol ;
+# end::oracle[]
 
 # Trystero JS meets each C++ peer over a relay of its own on 127.0.0.1: the
 # browser's peer in headless Chrome, and the native peer as a process. The
@@ -28,6 +30,7 @@ webcpp.lane oracle : cases-protocol ;
 # with what each peer saw, before the bound stops it; a run where every page
 # also hangs, each of its DevTools calls waiting 10 s, may still meet the
 # bound. They pass in about 30 s.
+# tag::interop[]
 webcpp.drive interop_browser : interop/peer.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>900
   : interop/run.mjs : --browser : emscripten ;
@@ -37,3 +40,4 @@ webcpp.drive interop_native : interop/native_peer.cpp
     <define>_GLIBCXX_ASSERTIONS
   : interop/run.mjs : --native : native ;
 webcpp.lane interop : interop_browser interop_native : native emscripten ;
+# end::interop[]

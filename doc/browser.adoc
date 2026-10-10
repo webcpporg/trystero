@@ -1,0 +1,147 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-browser]
+== The browser backend
+
+In the browser, `browser::backend` implements the backend interface over the
+page's own `WebSocket`, `RTCPeerConnection`, `RTCDataChannel`, `setTimeout`
+and `crypto.subtle`, through embind's `emscripten::val`, and
+`browser::event_loop` runs the room's executor from the page's events. One
+of each serves every room of the page.
+
+[#trystero-browser-loop]
+=== Driving Asio from the page's event loop
+
+In a browser nothing may block, and the page's JavaScript event loop is the
+only source of events. An `io_context` never runs on its own there:
+`browser::event_loop` drives it without ever calling `run()`.
+
+* Every JavaScript event that reaches the library, a socket's message, a
+  settled promise, an ICE candidate or a timer, is dispatched to its
+  handler, and is followed by `io_context::poll()`, which runs everything
+  that became ready.
+* Work given to the loop's executor, `browser::executor`, while no
+  JavaScript event is being handled posts to the `io_context` and schedules
+  one `poll()` in a microtask.
+* The loop holds a work guard on the `io_context`, so a `poll()` never
+  leaves it stopped.
+
+So nothing runs while nothing happens, and a handler runs as soon as its
+event does. Two alternatives were rejected: `poll()` from
+`emscripten_set_main_loop` costs 60 wake-ups a second and stops in hidden
+tabs, where `requestAnimationFrame` does; `poll()` on a fixed interval costs
+wake-ups and up to an interval of latency. The backend's timers are
+`setTimeout`, so their expiry is a JavaScript event like any other.
+
+[#trystero-browser-javascript]
+=== How JavaScript reaches {cpp}
+
+The page calls one function, `trystero_dispatch`, which
+`<webcpp/trystero/browser/src.hpp>` exports. A JavaScript handler is that
+function bound to the event loop, a registration and a slot. An object
+registers a callback with the loop and removes it when it is destroyed, so a
+late event for a destroyed object finds nothing; a destroyed loop marks every
+handler it made as dead.
+
+Text that crosses into JavaScript is decoded straight from the WebAssembly
+memory a view points into, by a `TextDecoder` the loop keeps, and text that
+comes back is encoded by a `TextEncoder` straight into a string of the room's
+resource: no `std::string` is made to carry either.
+
+[#trystero-browser-exceptions]
+=== No JavaScript exception enters WebAssembly
+
+The browser backend makes every call into JavaScript that can throw, a
+constructor, `JSON.parse`, a `send`, a WebRTC or Web Crypto method, through
+one function defined once in `browser/src.hpp` with `EM_JS`, which runs it
+inside `try` and returns a value or the exception as a value; the {cpp} turns
+that into the error its interface has. Every event of the page enters {cpp}
+through a function of the same file that catches what still escapes, puts
+WebAssembly's stack pointer and the loop's depth back as they were before the
+call, reports it and lets the loop poll again. With exceptions,
+`browser::dispatch` catches a {cpp} exception first, which frees it: one that
+reached JavaScript would keep its object for good. So a program that uses
+the browser backend may be built with exceptions or without them, and a
+peer's malformed message never stops the page's loop.
+
+[#trystero-browser-bounds]
+=== What a page bounds
+
+* A data channel message that is not an `ArrayBuffer`, as a text message a
+  peer sends, or that is larger than any room frame
+  (`protocol::max_room_frame_bytes`), is dropped before it is read: neither
+  can be a frame.
+* A relay's text longer than 1 MiB (`protocol::max_relay_message_bytes`) is
+  not copied into WebAssembly: the socket closes, and reports the close.
+* A text that would take the socket's `bufferedAmount` beyond 4 MiB
+  (`protocol::max_queued_relay_bytes`), as when a relay stops reading, drops
+  the socket, which reports one close at once. A page's `WebSocket` cannot
+  ping, so the browser has no idle timeout, which the native backend has
+  (<<trystero-native-relays>>).
+* A page makes at most `browser::backend::max_peer_connections` (256) peer
+  connections, counted from their construction until the garbage collector
+  frees them, as Chromium counts them against its own 500 (measured with
+  headless Chrome: the 501st throws "Cannot create so many
+  PeerConnections", and a closed one counts until a collection). Beyond,
+  the rooms report each negotiation they cannot start, and the rest of
+  Chromium's count stays free for what the page makes without a room.
+
+[#trystero-browser-page]
+=== What a page needs
+
+* A secure context: https, or http on `localhost` or `127.0.0.1`. Elsewhere
+  `crypto.subtle`, which seals the signaling, does not exist, and every
+  sealing operation fails with `error::backend_failure`.
+* No threads: Emscripten's threads need a cross-origin isolated page, so
+  trystero uses none. `/webcpp/trystero//trystero` defines
+  `BOOST_ASIO_DISABLE_THREADS` on emscripten, and the loop drives Asio on
+  the page's one thread.
+* A program that lives as long as the page: the event loop must outlive
+  every room and object it serves.
+* Boost.JSON's definitions, which a program links from `/webcpp//boost_json`,
+  which `/webcpp/trystero//trystero` brings and which builds on emscripten
+  as on every target.
+
+[#trystero-browser-chat]
+=== A page and its program
+
+The chat example is a page whose room is {cpp}: the program joins and sends,
+and the page only draws. It keeps the loop, the backend and the room for the
+page's life, and makes the action `chat` twice: once as `std::string_view`,
+to receive a message as a view of its frame, and once as `std::string`, to
+send by moving the text:
+
+[source]
+----
+include::{examples}/chat/chat.cpp[tag=state]
+----
+
+The page calls `join` with the app and the room its user typed, and the
+program joins and sets its handlers; a received message goes from its frame
+straight into a JavaScript string:
+
+[source]
+----
+include::{examples}/chat/chat.cpp[tag=join]
+----
+
+`send` shows the message at once, and reports a failure in the page's log:
+
+[source]
+----
+include::{examples}/chat/chat.cpp[tag=send]
+----
+
+The two functions are what the program exports to the page, through embind:
+
+[source]
+----
+include::{examples}/chat/chat.cpp[tag=bindings]
+----
+
+Any Trystero JS page, or any other page of the chat, that joins the same app
+and room is in the same chat (<<trystero-building-examples>>).

@@ -1,0 +1,126 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#trystero-native]
+== The native backend
+
+Natively, `native::backend` implements the backend interface over
+https://github.com/paullouisageneau/libdatachannel[libdatachannel] for
+WebRTC, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM,
+and Asio's timers. A native room is the same room as a browser's or Trystero
+JS's: they meet over the same relays and exchange the same frames. One
+backend serves every room of the application, beside the executor it runs
+on, and a native program runs that executor's `io_context` itself, blocking
+on it or polling it (<<trystero-quick-start-native>>).
+
+[#trystero-native-exceptions]
+=== Exceptions
+
+trystero raises no exception of its own, but libdatachannel reports errors by
+throwing, and the native backend's data channel and peer connection catch
+what it throws on refused input and complete with `error::backend_failure`.
+So they need exceptions: without them, or with
+`WEBCPP_TRYSTERO_NO_EXCEPTIONS` defined, `native::data_channel`,
+`native::peer_connection` and `native::backend`, which makes their objects,
+do not exist, and code that uses them does not compile. The native timer,
+sealer and WebSockets, and the rest of trystero, are unchanged.
+
+`<webcpp/trystero/config.hpp>`, which every header includes first, defines
+`WEBCPP_TRYSTERO_NO_EXCEPTIONS` when the compiler has no exceptions
+(`BOOST_NO_EXCEPTIONS`); a developer may define it in a build that has them.
+Each program and test that uses the native backend's WebRTC declares
+`<exception-handling>on` itself, whatever the build asks
+(<<trystero-building-project>>). One function of the backend throws: its
+constructor, a `boost::system::system_error` when OpenSSL cannot make the
+TLS context or load the system's certificate authorities.
+
+[#trystero-native-threads]
+=== Threads
+
+libdatachannel delivers its events on threads of its own. The backend never
+runs a handler there: each event copies what it carries and is posted to the
+room's executor, through a weak reference, so an event that arrives after its
+object is gone does nothing. Every handler of the room and every completion
+runs on the executor, as in the browser. An application that runs the
+`io_context` on several threads gives the room a strand.
+
+A received data channel message is copied once, out of libdatachannel's
+`std::vector<std::byte>` into the room's resource, on the executor; from
+there it is delivered without another copy. A text message, as a peer can
+send, or a binary one larger than any room frame, is dropped on
+libdatachannel's thread: neither can be a frame.
+
+[#trystero-native-libdatachannel]
+=== What the backend asks of libdatachannel
+
+* Automatic negotiation is off, so an offer or an answer exists only when the
+  signaling asks for one, as in the browser.
+* Every object libdatachannel hands out is held by the backend:
+  libdatachannel keeps only weak references.
+* Local candidates leave as the JSON of an `RTCIceCandidateInit`, the form
+  Trystero JS adds with `addIceCandidate`.
+* The `rtc::PeerConnection` object and its control block are made in the
+  room's resource; what that object allocates inside libdatachannel is
+  libdatachannel's (<<trystero-allocation-outside>>).
+
+[#trystero-native-config]
+=== Its configuration
+
+`native::backend_config` is what the backend makes its peer connections
+with, beside the room's `ice_servers`:
+
+[cols="1,3",options="header"]
+|===
+| Member | What it is
+
+| `bind_address`
+| The local address every peer connection binds to, as `"127.0.0.1"`; empty
+  means every interface but the loopback. Bound to the loopback, the peers
+  of one machine connect with no other network, which a test wants; a peer
+  bound there reaches no other machine.
+
+| `max_peer_connections_per_minute`
+| The most peer connections the backend makes in any minute, for every room
+  it serves together, 256: beyond, it makes none, and a room reports each
+  negotiation it cannot start. A room makes at most 64 in any 57 s however
+  its peers behave (<<trystero-protocol-bounds>>), so the default lets four
+  rooms do so at once.
+
+| `relay_limits`
+| What the relays' WebSockets tolerate of a relay that stops reading or
+  answering, `native::websocket_limits` (<<trystero-native-relays>>).
+|===
+
+[#trystero-native-relays]
+=== The relays
+
+The relays are reached over Boost.Beast: `ws://` in the clear, `wss://` over
+TLS with SNI and host name verification. The backend verifies relays against
+the system's certificate authorities; `tls_context()` gives the
+`boost::asio::ssl::context` to an application with authorities of its own. A
+relay whose certificate does not verify is unreachable, and the room retries
+it later as it would any other. The WebSockets are Beast's rather than
+libdatachannel's own, so the relays run on the room's executor like
+everything else.
+
+A relay is a third party, and the backend bounds what one can make the room
+hold:
+
+* A text longer than 1 MiB (`protocol::max_relay_message_bytes`) closes the
+  connection before it is copied, as in the browser.
+* A relay that stops reading is dropped once the text held unsent for it
+  would pass 4 MiB (`websocket_limits::max_queued_bytes`, which is
+  `protocol::max_queued_relay_bytes` on both backends).
+* A relay that stops answering is dropped once `idle_timeout` (30 s) passes
+  with its keep-alive ping unanswered: halfway through, the connection sends
+  a ping. The timeout counts bytes received, and a ping waits for the write
+  in flight, so a relay that reads under about 2 KB/s is closed during a
+  64 KiB text. Signaling texts are 2 to 4 KB, so a real room meets it only
+  with a relay slower than about 200 B/s.
+
+Each drop reports one close, and the room reconnects with its backoff
+(<<trystero-protocol-discovery>>). A page has no idle timeout: its
+`WebSocket` cannot ping (<<trystero-browser-bounds>>).

@@ -12,3 +12,9 @@
 # Comment: the values of error are fixed, and the enum's table of members
 # would show each enumerator's brief alone.
 show-enum-constants: true
+
+# A backend's classes override the interface's virtual functions, and MrDocs
+# copies an interface's member into a derived class under the interface's
+# own anchor, which Asciidoctor then refuses as a duplicate: a derived class
+# lists its own members alone, and the interface's are in its section.
+inherit-base-members: never
