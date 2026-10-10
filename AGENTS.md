@@ -51,10 +51,17 @@ holds only what is specific to trystero.
 - **The external dependencies.** libsecp256k1 (every room), libdatachannel
   and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
   them where `SECP256K1_ROOT`, `SECP256K1_EMSCRIPTEN_ROOT`,
-  `LIBDATACHANNEL_ROOT` and `OPENSSL_ROOT` say, until webcpp builds them from
-  `third_party/`. A variable that is not set leaves its library to the
-  compiler's default search path; one that names a directory without its
-  library's header stops the build, naming the variable. libdatachannel is a
+  `LIBDATACHANNEL_ROOT` and `OPENSSL_ROOT` say, else in the superproject's
+  `.local/secp256k1-native`, `.local/secp256k1-emscripten`,
+  `.local/libdatachannel` and `.local/openssl` when it holds the library's
+  header, where webcpp's CI actions install them, until webcpp builds them
+  from `third_party/`; so the reference and the lint need no variable. A
+  library found in neither is left to the compiler's default search path; a
+  variable that names a directory without its library's header stops the
+  build, naming the variable. With MSVC the names are CMake's and Shining
+  Light's: `libsecp256k1`, linked with `SECP256K1_STATIC` defined, which a
+  static libsecp256k1 needs on Windows, and `libssl` and `libcrypto`, also
+  searched in `lib/VC/x64/MD`. libdatachannel is a
   C++ library: it must be built with the same standard library as the
   program that links it (libc++ for clang on macOS, libstdc++ for GCC), or
   the program does not link, though the native headers still compile alone.

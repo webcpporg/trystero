@@ -10,8 +10,8 @@
 trystero is header-only, and is developed inside the webcpp superproject, as
 a Boost library is developed inside Boost. Besides Boost, it needs three
 libraries that are not part of it, which the build finds where four
-variables of the environment say, until webcpp builds them from
-`third_party/`:
+variables of the environment say, else in the superproject's `.local/`,
+until webcpp builds them from `third_party/`:
 
 [cols="2,2,3",options="header"]
 |===
@@ -19,23 +19,30 @@ variables of the environment say, until webcpp builds them from
 
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules
 | every room: it signs the Nostr events peers meet through
-| `SECP256K1_ROOT` natively, `SECP256K1_EMSCRIPTEN_ROOT` for its emscripten
-  build
+| `SECP256K1_ROOT` natively, else `.local/secp256k1-native`;
+  `SECP256K1_EMSCRIPTEN_ROOT` for its emscripten build, else
+  `.local/secp256k1-emscripten`
 
 | libdatachannel 0.24.6
 | the native backend
-| `LIBDATACHANNEL_ROOT`
+| `LIBDATACHANNEL_ROOT`, else `.local/libdatachannel`
 
 | OpenSSL 3
 | the native backend
-| `OPENSSL_ROOT`
+| `OPENSSL_ROOT`, else `.local/openssl`
 |===
 
 Each variable names a directory with the library's `include/` and `lib/`.
-A variable that is not set leaves the library to the compiler's default
-search path; one that names a directory without the library's header stops
-the build, naming the variable, when a target that needs the library is
-built. trystero's `build.jam` declares them so:
+A variable that is not set has the library looked for in the directory of
+`.local/` that the table names, where webcpp's continuous integration installs
+it, when that directory holds the library's header, and else leaves it to the
+compiler's default search path; one that names a directory without the
+library's header stops the build, naming the variable, when a target that
+needs the library is built. With MSVC, the libraries are CMake's
+`libsecp256k1.lib`, which a program links statically with `SECP256K1_STATIC`
+defined, and OpenSSL's `libssl.lib` and `libcrypto.lib`, also looked for in
+`lib/VC/x64/MD`, where the installer of Shining Light Productions puts them.
+trystero's `build.jam` declares them so:
 
 [listing]
 ----
@@ -106,8 +113,8 @@ include::{webcpp-root}/tools/ci/emsdk.jam[tag=emsdk]
 include::{webcpp-root}/tools/ci/emsdk.jam[tag=emscripten]
 ----
 
-With it and the four variables, from the root of a webcpp checkout, these
-build the tests and the examples, natively and on emscripten:
+With it and the three libraries found, from the root of a webcpp checkout,
+these build the tests and the examples, natively and on emscripten:
 
 [source,bash]
 ----

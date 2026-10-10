@@ -54,10 +54,12 @@ part of it, until webcpp builds them from `third_party/`:
 | OpenSSL 3 | the native backend | `OPENSSL_ROOT` |
 
 Each variable names a directory with the library's `include/` and `lib/`. A
-variable that is not set leaves the library to the compiler's default search
-path; one that names a directory without the library's header stops the
-build, naming the variable, when a target that needs the library is built.
-With them set,
+variable that is not set has the library looked for in the superproject's
+`.local/secp256k1-native`, `.local/secp256k1-emscripten`,
+`.local/libdatachannel` and `.local/openssl`, where webcpp's CI installs it,
+and else leaves it to the compiler's default search path; one that names a
+directory without the library's header stops the build, naming the variable,
+when a target that needs the library is built. With them found,
 
     b2 libs/trystero/test libs/trystero/example
     b2 toolset=emscripten libs/trystero/test libs/trystero/example

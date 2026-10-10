@@ -106,9 +106,10 @@ include::{library-root}/test/Jamfile[tag=browser]
 include::{library-root}/test/Jamfile[tag=no-exceptions]
 ----
 
-From the root of a webcpp checkout, with the four variables of
-<<trystero-building>> set, each of these builds and runs the tests, natively,
-under AddressSanitizer and UndefinedBehaviorSanitizer, and on emscripten:
+From the root of a webcpp checkout, with the three libraries of
+<<trystero-building>> found, each of these builds and runs the tests,
+natively, under AddressSanitizer and UndefinedBehaviorSanitizer, and on
+emscripten:
 
 [source,bash]
 ----
@@ -180,14 +181,15 @@ b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten 
 ----
 
 [#trystero-testing-container]
-=== The container lane
+=== The container lanes
 
-The unit tests are also built with clang 18 and with GCC 14 against
-`libstdc{plus}{plus}`, in a Linux container, with libsecp256k1,
-libdatachannel and OpenSSL built there with the same compiler, and run in it
-with `docker run` and the network `none`, which leaves the loopback alone:
-every test passes, which shows that none reaches beyond the machine
-(<<trystero-invariant-6,guarantee 6>>).
+Two lanes of the continuous integration, `gcc-14` and `clang-linux-18`, build
+and run the unit tests with GCC 14 and with clang 18 against
+`libstdc{plus}{plus}` in a Linux container, Ubuntu 24.04, with libsecp256k1
+and libdatachannel built with the same compiler against the system's
+OpenSSL 3, with `docker run` and the network `none`, which leaves the
+loopback alone: every test passes, which shows that none reaches beyond the
+machine (<<trystero-invariant-6,guarantee 6>>).
 
 [#trystero-testing-report]
 === The test matrix

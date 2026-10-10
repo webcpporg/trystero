@@ -11,31 +11,73 @@
 project /webcpp/trystero ;
 
 # libsecp256k1, libdatachannel and OpenSSL are found where SECP256K1_ROOT,
-# SECP256K1_EMSCRIPTEN_ROOT, LIBDATACHANNEL_ROOT and OPENSSL_ROOT say, until
-# webcpp builds them from third_party/; a variable that is not set leaves
-# the library to the compiler's default search path.
+# SECP256K1_EMSCRIPTEN_ROOT, LIBDATACHANNEL_ROOT and OPENSSL_ROOT say, else in
+# the superproject's .local/, where webcpp's CI installs them, until webcpp
+# builds them from third_party/; a library found in neither is left to the
+# compiler's default search path.
 import errors ;
 import os ;
 import path ;
 
+# The directory of a dependency: the one its variable names, else
+# .local/<directory> of the superproject when that holds its header, else
+# nothing.
+local rule dependency-root ( variable : directory : header )
+{
+    local given = [ os.environ $(variable) ] ;
+    if $(given)
+    {
+        return $(given) ;
+    }
+    local root = [ path.join [ path.root [ path.make $(WEBCPP_ROOT) ] [ path.pwd ] ]
+        .local $(directory) ] ;
+    if [ path.exists $(root)/include/$(header) ]
+    {
+        return [ path.native $(root) ] ;
+    }
+}
+
+# MSVC's names are CMake's there: libsecp256k1.lib, and OpenSSL's libssl.lib
+# and libcrypto.lib, which an installation of Shining Light Productions, as
+# GitHub's Windows images have, keeps in lib/VC/x64/MD. A static
+# libsecp256k1 on Windows needs SECP256K1_STATIC, or its header declares
+# every function imported from a DLL.
 # tag::dependencies[]
-local secp256k1-root = [ os.environ SECP256K1_ROOT ] ;
-local secp256k1-emscripten-root = [ os.environ SECP256K1_EMSCRIPTEN_ROOT ] ;
-local libdatachannel-root = [ os.environ LIBDATACHANNEL_ROOT ] ;
-local openssl-root = [ os.environ OPENSSL_ROOT ] ;
-lib secp256k1 : : <name>secp256k1 <toolset>emscripten <search>$(secp256k1-emscripten-root)/lib
+local secp256k1-root = [ dependency-root SECP256K1_ROOT : secp256k1-native
+    : secp256k1.h ] ;
+local secp256k1-emscripten-root = [ dependency-root SECP256K1_EMSCRIPTEN_ROOT
+    : secp256k1-emscripten : secp256k1.h ] ;
+local libdatachannel-root = [ dependency-root LIBDATACHANNEL_ROOT
+    : libdatachannel : rtc/rtc.hpp ] ;
+local openssl-root = [ dependency-root OPENSSL_ROOT : openssl
+    : openssl/ssl.h ] ;
+lib secp256k1 : : <name>secp256k1 <toolset>emscripten
+    <search>$(secp256k1-emscripten-root)/lib
   : : <include>$(secp256k1-emscripten-root)/include ;
+lib secp256k1 : : <name>libsecp256k1 <toolset>msvc
+    <search>$(secp256k1-root)/lib
+  : : <include>$(secp256k1-root)/include <define>SECP256K1_STATIC ;
 lib secp256k1 : : <name>secp256k1 <search>$(secp256k1-root)/lib
   : : <include>$(secp256k1-root)/include ;
 lib datachannel : : <name>datachannel <search>$(libdatachannel-root)/lib
-  : : <include>$(libdatachannel-root)/include <dll-path>$(libdatachannel-root)/lib ;
-lib ssl : : <name>ssl <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
-lib crypto : : <name>crypto <search>$(openssl-root)/lib : : <include>$(openssl-root)/include ;
+  : : <include>$(libdatachannel-root)/include
+    <dll-path>$(libdatachannel-root)/lib ;
+lib ssl : : <name>libssl <toolset>msvc <search>$(openssl-root)/lib
+    <search>$(openssl-root)/lib/VC/x64/MD
+  : : <include>$(openssl-root)/include ;
+lib ssl : : <name>ssl <search>$(openssl-root)/lib
+  : : <include>$(openssl-root)/include ;
+lib crypto : : <name>libcrypto <toolset>msvc <search>$(openssl-root)/lib
+    <search>$(openssl-root)/lib/VC/x64/MD
+  : : <include>$(openssl-root)/include ;
+lib crypto : : <name>crypto <search>$(openssl-root)/lib
+  : : <include>$(openssl-root)/include ;
 # end::dependencies[]
 
 # Stops the build, naming the variable, when it is set and its directory
 # does not hold the header of its library. A variable that is not set is
-# left alone: path.make needs a path.
+# left alone: path.make needs a path, and .local/ is taken only when it holds
+# the header.
 local rule check-root ( variable : header )
 {
     local root = [ os.environ $(variable) ] ;
@@ -47,8 +89,9 @@ local rule check-root ( variable : header )
     if ! [ path.exists $(directory)/include/$(header) ]
     {
         errors.user-error "$(variable)=$(root) holds no include/$(header): set it to"
-            "the directory of the library's include/ and lib/, or unset it to leave"
-            "the library to the compiler's default search path." ;
+            "the directory of the library's include/ and lib/, or unset it to look"
+            "for the library in the superproject's .local/, else on the compiler's"
+            "default search path." ;
     }
 }
 

@@ -47,9 +47,10 @@ by_ `allocation`, natively and on emscripten.
 rooms of the unit tests meet over the memory relays, the native tests' peer
 connections bind to 127.0.0.1 and gather their candidates there alone, and
 the WebSocket test talks to a server of its own on 127.0.0.1. _Held by_ the
-container lane: every unit test, built with clang 18 and with GCC 14 against
-`libstdc{plus}{plus}`, passes in a Linux container that has no network but
-the loopback (`docker run` with the network `none`).
+container lanes, `gcc-14` and `clang-linux-18`: every unit test, built with
+GCC 14 and with clang 18 against `libstdc{plus}{plus}`, passes in a Linux
+container that has no network but the loopback (`docker run` with the
+network `none`).
 . [[trystero-invariant-7]]*A room refuses a replayed or reflected offer or
 answer.* A sealed offer or answer it made, or acted on, that comes back to it
 as a peer's changes nothing (<<trystero-protocol-replay>>). _Held by_ `room`
