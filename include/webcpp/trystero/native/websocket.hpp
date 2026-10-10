@@ -398,15 +398,15 @@ inline std::shared_ptr<backend::websocket> connect_websocket(const boost::asio::
     }
     const std::pmr::polymorphic_allocator<> allocator(memory);
     if (parts->secure) {
-        auto session = std::allocate_shared<detail::websocket_session<true>>(
+        const auto session = std::allocate_shared<detail::websocket_session<true>>(
             allocator, ex, tls, std::move(*parts), std::move(h), memory, limits);
         session->start();
-        return std::allocate_shared<detail::websocket_handle<true>>(allocator, std::move(session));
+        return std::allocate_shared<detail::websocket_handle<true>>(allocator, session);
     }
-    auto session = std::allocate_shared<detail::websocket_session<false>>(
+    const auto session = std::allocate_shared<detail::websocket_session<false>>(
         allocator, ex, tls, std::move(*parts), std::move(h), memory, limits);
     session->start();
-    return std::allocate_shared<detail::websocket_handle<false>>(allocator, std::move(session));
+    return std::allocate_shared<detail::websocket_handle<false>>(allocator, session);
 }
 
 }  // namespace webcpp::trystero::native

@@ -86,10 +86,12 @@ public:
      * @return The new connection.
      * @throws std::exception What libdatachannel throws when it cannot make the connection.
      */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<peer_connection> create(boost::asio::any_io_executor ex,
                                                    std::span<const backend::ice_server> servers,
                                                    std::string_view bind_address,
                                                    std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         rtc::Configuration config;
         config.disableAutoNegotiation = true;
         if (!bind_address.empty()) {

@@ -59,9 +59,11 @@ public:
      * @param memory The resource the wrapper, its handlers and its frames are allocated in.
      * @return The channel.
      */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<data_channel> create(boost::asio::any_io_executor ex,
                                                 std::shared_ptr<rtc::DataChannel> channel,
                                                 std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         auto self = std::allocate_shared<data_channel>(std::pmr::polymorphic_allocator<>(memory),
                                                        private_tag{}, std::move(ex),
                                                        std::move(channel), memory);

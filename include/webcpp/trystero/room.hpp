@@ -293,7 +293,9 @@ struct payload_traits<std::string> {
     static constexpr bool owning = true;
 
     /** Keeps the text alive, moved into a shared object of the room's resource. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static encoded_payload encode(std::string v, std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         return own(protocol::payload_format::text, keep<std::string>(memory, std::move(v)));
     }
 
@@ -316,7 +318,9 @@ struct payload_traits<std::pmr::string> {
     static constexpr bool owning = true;
 
     /** Keeps the text alive, moved into a shared object of the room's resource. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static encoded_payload encode(std::pmr::string v, std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         return own(protocol::payload_format::text, keep<std::pmr::string>(memory, std::move(v)));
     }
 
@@ -394,7 +398,9 @@ struct payload_traits<bytes> {
     static constexpr bool owning = true;
 
     /** Keeps the bytes alive, moved into a shared object of the room's resource. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static encoded_payload encode(bytes v, std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         return own(protocol::payload_format::binary, keep<bytes>(memory, std::move(v)));
     }
 
@@ -418,7 +424,9 @@ struct payload_traits<pmr_bytes> {
     static constexpr bool owning = true;
 
     /** Keeps the bytes alive, moved into a shared object of the room's resource. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static encoded_payload encode(pmr_bytes v, std::pmr::memory_resource* memory) {
+        // NOLINTEND(performance-unnecessary-value-param)
         return own(protocol::payload_format::binary, keep<pmr_bytes>(memory, std::move(v)));
     }
 
@@ -1072,8 +1080,10 @@ private:
         }
     }
 
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     void on_connected(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
                       std::shared_ptr<backend::data_channel> channel) {
+        // NOLINTEND(performance-unnecessary-value-param)
         if (left_) {
             channel->close();
             pc->close();
@@ -1561,8 +1571,10 @@ public:
     }
 
 private:
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<detail::room_impl> make(executor_type ex, backend::factory& factory,
                                                    room_config config, std::string_view room_id) {
+        // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory = config.memory;
         BOOST_ASSERT_MSG(memory != nullptr, "room_config::memory names no resource");
         return std::allocate_shared<detail::room_impl>(std::pmr::polymorphic_allocator<>(memory),
