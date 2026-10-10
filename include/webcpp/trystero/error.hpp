@@ -20,7 +20,7 @@ namespace webcpp::trystero {
 /**
  * What an operation of the library completes with when it does not succeed.
  *
- * Each value is one of the `Error`s Trystero rejects a promise with or reports to `onPeerError`,
+ * Each value is one of the errors Trystero rejects a promise with or reports to `onPeerError`,
  * as a code of @ref error_category rather than a message: an operation completes with it, and
  * `room::on_error` reports it with the peer it concerns.
  *

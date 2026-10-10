@@ -313,7 +313,7 @@ private:
 };
 
 /**
- * A data channel over the page's `RTCDataChannel`, its messages received as `ArrayBuffer`s.
+ * A data channel over the page's `RTCDataChannel`, its messages received as `ArrayBuffer` objects.
  *
  * A message that is not an `ArrayBuffer`, as a text one a peer sends, or that is larger than any
  * room frame (`protocol::max_room_frame_bytes`), is dropped before it is read: neither can be a
@@ -913,9 +913,9 @@ public:
     explicit backend(event_loop& loop) : loop_(loop) {}
 
     /**
-     * The most `RTCPeerConnection`s the page's rooms hold, every backend of the page together,
-     * counted from their construction until the garbage collector frees them: half of the 500
-     * Chromium allows a page, which it counts the same way, so that a closed connection still
+     * The most `RTCPeerConnection` objects the page's rooms hold, every backend of the page
+     * together, counted from their construction until the garbage collector frees them: half of the
+     * 500 Chromium allows a page, which it counts the same way, so that a closed connection still
      * counts until a collection the page cannot ask for.
      *
      * Tip: a room makes at most 64 connections in any 57 s, so floods of four rooms reach this
