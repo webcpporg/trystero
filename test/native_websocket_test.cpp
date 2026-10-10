@@ -448,6 +448,36 @@ void a_relay_that_stops_answering_times_out() {
     BOOST_TEST(run_until(io, [&] { return closes == 1; }, 10s));
 }
 
+// A relay that is quiet but healthy: it sends nothing, but reads, so it answers each keep-alive
+// ping. With a 1 s idle timeout, the socket stays open well past it, and then still echoes.
+void a_quiet_relay_that_answers_pings_stays_connected() {
+    asio::io_context io;
+    const echo_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    bool opened = false;
+    int closes = 0;
+    std::vector<std::string> received;
+    const auto socket = trystero::native::connect_websocket(
+        io.get_executor(), tls, server.url(),
+        {
+            .open = [&] { opened = true; },
+            .message = [&](std::string_view text) { received.emplace_back(text); },
+            .close = [&] { ++closes; },
+        },
+        std::pmr::get_default_resource(),
+        {
+            .max_queued_bytes = trystero::native::websocket_limits{}.max_queued_bytes,
+            .idle_timeout = 1s,
+        });
+    if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
+        return;
+    }
+    run_until(io, [&] { return closes != 0; }, 3s);  // three idle timeouts
+    BOOST_TEST_EQ(closes, 0);
+    socket->send("still there");
+    BOOST_TEST(run_until(io, [&] { return received.size() == 1; }));
+}
+
 }  // namespace
 
 int main() {
@@ -461,5 +491,6 @@ int main() {
     a_connection_that_ends_during_a_write_closes_once(misbehaviour::reset);
     a_relay_that_stops_reading_is_dropped_at_the_queue_bound();
     a_relay_that_stops_answering_times_out();
+    a_quiet_relay_that_answers_pings_stays_connected();
     return boost::report_errors();
 }

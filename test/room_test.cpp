@@ -955,6 +955,53 @@ void a_reflected_offer_is_refused_as_an_offer() {
     BOOST_TEST_EQ(answered_reflections, 0);
 }
 
+// A answers B (B's id is lower), then offers to C (C's id is higher). A watcher without the room
+// key sends A's own sealed answer to B back to A as C's answer to that offer. A made it: A refuses
+// it, and C's own answer joins them.
+void a_reflected_answer_is_refused_as_an_answer() {
+    fixture f;
+    const std::string a_id = "MMMMMMMMMMMMMMMMMMMM";
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    const std::string c_id = "ZZZZZZZZZZZZZZZZZZZZ";
+    auto c = config(a_id);
+    bool refused = false;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refused = refused || text.starts_with("refused the answer from " + c_id);
+    };
+    trystero::room a(f.io.get_executor(), f.net, std::move(c), "reflans");
+    std::vector<std::string> joined;
+    a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    flooder watcher(f, "reflans");
+    const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "reflans", a_id));
+    const auto b_topic = std::string(trystero::protocol::peer_topic(app_id, "reflans", b_id));
+    const auto c_topic = std::string(trystero::protocol::peer_topic(app_id, "reflans", c_id));
+    std::string a_answer;
+    int reflected = 0;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (!s) {
+            return;
+        }
+        if (s->topic == b_topic && s->peer == a_id && !s->answer.empty() && a_answer.empty()) {
+            a_answer = s->answer;
+        }
+        if (s->topic == c_topic && s->peer == a_id && !s->offer.empty() && !a_answer.empty()) {
+            watcher.publish(a_topic,
+                            {.peer_id = c_id, .offer_id = s->offer_id, .answer = a_answer});
+            ++reflected;
+        }
+    };
+    watcher.watch(b_topic);
+    watcher.watch(c_topic);
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "reflans");
+    webcpp::test::require(
+        BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1 && !a_answer.empty(); })));
+    const trystero::room peer_c(f.io.get_executor(), f.net, config(c_id), "reflans");
+    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
+    BOOST_TEST_GE(reflected, 1);
+    BOOST_TEST(refused);
+}
+
 // A relay that closes each connection right after its subscription, as one does after a text
 // longer than a room reads, is tried again within a bound that doubles every time, to 60 s; the
 // bound comes back to 3.3 s only after a connection that stayed open for 60 s. The clock runs 100
@@ -1186,6 +1233,7 @@ int main() {
     a_replayed_offer_is_refused();
     a_reflected_offer_is_refused_as_an_answer();
     a_reflected_offer_is_refused_as_an_offer();
+    a_reflected_answer_is_refused_as_an_answer();
     a_relay_that_closes_at_once_is_tried_less_and_less_often();
     counter_announcements_are_paced();
     three_peers_form_a_mesh();
