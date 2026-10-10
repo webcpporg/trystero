@@ -169,9 +169,10 @@ Every peer gathers its ICE candidates on the machine alone: the {cpp} peers
 get `stun:127.0.0.1:9` in place of Trystero's public STUN servers, the
 native peer binds its connections to 127.0.0.1, and the Trystero JS peers
 have no ICE server. Chrome is the one `CHROME` names, else on macOS
-Playwright's `chrome-headless-shell`. Each driver is bounded by 900 s,
-beyond its scenarios' own limits, so that a scenario that does not complete
-fails by name with what each peer saw.
+Playwright's `chrome-headless-shell`; the continuous integration names Chrome
+for Testing's `chrome-headless-shell`, at the version webcpp pins. Each driver
+is bounded by 900 s, beyond its scenarios' own limits, so that a scenario that
+does not complete fails by name with what each peer saw.
 
 [source,bash]
 ----
@@ -185,11 +186,14 @@ b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten 
 
 Two lanes of the continuous integration, `gcc-14` and `clang-linux-18`, build
 and run the unit tests with GCC 14 and with clang 18 against
-`libstdc{plus}{plus}` in a Linux container, Ubuntu 24.04, with libsecp256k1
-and libdatachannel built with the same compiler against the system's
-OpenSSL 3, with `docker run` and the network `none`, which leaves the
-loopback alone: every test passes, which shows that none reaches beyond the
-machine (<<trystero-invariant-6,guarantee 6>>).
+`libstdc{plus}{plus}` in a Linux container, Ubuntu 24.04, with `docker run`
+and the network `none`, which leaves the loopback alone: every test passes,
+which shows that none reaches beyond the machine
+(<<trystero-invariant-6,guarantee 6>>). libsecp256k1 and libdatachannel are
+built before, on the runner, Ubuntu 24.04 too, with the lane's compiler
+against the runner's OpenSSL 3, and the container, which holds the same
+compilers and OpenSSL's development files, sees them where the runner put
+them.
 
 [#trystero-testing-report]
 === The test matrix

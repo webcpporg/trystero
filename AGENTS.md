@@ -56,9 +56,13 @@ holds only what is specific to trystero.
   `.local/libdatachannel` and `.local/openssl` when it holds the library's
   header, where webcpp's CI actions install them, until webcpp builds them
   from `third_party/`; so the reference and the lint need no variable. A
-  library found in neither is left to the compiler's default search path; a
-  variable that names a directory without its library's header stops the
-  build, naming the variable. With MSVC the names are CMake's and Shining
+  library found in neither is left to the compiler's default search path,
+  where a system install is legitimate (natively, outside Windows,
+  `/usr/include` or `/usr/local/include`); a variable that names a directory
+  without its library's header stops the build, naming the variable, and so
+  does a library that no candidate holds, naming the library and every place
+  it looked (`check-found`), rather than leave the compiler to fail on a
+  missing header or take another copy without a word. With MSVC the names are CMake's and Shining
   Light's: `libsecp256k1`, linked with `SECP256K1_STATIC` defined, which a
   static libsecp256k1 needs on Windows, and `libssl` and `libcrypto`, also
   searched in `lib/VC/x64/MD`. libdatachannel is a

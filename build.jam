@@ -14,7 +14,8 @@ project /webcpp/trystero ;
 # SECP256K1_EMSCRIPTEN_ROOT, LIBDATACHANNEL_ROOT and OPENSSL_ROOT say, else in
 # the superproject's .local/, where webcpp's CI installs them, until webcpp
 # builds them from third_party/; a library found in neither is left to the
-# compiler's default search path.
+# compiler's default search path, where a system install is legitimate, and
+# the build stops, naming the library, when that holds none either.
 import errors ;
 import os ;
 import path ;
@@ -74,25 +75,53 @@ lib crypto : : <name>crypto <search>$(openssl-root)/lib
   : : <include>$(openssl-root)/include ;
 # end::dependencies[]
 
-# Stops the build, naming the variable, when it is set and its directory
-# does not hold the header of its library. A variable that is not set is
-# left alone: path.make needs a path, and .local/ is taken only when it holds
-# the header.
-local rule check-root ( variable : header )
+# Stops the build, naming the library, when no candidate holds its header:
+# the directory its variable names, when it is set (else the build would
+# take another copy without a word); else .local/<directory>; else, for a
+# native build outside Windows, the system's /usr/include or
+# /usr/local/include, where a system install is legitimate and the compiler
+# finds it with no option. A build for emscripten has no system copy.
+local rule check-found ( library : variable : directory : header : system ? )
 {
     local root = [ os.environ $(variable) ] ;
-    if ! $(root)
+    if $(root)
+    {
+        local given = [ path.make $(root) ] ;
+        if ! [ path.exists $(given)/include/$(header) ]
+        {
+            errors.user-error "$(variable)=$(root) holds no include/$(header): set it"
+                "to the directory of $(library)'s include/ and lib/, or unset it to"
+                "look for $(library) in the superproject's .local/$(directory), else on"
+                "the system." ;
+        }
+        return ;
+    }
+    local local-root = [ path.join [ path.root [ path.make $(WEBCPP_ROOT) ] [ path.pwd ] ]
+        .local $(directory) ] ;
+    if [ path.exists $(local-root)/include/$(header) ]
     {
         return ;
     }
-    local directory = [ path.make $(root) ] ;
-    if ! [ path.exists $(directory)/include/$(header) ]
+    local systems ;
+    if $(system) && [ os.name ] != NT
     {
-        errors.user-error "$(variable)=$(root) holds no include/$(header): set it to"
-            "the directory of the library's include/ and lib/, or unset it to look"
-            "for the library in the superproject's .local/, else on the compiler's"
-            "default search path." ;
+        systems = /usr/include /usr/local/include ;
+        for local system-include in $(systems)
+        {
+            if [ path.exists $(system-include)/$(header) ]
+            {
+                return ;
+            }
+        }
     }
+    local looked = "$(variable) is not set, and $(local-root)/include holds no $(header)" ;
+    if $(systems)
+    {
+        looked = "$(looked), nor does $(systems[1]) or $(systems[2])" ;
+    }
+    errors.user-error "$(library) was not found: $(looked). Set $(variable) to the"
+        "directory of its include/ and lib/, or install it in $(local-root), as"
+        "trystero's page says (\"Building\")." ;
 }
 
 # The dependencies of the rooms: libsecp256k1, the emscripten build of it on
@@ -101,11 +130,13 @@ rule trystero-dependencies ( properties * )
 {
     if <toolset>emscripten in $(properties)
     {
-        check-root SECP256K1_EMSCRIPTEN_ROOT : secp256k1.h ;
+        check-found libsecp256k1 : SECP256K1_EMSCRIPTEN_ROOT : secp256k1-emscripten
+            : secp256k1.h ;
     }
     else
     {
-        check-root SECP256K1_ROOT : secp256k1.h ;
+        check-found libsecp256k1 : SECP256K1_ROOT : secp256k1-native : secp256k1.h
+            : system ;
     }
 }
 
@@ -113,8 +144,9 @@ rule trystero-dependencies ( properties * )
 # uses it is built.
 rule native-dependencies ( properties * )
 {
-    check-root LIBDATACHANNEL_ROOT : rtc/rtc.hpp ;
-    check-root OPENSSL_ROOT : openssl/ssl.h ;
+    check-found libdatachannel : LIBDATACHANNEL_ROOT : libdatachannel : rtc/rtc.hpp
+        : system ;
+    check-found OpenSSL : OPENSSL_ROOT : openssl : openssl/ssl.h : system ;
 }
 
 # On emscripten, the browser has no threads (the event loop drives Asio), and

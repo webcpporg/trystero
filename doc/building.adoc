@@ -36,9 +36,11 @@ Each variable names a directory with the library's `include/` and `lib/`.
 A variable that is not set has the library looked for in the directory of
 `.local/` that the table names, where webcpp's continuous integration installs
 it, when that directory holds the library's header, and else leaves it to the
-compiler's default search path; one that names a directory without the
-library's header stops the build, naming the variable, when a target that
-needs the library is built. With MSVC, the libraries are CMake's
+compiler's default search path, where a system install is legitimate; one
+that names a directory without the library's header stops the build, naming
+the variable, when a target that needs the library is built, and so does a
+library found in none of them, natively in neither `/usr/include` nor
+`/usr/local/include`, naming the library and where it looked. With MSVC, the libraries are CMake's
 `libsecp256k1.lib`, which a program links statically with `SECP256K1_STATIC`
 defined, and OpenSSL's `libssl.lib` and `libcrypto.lib`, also looked for in
 `lib/VC/x64/MD`, where the installer of Shining Light Productions puts them.

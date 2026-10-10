@@ -57,9 +57,11 @@ Each variable names a directory with the library's `include/` and `lib/`. A
 variable that is not set has the library looked for in the superproject's
 `.local/secp256k1-native`, `.local/secp256k1-emscripten`,
 `.local/libdatachannel` and `.local/openssl`, where webcpp's CI installs it,
-and else leaves it to the compiler's default search path; one that names a
-directory without the library's header stops the build, naming the variable,
-when a target that needs the library is built. With them found,
+and else leaves it to the compiler's default search path, where a system
+install is legitimate; one that names a directory without the library's header
+stops the build, naming the variable, when a target that needs the library is
+built, and so does a library found in none of them, naming it and where it
+looked. With them found,
 
     b2 libs/trystero/test libs/trystero/example
     b2 toolset=emscripten libs/trystero/test libs/trystero/example
