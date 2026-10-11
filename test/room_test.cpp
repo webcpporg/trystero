@@ -818,6 +818,10 @@ void join_and_leave(fixture& f, std::string_view b_id, std::string_view room_id,
 // with each of A's new offers to B, before B's own answer. The answer opens with the room key, but
 // A used it before: A refuses it, blames no one, and B joins again. The clock runs 10 times
 // faster.
+//
+// The watcher is armed as A sees B leave: an announcement B made before leaving may still reach A
+// after it, and A's offer to that announcement is the one the returning B answers, on a relay
+// where A does not send it again.
 void a_replayed_answer_is_refused() {
     fixture f;
     f.net.time_scale = 10;
@@ -827,15 +831,18 @@ void a_replayed_answer_is_refused() {
     std::vector<std::string> joined;
     std::vector<std::string> left;
     std::vector<boost::system::error_code> errors;
+    bool armed = false;
     a.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
-    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    a.on_peer_leave([&](std::string_view p) {
+        left.emplace_back(p);
+        armed = true;
+    });
     a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
                    std::string_view /*what*/) { errors.push_back(ec); });
     flooder watcher(f, "replay");
     const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", a_id));
     const auto b_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", b_id));
     std::string recorded;
-    bool armed = false;
     int replays = 0;
     watcher.on_text = [&](std::string_view text) {
         const auto s = relayed_signal(text);
@@ -854,7 +861,6 @@ void a_replayed_answer_is_refused() {
     watcher.watch(a_topic);
     watcher.watch(b_topic);
     join_and_leave(f, b_id, "replay", joined, left, [&] { return !recorded.empty(); });
-    armed = true;
     const trystero::room b(f.io.get_executor(), f.net, config(b_id), "replay");
     BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
     BOOST_TEST_GE(replays, 1);
