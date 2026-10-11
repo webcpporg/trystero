@@ -93,6 +93,7 @@ The native quick start, whole:
 
 <!-- include::example/native_quick_start.cpp[tag=program] -->
 ```cpp
+#include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -100,14 +101,20 @@ The native quick start, whole:
 
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace trystero = webcpp::trystero;
 
 int main() {
     boost::asio::io_context io;
     trystero::native::backend backend(io.get_executor());
-    trystero::room room(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"},
-                        "lobby");
+    trystero::app app(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"});
+    auto joined = app.join("lobby");
+    if (!joined) {
+        std::cerr << "not joined: " << joined.error().message() << '\n';
+        return 1;
+    }
+    trystero::room room = std::move(*joined);
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
@@ -124,19 +131,36 @@ int main() {
 }
 ```
 
-The browser quick start's room, which a page keeps alive as long as the tab:
+The browser quick start's app and the room it joins, which a page keeps alive as long as the tab:
 
 <!-- include::example/quick_start.cpp[tag=application] -->
 ```cpp
-/** What the page keeps alive: event loop, backend, room and actions. */
+/** The room the page joined, and its actions. */
+struct lobby {
+    trystero::room room;
+    trystero::action<std::string> chat = room.make_action<std::string>("chat");
+    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+};
+
+/** What the page keeps alive: event loop, backend, app, and the room it joined. */
 struct application {
     asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    trystero::room room{
-        loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
-    trystero::action<std::string> chat = room.make_action<std::string>("chat");
-    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+    trystero::app app{loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
+    std::optional<lobby> joined;
+
+    /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses
+     * (a room of that id joined already, or 64 rooms). */
+    lobby* join() {
+        auto result = app.join("lobby");
+        if (!result) {
+            const std::string reason = result.error().message();
+            std::printf("not joined: %s\n", reason.c_str());
+            return nullptr;
+        }
+        return &joined.emplace(std::move(*result));
+    }
 };
 ```
 

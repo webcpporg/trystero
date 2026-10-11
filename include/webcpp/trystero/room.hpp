@@ -55,6 +55,8 @@
 
 namespace webcpp::trystero {
 
+class app;
+
 /**
  * A peer's id in a room, Trystero's `selfId` and the ids `getPeers` lists: 20 characters of
  * `protocol::id_alphabet` unless the configuration names one.
@@ -74,7 +76,8 @@ using bytes = std::vector<std::uint8_t>;
 /**
  * Binary data in a memory resource, an action's binary payload in the room's resource.
  *
- * A message received as `pmr_bytes` is in `room_config::memory`, which must outlive the value:
+ * A message received as `pmr_bytes` is in the room's resource, its app's `app_config::memory`,
+ * which must outlive the value:
  * the buffer its transfer assembled, moved out without a copy, or a copy of its bytes when it
  * arrived inline, in one frame.
  *
@@ -89,101 +92,6 @@ using pmr_bytes = std::pmr::vector<std::uint8_t>;
  * a `boost::json::value` for JSON, in the room's JSON storage, and `bytes` for binary data.
  */
 using payload = std::variant<std::string, boost::json::value, bytes>;
-
-/**
- * What a room is joined with, the configuration Trystero's `joinRoom` takes.
- *
- * The room copies every part of it into `memory`. It is move-only, as its `log` is: pass it moved,
- * or build it in place with designated initializers.
- *
- * @see "Rooms and actions", in the guide.
- */
-struct room_config {
-    /** The application's id, Trystero's `appId`: rooms of different apps never meet. */
-    std::pmr::string app_id = {};
-    /**
-     * The room's password, Trystero's `password`: part of the key the signals are sealed with,
-     * and a challenge added to the handshake, so peers with another password never join.
-     *
-     * Empty means none: the signals are still sealed, under a key of the app and the room alone,
-     * as Trystero's `genKey` does, and the handshake has no challenge.
-     */
-    std::pmr::string password = {};
-    /**
-     * The Nostr relays to use, Trystero's `relayConfig.urls`; empty means Trystero's defaults,
-     * derived from the app id.
-     */
-    std::pmr::vector<std::pmr::string> relay_urls = {};
-    /**
-     * How many of the default relays the derivation keeps, Trystero's `relayConfig.redundancy`;
-     * ignored when `relay_urls` names the relays.
-     */
-    std::size_t relay_redundancy = 5;
-    /**
-     * The STUN and TURN servers; empty means Trystero's defaults, @ref default_ice_servers.
-     *
-     * A server WebRTC would refuse (a URL that is not `stun:`, `stuns:`, `turn:` or `turns:`
-     * `host[:port]`, or a TURN server without a user name and a credential) is dropped when the
-     * room joins, and `room::on_error` reports it with `error::invalid_configuration`; the room
-     * goes on with the others, on every backend.
-     */
-    std::pmr::vector<backend::ice_server> ice_servers = {};
-    /**
-     * This peer's id in the room, Trystero's `selfId`; empty means 20 random characters.
-     *
-     * Rooms of one app that meet a Trystero JS peer need ids of their own: Trystero keeps one
-     * connection per app and peer id, which all its rooms share, and drops a second one to the
-     * same id, while each room here makes its own. Given one id, two rooms meet a Trystero JS peer
-     * in one of them only; left empty, each room draws its own.
-     *
-     * Other peers ignore an id longer than `protocol::max_peer_id_bytes` (64): the room replaces
-     * one with 20 random characters, and `room::on_error` reports it with
-     * `error::invalid_configuration`.
-     */
-    std::pmr::string self_id = {};
-    /**
-     * How long a connected peer has to finish the handshake before it is dropped, Trystero's
-     * `handshakeTimeoutMs`.
-     */
-    std::chrono::milliseconds handshake_timeout{10'000};
-    /**
-     * The most bytes the room reserves at once for the transfers it receives, across peers,
-     * Trystero's `maxReceiveBytes`.
-     */
-    std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
-    /**
-     * Where the room's diagnostics go: called with a category ("app", "nostr", "signal",
-     * "webrtc", "room" or "action") and a sentence; empty means none, and then no text is
-     * composed.
-     *
-     * The room moves the sink into `memory`, and composes each sentence there.
-     */
-    detail::logger::sink log = {};
-    /**
-     * The resource every allocation of the room goes through, from its construction to its
-     * destruction; not null.
-     *
-     * The room allocates there itself and all it holds: the copy of this configuration, its
-     * peers, actions, queues, frames, transfers, negotiations and relays, its handlers, the text it
-     * composes for its log, the objects its backend makes for it, the context libsecp256k1 signs
-     * with and the JSON it parses and writes. A message an action's handler receives as a
-     * `std::pmr::string`, a `pmr_bytes` or a `boost::json::value` is there too; a completion
-     * handler is allocated as its own associated allocator says. What libdatachannel, OpenSSL and
-     * the browser's JavaScript allocate stays theirs. The room uses the resource from its executor
-     * only, so it need not be thread-safe when that executor runs on one thread.
-     *
-     * It must outlive the room, every value the room hands out (a `std::pmr::string`, a
-     * `pmr_bytes`, a `boost::json::value`), and every operation the room leaves pending: on Asio,
-     * until the io_context the room's executor belongs to has run out of the room's work or has
-     * been destroyed, so a resource is declared before its io_context; in the browser, until the
-     * room's pending promises have settled. A room allocates and frees per event, so a resource
-     * that reuses what is freed (a pool) suits a long-lived room, and a monotonic one only a
-     * short-lived one.
-     *
-     * @see "Allocation", in the guide.
-     */
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource();
-};
 
 /**
  * Who sent a message, and the metadata it carried, the second and third arguments of Trystero's
@@ -563,6 +471,17 @@ public:
     room_impl(const room_impl&) = delete;
     room_impl& operator=(const room_impl&) = delete;
 
+    /** A room of `app`, in the app's resource, joined: `start` has run. */
+    static std::shared_ptr<room_impl> make(std::shared_ptr<app_impl> app, room_options options,
+                                           std::string_view room_id) {
+        std::pmr::memory_resource* const memory = app->memory();
+        auto impl =
+            std::allocate_shared<room_impl>(std::pmr::polymorphic_allocator<>(memory),
+                                            std::move(app), std::move(options), room_id, memory);
+        impl->start();
+        return impl;
+    }
+
     /**
      * Leaves the app's registry and lets go quietly: it may run while the io_context is destroyed,
      * so it ends no connection, idles none, calls nothing back and releases no user of the app.
@@ -708,17 +627,6 @@ public:
     /** Sets the handler of each problem with a peer that the room handled itself. */
     void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
         on_error_ = keep_handler(std::move(f));
-    }
-
-    /** Reports a part of the configuration the app set aside to `on_error`, with no peer, once the
-     * caller has returned, so that a handler set right after the room is made sees it. The app
-     * logged it already. */
-    void report_configuration(std::string_view what) {
-        post([weak = weak_from_this(), what = std::pmr::string(what, memory_)] {
-            if (const auto self = weak.lock(); self && self->on_error_) {
-                (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
-            }
-        });
     }
 
     void presence_changed(std::string_view peer, bool present) override {
@@ -1349,15 +1257,16 @@ class action;
 /**
  * A room joined over Trystero's Nostr strategy, what Trystero's `joinRoom` returns.
  *
- * Constructing it joins; `async_leave` leaves with Trystero's farewell, and destroying it leaves at
- * once. Its peers meet over the relays, connect over WebRTC and exchange the messages of the
- * actions it makes, wire compatible with Trystero's JavaScript.
+ * `app::join` makes it, joined; `async_leave` leaves with Trystero's farewell, and destroying it
+ * leaves at once. Its peers meet over the relays, connect over WebRTC through the connections its
+ * app shares between its rooms, and exchange the messages of the actions it makes, wire compatible
+ * with Trystero's JavaScript.
  *
- * Tip: every handler the room calls, and every completion, runs on the executor it was constructed
- * with. The views a handler receives are valid for the duration of the call. Every allocation of
- * the room goes through `room_config::memory`; a completion handler is allocated as its own
- * associated allocator says. Destroying the room leaves operations pending on its executor, which
- * free into that resource: it must outlive them (see `room_config::memory`).
+ * Tip: every handler the room calls, and every completion, runs on its app's executor. The views a
+ * handler receives are valid for the duration of the call. Every allocation of the room goes
+ * through its app's `app_config::memory`; a completion handler is allocated as its own associated
+ * allocator says. Destroying the room leaves operations pending on its executor, which free into
+ * that resource: it must outlive them (see `app_config::memory`).
  *
  * @see "Rooms and actions", in the guide.
  */
@@ -1365,20 +1274,6 @@ class room {
 public:
     /** The executor every handler and completion of the room runs on. */
     using executor_type = boost::asio::any_io_executor;
-
-    /**
-     * Joins a room: connects to the relays and announces this peer on the room's topic.
-     *
-     * @param ex The executor every handler and completion of the room runs on.
-     * @param factory The backend, which must outlive the room.
-     * @param config What the room is joined with, copied into `config.memory`.
-     * @param room_id The room's id, Trystero's `roomId`, read during the call.
-     * @pre `config.memory` is not null.
-     */
-    room(executor_type ex, backend::factory& factory, room_config config, std::string_view room_id)
-        : impl_(make(std::move(ex), factory, std::move(config), room_id)) {
-        impl_->start();
-    }
 
     /** Not copyable: a room is one membership. */
     room(const room&) = delete;
@@ -1397,9 +1292,9 @@ public:
      * Leaves the membership this room held at once, as the destructor does, then takes the
      * membership of the room moved from, which may then only be destroyed or assigned.
      *
-     * Every peer of the membership left is told, every connection of it is closed, and every
-     * operation pending on it completes with `error::room_left`, even while an `action` of it
-     * lives.
+     * Every peer of the membership left is told, the room lets go of the app's connections, which
+     * the app's other rooms may go on using, and every operation pending on it completes with
+     * `error::room_left`, even while an `action` of it lives.
      *
      * @param other The room moved from.
      * @return This room.
@@ -1417,8 +1312,9 @@ public:
     // Leaving sends each peer Trystero's farewell, whose frames are allocated in the room's
     // resource: a resource that fails then ends the program, as in any destructor.
     /**
-     * Leaves at once, without the farewell's grace period: every peer is told, every connection is
-     * closed, and every pending operation completes with `error::room_left`.
+     * Leaves at once, without the farewell's grace period: every peer is told, the room lets go of
+     * the app's connections, which the app's other rooms may go on using, and every pending
+     * operation completes with `error::room_left`.
      */
     ~room() {  // NOLINT(bugprone-exception-escape)
         if (impl_) {
@@ -1427,22 +1323,22 @@ public:
     }
 
     /**
-     * The executor the room was constructed with.
+     * The executor of the room's app.
      *
      * @return The executor every handler and completion of the room runs on.
      */
     [[nodiscard]] const executor_type& get_executor() const { return impl_->get_executor(); }
 
     /**
-     * This peer's id in the room, Trystero's `selfId`.
+     * This peer's id in the room, Trystero's `selfId`: its app's.
      *
      * @return The id, valid as long as the room.
      */
     [[nodiscard]] std::string_view self_id() const { return impl_->self_id(); }
 
     /**
-     * The Nostr relays this room uses, derived from the app id unless the configuration named
-     * them.
+     * The Nostr relays this room uses, its app's: derived from the app id unless the app's
+     * configuration named them.
      *
      * @return The relays' URLs, valid as long as the room.
      */
@@ -1486,13 +1382,11 @@ public:
      * Sets what is called with each problem with one peer that the room handled itself, as a
      * wrong password or a timed-out handshake, Trystero's `onPeerError`.
      *
-     * It is called too, with an empty peer id, for each part of the configuration the room dropped
-     * when it joined (`error::invalid_configuration`): a handler set right after the room is
-     * constructed sees those. Signals that do not open with the room key (`error::wrong_password`)
-     * are reported once per negotiation, and paced: the first of a quiet 10 s at once, with its
-     * peer, and the others of those 10 s in one report, with an empty peer id and a description
-     * that starts with their number, since anyone who reads the relays can send them from any
-     * number of fresh ids.
+     * Signals that do not open with the room key (`error::wrong_password`) are reported once per
+     * negotiation, and paced: the first of a quiet 10 s at once, with its peer, and the others of
+     * those 10 s in one report, with an empty peer id and a description that starts with their
+     * number, since anyone who reads the relays can send them from any number of fresh ids. A part
+     * of the configuration the app set aside is reported to `app::on_error`, not here.
      *
      * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
      * for the call.
@@ -1551,9 +1445,10 @@ public:
     /**
      * Says goodbye to every peer and closes everything, Trystero's `leave`.
      *
-     * Each peer is sent `\@_leave`, and 99 ms later, as Trystero waits, every connection is
-     * closed and every pending operation completes with `error::room_left`. Completes with
-     * `(error_code)`, empty, also when the room was already left.
+     * Each peer is sent `\@_leave`, and 99 ms later, as Trystero waits, the room lets go of the
+     * app's connections, which the app's other rooms may go on using, and every pending operation
+     * completes with `error::room_left`. Completes with `(error_code)`, empty, also when the room
+     * was already left.
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code)`.
      * @param token The completion token.
@@ -1570,39 +1465,10 @@ public:
     }
 
 private:
-    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    static std::shared_ptr<detail::room_impl> make(executor_type ex, backend::factory& factory,
-                                                   room_config config, std::string_view room_id) {
-        // NOLINTEND(performance-unnecessary-value-param)
-        std::pmr::memory_resource* const memory = config.memory;
-        BOOST_ASSERT_MSG(memory != nullptr, "room_config::memory names no resource");
-        const std::pmr::polymorphic_allocator<> allocator(memory);
-        // The configuration's app part makes an app of the room's own, which it shares with no
-        // other room (increment 1 of the shared connection).
-        const auto app =
-            std::allocate_shared<detail::app_impl>(allocator, std::move(ex), factory,
-                                                   app_config{
-                                                       .app_id = std::move(config.app_id),
-                                                       .self_id = std::move(config.self_id),
-                                                       .relay_urls = std::move(config.relay_urls),
-                                                       .relay_redundancy = config.relay_redundancy,
-                                                       .ice_servers = std::move(config.ice_servers),
-                                                       .log = std::move(config.log),
-                                                       .memory = memory,
-                                                   });
-        auto impl = std::allocate_shared<detail::room_impl>(
-            allocator, app,
-            room_options{
-                .password = std::move(config.password),
-                .handshake_timeout = config.handshake_timeout,
-                .max_receive_bytes = config.max_receive_bytes,
-            },
-            room_id, memory);
-        for (const auto& what : app->setup_reports()) {
-            impl->report_configuration(what);
-        }
-        return impl;
-    }
+    friend class app;
+
+    /** The handle of a room `app::join` made and started. */
+    explicit room(std::shared_ptr<detail::room_impl> impl) : impl_(std::move(impl)) {}
 
     std::shared_ptr<detail::room_impl> impl_;
 };

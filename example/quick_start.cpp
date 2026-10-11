@@ -5,8 +5,8 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // The quick start of the documentation (doc: #trystero-quick-start), which includes the tagged
-// regions below: a browser program that joins a room, greets every peer that joins, prints what it
-// receives, and echoes another action from a coroutine.
+// regions below: a browser program whose app joins a room, greets every peer that joins, prints
+// what it receives, and echoes another action from a coroutine.
 
 // tag::includes[]
 #include <webcpp/trystero.hpp>
@@ -19,7 +19,9 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
+#include <cstdio>
 #include <iostream>
+#include <optional>
 #include <string>
 
 namespace asio = boost::asio;
@@ -29,15 +31,32 @@ namespace trystero = webcpp::trystero;
 namespace {
 
 // tag::application[]
-/** What the page keeps alive: event loop, backend, room and actions. */
+/** The room the page joined, and its actions. */
+struct lobby {
+    trystero::room room;
+    trystero::action<std::string> chat = room.make_action<std::string>("chat");
+    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+};
+
+/** What the page keeps alive: event loop, backend, app, and the room it joined. */
 struct application {
     asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    trystero::room room{
-        loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
-    trystero::action<std::string> chat = room.make_action<std::string>("chat");
-    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+    trystero::app app{loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
+    std::optional<lobby> joined;
+
+    /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses
+     * (a room of that id joined already, or 64 rooms). */
+    lobby* join() {
+        auto result = app.join("lobby");
+        if (!result) {
+            const std::string reason = result.error().message();
+            std::printf("not joined: %s\n", reason.c_str());
+            return nullptr;
+        }
+        return &joined.emplace(std::move(*result));
+    }
 };
 
 // end::application[]
@@ -63,19 +82,23 @@ asio::awaitable<void> echo_back(trystero::action<std::string>& echo) {
 // tag::main[]
 int main() {
     auto* app = new application;  // a page's program lives as long as the tab
+    auto* lobby = app->join();
+    if (lobby == nullptr) {
+        return 1;
+    }
 
-    app->room.on_peer_join([app](std::string_view peer) {
+    lobby->room.on_peer_join([lobby](std::string_view peer) {
         trystero::send_options to_peer{.targets = {trystero::peer_id(peer)}, .metadata = {}};
-        app->chat.async_send("hello", std::move(to_peer), [](boost::system::error_code ec) {
+        lobby->chat.async_send("hello", std::move(to_peer), [](boost::system::error_code ec) {
             if (ec) {
                 std::cerr << "not delivered: " << ec.message() << '\n';
             }
         });
     });
-    app->chat.on_message([](const std::string& text, const trystero::message_info& info) {
+    lobby->chat.on_message([](const std::string& text, const trystero::message_info& info) {
         std::cout << info.from << ": " << text << '\n';
     });
-    asio::co_spawn(app->loop.get_executor(), echo_back(app->echo), asio::detached);
+    asio::co_spawn(app->loop.get_executor(), echo_back(lobby->echo), asio::detached);
 }
 
 // end::main[]

@@ -4,9 +4,9 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// A chat room in the browser: the room is C++ (webcpp::trystero), the page only draws. It joins
-// over Trystero's public Nostr relays, so Trystero JS peers with the same app id and room id are in
-// the same chat.
+// A chat room in the browser: the app and its room are C++ (webcpp::trystero), the page only draws.
+// It joins over Trystero's public Nostr relays, so Trystero JS peers with the same app id and room
+// id are in the same chat.
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
@@ -28,6 +28,7 @@ struct chat {
     boost::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
+    std::unique_ptr<trystero::app> app;  // made at the first join, with that join's app id
     std::unique_ptr<trystero::room> room;
     // The action "chat" twice: received as views of the frame, and sent by moving the text.
     std::unique_ptr<trystero::action<std::string_view>> messages;
@@ -61,13 +62,22 @@ void join_room(const std::string& app_id, const std::string& room_id) {
     if (c.room) {
         return;
     }
-    trystero::room_config config;
-    config.app_id = app_id;
-    config.log = [](std::string_view category, std::string_view text) {
-        ui("log", category, text);
-    };
-    c.room = std::make_unique<trystero::room>(c.loop.get_executor(), c.backend, std::move(config),
-                                              room_id);
+    if (!c.app) {
+        trystero::app_config config;
+        config.app_id = app_id;
+        config.log = [](std::string_view category, std::string_view text) {
+            ui("log", category, text);
+        };
+        c.app =
+            std::make_unique<trystero::app>(c.loop.get_executor(), c.backend, std::move(config));
+    }
+    auto joined = c.app->join(room_id);
+    if (!joined) {
+        ui("log", std::string_view("chat"),
+           std::string_view("not joined: " + joined.error().message()));
+        return;
+    }
+    c.room = std::make_unique<trystero::room>(std::move(*joined));
     c.messages = std::make_unique<trystero::action<std::string_view>>(
         c.room->make_action<std::string_view>("chat"));
     c.outgoing =

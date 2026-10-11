@@ -18,7 +18,8 @@
 // | --self        | this peer's id, optional                                         |
 // | --relays      | comma-separated relay URLs, optional (Trystero's default list)   |
 // | --ice         | a STUN or TURN server's URL, optional (Trystero's default list)  |
-// | --room2       | a second room of the same app to join too, optional              |
+// | --room2       | a second room of the same app id to join too, optional           |
+#include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -67,11 +68,10 @@ std::map<std::string, std::string> arguments(int argc, char* const* argv) {
     return out;
 }
 
-/** The room's configuration, from the driver's arguments. */
-trystero::room_config config_of(std::map<std::string, std::string>& args) {
-    trystero::room_config config;
+/** The app's configuration, from the driver's arguments. */
+trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
+    trystero::app_config config;
     config.app_id = args["app"];
-    config.password = args["password"];
     config.self_id = args["self"];
     for (std::string_view relays = args["relays"]; !relays.empty();) {
         const auto comma = relays.find(',');
@@ -86,6 +86,22 @@ trystero::room_config config_of(std::map<std::string, std::string>& args) {
         std::cerr << category << ": " << text << '\n';
     };
     return config;
+}
+
+/** A room's options, from the driver's arguments. */
+trystero::room_options options_of(std::map<std::string, std::string>& args) {
+    return {.password = std::pmr::string(args["password"])};
+}
+
+/** Joins `room_id` through `app`; when the app refuses, the process ends after an event. */
+trystero::room join(trystero::app& app, const std::string& room_id,
+                    std::map<std::string, std::string>& args) {
+    auto joined = app.join(room_id, options_of(args));
+    if (!joined) {
+        record("not-joined", {{"room", room_id}, {"error", joined.error().message()}});
+        std::exit(1);
+    }
+    return std::move(*joined);
 }
 
 /** The native backend, which records each peer connection it makes, for the scenarios that count
@@ -105,23 +121,25 @@ public:
     }
 };
 
-trystero::room room_of(boost::asio::io_context& io, trystero::native::backend& backend,
-                       std::map<std::string, std::string>& args, std::string_view suffix = {}) {
-    return {io.get_executor(), backend, config_of(args), args["room"] + std::string(suffix)};
-}
-
 /**
- * A second room of the same app, with the configuration of the first but its room id: it sends each
- * peer that joins a chat message and a 100 KB file, and records what it sees with `room: second`.
+ * A second room of the same app id, with the configuration and the options of the first: it sends
+ * each peer that joins a chat message and a 100 KB file, and records what it sees with
+ * `room: second`.
+ *
+ * Tip: its app is its own. Trystero JS keeps one connection per peer id, and answers no second
+ * offer from it, so a room of an app already connected to the page meets it only by binding over
+ * that connection on the page's presence for the room, which the library does not do yet.
  */
 struct second_room {
+    trystero::app app;
     trystero::room room;
     trystero::action<std::string> chat = room.make_action<std::string>("chat");
     trystero::action<trystero::bytes> file = room.make_action<trystero::bytes>("file");
 
     second_room(boost::asio::io_context& io, trystero::native::backend& backend,
                 std::map<std::string, std::string>& args)
-        : room(io.get_executor(), backend, config_of(args), args["room2"]) {
+        : app(io.get_executor(), backend, app_config_of(args)),
+          room(join(app, args["room2"], args)) {
         record("joined", {{"room", "second"}, {"self", room.self_id()}});
         room.on_peer_join([this](std::string_view peer_view) {
             const trystero::peer_id peer(peer_view);
@@ -188,7 +206,11 @@ int main(int argc, char* argv[]) {
     auto args = arguments(argc, argv);
     boost::asio::io_context io;
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
-    trystero::room room = room_of(io, backend, args);
+    trystero::app app(io.get_executor(), backend, app_config_of(args));
+    app.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+        record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
+    });
+    trystero::room room = join(app, args["room"], args);
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {
         relays.emplace_back(url);
@@ -270,7 +292,7 @@ int main(int argc, char* argv[]) {
                     std::abort();
                 }
                 if (command.starts_with("replace")) {
-                    replace(room, room_of(io, backend, args, "-replaced"));
+                    replace(room, join(app, args["room"] + "-replaced", args));
                 }
                 if (!command.starts_with("leave")) {
                     read_command();

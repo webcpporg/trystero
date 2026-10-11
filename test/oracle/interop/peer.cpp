@@ -14,7 +14,7 @@
 // | self            | this peer's id, optional                                         |
 // | relays          | comma-separated relay URLs, optional (Trystero's default list)   |
 // | ice             | a STUN or TURN server's URL, optional (Trystero's default list)  |
-// | room2           | a second room of the same app to join too, optional              |
+// | room2           | a second room of the same app id to join too, optional           |
 // | program         | the program's JavaScript, which cpp.html loads; not read here    |
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/browser/backend.hpp>
@@ -27,6 +27,7 @@
 #include <boost/json/serialize.hpp>
 
 #include <memory>
+#include <memory_resource>
 #include <string>
 
 using emscripten::val;
@@ -34,17 +35,22 @@ namespace trystero = webcpp::trystero;
 
 namespace {
 
-/** Everything the page keeps alive: the io_context, the event loop, the backend, the room and its
- * actions. */
+/** Everything the page keeps alive: the io_context, the event loop, the backend, the app, the room
+ * and its actions. */
 struct page {
     boost::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
+    std::unique_ptr<trystero::app> app;
     std::unique_ptr<trystero::room> room;
     std::unique_ptr<trystero::action<std::string>> chat;
     std::unique_ptr<trystero::action<boost::json::value>> drink;
     std::unique_ptr<trystero::action<trystero::bytes>> file;
-    // The second room, with `room2`, and its actions.
+    // The second room, with `room2`, its own app, and its actions. Its own app: Trystero JS keeps
+    // one connection per peer id, and answers no second offer from it, so a room of an app that is
+    // already connected to the page meets it only by binding over that connection on the page's
+    // presence for the room, which the library does not do yet.
+    std::unique_ptr<trystero::app> second_app;
     std::unique_ptr<trystero::room> second;
     std::unique_ptr<trystero::action<std::string>> second_chat;
     std::unique_ptr<trystero::action<trystero::bytes>> second_file;
@@ -85,11 +91,10 @@ std::uint32_t checksum(const trystero::bytes& data) {
     return sum;
 }
 
-/** The page's configuration, from the URL. */
-trystero::room_config config_of_page() {
-    trystero::room_config config;
+/** The app's configuration, from the URL. */
+trystero::app_config config_of_page() {
+    trystero::app_config config;
     config.app_id = param("app");
-    config.password = param("password");
     config.self_id = param("self");
     for (std::string relays = param("relays"); !relays.empty();) {
         const auto comma = relays.find(',');
@@ -104,15 +109,35 @@ trystero::room_config config_of_page() {
     return config;
 }
 
+/** A room's options, from the URL. */
+trystero::room_options options_of_page() {
+    return {.password = std::pmr::string(param("password"))};
+}
+
+/** Joins `room_id` through `app`; null, with an event, when the app refuses. */
+std::unique_ptr<trystero::room> join(trystero::app& app, const std::string& room_id,
+                                     std::string_view which) {
+    auto joined = app.join(room_id, options_of_page());
+    if (!joined) {
+        record("not-joined", {{"room", which}, {"error", joined.error().message()}});
+        return nullptr;
+    }
+    return std::make_unique<trystero::room>(std::move(*joined));
+}
+
 /**
- * Joins `room2`, a second room of the same app, with the configuration of the first but its room
- * id: it sends each peer that joins a chat message and a 100 KB file, and records what it sees with
- * `room: second`.
+ * Joins `room2`, a second room of the same app id, with the configuration and the options of the
+ * first: it sends each peer that joins a chat message and a 100 KB file, and records what it sees
+ * with `room: second`.
  */
 void join_second() {
     page& app = the_page();
-    app.second = std::make_unique<trystero::room>(app.loop.get_executor(), app.backend,
-                                                  config_of_page(), param("room2"));
+    app.second_app =
+        std::make_unique<trystero::app>(app.loop.get_executor(), app.backend, config_of_page());
+    app.second = join(*app.second_app, param("room2"), "second");
+    if (!app.second) {
+        return;
+    }
     app.second_chat = std::make_unique<trystero::action<std::string>>(
         app.second->make_action<std::string>("chat"));
     app.second_file = std::make_unique<trystero::action<trystero::bytes>>(
@@ -155,8 +180,16 @@ void join_second() {
 
 void start() {
     page& app = the_page();
-    app.room = std::make_unique<trystero::room>(app.loop.get_executor(), app.backend,
-                                                config_of_page(), param("room"));
+    app.app =
+        std::make_unique<trystero::app>(app.loop.get_executor(), app.backend, config_of_page());
+    app.app->on_error(
+        [](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+            record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
+        });
+    app.room = join(*app.app, param("room"), "first");
+    if (!app.room) {
+        return;
+    }
     auto& room = *app.room;
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {

@@ -5,8 +5,8 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 /**
- The rooms of trystero, which build on every target: include this one header to
- join a room through a backend.
+ The apps and rooms of trystero, which build on every target: include this one
+ header to make an app over a backend and join its rooms.
 
  It leaves out the two backends, each with a dependency of its own target:
  `<webcpp/trystero/browser/backend.hpp>`, which builds only on emscripten, and
@@ -18,9 +18,11 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/json_resource.hpp>
+#include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #endif

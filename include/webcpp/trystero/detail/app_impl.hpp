@@ -13,6 +13,8 @@
 #include <webcpp/trystero/detail/connection.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/detail/post.hpp>
+#include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
@@ -21,6 +23,7 @@
 
 #include <boost/asio/any_io_executor.hpp>  // lint-world: names the executor only
 #include <boost/assert.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <array>
 #include <chrono>
@@ -154,6 +157,28 @@ public:
 
     /** What the constructor set aside, a sentence each, in its order. */
     [[nodiscard]] std::span<const std::pmr::string> setup_reports() const { return setup_reports_; }
+
+    /** Sets what is called with each part of the configuration set aside, and posts it every one
+     * the constructor set aside, with an empty peer id and `error::invalid_configuration`: the
+     * reports were made before any handler could be set. */
+    void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
+        if (!f) {
+            on_error_ = nullptr;
+            return;
+        }
+        on_error_ = std::allocate_shared<decltype(f)>(allocator(), std::move(f));
+        for (const auto& what : setup_reports_) {
+            post(ex_, memory_, [f = on_error_, what = std::pmr::string(what, memory_)] {
+                (*f)("", make_error_code(error::invalid_configuration), what);
+            });
+        }
+    }
+
+    /** `f` as a handler of the app's resource. */
+    template <class Signature, class F>
+    handler<Signature> bind(F&& f) const {
+        return handler<Signature>(std::allocator_arg, allocator(), std::forward<F>(f));
+    }
 
     /** The connections not ended whose channel is open. */
     [[nodiscard]] std::pmr::vector<std::shared_ptr<connection>> live_connections() const {
@@ -363,11 +388,6 @@ private:
 
     [[nodiscard]] std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
-    template <class Signature, class F>
-    handler<Signature> bind(F&& f) const {
-        return handler<Signature>(std::allocator_arg, allocator(), std::forward<F>(f));
-    }
-
     std::pmr::memory_resource* memory_;
     executor_type ex_;
     backend::factory& factory_;
@@ -378,6 +398,8 @@ private:
     std::pmr::vector<backend::ice_server> ice_servers_;
     std::chrono::milliseconds idle_timeout_;
     std::pmr::vector<std::pmr::string> setup_reports_;
+    std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
+        on_error_;
     std::pmr::map<std::pmr::string, entry, std::less<>> rooms_;
     std::pmr::map<std::pmr::string, std::shared_ptr<connection>, std::less<>> connections_;
     std::size_t users_ = 0;

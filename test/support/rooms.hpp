@@ -11,6 +11,7 @@
 
 #include "../require.hpp"
 
+#include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
@@ -26,17 +27,21 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
-// The rooms' shared test helpers: a memory network with two relays, a watcher of a room's relay
-// traffic, a flood of announcements, and the virtual clock's own waits. A case
-// of room_test.cpp, connection_test.cpp or shared_test.cpp includes this header for them.
+// The rooms' shared test helpers: a memory network with two relays, an app over them and a join
+// that must succeed, a watcher of a room's relay traffic, a flood of announcements, and the virtual
+// clock's own waits. A case of room_test.cpp, connection_test.cpp or shared_test.cpp includes this
+// header for them.
 namespace webcpp::trystero::test {
 
 using namespace std::chrono_literals;
@@ -44,6 +49,29 @@ using namespace std::chrono_literals;
 constexpr const char* relay_a = "wss://relay-a.test";
 constexpr const char* relay_b = "wss://relay-b.test";
 constexpr const char* app_id = "webcpp-trystero-tests";
+
+/** An app of the tests' app id over the two memory relays, with `self_id`; with
+ * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */
+inline trystero::app_config app_config(std::string_view self_id) {
+    trystero::app_config c;
+    c.app_id = app_id;
+    c.relay_urls = {relay_a, relay_b};
+    c.self_id = self_id;
+    if (std::getenv("WEBCPP_TEST_TRYSTERO_VERBOSE") != nullptr) {
+        c.log = [id = std::pmr::string(self_id)](std::string_view category, std::string_view text) {
+            std::cerr << "  [" << id << "] " << category << ": " << text << "\n";
+        };
+    }
+    return c;
+}
+
+/** Joins `room_id`, which must succeed: a failure ends the test. */
+inline trystero::room join(trystero::app& a, std::string_view room_id,
+                           trystero::room_options options = {}) {
+    auto r = a.join(room_id, std::move(options));
+    webcpp::test::require(BOOST_TEST(r.has_value()));
+    return std::move(*r);
+}
 
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
 inline bool run_until(boost::asio::io_context& io, const std::function<bool()>& done,
