@@ -114,7 +114,8 @@ bool run_until(fixture& f, const std::function<bool()>& done,
 }
 
 /** Moves the virtual clock by `by`, firing every timer due meanwhile; fails the case by name when
- * the clock stopped at its step bound (review N4). */
+ * the clock stopped at its step bound (review N4). Called with milliseconds: an argument of
+ * another duration finds std::advance by its namespace, which GCC prefers, as an exact match. */
 void advance(fixture& f, std::chrono::milliseconds by) {
     if (!f.net.advance(by)) {
         BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
@@ -1435,7 +1436,7 @@ void a_late_end_of_another_connection_keeps_the_peer() {
     const auto second = a.app->find(b_id);
     webcpp::test::require(BOOST_TEST(second != nullptr && second != first));
     a.room->connection_ended(first, b_id, "a late end of the first connection");
-    advance(f, 5s);
+    advance(f, 5000ms);
     BOOST_TEST_EQ(a.room->active_peers().size(), 1U);
     BOOST_TEST_EQ(b_leaves, 1);
     second->end("test");
@@ -1519,7 +1520,7 @@ void a_room_left_with_no_idle_time_sends_its_presence() {
         return trystero::test::memory_network::verdict::deliver;
     };
     a.room->abandon();
-    advance(f, 1s);
+    advance(f, 1000ms);
     BOOST_TEST_EQ(seen, 1);
 }
 
