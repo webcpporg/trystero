@@ -1236,6 +1236,16 @@ private:
         remove_peer(it->first, reason, end_kind::kick);
     }
 
+    /** Detaches a peer's binding as its end says: the connection idles after a departure, this
+     * room's own leave among them, and ends after a kick of its last room; at the connection's
+     * end, the connection has let the binding go already. */
+    void let_go(peer_state& state, end_kind kind) {
+        if (kind == end_kind::connection_end) {
+            return;
+        }
+        state.link->detach(kind == end_kind::kick, app_->idle_timeout());
+    }
+
     void remove_peer(std::string_view peer_view, std::string_view reason, end_kind kind) {
         const auto it = peers_.find(peer_view);
         if (it == peers_.end()) {
@@ -1246,10 +1256,7 @@ private:
         std::pmr::string peer = std::move(node.key());
         auto& state = node.mapped();
         log_("room", "peer ", peer, " gone: ", reason);
-        if (kind != end_kind::connection_end) {
-            // The connection idles after a departure and ends after a kick of its last room.
-            state.link->detach(kind == end_kind::kick, app_->idle_timeout());
-        }
+        let_go(state, kind);
         for (auto& ping : state.pings) {
             complete(std::move(ping.handler), make_error_code(error::peer_disconnected),
                      std::chrono::milliseconds{});
@@ -1282,7 +1289,7 @@ private:
         auto peers = std::move(peers_);
         peers_.clear();
         for (auto& [id, state] : peers) {
-            state.link->detach(false, app_->idle_timeout());
+            let_go(state, end_kind::room_end);
             for (auto& ping : state.pings) {
                 complete(std::move(ping.handler), make_error_code(error::room_left),
                          std::chrono::milliseconds{});
