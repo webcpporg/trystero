@@ -39,6 +39,7 @@
 
 #include "require.hpp"
 #include "support/memory_backend.hpp"
+#include "support/rooms.hpp"
 
 namespace asio = boost::asio;
 namespace trystero = webcpp::trystero;
@@ -46,9 +47,15 @@ using namespace std::chrono_literals;
 
 namespace {
 
-constexpr const char* relay_a = "wss://relay-a.test";
-constexpr const char* relay_b = "wss://relay-b.test";
-constexpr const char* app_id = "webcpp-trystero-tests";
+using trystero::test::advance;
+using trystero::test::app_id;
+using trystero::test::counting_resource;
+using trystero::test::fixture;
+using trystero::test::flooder;
+using trystero::test::relay_a;
+using trystero::test::relay_b;
+using trystero::test::relayed_signal;
+using trystero::test::run_until;
 
 trystero::room_config config(std::string_view self_id, std::string_view password = {}) {
     trystero::room_config c;
@@ -62,64 +69,6 @@ trystero::room_config config(std::string_view self_id, std::string_view password
         };
     }
     return c;
-}
-
-/** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
-bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 10s) {
-    const auto end = std::chrono::steady_clock::now() + limit;
-    while (!done() && std::chrono::steady_clock::now() < end) {
-        io.run_for(20ms);  // lint-run: the memory relays and the rooms' timers post to it
-        if (io.stopped()) {
-            io.restart();
-        }
-    }
-    return done();
-}
-
-struct fixture {
-    asio::io_context io;
-    trystero::test::memory_network net{io};
-
-    /** A memory network with two relays; with `virtual_time`, on the virtual clock (Task 1). */
-    explicit fixture(bool virtual_time = false) {
-        net.virtual_clock = virtual_time;
-        net.relay(relay_a);
-        net.relay(relay_b);
-    }
-};
-
-/** Runs until `done` holds, for at most `limit`: of the virtual clock when the fixture has one,
- * moving it from timer to timer, else of the wall clock. On the virtual clock it fires at most
- * `max_steps` timers, and fails the case by name past them (review N4): a timer re-armed without
- * delay would otherwise hold the clock still forever. */
-bool run_until(fixture& f, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = std::chrono::seconds(10)) {
-    if (!f.net.virtual_clock) {
-        return run_until(f.io, done, limit);
-    }
-    const double end = f.net.now_ms() + static_cast<double>(limit.count());
-    for (std::size_t steps = 0; !done(); ++steps) {
-        if (steps == f.net.max_steps) {
-            BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
-            return false;
-        }
-        f.io.restart();
-        f.io.poll();
-        if (done() || !f.net.step(end)) {
-            break;
-        }
-    }
-    return done();
-}
-
-/** Moves the virtual clock by `by`, firing every timer due meanwhile; fails the case by name when
- * the clock stopped at its step bound (review N4). Called with milliseconds: an argument of
- * another duration finds std::advance by its namespace, which GCC prefers, as an exact match. */
-void advance(fixture& f, std::chrono::milliseconds by) {
-    if (!f.net.advance(by)) {
-        BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
-    }
 }
 
 /** An app and a room of it, made as the standalone room makes them, for a case that reaches the
@@ -431,110 +380,6 @@ void a_refused_peer_connection_is_reported_and_tried_again() {
     }
 }
 
-/** A resource that counts the bytes it has out, and the most it had out at once. */
-class counting_resource final : public std::pmr::memory_resource {
-public:
-    std::size_t in_use = 0;
-    std::size_t peak = 0;
-
-private:
-    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-        in_use += bytes;
-        peak = std::max(peak, in_use);
-        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
-    }
-
-    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
-        in_use -= bytes;
-        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
-    }
-
-    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
-        return this == &other;
-    }
-};
-
-/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own. */
-class flooder {
-public:
-    flooder(fixture& f, std::string_view room)
-        : f_(f), topic_(trystero::protocol::root_topic(app_id, room)) {
-        socket_ = f.net.connect(relay_a,
-                                {
-                                    .open = [this] { open_ = true; },
-                                    .message =
-                                        [this](std::string_view text) {
-                                            if (on_text) {
-                                                on_text(text);
-                                            }
-                                        },
-                                    .close = {},
-                                },
-                                std::pmr::get_default_resource());
-        webcpp::test::require(BOOST_TEST(run_until(f.io, [this] { return open_; })));
-        std::array<std::uint8_t, 32> secret{};
-        secret.fill(9);
-        signer_.emplace(*trystero::protocol::nostr::signer::from_secret(secret));
-    }
-
-    /** What the relay sends the flooder: the events of the topics it watches. */
-    std::function<void(std::string_view)> on_text;
-
-    /** Subscribes to a topic's events, which then reach `on_text`. */
-    void watch(std::string_view topic) {
-        const std::array<std::pmr::string, 1> topics{std::pmr::string(topic)};
-        socket_->send(trystero::protocol::nostr::subscribe_message(
-            "watch" + std::to_string(next_++), topics, 0));
-    }
-
-    /** Publishes a signal on a topic, in any peer's name. */
-    void publish(std::string_view topic, const trystero::protocol::signal_message& m) {
-        const std::array<std::uint8_t, 32> aux{};
-        socket_->send(trystero::protocol::nostr::event_message(
-            *signer_, f_.net.unix_seconds(), topic, trystero::protocol::write_signal(m), aux));
-    }
-
-    /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
-     */
-    static std::string sealed(std::string_view room, std::string_view plain) {
-        const auto key = trystero::protocol::seal_key("", app_id, room);
-        return std::string(trystero::protocol::format_sealed(
-            std::span(key).first(16),
-            std::span(reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size())));
-    }
-
-    /** Announces one id `times` times. */
-    void announce_as(std::string_view id, int times) {
-        const std::array<std::uint8_t, 32> aux{};
-        for (int i = 0; i < times; ++i) {
-            const auto nonce = std::to_string(next_++);
-            const auto content = trystero::protocol::write_signal({.peer_id = id}, nonce);
-            socket_->send(trystero::protocol::nostr::event_message(*signer_, f_.net.unix_seconds(),
-                                                                   topic_, content, aux));
-        }
-    }
-
-    /** Announces `count` ids, each `prefix` and a number. */
-    void announce(std::size_t count, std::string_view prefix) {
-        const std::array<std::uint8_t, 32> aux{};
-        for (std::size_t i = 0; i < count; ++i) {
-            std::pmr::string id(prefix);
-            id += std::to_string(next_++);
-            const auto content = trystero::protocol::write_signal({.peer_id = id});
-            socket_->send(trystero::protocol::nostr::event_message(*signer_, f_.net.unix_seconds(),
-                                                                   topic_, content, aux));
-        }
-    }
-
-private:
-    fixture& f_;
-    std::pmr::string topic_;
-    std::shared_ptr<trystero::backend::websocket> socket_;
-    std::optional<trystero::protocol::nostr::signer> signer_;
-    bool open_ = false;
-    std::size_t next_ = 0;
-};
-
 // Announcements are not sealed: anyone who knows the app and the room ids can announce any number
 // of fresh ids. A room offers to at most max_unconnected_peers of them at once, its memory and the
 // page's connections stay bounded, the peer it is connected to keeps working, and once the offers
@@ -829,42 +674,6 @@ void the_replay_cache_remembers_the_last_ones() {
     trystero::detail::replay_cache none(0, std::pmr::get_default_resource());
     none.insert("one");
     BOOST_TEST(!none.contains("one"));
-}
-
-/** A relay's event as a watcher reads it: its topic and its signal. */
-struct relayed {
-    std::string topic;
-    std::string peer;
-    std::string offer_id;
-    std::string offer;
-    std::string answer;
-    bool announcement = false;
-};
-
-/** The topic and the signal of a relay's text, when it is an event that carries one. */
-std::optional<relayed> relayed_signal(std::string_view text) {
-    boost::system::error_code ec;
-    const auto document = boost::json::parse(text, ec);
-    const auto message =
-        ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
-    const auto* event =
-        message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
-    if (event == nullptr) {
-        return std::nullopt;
-    }
-    const auto content = boost::json::parse(event->content, ec);
-    const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
-    if (!signal) {
-        return std::nullopt;
-    }
-    return relayed{
-        .topic = std::string(event->topic),
-        .peer = std::string(signal->peer_id),
-        .offer_id = std::string(signal->offer_id),
-        .offer = std::string(signal->offer),
-        .answer = std::string(signal->answer),
-        .announcement = signal->is_announcement(),
-    };
 }
 
 /** Joins B to A, records what `record` keeps of the relays meanwhile, and has B leave. */
