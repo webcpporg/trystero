@@ -55,6 +55,8 @@ webcpp.compile config_all_off : config_test.cpp
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
+# The memory backend's hooks, which the tests of shared connections drive.
+webcpp.run memory_backend : memory_backend_test.cpp ;
 # end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
