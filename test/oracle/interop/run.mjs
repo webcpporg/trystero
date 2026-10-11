@@ -401,7 +401,7 @@ const unusableIceScenario = (name, cppKind) =>
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
-        const reported = (await cpp.events()).some(e => e.kind === 'error' && e.error === "the room's configuration is unusable")
+        const reported = (await cpp.events()).some(e => e.kind === 'error' && e.error === 'the configuration is unusable')
         return reported ? null : 'the C++ peer did not report the unusable ICE server'
     })
 
