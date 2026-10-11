@@ -494,6 +494,85 @@ void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     BOOST_TEST_EQ(room->events.back(), "ended B: test");
 }
 
+// A room adopts a connection to the peer from inside the stale connection's end, and its channel
+// starts closing before the outer adoption goes on: that one is stale too, and ends before the
+// outer one is adopted, so no room hears an end once the outer one is the peer's (review of Task 3,
+// r1).
+void a_nested_adoption_gone_stale_ends_before_the_outer_one() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto first = negotiate(io, net);
+    const auto second = negotiate(io, net);
+    const auto third = negotiate(io, net);
+    app->adopt("B", first.local_pc, first.local);
+    std::shared_ptr<detail::connection> nested;
+    room->on_end = [&] {
+        if (!nested) {
+            nested = app->adopt("B", third.local_pc, third.local);
+            third.local->close();  // closing: its close event is posted
+        }
+    };
+    first.local->close();
+    const auto outer = app->adopt("B", second.local_pc, second.local);
+    webcpp::test::require(BOOST_TEST(nested != nullptr));
+    BOOST_TEST(outer != nested);
+    const std::vector<std::string> ends{
+        "ended B: replaced by a new connection to the peer",
+        "ended B: replaced by a new connection to the peer",
+    };
+    BOOST_TEST(room->events == ends);
+    settle(io);
+    BOOST_TEST(room->events == ends);
+    BOOST_TEST(app->find("B") == outer);
+    BOOST_TEST(outer->live());
+    BOOST_TEST_EQ(app->live_connections().size(), 1U);
+}
+
+// An adoption from inside a connection's own end, before the rooms hear it (a drain waiter the end
+// fails): the ending connection is let go, the new one is the peer's, and the rooms hear the end
+// once.
+void an_adoption_from_inside_an_end_under_way() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto first = negotiate(io, net);
+    const auto second = negotiate(io, net);
+    const auto c = app->adopt("B", first.local_pc, first.local);
+    auto* m = std::pmr::get_default_resource();
+    const std::pmr::polymorphic_allocator<> alloc(m);
+    const auto b = std::allocate_shared<detail::binding>(
+        alloc, c, "T1",
+        trystero::handler<void(trystero::backend::bytes&&, std::span<const std::uint8_t>)>(
+            std::allocator_arg, alloc,
+            [](trystero::backend::bytes&&, std::span<const std::uint8_t>) {}),
+        m);
+    net.channel_capacity = 1;
+    const std::vector<std::uint8_t> payload(16'000, 0);
+    for (int i = 0; i < 5; ++i) {
+        webcpp::test::require(
+            BOOST_TEST(b->send(trystero::protocol::room_frame("T9", payload, m))));
+    }
+    std::shared_ptr<detail::connection> nested;
+    b->wait_drained({std::allocator_arg, alloc,
+                     [&](bool) { nested = app->adopt("B", second.local_pc, second.local); }});
+    c->end("test");
+    webcpp::test::require(BOOST_TEST(nested != nullptr));
+    BOOST_TEST(nested != c);
+    BOOST_TEST(nested->live());
+    BOOST_TEST(app->find("B") == nested);
+    BOOST_TEST(room->events == (std::vector<std::string>{"ended B: test"}));
+    settle(io);
+    BOOST_TEST(app->find("B") == nested);
+    BOOST_TEST_EQ(room->events.size(), 1U);
+}
+
 // A connection's end takes its own entry only: the last user's release ends the connections it
 // took out of the registry, and a room that adopts one to the same peer from inside the calls keeps
 // it registered, though the rooms still hear the released connection's end.
@@ -585,6 +664,8 @@ int main() {
     the_last_user_ends_every_connection();
     a_stale_connection_ends_before_its_replacement();
     an_adoption_from_inside_a_stale_end_is_the_one_kept();
+    a_nested_adoption_gone_stale_ends_before_the_outer_one();
+    an_adoption_from_inside_an_end_under_way();
     an_end_takes_only_its_own_entry();
     a_view_into_the_stale_connection_names_its_replacement();
     the_apps_destruction_is_quiet();

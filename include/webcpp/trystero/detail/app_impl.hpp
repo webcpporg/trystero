@@ -226,16 +226,21 @@ public:
      * Tip: a stale connection to the peer, one whose channel is closing, ends first, as Trystero
      * clears it (C/shared-peer.mjs:142-149): the rooms hear its end before the new connection is
      * adopted, and a room may adopt one to the peer from inside that call, which is then the one
-     * shared. */
-    std::shared_ptr<connection> adopt(std::string_view peer,
+     * shared, or ends in its turn if it is stale by then (review of Task 3, r1). One whose end is
+     * already under way, further up the stack, is let go: it ends no second time. */
+    std::shared_ptr<connection> adopt(std::string_view peer_view,
                                       std::shared_ptr<backend::peer_connection> pc,
                                       std::shared_ptr<backend::data_channel> channel) {
-        if (const auto it = connections_.find(peer);
-            it != connections_.end() && !it->second->live()) {
-            // `peer` may be a view into the stale connection, which the end below may free.
-            const std::pmr::string held(peer, memory_);
-            it->second->end("replaced by a new connection to the peer");
-            return share_or_adopt(held, std::move(pc), std::move(channel));
+        // `peer_view` may be a view into the stale connection, which its end frees.
+        const std::pmr::string peer(peer_view, memory_);
+        for (auto it = connections_.find(peer); it != connections_.end() && !it->second->live();
+             it = connections_.find(peer)) {
+            const auto stale = it->second;
+            stale->end("replaced by a new connection to the peer");
+            if (const auto again = connections_.find(peer);
+                again != connections_.end() && again->second == stale) {
+                connections_.erase(again);
+            }
         }
         return share_or_adopt(peer, std::move(pc), std::move(channel));
     }
