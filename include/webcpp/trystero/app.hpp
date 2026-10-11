@@ -46,8 +46,8 @@ public:
     /** The executor every handler and completion of the app and its rooms runs on. */
     using executor_type = boost::asio::any_io_executor;
 
-    /** The most rooms an app holds at once: a peer drops a connection that advertises more
-     * (Trystero's literal 64, C/shared-peer.mjs:457). */
+    /** The most rooms an app holds at once: a Trystero JS peer drops a connection that advertises
+     * more, its limit of 64 room tokens per connection. */
     static constexpr std::size_t max_rooms = 64;
 
     /**
@@ -150,8 +150,9 @@ public:
 
     /**
      * Sets what is called with each part of the configuration the app set aside, with an empty
-     * peer id and `error::invalid_configuration`; the reports made before it is set are posted to
-     * it, once the caller has returned.
+     * peer id and `error::invalid_configuration`. The reports are delivered once the caller has
+     * returned, each once, to the handler set when they are delivered: one replaced before then
+     * gets none.
      *
      * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
      * for the call.

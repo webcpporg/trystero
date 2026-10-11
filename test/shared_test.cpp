@@ -21,6 +21,7 @@
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "require.hpp"
@@ -32,7 +33,7 @@ using namespace std::chrono_literals;
 namespace {
 
 // Every room reports the app's id; an over-long one is replaced, and it and a negative idle time
-// are reported to the app's handler, set after the app is made.
+// are reported to the app's handler, set after the app is made, once each.
 void every_room_has_the_apps_id() {
     fixture f{true};
     trystero::app a(f.io.get_executor(), f.net, app_config("AAAAAAAAAAAAAAAAAAAA"));
@@ -42,17 +43,39 @@ void every_room_has_the_apps_id() {
     BOOST_TEST_EQ(r2.self_id(), a.self_id());
     auto long_id = app_config(std::string(65, 'x'));
     long_id.idle_timeout = -1ms;
-    std::vector<boost::system::error_code> reports;
+    std::vector<std::pair<boost::system::error_code, std::string>> reports;
     trystero::app b(f.io.get_executor(), f.net, std::move(long_id));
-    b.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view) {
+    b.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         BOOST_TEST(peer.empty());
-        reports.push_back(ec);
+        reports.emplace_back(ec, what);
     });
     BOOST_TEST_EQ(b.self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST(run_until(f, [&] { return reports.size() == 2; }));
-    for (const auto ec : reports) {
+    advance(f, 100ms);
+    webcpp::test::require(BOOST_TEST_EQ(reports.size(), 2U));
+    for (const auto& [ec, what] : reports) {
         BOOST_TEST(ec == trystero::error::invalid_configuration);
     }
+    BOOST_TEST(reports[0].second.starts_with("self_id "));
+    BOOST_TEST(reports[1].second.starts_with("idle_timeout "));
+}
+
+// A report reaches only the handler set when it is delivered, and each is delivered once: a handler
+// replaced before the delivery gets none, and one set after it gets none again.
+void each_setup_report_reaches_the_current_handler_once() {
+    fixture f{true};
+    auto long_id = app_config(std::string(65, 'x'));
+    long_id.idle_timeout = -1ms;
+    trystero::app b(f.io.get_executor(), f.net, std::move(long_id));
+    std::array<std::size_t, 3> calls{};
+    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[0]; });
+    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[1]; });
+    advance(f, 100ms);
+    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[2]; });
+    advance(f, 100ms);
+    BOOST_TEST_EQ(calls[0], 0U);
+    BOOST_TEST_EQ(calls[1], 2U);
+    BOOST_TEST_EQ(calls[2], 0U);
 }
 
 // A room joined twice is refused while it is joined, and so is a 65th room.
@@ -181,6 +204,9 @@ void a_moved_from_app_releases_nothing() {
     const auto made = f.net.made_connections;
     {
         const trystero::app moved(std::move(*a));
+        // A moved-from app takes another's state by assignment, and releases only that one.
+        *a = trystero::app(f.io.get_executor(), f.net, app_config("UUUUUUUUUUUUUUUUUUUU"));
+        BOOST_TEST_EQ(a->self_id(), "UUUUUUUUUUUUUUUUUUUU");
         a.reset();
         BOOST_TEST_EQ(moved.self_id(), "LLLLLLLLLLLLLLLLLLLL");
     }
@@ -258,6 +284,7 @@ void an_app_assigned_to_itself_keeps_its_state() {
 
 int main() {
     every_room_has_the_apps_id();
+    each_setup_report_reaches_the_current_handler_once();
     joining_is_refused_twice_and_beyond_64();
     two_apps_with_one_id_never_meet();
     two_rooms_share_one_connection();

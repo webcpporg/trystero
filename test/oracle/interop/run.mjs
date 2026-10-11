@@ -392,8 +392,8 @@ const textMessagesScenario = (name, cppKind) =>
         return (await cpp.log()).includes('invalid or incompatible room frame') ? 'the C++ peer took a text message for a frame' : null
     })
 
-// The C++ peer is given a TURN server without credentials, which WebRTC refuses: the room drops it when it joins and
-// reports it, and the exchange completes over the host candidates.
+// The C++ peer is given a TURN server without credentials, which WebRTC refuses: the app drops it when it is made and
+// reports it to app::on_error, and the exchange completes over the host candidates.
 const unusableIceScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}

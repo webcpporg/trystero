@@ -158,20 +158,26 @@ public:
     /** What the constructor set aside, a sentence each, in its order. */
     [[nodiscard]] std::span<const std::pmr::string> setup_reports() const { return setup_reports_; }
 
-    /** Sets what is called with each part of the configuration set aside, and posts it every one
-     * the constructor set aside, with an empty peer id and `error::invalid_configuration`: the
-     * reports were made before any handler could be set. */
+    /** Sets what is called with each part of the configuration set aside, with an empty peer id
+     * and `error::invalid_configuration`, and posts the delivery of the reports the constructor
+     * made, which no handler could see then.
+     *
+     * Tip: the delivery calls the handler current when it runs, so one replaced before it gets
+     * none, and it hands each report over once, so one set after it gets none either. */
     void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
         if (!f) {
             on_error_ = nullptr;
             return;
         }
         on_error_ = std::allocate_shared<decltype(f)>(allocator(), std::move(f));
-        for (const auto& what : setup_reports_) {
-            post(ex_, memory_, [f = on_error_, what = std::pmr::string(what, memory_)] {
-                (*f)("", make_error_code(error::invalid_configuration), what);
-            });
+        if (delivered_reports_ == setup_reports_.size()) {
+            return;
         }
+        post(ex_, memory_, [weak = weak_from_this()] {
+            if (const auto self = weak.lock()) {
+                self->deliver_setup_reports();
+            }
+        });
     }
 
     /** `f` as a handler of the app's resource. */
@@ -371,6 +377,16 @@ private:
         }
     }
 
+    /** Hands every report not yet delivered to the current handler, one at a time: a handler may
+     * replace itself, or clear itself, from inside its call. */
+    void deliver_setup_reports() {
+        while (delivered_reports_ < setup_reports_.size() && on_error_) {
+            const auto f = on_error_;
+            const std::string_view what = setup_reports_[delivered_reports_++];
+            (*f)("", make_error_code(error::invalid_configuration), what);
+        }
+    }
+
     void set_aside(std::string_view what) {
         log_("app", what);
         setup_reports_.emplace_back(what);
@@ -400,6 +416,7 @@ private:
     std::pmr::vector<std::pmr::string> setup_reports_;
     std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
         on_error_;
+    std::size_t delivered_reports_ = 0;  // the setup reports handed to a handler, in their order
     std::pmr::map<std::pmr::string, entry, std::less<>> rooms_;
     std::pmr::map<std::pmr::string, std::shared_ptr<connection>, std::less<>> connections_;
     std::size_t users_ = 0;

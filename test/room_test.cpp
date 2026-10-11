@@ -1183,8 +1183,8 @@ void a_connections_end_is_seen_and_the_peers_meet_again() {
     }
 }
 
-// Case 13: a frame naming a token no room of the app has is dropped, the connection stays, and the
-// app's resource keeps none of them (64 kept frames of 4,000 bytes would hold over 256 KB).
+// A frame naming a token no room of the app has is dropped, the connection stays, and the app's
+// resource keeps none of them (64 kept frames of 4,000 bytes would hold over 256 KB).
 void a_frame_of_an_unknown_token_is_dropped() {
     counting_resource memory;
     fixture f{true};
