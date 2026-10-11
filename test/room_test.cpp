@@ -81,11 +81,45 @@ struct fixture {
     asio::io_context io;
     trystero::test::memory_network net{io};
 
-    fixture() {
+    /** A memory network with two relays; with `virtual_time`, on the virtual clock (Task 1). */
+    explicit fixture(bool virtual_time = false) {
+        net.virtual_clock = virtual_time;
         net.relay(relay_a);
         net.relay(relay_b);
     }
 };
+
+/** Runs until `done` holds, for at most `limit`: of the virtual clock when the fixture has one,
+ * moving it from timer to timer, else of the wall clock. On the virtual clock it fires at most
+ * `max_steps` timers, and fails the case by name past them (review N4): a timer re-armed without
+ * delay would otherwise hold the clock still forever. */
+bool run_until(fixture& f, const std::function<bool()>& done,
+               std::chrono::milliseconds limit = std::chrono::seconds(10)) {
+    if (!f.net.virtual_clock) {
+        return run_until(f.io, done, limit);
+    }
+    const double end = f.net.now_ms() + static_cast<double>(limit.count());
+    for (std::size_t steps = 0; !done(); ++steps) {
+        if (steps == f.net.max_steps) {
+            BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
+            return false;
+        }
+        f.io.restart();
+        f.io.poll();
+        if (done() || !f.net.step(end)) {
+            break;
+        }
+    }
+    return done();
+}
+
+/** Moves the virtual clock by `by`, firing every timer due meanwhile; fails the case by name when
+ * the clock stopped at its step bound (review N4). */
+void advance(fixture& f, std::chrono::milliseconds by) {
+    if (!f.net.advance(by)) {
+        BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
+    }
+}
 
 void two_peers_join_and_exchange_every_payload_format() {
     fixture f;
@@ -1240,6 +1274,110 @@ void a_rate_limited_relay_does_not_stop_discovery() {
     BOOST_TEST_LT(1000 - f.net.relay(relay_a).rate_limit_next, 12);
 }
 
+// A connection's end is every room's (one room here): a forced failure, a frame that does not
+// decode, and a 65th advertised token each end it; the peers then meet again over a new one.
+void a_connections_end_is_seen_and_the_peers_meet_again() {
+    for (int way = 0; way < 3; ++way) {
+        fixture f{true};
+        trystero::room a(f.io.get_executor(), f.net, config("NNNNNNNNNNNNNNNNNNNN"), "ends");
+        std::vector<std::size_t> a_pcs;
+        f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+            a_pcs.push_back(pc);
+        };
+        const trystero::room b(f.io.get_executor(), f.net, config("OOOOOOOOOOOOOOOOOOOO"), "ends");
+        int joins = 0;
+        int leaves = 0;
+        a.on_peer_join([&](std::string_view) { ++joins; });
+        a.on_peer_leave([&](std::string_view) { ++leaves; });
+        webcpp::test::require(BOOST_TEST(run_until(f, [&] { return joins == 1; })));
+        const auto open_pc = f.net.live_connections();  // the pair, both ends
+        BOOST_TEST_EQ(open_pc, 2U);
+        // A's end of the pair: the first connection made after A's room existed is A's offer, or
+        // the peer of B's; peer_of finds the other.
+        const std::size_t a_end = a_pcs.front();
+        if (way == 0) {
+            f.net.fail(a_end);
+        } else if (way == 1) {
+            const std::array<std::uint8_t, 4> bad{3, 0, 1, 'x'};
+            f.net.inject(a_end, bad);
+        } else {
+            for (int i = 0; i < 65; ++i) {
+                f.net.inject(a_end,
+                             trystero::protocol::presence_frame("X" + std::to_string(i), true));
+            }
+        }
+        BOOST_TEST(run_until(f, [&] { return leaves == 1; }));
+        BOOST_TEST(run_until(f, [&] { return joins == 2; }, 20s));
+    }
+}
+
+// Case 13: a frame naming a token no room of the app has is dropped, the connection stays, and the
+// app's resource keeps none of them (64 kept frames of 4,000 bytes would hold over 256 KB).
+void a_frame_of_an_unknown_token_is_dropped() {
+    counting_resource memory;
+    fixture f{true};
+    auto a_config = config("PPPPPPPPPPPPPPPPPPPP");
+    a_config.memory = &memory;
+    trystero::room a(f.io.get_executor(), f.net, std::move(a_config), "unknown");
+    std::vector<std::size_t> pcs;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        pcs.push_back(pc);
+    };
+    const trystero::room b(f.io.get_executor(), f.net, config("QQQQQQQQQQQQQQQQQQQQ"), "unknown");
+    int leaves = 0;
+    a.on_peer_leave([&](std::string_view) { ++leaves; });
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1; })));
+    const std::vector<std::uint8_t> action(4'000, 2);
+    advance(f, 300ms);
+    const auto before = memory.in_use;
+    for (int i = 0; i < 1000; ++i) {
+        f.net.inject(pcs.front(), trystero::protocol::room_frame("unknown-token", action));
+    }
+    advance(f, 300ms);
+    BOOST_TEST_EQ(leaves, 0);
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+    BOOST_TEST_LT(memory.in_use, before + (std::size_t{64} * 1024));
+}
+
+// Review Focus 3: malformed envelopes end the connection; a frame of exactly 16,515 bytes does not.
+void malformed_envelopes_end_the_connection() {
+    const auto zero_token = std::vector<std::uint8_t>{2, 1, 0, 0};
+    std::vector<std::uint8_t> long_token{2, 1, 0, 129};
+    long_token.resize(4 + 129, 'x');
+    const auto kind_3 = std::vector<std::uint8_t>{3, 1, 0, 1, 'x'};
+    std::vector<std::uint8_t> too_big{1, 0, 1, 'x'};
+    too_big.resize(16'516, 0);
+    for (const auto& bad : {zero_token, long_token, kind_3, too_big}) {
+        fixture f{true};
+        trystero::room a(f.io.get_executor(), f.net, config("RRRRRRRRRRRRRRRRRRRR"), "bad");
+        std::vector<std::size_t> pcs;
+        f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+            pcs.push_back(pc);
+        };
+        const trystero::room b(f.io.get_executor(), f.net, config("SSSSSSSSSSSSSSSSSSSS"), "bad");
+        int leaves = 0;
+        a.on_peer_leave([&](std::string_view) { ++leaves; });
+        webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1; })));
+        f.net.inject(pcs.front(), bad);
+        BOOST_TEST(run_until(f, [&] { return leaves == 1; }));
+    }
+    fixture f{true};
+    trystero::room a(f.io.get_executor(), f.net, config("RRRRRRRRRRRRRRRRRRRR"), "bad");
+    std::vector<std::size_t> pcs;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        pcs.push_back(pc);
+    };
+    const trystero::room b(f.io.get_executor(), f.net, config("SSSSSSSSSSSSSSSSSSSS"), "bad");
+    int leaves = 0;
+    a.on_peer_leave([&](std::string_view) { ++leaves; });
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1; })));
+    std::vector<std::uint8_t> largest{1, 0, 1, 'x'};
+    largest.resize(16'515, 0);
+    f.net.inject(pcs.front(), largest);
+    advance(f, 300ms);
+    BOOST_TEST_EQ(leaves, 0);
+}
+
 }  // namespace
 
 int main() {
@@ -1272,5 +1410,8 @@ int main() {
     async_receive_works_in_a_coroutine();
     view_handlers_read_the_frame_without_copying();
     a_rate_limited_relay_does_not_stop_discovery();
+    a_connections_end_is_seen_and_the_peers_meet_again();
+    a_frame_of_an_unknown_token_is_dropped();
+    malformed_envelopes_end_the_connection();
     return boost::report_errors();
 }

@@ -11,10 +11,11 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/action_wire.hpp>
+#include <webcpp/trystero/detail/app_impl.hpp>
+#include <webcpp/trystero/detail/connection.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
-#include <webcpp/trystero/detail/peer_link.hpp>
 #include <webcpp/trystero/detail/post.hpp>
 #include <webcpp/trystero/detail/signaling.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -151,8 +152,9 @@ struct room_config {
      */
     std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
     /**
-     * Where the room's diagnostics go: called with a category ("nostr", "signal", "webrtc",
-     * "room" or "action") and a sentence; empty means none, and then no text is composed.
+     * Where the room's diagnostics go: called with a category ("app", "nostr", "signal",
+     * "webrtc", "room" or "action") and a sentence; empty means none, and then no text is
+     * composed.
      *
      * The room moves the sink into `memory`, and composes each sentence there.
      */
@@ -513,9 +515,10 @@ struct completion {
 };
 
 /**
- * Everything a joined room is: the strategy, the negotiations, the connected peers and their
- * handshakes, the action wire and the actions the application made. `room` and `action` are handles
- * to it. Every allocation goes through the resource of its configuration.
+ * Everything a joined room is: the strategy, the negotiations, the peers bound to the app's
+ * connections and their handshakes, the action wire and the actions the application made. `room`
+ * and `action` are handles to it. Every allocation goes through its resource; what it shares with
+ * the app's other rooms (the configuration, the self id, the connections) is the app's.
  *
  * | Internal action   | Meaning                                                           |
  * | \@_hsdata         | a handshake message: the password challenge and its response      |
@@ -523,7 +526,7 @@ struct completion {
  * | \@_ping, \@_pong  | round-trip measurement                                            |
  * | \@_leave          | the sender leaves the room                                        |
  */
-class room_impl : public std::enable_shared_from_this<room_impl> {
+class room_impl final : public std::enable_shared_from_this<room_impl>, public room_endpoint {
 public:
     /** The executor every handler and completion of the room runs on. */
     using executor_type = boost::asio::any_io_executor;
@@ -531,55 +534,51 @@ public:
     using message_handler = handler<void(incoming&)>;
 
     /**
-     * Copies the configuration into its resource and makes the room's JSON storage there.
+     * A room of `app`, with its own options copied into `memory`, where it makes its JSON storage
+     * too.
      *
      * Tip: the storage is counted, since a value a handler keeps may outlive the room; Boost.JSON
      * allocates its counter with `operator new`, once, here.
      */
-    room_impl(executor_type ex, backend::factory& factory, room_config config,
-              std::string_view room_id)
-        : memory_(config.memory),
+    room_impl(std::shared_ptr<app_impl> app, room_options options, std::string_view room_id,
+              std::pmr::memory_resource* memory)
+        : memory_(memory),
           json_(boost::json::make_shared_resource<json_resource>(memory_)),
-          ex_(std::move(ex)),
-          factory_(factory),
-          log_(std::move(config.log), memory_),
-          config_(adopt(config)),
+          app_(std::move(app)),
+          ex_(app_->get_executor()),
+          factory_(app_->factory()),
+          log_(app_->log()),
+          options_{
+              .password = std::pmr::string(std::move(options.password), memory_),
+              .handshake_timeout = options.handshake_timeout,
+              .max_receive_bytes = options.max_receive_bytes,
+          },
           room_id_(room_id, memory_),
-          token_(memory_),
-          root_topic_(memory_),
-          self_topic_(memory_),
+          token_(protocol::room_token(app_->app_id(), room_id_, memory_)),
+          root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
+          self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
-          actions_(memory_) {
-        if (config_.self_id.size() > protocol::max_peer_id_bytes) {
-            config_.self_id.clear();
-            long_self_id_ = true;
-        }
-        if (config_.self_id.empty()) {
-            config_.self_id = random_id(protocol::peer_id_size);
-        }
-        if (config_.ice_servers.empty()) {
-            config_.ice_servers = default_ice_servers(memory_);
-        }
-        if (config_.relay_urls.empty()) {
-            for (const auto url :
-                 protocol::derive_relays(config_.app_id, protocol::default_nostr_relays,
-                                         config_.relay_redundancy, memory_)) {
-                config_.relay_urls.emplace_back(url);
-            }
-        }
-        token_ = protocol::room_token(config_.app_id, room_id_, memory_);
-        root_topic_ = protocol::root_topic(config_.app_id, room_id_, memory_);
-        self_topic_ = protocol::peer_topic(config_.app_id, room_id_, config_.self_id, memory_);
-    }
+          actions_(memory_) {}
 
-    /** Joins: makes the sealer, the action wire, the signaling and the strategy, and starts it. */
+    room_impl(const room_impl&) = delete;
+    room_impl& operator=(const room_impl&) = delete;
+
+    /**
+     * Leaves the app's registry and lets go quietly: it may run while the io_context is destroyed,
+     * so it ends no connection, idles none, calls nothing back and releases no user of the app
+     * (review I10; the spec's section 4.2, M10). Its peers' bindings leave their connections as
+     * they go.
+     */
+    ~room_impl() { app_->unregister_room(token_, this); }
+
+    /** Joins: makes the sealer, the action wire, the signaling and the strategy, registers the
+     * room with its app, and starts the strategy. */
     void start() {
         const auto weak = weak_from_this();
-        set_aside_unusable_configuration();
         sealer_ = factory_.make_sealer(
-            protocol::seal_key(config_.password, config_.app_id, room_id_), memory_);
+            protocol::seal_key(options_.password, app_->app_id(), room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
-            allocator(), factory_, token_, config_.max_receive_bytes,
+            allocator(), factory_, token_, options_.max_receive_bytes,
             action_wire::callbacks{
                 .find_link = bind<std::optional<action_wire::link>(std::string_view, bool)>(
                     [weak](std::string_view peer,
@@ -616,8 +615,8 @@ public:
             },
             memory_, json_);
         signaling_ = std::allocate_shared<signaling>(
-            allocator(), factory_, sealer_, config_.app_id, room_id_, config_.self_id,
-            config_.ice_servers,
+            allocator(), factory_, sealer_, app_->app_id(), room_id_, app_->self_id(),
+            app_->ice_servers(),
             signaling::callbacks{
                 .publish = bind<void(std::size_t, std::string_view, std::string_view)>(
                     [weak](std::size_t relay, std::string_view topic, std::string_view content) {
@@ -644,15 +643,15 @@ public:
                         }
                     }),
             },
-            log_, memory_, json_);
+            log_, memory_, app_->memory(), json_);
         std::pmr::vector<std::pmr::string> topics(memory_);
         topics.push_back(root_topic_);
         topics.push_back(self_topic_);
         strategy_ = std::allocate_shared<nostr_strategy>(
-            allocator(), factory_, config_.relay_urls, std::move(topics), root_topic_,
+            allocator(), factory_, app_->relay_urls(), std::move(topics), root_topic_,
             bind<std::pmr::string()>([weak, memory = memory_] {
                 const auto self = weak.lock();
-                return self ? protocol::write_signal({.peer_id = self->config_.self_id},
+                return self ? protocol::write_signal({.peer_id = self->app_->self_id()},
                                                      self->random_id(protocol::nonce_size), memory)
                             : std::pmr::string(memory);
             }),
@@ -663,25 +662,30 @@ public:
                     }
                 }),
             log_, memory_, json_);
-        log_("room", "joining room ", room_id_, " of app ", config_.app_id, " as ", config_.self_id,
-             " over ", config_.relay_urls.size(), " relays");
+        log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
+             " over ", app_->relay_urls().size(), " relays");
+        // By a weak reference (the spec's section 4.1): the room leaves the registry before it
+        // ends, its destructor included.
+        app_->register_room(room_id_, token_,
+                            std::static_pointer_cast<room_endpoint>(shared_from_this()));
+        app_->add_user();
         strategy_->start();
     }
 
     /** The room's executor. */
     const executor_type& get_executor() const { return ex_; }
 
-    /** The room's resource, `room_config::memory`. */
+    /** The room's resource. */
     std::pmr::memory_resource* memory() const { return memory_; }
 
     /** An allocator of the room's resource. */
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
-    /** This peer's id. */
-    std::string_view self_id() const { return config_.self_id; }
+    /** This peer's id, the app's. */
+    std::string_view self_id() const { return app_->self_id(); }
 
-    /** The relays the room uses. */
-    std::span<const std::pmr::string> relay_urls() const { return config_.relay_urls; }
+    /** The relays the room uses, the app's. */
+    std::span<const std::pmr::string> relay_urls() const { return app_->relay_urls(); }
 
     /** The ids of the peers whose handshake completed, in the room's resource. */
     std::pmr::vector<peer_id> active_peers() const {
@@ -705,6 +709,34 @@ public:
     /** Sets the handler of each problem with a peer that the room handled itself. */
     void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
         on_error_ = keep_handler(std::move(f));
+    }
+
+    /** Reports a part of the configuration the app set aside to `on_error`, with no peer, once the
+     * caller has returned, so that a handler set right after the room is made sees it. The app
+     * logged it already. */
+    void report_configuration(std::string_view what) {
+        post([weak = weak_from_this(), what = std::pmr::string(what, memory_)] {
+            if (const auto self = weak.lock(); self && self->on_error_) {
+                (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
+            }
+        });
+    }
+
+    void presence_changed(std::string_view peer, bool present) override {
+        if (!present && peers_.contains(peer)) {
+            remove_peer(peer, "peer left the room", end_kind::withdrawn);
+        }
+        // Binding on presence is increment 2's (Task 6).
+    }
+
+    [[nodiscard]] bool keeps_frames_from(std::string_view /*peer*/) const override { return true; }
+
+    void frame_kept(std::string_view /*peer*/) override {}
+
+    void connection_ended(std::string_view peer, std::string_view reason) override {
+        if (peers_.contains(peer)) {
+            remove_peer(peer, reason, end_kind::connection_end);
+        }
     }
 
     /** Registers an action; frames that waited for it are delivered to it from now on. */
@@ -878,6 +910,10 @@ private:
         }
     }
 
+    /** How a binding ended: the peer's \@_leave, its presence(0), a kick of this room, the
+     * connection's end, or this room's own leave. */
+    enum class end_kind { peer_left, withdrawn, kick, connection_end, room_end };
+
     struct pending_ping {
         double started_ms = 0;
         completion<void(boost::system::error_code, std::chrono::milliseconds)> handler;
@@ -886,7 +922,7 @@ private:
     struct peer_state {
         explicit peer_state(std::pmr::polymorphic_allocator<> a) : challenge(a), pings(a) {}
 
-        std::shared_ptr<peer_link> link;
+        std::shared_ptr<binding> link;
         bool active = false;
         bool local_passed = false;
         bool remote_ready = false;
@@ -904,24 +940,6 @@ private:
     };
 
     static constexpr std::size_t max_queued_messages = 1024;
-
-    /** A copy of the configuration with every part in its resource, but the sink, which the logger
-     * takes. */
-    static room_config adopt(const room_config& c) {
-        std::pmr::memory_resource* const m = c.memory;
-        return room_config{
-            .app_id = std::pmr::string(c.app_id, m),
-            .password = std::pmr::string(c.password, m),
-            .relay_urls = std::pmr::vector<std::pmr::string>(c.relay_urls, m),
-            .relay_redundancy = c.relay_redundancy,
-            .ice_servers = copy_ice_servers(c.ice_servers, m),
-            .self_id = std::pmr::string(c.self_id, m),
-            .handshake_timeout = c.handshake_timeout,
-            .max_receive_bytes = c.max_receive_bytes,
-            .log = {},
-            .memory = m,
-        };
-    }
 
     /** A handler that several posts call, shared in the room's resource. */
     template <class Signature>
@@ -1003,50 +1021,6 @@ private:
         post([handler, m = std::move(m)]() mutable { (*handler)(m); });
     }
 
-    /**
-     * Sets aside what of the configuration no peer could use: an over-long `self_id`, which the
-     * constructor replaced, and each ICE server no peer connection could be made with, which is
-     * dropped. Each is logged and reported to `on_error` once the constructor has returned, so
-     * that a handler set right after it sees it.
-     */
-    void set_aside_unusable_configuration() {
-        if (long_self_id_) {
-            report_configuration(std::pmr::string(
-                "self_id is longer than any peer accepts, so the room uses a random one", memory_));
-        }
-        auto& servers = config_.ice_servers;
-        for (auto& server : servers) {
-            for (auto& url : server.urls) {
-                lowercase_scheme(url);
-            }
-        }
-        for (auto it = servers.begin(); it != servers.end();) {
-            const auto fault = ice_server_fault(*it);
-            if (fault.empty()) {
-                ++it;
-                continue;
-            }
-            std::pmr::string what("the ICE server ", memory_);
-            what += it->urls.empty() ? std::string_view("(no URL)") : std::string_view(it->urls[0]);
-            what += ' ';
-            what += fault;
-            what += ", so the room goes on without it";
-            report_configuration(std::move(what));
-            it = servers.erase(it);
-        }
-    }
-
-    /** Logs a part of the configuration the room set aside, and reports it to `on_error` once the
-     * constructor has returned. */
-    void report_configuration(std::pmr::string what) {
-        log_("room", what);
-        post([weak = weak_from_this(), what = std::move(what)] {
-            if (const auto self = weak.lock(); self && self->on_error_) {
-                (*self->on_error_)("", make_error_code(error::invalid_configuration), what);
-            }
-        });
-    }
-
     void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
         log_("room", "peer ", peer, ": ", what);
         if (on_error_) {
@@ -1055,63 +1029,81 @@ private:
         }
     }
 
+    /** A negotiation of this room opened a channel to `peer`: the app adopts the connection, or
+     * keeps the one it has to the peer, and the room binds the peer to it.
+     *
+     * Tip: the adoption may end a stale connection to the peer, whose end reaches this room
+     * synchronously and may remove the peer; nothing of the room is held across it, and the id is
+     * this call's own copy. */
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     void on_connected(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
                       std::shared_ptr<backend::data_channel> channel) {
         // NOLINTEND(performance-unnecessary-value-param)
         if (left_) {
+            channel->set_handlers({});
+            pc->set_handlers({});
             channel->close();
             pc->close();
             return;
         }
-        // A peer is bound once until its removal: the signaling hands over no channel while its
-        // entry is connected, which `on_channel_open` sets and only `forget` clears, after
-        // `remove_peer` has taken the peer out (review of Task 2, r2).
+        const std::pmr::string peer(peer_view, memory_);
+        const auto c = app_->adopt(peer, std::move(pc), std::move(channel));
+        bind_peer(peer, c);
+    }
+
+    /** Binds this room to `c` for `peer`, as the spec's section 4.2 orders it: the negotiation
+     * marked connected, the peer's state and handshake timer, then the handshake's first message.
+     * Task 6 delivers the frames the connection kept before that message.
+     *
+     * Tip: the peer's id is copied first, since every step may run code that removes the peer's
+     * entry (a kick); the entry is never held by reference across such a step (review C1). Each
+     * lambda keeps its own copy in the room's resource, named: a plain copy of a std::pmr::string
+     * takes the default resource (review N2). */
+    void bind_peer(std::string_view peer_view, const std::shared_ptr<connection>& c) {
+        // A peer is bound once until its removal, as the connection's attach requires: the
+        // signaling hands over no channel while its entry is connected, which `on_channel_open`
+        // and `bound` set and only `forget` clears, after `remove_peer` has taken the peer out
+        // (review of Task 2, r2).
         BOOST_ASSERT(!peers_.contains(peer_view));
+        const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
-        const auto it = peers_.try_emplace(std::pmr::string(peer_view, memory_), allocator()).first;
-        const std::pmr::string& peer = it->first;
-        auto& state = it->second;
-        state.link = std::allocate_shared<peer_link>(
-            allocator(), factory_, peer, token_, std::move(pc), std::move(channel),
-            peer_link::callbacks{
-                .frame =
-                    bind<void(std::string_view, backend::bytes&&, std::span<const std::uint8_t>)>(
-                        [weak](std::string_view p, backend::bytes&& frame,
-                               std::span<const std::uint8_t> action) {
-                            if (const auto self = weak.lock()) {
-                                self->wire_->handle(p, std::move(frame), action);
-                            }
-                        }),
-                .closed = bind<void(std::string_view, std::string_view)>(
-                    [weak](std::string_view p, std::string_view reason) {
+        signaling_->bound(peer);
+        {
+            auto& state = peers_.try_emplace(peer, allocator()).first->second;
+            state.link = std::allocate_shared<binding>(
+                allocator(), c, token_,
+                bind<void(backend::bytes&&, std::span<const std::uint8_t>)>(
+                    [weak, peer = std::pmr::string(peer, memory_)](
+                        backend::bytes&& frame, std::span<const std::uint8_t> action) {
                         if (const auto self = weak.lock()) {
-                            self->remove_peer(p, reason, false);
+                            self->wire_->handle(peer, std::move(frame), action);
                         }
                     }),
-            },
-            log_, memory_);
-        state.handshake_timer = factory_.make_timer(memory_);
-        state.handshake_timer->start(
-            config_.handshake_timeout, bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
-                const auto self = weak.lock();
-                if (!self) {
-                    return;
-                }
-                self->report(peer, make_error_code(error::handshake_timed_out),
-                             "handshake timed out");
-                self->kick(peer, "handshake timed out");
-            }));
-        state.link->start();
-        start_handshake(peer, state);
+                memory_);
+            state.handshake_timer = factory_.make_timer(memory_);
+            state.handshake_timer->start(
+                options_.handshake_timeout,
+                bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
+                    const auto self = weak.lock();
+                    if (!self) {
+                        return;
+                    }
+                    self->report(peer, make_error_code(error::handshake_timed_out),
+                                 "handshake timed out");
+                    self->kick(peer, "handshake timed out");
+                }));
+        }
+        if (const auto it = peers_.find(peer); it != peers_.end()) {
+            start_handshake(it->first, it->second);
+        }
     }
 
     void start_handshake(std::string_view peer, peer_state& state) {
-        if (config_.password.empty()) {
+        if (options_.password.empty()) {
             pass_local(peer);
             return;
         }
-        if (config_.self_id < peer) {
+        if (app_->self_id() < peer) {
             state.challenge = random_id(36);
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
             protocol::json::append_string(text, state.challenge);
@@ -1133,10 +1125,10 @@ private:
             const auto* s = v != nullptr ? v->if_string() : nullptr;
             return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
         };
-        if (config_.self_id < peer) {
+        if (app_->self_id() < peer) {
             if (field("__trystero_pw") != "response" ||
-                field("h") != protocol::handshake_proof(it->second.challenge, config_.password,
-                                                        config_.app_id, room_id_, memory_)) {
+                field("h") != protocol::handshake_proof(it->second.challenge, options_.password,
+                                                        app_->app_id(), room_id_, memory_)) {
                 fail_handshake(peer);
                 return;
             }
@@ -1147,7 +1139,7 @@ private:
             }
             std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
             protocol::json::append_string(
-                text, protocol::handshake_proof(field("c"), config_.password, config_.app_id,
+                text, protocol::handshake_proof(field("c"), options_.password, app_->app_id(),
                                                 room_id_, memory_));
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
@@ -1210,7 +1202,7 @@ private:
                 complete(std::move(ping.handler), boost::system::error_code{}, elapsed);
             }
         } else if (name == "@_leave") {
-            remove_peer(m.peer, "peer left the room", true);
+            remove_peer(m.peer, "peer left the room", end_kind::peer_left);
         } else if (name.starts_with("@_")) {
             // Media and renegotiation actions: not implemented yet (doc: #trystero-roadmap).
         } else if (const auto it = actions_.find(name); it != actions_.end()) {
@@ -1237,10 +1229,10 @@ private:
             return;
         }
         send_internal("@_leave", it->first);
-        remove_peer(it->first, reason, true);
+        remove_peer(it->first, reason, end_kind::kick);
     }
 
-    void remove_peer(std::string_view peer_view, std::string_view reason, bool close_link) {
+    void remove_peer(std::string_view peer_view, std::string_view reason, end_kind kind) {
         const auto it = peers_.find(peer_view);
         if (it == peers_.end()) {
             return;
@@ -1250,8 +1242,9 @@ private:
         std::pmr::string peer = std::move(node.key());
         auto& state = node.mapped();
         log_("room", "peer ", peer, " gone: ", reason);
-        if (close_link) {
-            state.link->close();
+        if (kind != end_kind::connection_end) {
+            // The connection idles after a departure and ends after a kick of its last room.
+            state.link->detach(kind == end_kind::kick, app_->idle_timeout());
         }
         for (auto& ping : state.pings) {
             complete(std::move(ping.handler), make_error_code(error::peer_disconnected),
@@ -1262,18 +1255,30 @@ private:
             return;
         }
         signaling_->forget(peer);
-        strategy_->restart_announcements();
+        // Announcements find peers without a connection; over a live one every rebinding goes
+        // through it (the spec's ruling 9).
+        if (!app_->find(peer)) {
+            strategy_->restart_announcements();
+        }
         if (state.active && on_leave_) {
             post([f = on_leave_, peer = std::move(peer)] { (*f)(peer); });
         }
     }
 
+    /** Says the room is left on every live connection of the app, lets every peer go as a
+     * departure, and leaves the app: its registry, and once, its users.
+     *
+     * Tip: the presence goes first, since a departure of a connection's last room ends it at once
+     * when the app's idle time is 0. */
     void close_everything() {
         leave_timer_.reset();
+        for (const auto& c : app_->live_connections()) {
+            c->send_presence(token_, false);
+        }
         auto peers = std::move(peers_);
         peers_.clear();
         for (auto& [id, state] : peers) {
-            state.link->close();
+            state.link->detach(false, app_->idle_timeout());
             for (auto& ping : state.pings) {
                 complete(std::move(ping.handler), make_error_code(error::room_left),
                          std::chrono::milliseconds{});
@@ -1294,14 +1299,19 @@ private:
         if (strategy_) {
             strategy_->stop();
         }
+        app_->unregister_room(token_, this);
+        if (!std::exchange(released_, true)) {
+            app_->release_user();
+        }
     }
 
     std::pmr::memory_resource* memory_;
     boost::json::storage_ptr json_;
+    std::shared_ptr<app_impl> app_;
     executor_type ex_;
     backend::factory& factory_;
     logger log_;
-    room_config config_;
+    room_options options_;
     std::pmr::string room_id_;
     std::pmr::string token_;
     std::pmr::string root_topic_;
@@ -1318,7 +1328,7 @@ private:
         on_error_;
     std::shared_ptr<backend::timer> leave_timer_;
     bool left_ = false;
-    bool long_self_id_ = false;
+    bool released_ = false;  // the app's user count no longer counts this room
 };
 
 }  // namespace detail
@@ -1556,9 +1566,32 @@ private:
         // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory = config.memory;
         BOOST_ASSERT_MSG(memory != nullptr, "room_config::memory names no resource");
-        return std::allocate_shared<detail::room_impl>(std::pmr::polymorphic_allocator<>(memory),
-                                                       std::move(ex), factory, std::move(config),
-                                                       room_id);
+        const std::pmr::polymorphic_allocator<> allocator(memory);
+        // The configuration's app part makes an app of the room's own, which it shares with no
+        // other room (increment 1 of the shared connection).
+        const auto app =
+            std::allocate_shared<detail::app_impl>(allocator, std::move(ex), factory,
+                                                   app_config{
+                                                       .app_id = std::move(config.app_id),
+                                                       .self_id = std::move(config.self_id),
+                                                       .relay_urls = std::move(config.relay_urls),
+                                                       .relay_redundancy = config.relay_redundancy,
+                                                       .ice_servers = std::move(config.ice_servers),
+                                                       .log = std::move(config.log),
+                                                       .memory = memory,
+                                                   });
+        auto impl = std::allocate_shared<detail::room_impl>(
+            allocator, app,
+            room_options{
+                .password = std::move(config.password),
+                .handshake_timeout = config.handshake_timeout,
+                .max_receive_bytes = config.max_receive_bytes,
+            },
+            room_id, memory);
+        for (const auto& what : app->setup_reports()) {
+            impl->report_configuration(what);
+        }
+        return impl;
     }
 
     std::shared_ptr<detail::room_impl> impl_;

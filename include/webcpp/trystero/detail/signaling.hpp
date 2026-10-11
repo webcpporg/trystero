@@ -130,13 +130,16 @@ public:
     };
 
     /** Every allocation goes through `memory`, the parsed signals through `json`, a storage of that
-     * resource. */
+     * resource, but the peer connections, which are made in `connection_memory`, the app's: the
+     * one a negotiation opens becomes the app's connection. */
     signaling(backend::factory& factory, std::shared_ptr<backend::sealer> sealer,
               std::string_view app_id, std::string_view room_id, std::string_view self_id,
               std::span<const backend::ice_server> ice_servers, callbacks cb, logger log,
-              std::pmr::memory_resource* memory, boost::json::storage_ptr json)
+              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory,
+              boost::json::storage_ptr json)
         : factory_(factory),
           memory_(memory),
+          connection_memory_(connection_memory),
           json_(std::move(json)),
           sealer_(std::move(sealer)),
           app_id_(app_id, memory),
@@ -189,6 +192,18 @@ public:
             reset_answer(it->second);
             peers_.erase(it);
         }
+    }
+
+    /** A room is bound to `peer`: its negotiation ends, its entry stays marked connected, and every
+     * later signal of that peer is ignored until `forget` (the spec's ruling 9, I1). */
+    void bound(std::string_view peer) {
+        auto it = peers_.find(peer);
+        if (it == peers_.end()) {
+            it = peers_.try_emplace(std::pmr::string(peer, memory_), allocator()).first;
+        }
+        reset_offer(it->second);
+        reset_answer(it->second);
+        it->second.connected = true;
     }
 
     /** Ends every negotiation, and ignores every signal from now on. */
@@ -369,7 +384,7 @@ private:
             }
             return nullptr;
         }
-        auto pc = factory_.make_peer_connection(ice_servers_, memory_);
+        auto pc = factory_.make_peer_connection(ice_servers_, connection_memory_);
         if (!pc) {
             refused(peer);
         }
@@ -1116,6 +1131,7 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
+    std::pmr::memory_resource* connection_memory_;
     boost::json::storage_ptr json_;
     std::shared_ptr<backend::sealer> sealer_;
     std::pmr::string app_id_;
