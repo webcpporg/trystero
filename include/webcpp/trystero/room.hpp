@@ -1064,6 +1064,10 @@ private:
             pc->close();
             return;
         }
+        // A peer is bound once until its removal: the signaling hands over no channel while its
+        // entry is connected, which `on_channel_open` sets and only `forget` clears, after
+        // `remove_peer` has taken the peer out (review of Task 2, r2).
+        BOOST_ASSERT(!peers_.contains(peer_view));
         const auto weak = weak_from_this();
         const auto it = peers_.try_emplace(std::pmr::string(peer_view, memory_), allocator()).first;
         const std::pmr::string& peer = it->first;
