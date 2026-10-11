@@ -195,7 +195,7 @@ public:
     }
 
     /** A room is bound to `peer`: its negotiation ends, its entry stays marked connected, and every
-     * later signal of that peer is ignored until `forget` (the spec's ruling 9, I1). */
+     * later signal of that peer is ignored until `forget`. */
     void bound(std::string_view peer) {
         auto it = peers_.find(peer);
         if (it == peers_.end()) {

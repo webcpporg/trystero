@@ -317,8 +317,7 @@ void kept_frames_are_bounded_and_dropped_after_10_s() {
     BOOST_TEST(p.b.c->take_kept("T2").empty());
 }
 
-// A connection whose channel is closing or closed is not live, so the app does not reuse it
-// (review M6).
+// A connection whose channel is closing or closed is not live, so the app does not reuse it.
 void a_closing_channel_is_not_live() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
@@ -330,7 +329,7 @@ void a_closing_channel_is_not_live() {
 }
 
 // The bindings waiting at one drain each get their turn, in the order they began to wait, and a
-// binding destroyed by an earlier turn gets none (review M5).
+// binding destroyed by an earlier turn gets none.
 void drain_turns_follow_the_order_of_waiting() {
     const std::array<std::string_view, 3> tokens{"T1", "T2", "T3"};
     link_pair p(tokens, tokens);
@@ -452,7 +451,7 @@ void the_last_binding_ends_or_idles_the_connection() {
 
 // A turn destroys a binding that waits after it and makes another in the same resource, which a
 // pool gives the freed block: the new binding began to wait during this drain, so its turn is the
-// next drain, once the channel has drained, never the old one's (review of Task 2, I1).
+// next drain, once the channel has drained, never the old one's.
 void a_binding_made_during_a_drain_waits_for_the_next() {
     const std::array<std::string_view, 3> tokens{"T1", "T2", "T3"};
     link_pair p(tokens, tokens);
@@ -485,8 +484,7 @@ void a_binding_made_during_a_drain_waits_for_the_next() {
     BOOST_TEST_LE(t3_buffered_at_its_turn, trystero::backend::data_channel::low_threshold);
 }
 
-// A turn that ends the connection: every binding still waiting after it is told `false` (review
-// of Task 2, I2).
+// A turn that ends the connection: every binding still waiting after it is told `false`.
 void an_end_inside_a_drain_fails_the_waiters_after_it() {
     const std::array<std::string_view, 2> tokens{"T1", "T2"};
     link_pair p(tokens, tokens);
@@ -510,7 +508,7 @@ void an_end_inside_a_drain_fails_the_waiters_after_it() {
 
 /** A binding of T1 on `p`'s b side whose delivery kicks the peer (`destroy` false) or drops the
  * binding (`destroy` true), then reads its own capture, as a room's delivery passes its `peer`
- * on after a kick. Under the sanitizers (review of Task 2, I3). */
+ * on after a kick: a use-after-free here would fail under the sanitizers. */
 void a_delivery_that_lets_its_binding_go(bool destroy) {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
@@ -550,7 +548,7 @@ void a_delivery_that_drops_its_binding() {
 }
 
 // A waiter told `false` by `detach` releases the room's last reference to the binding, as a
-// transfer's failure may (review of Task 2, I3).
+// transfer's failure may.
 void a_waiter_that_releases_its_binding_during_detach() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);

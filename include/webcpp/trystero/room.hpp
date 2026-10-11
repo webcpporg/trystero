@@ -565,9 +565,8 @@ public:
 
     /**
      * Leaves the app's registry and lets go quietly: it may run while the io_context is destroyed,
-     * so it ends no connection, idles none, calls nothing back and releases no user of the app
-     * (review I10; the spec's section 4.2, M10). Its peers' bindings leave their connections as
-     * they go.
+     * so it ends no connection, idles none, calls nothing back and releases no user of the app.
+     * Its peers' bindings leave their connections as they go.
      */
     ~room_impl() { app_->unregister_room(token_, this); }
 
@@ -664,8 +663,8 @@ public:
             log_, memory_, json_);
         log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
              " over ", app_->relay_urls().size(), " relays");
-        // By a weak reference (the spec's section 4.1): the room leaves the registry before it
-        // ends, its destructor included.
+        // By a weak reference: the room leaves the registry before it ends, its destructor
+        // included.
         app_->register_room(room_id_, token_,
                             std::static_pointer_cast<room_endpoint>(shared_from_this()));
         app_->add_user();
@@ -726,7 +725,8 @@ public:
         if (!present && peers_.contains(peer)) {
             remove_peer(peer, "peer left the room", end_kind::withdrawn);
         }
-        // Binding on presence is increment 2's (Task 6).
+        // Does not bind the peer here: a peer is bound only when its negotiation connects
+        // (on_connected), never from presence alone.
     }
 
     [[nodiscard]] bool keeps_frames_from(std::string_view /*peer*/) const override { return true; }
@@ -736,7 +736,7 @@ public:
     void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                           std::string_view reason) override {
         // The peer may be bound to another connection by now: a late end of an older one is not
-        // its end (review of Task 4, I1).
+        // its end.
         if (const auto it = peers_.find(peer);
             it != peers_.end() && it->second.link->is_on(ended)) {
             remove_peer(peer, reason, end_kind::connection_end);
@@ -1055,19 +1055,18 @@ private:
         bind_peer(peer, c);
     }
 
-    /** Binds this room to `c` for `peer`, as the spec's section 4.2 orders it: the negotiation
+    /** Binds this room to `c` for `peer`, in the order the specification sets: the negotiation
      * marked connected, the peer's state and handshake timer, then the handshake's first message.
-     * Task 6 delivers the frames the connection kept before that message.
+     * The frames the connection kept before that message are not delivered here.
      *
      * Tip: the peer's id is copied first, since every step may run code that removes the peer's
-     * entry (a kick); the entry is never held by reference across such a step (review C1). Each
+     * entry (a kick); the entry is never held by reference across such a step. Each
      * lambda keeps its own copy in the room's resource, named: a plain copy of a std::pmr::string
-     * takes the default resource (review N2). */
+     * takes the default resource. */
     void bind_peer(std::string_view peer_view, const std::shared_ptr<connection>& c) {
         // A peer is bound once until its removal, as the connection's attach requires: the
         // signaling hands over no channel while its entry is connected, which `on_channel_open`
-        // and `bound` set and only `forget` clears, after `remove_peer` has taken the peer out
-        // (review of Task 2, r2).
+        // and `bound` set and only `forget` clears, after `remove_peer` has taken the peer out.
         BOOST_ASSERT(!peers_.contains(peer_view));
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
@@ -1267,7 +1266,7 @@ private:
         }
         signaling_->forget(peer);
         // Announcements find peers without a connection; over a live one every rebinding goes
-        // through it (the spec's ruling 9).
+        // through it.
         if (!app_->find(peer)) {
             strategy_->restart_announcements();
         }

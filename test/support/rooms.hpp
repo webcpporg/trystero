@@ -62,7 +62,7 @@ struct fixture {
     boost::asio::io_context io;
     memory_network net{io};
 
-    /** A memory network with two relays; with `virtual_time`, on the virtual clock (Task 1). */
+    /** A memory network with two relays; with `virtual_time`, on the virtual clock. */
     explicit fixture(bool virtual_time = false) {
         net.virtual_clock = virtual_time;
         net.relay(relay_a);
@@ -72,8 +72,8 @@ struct fixture {
 
 /** Runs until `done` holds, for at most `limit`: of the virtual clock when the fixture has one,
  * moving it from timer to timer, else of the wall clock. On the virtual clock it fires at most
- * `max_steps` timers, and fails the case by name past them (review N4): a timer re-armed without
- * delay would otherwise hold the clock still forever. */
+ * `max_steps` timers, and fails the case by name past them: a timer re-armed without delay would
+ * otherwise hold the clock still forever. */
 inline bool run_until(fixture& f, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = std::chrono::seconds(10)) {
     if (!f.net.virtual_clock) {
@@ -95,7 +95,7 @@ inline bool run_until(fixture& f, const std::function<bool()>& done,
 }
 
 /** Moves the virtual clock by `by`, firing every timer due meanwhile; fails the case by name when
- * the clock stopped at its step bound (review N4). Called with milliseconds: an argument of
+ * the clock stopped at its step bound. Called with milliseconds: an argument of
  * another duration finds std::advance by its namespace, which GCC prefers, as an exact match. */
 inline void advance(fixture& f, std::chrono::milliseconds by) {
     if (!f.net.advance(by)) {

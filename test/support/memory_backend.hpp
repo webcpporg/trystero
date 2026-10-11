@@ -72,7 +72,7 @@ class memory_timer;
 /** The virtual clock: the timers scheduled on it, each once, by due time and then by the order of
  * scheduling. A timer leaves when it fires, and when it is restarted, cancelled or destroyed, so
  * that nothing keeps it, or its memory in the resource of the room or connection that made it,
- * past that call (review N1). */
+ * past that call. */
 struct virtual_clock_state {
     using key = std::pair<double, std::uint64_t>;
     std::map<key, memory_timer*> due;
@@ -986,7 +986,7 @@ inline void memory_network::release(std::size_t to) {
 }
 
 inline void memory_network::deliver(std::size_t from, std::span<const std::uint8_t> frame) {
-    // A frame released after its sending end was destroyed is dropped (review M14), as is one whose
+    // A frame released after its sending end was destroyed is dropped, as is one whose
     // sending connection's channel is no longer paired: a connection pairs once, so its channel's
     // other end is the end the frame was sent to while it was paired.
     const auto sender = find(from);
@@ -1059,7 +1059,7 @@ inline bool memory_network::due_by(double until_ms) const {
 }
 
 inline bool memory_network::step(double until_ms) {
-    // The clock moves from the first step, before any timer is made (review I1).
+    // The clock moves from the first step, before any timer is made.
     if (virtual_clock && !clock_) {
         clock_ = std::make_shared<virtual_clock_state>();
     }

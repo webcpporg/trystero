@@ -66,7 +66,7 @@ class binding;  // NOLINT(cppcoreguidelines-virtual-class-destructor)
  * | room frame, any other T             | dropped                                                   |
  *
  * Tip: it holds plain pointers to its bindings, which remove themselves before they go, so that it
- * keeps nothing of a room's resource after the room has ended (the spec's section 4.1).
+ * keeps nothing of a room's resource after the room has ended.
  */
 class connection : public std::enable_shared_from_this<connection> {
 public:
@@ -165,8 +165,7 @@ public:
     [[nodiscard]] std::string_view peer() const { return peer_; }
 
     /** Not stale, as Trystero says it: not ended, and its channel neither closing nor closed. A
-     * connection is adopted once its channel is open, so "still opening" does not arise here
-     * (review M6). */
+     * connection is adopted once its channel is open, so "still opening" does not arise here. */
     [[nodiscard]] bool live() const { return !ended_ && channel_->is_open(); }
 
     /** How many frames are kept for rooms not bound yet. */
@@ -254,7 +253,7 @@ private:
     std::shared_ptr<backend::timer> idle_timer_;
     std::shared_ptr<backend::timer> disconnect_timer_;
     // Bindings are named by id, never by address: a binding made during a drain may take the block
-    // of one destroyed in it, and must not inherit its turn (review of Task 2, I1).
+    // of one destroyed in it, and must not inherit its turn.
     std::pmr::deque<std::uint64_t> drain_order_;
     std::pmr::map<std::uint64_t, binding*> attached_;  // by id: in the order of attachment
     std::uint64_t next_binding_id_ = 0;
@@ -284,7 +283,7 @@ public:
 
     /** Leaves the connection quietly: its waiters freed uncalled, its place in the connection
      * forgotten, and nothing ended, idled, closed or called back, since it may run while the
-     * io_context is destroyed (review I10; the spec's section 4.2, M10). */
+     * io_context is destroyed. */
     ~binding() {
         if (std::exchange(detached_, true)) {
             return;
@@ -343,7 +342,7 @@ public:
             return;
         }
         // The room may detach or destroy this binding from inside the call (a kick): it and its
-        // delivery stay alive until the call returns (review C1). A lock, not shared_from_this,
+        // delivery stay alive until the call returns. A lock, not shared_from_this,
         // which would abort without exceptions when no shared_ptr owns the binding.
         const auto self = weak_from_this().lock();
         deliver_(std::move(frame), action);
@@ -445,9 +444,9 @@ inline void connection::end(std::string_view reason_view) {
     // The bindings are let go before anyone is told: a room may destroy its binding, or itself,
     // from inside `ended` (Trystero's clear, C/shared-peer.mjs:170-180). Every attached binding is
     // told, those of the drain order first, then the others in the order they attached: an end
-    // from inside a drain's turn leaves waiters of that drain in no drain order (review of Task 2,
-    // I2). A failure may detach or destroy another binding, so each is looked up before its turn
-    // (review M5); one attached meanwhile finds the connection not live, and fails at once.
+    // from inside a drain's turn leaves waiters of that drain in no drain order. A failure may
+    // detach or destroy another binding, so each is looked up before its turn; one attached
+    // meanwhile finds the connection not live, and fails at once.
     bound_.clear();
     auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
     for (const auto& [id, b] : attached_) {
@@ -531,7 +530,7 @@ inline void connection::forget_kept_if_empty() {
         return;
     }
     kept_timer_.reset();
-    // A cleared deque keeps blocks (libc++ keeps up to two): a new one frees them (I5).
+    // A cleared deque keeps blocks (libc++ keeps up to two): a new one frees them.
     kept_ = decltype(kept_)(memory_);
 }
 
@@ -559,7 +558,7 @@ inline void connection::on_state(backend::connection_state state) {
 inline void connection::on_drained(bool open) {
     // Every binding waiting at this drain gets its turn, in the order it began to wait. A turn may
     // detach another binding of the snapshot, even destroy it: each is looked up by its id before
-    // its turn (review M5), so that one made meanwhile, at the same address, is not taken for it.
+    // its turn, so that one made meanwhile, at the same address, is not taken for it.
     const auto self = shared_from_this();
     const auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
     for (const auto id : order) {

@@ -1180,7 +1180,7 @@ void a_frame_of_an_unknown_token_is_dropped() {
     BOOST_TEST_LT(memory.in_use, before + (std::size_t{64} * 1024));
 }
 
-// Review Focus 3: malformed envelopes end the connection; a frame of exactly 16,515 bytes does not.
+// Malformed envelopes end the connection; a frame of exactly 16,515 bytes does not.
 void malformed_envelopes_end_the_connection() {
     const auto zero_token = std::vector<std::uint8_t>{2, 1, 0, 0};
     std::vector<std::uint8_t> long_token{2, 1, 0, 129};
@@ -1219,9 +1219,8 @@ void malformed_envelopes_end_the_connection() {
     BOOST_TEST_EQ(leaves, 0);
 }
 
-// A room acts on the end of the connection its peer is bound to, and on no other (review of Task 4,
-// I1): a late end of the peer's first connection keeps the peer, bound to the second; the second's
-// end removes it.
+// A room acts on the end of the connection its peer is bound to, and on no other: a late end of
+// the peer's first connection keeps the peer, bound to the second; the second's end removes it.
 void a_late_end_of_another_connection_keeps_the_peer() {
     fixture f{true};
     const std::string b_id = "UUUUUUUUUUUUUUUUUUUU";
@@ -1308,8 +1307,8 @@ void a_kick_by_the_last_room_ends_the_connection() {
     a.room->abandon();
 }
 
-// A room left with no idle time still says so on the connection, before its departure ends it
-// (review of Task 4, item 2): Trystero's idle close is always a later timer.
+// A room left with no idle time still says so on the connection, before its departure ends it:
+// Trystero's idle close is always a later timer.
 void a_room_left_with_no_idle_time_sends_its_presence() {
     fixture f{true};
     const auto a = make_app_room(f, "ZZZZZZZZZZZZZZZZZZZZ", "no-idle",

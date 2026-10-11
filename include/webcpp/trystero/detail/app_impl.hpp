@@ -52,7 +52,7 @@ public:
     /** A frame of this room's token from `peer` was kept. */
     virtual void frame_kept(std::string_view peer) = 0;
     /** The app's connection `ended` to `peer` ended: not always the one the room is bound to, so a
-     * room acts only on what it holds on `ended` (review of Task 4, I1). */
+     * room acts only on what it holds on `ended`. */
     virtual void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                                   std::string_view reason) = 0;
 
@@ -69,7 +69,7 @@ protected:
  *
  * Tip: its users are the `app` handle and every room not yet ended; when the last goes, it ends
  * every connection at that call. Its destructor ends nothing: it may run while the io_context is
- * destroyed, from the last operation pending there (the spec's section 4.2, "The app's users").
+ * destroyed, from the last operation pending there.
  */
 class app_impl : public std::enable_shared_from_this<app_impl> {
 public:
@@ -187,9 +187,8 @@ public:
     /** How many rooms the registry holds. */
     [[nodiscard]] std::size_t counted_rooms() const { return rooms_.size(); }
 
-    /** Registers a room by a weak reference (the spec's section 4.1): its control block is in the
-     * room's resource, so the room unregisters before its state goes, in every way it ends, its
-     * destructor included (review I10). */
+    /** Registers a room by a weak reference: its control block is in the room's resource, so the
+     * room unregisters before its state goes, in every way it ends, its destructor included. */
     void register_room(std::string_view room_id, std::string_view token,
                        const std::shared_ptr<room_endpoint>& room) {
         rooms_.insert_or_assign(std::pmr::string(token, memory_),
@@ -200,7 +199,7 @@ public:
                                 });
     }
 
-    /** Forgets the room of `token`, if it is still `room`'s entry (review M7). */
+    /** Forgets the room of `token`, if it is still `room`'s entry. */
     void unregister_room(std::string_view token, const room_endpoint* room) {
         if (const auto it = rooms_.find(token); it != rooms_.end() && it->second.raw == room) {
             rooms_.erase(it);
@@ -229,7 +228,7 @@ public:
      * Tip: a stale connection to the peer, one whose channel is closing, ends first, as Trystero
      * clears it (C/shared-peer.mjs:142-149): the rooms hear its end before the new connection is
      * adopted, and a room may adopt one to the peer from inside that call, which is then the one
-     * shared, or ends in its turn if it is stale by then (review of Task 3, r1). One whose end is
+     * shared, or ends in its turn if it is stale by then. One whose end is
      * already under way, further up the stack, is let go: it ends no second time. */
     std::shared_ptr<connection> adopt(std::string_view peer_view,
                                       std::shared_ptr<backend::peer_connection> pc,

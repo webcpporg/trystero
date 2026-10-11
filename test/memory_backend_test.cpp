@@ -329,7 +329,7 @@ void a_release_after_the_sending_channel_was_replaced_drops_its_frames() {
     BOOST_TEST(p.at_answerer.empty());
 }
 
-// A frame held for an end whose sender is gone is dropped on release (review M14).
+// A frame held for an end whose sender is gone is dropped on release.
 void a_release_after_the_sender_went_drops_its_frames() {
     asio::io_context io;
     memory_network net{io};
@@ -421,7 +421,7 @@ private:
     }
 };
 
-// Review N1: a virtual timer restarted, cancelled or destroyed leaves the clock at once, so its
+// A virtual timer restarted, cancelled or destroyed leaves the clock at once, so its
 // memory, in the resource of the room or connection that made it, is back at once, not at its due
 // time.
 void a_virtual_timer_leaves_the_clock_at_once() {
@@ -442,7 +442,7 @@ void a_virtual_timer_leaves_the_clock_at_once() {
     BOOST_TEST(net.advance(20s));
 }
 
-// Review N4: a timer that re-arms itself without delay would never let the clock move; advance
+// A timer that re-arms itself without delay would never let the clock move; advance
 // stops after max_steps timers and says so, and the test fails instead of hanging.
 void a_timer_rearmed_without_delay_stops_the_clock() {
     asio::io_context io;

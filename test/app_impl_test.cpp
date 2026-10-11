@@ -303,7 +303,7 @@ void every_allocation_goes_through_the_apps_resource() {
 }
 
 // Rooms are found by id through a weak reference, and a room leaves the registry only by its own
-// entry (review M7).
+// entry.
 void the_registry_holds_rooms_by_a_weak_reference() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -502,8 +502,7 @@ void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
 
 // A room adopts a connection to the peer from inside the stale connection's end, and its channel
 // starts closing before the outer adoption goes on: that one is stale too, and ends before the
-// outer one is adopted, so no room hears an end once the outer one is the peer's (review of Task 3,
-// r1).
+// outer one is adopted, so no room hears an end once the outer one is the peer's.
 void a_nested_adoption_gone_stale_ends_before_the_outer_one() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -634,7 +633,7 @@ void a_view_into_the_stale_connection_names_its_replacement() {
 }
 
 // The app's destruction ends nothing and calls nothing back, and a connection that outlives it
-// routes nothing (the spec's section 4.2).
+// routes nothing.
 void the_apps_destruction_is_quiet() {
     asio::io_context io;
     trystero::test::memory_network net(io);
