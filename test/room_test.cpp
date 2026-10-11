@@ -121,6 +121,34 @@ void advance(fixture& f, std::chrono::milliseconds by) {
     }
 }
 
+/** An app and a room of it, made as the standalone room makes them, for a case that reaches the
+ * app's connections or calls the room as its app does. The case abandons the room before the
+ * fixture goes. */
+struct app_room {
+    std::shared_ptr<trystero::detail::app_impl> app;
+    std::shared_ptr<trystero::detail::room_impl> room;
+};
+
+app_room make_app_room(fixture& f, std::string_view self_id, std::string_view room_id,
+                       std::chrono::milliseconds idle_timeout = std::chrono::milliseconds{
+                           123'333}) {
+    auto* m = std::pmr::get_default_resource();
+    const std::pmr::polymorphic_allocator<> alloc(m);
+    app_room out;
+    out.app =
+        std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
+                                                         trystero::app_config{
+                                                             .app_id = app_id,
+                                                             .self_id = std::pmr::string(self_id),
+                                                             .relay_urls = {relay_a, relay_b},
+                                                             .idle_timeout = idle_timeout,
+                                                         });
+    out.room = std::allocate_shared<trystero::detail::room_impl>(
+        alloc, out.app, trystero::room_options{}, room_id, m);
+    out.room->start();
+    return out;
+}
+
 void two_peers_join_and_exchange_every_payload_format() {
     fixture f;
     // "A..." sorts below "z...", so A offers and z answers; the other test below swaps nothing but
@@ -1378,6 +1406,40 @@ void malformed_envelopes_end_the_connection() {
     BOOST_TEST_EQ(leaves, 0);
 }
 
+// A room acts on the end of the connection its peer is bound to, and on no other (review of Task 4,
+// I1): a late end of the peer's first connection keeps the peer, bound to the second; the second's
+// end removes it.
+void a_late_end_of_another_connection_keeps_the_peer() {
+    fixture f{true};
+    const std::string b_id = "UUUUUUUUUUUUUUUUUUUU";
+    const auto a = make_app_room(f, "TTTTTTTTTTTTTTTTTTTT", "late");
+    std::vector<std::size_t> pcs;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        pcs.push_back(pc);
+    };
+    trystero::room b(f.io.get_executor(), f.net, config(b_id), "late");
+    int b_joins = 0;
+    int b_leaves = 0;
+    b.on_peer_join([&](std::string_view) { ++b_joins; });
+    b.on_peer_leave([&](std::string_view) { ++b_leaves; });
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return a.room->active_peers().size() == 1 && b_joins == 1; })));
+    const auto first = a.app->find(b_id);
+    webcpp::test::require(BOOST_TEST(first != nullptr));
+    f.net.fail(pcs.front());
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return a.room->active_peers().size() == 1 && b_joins == 2; }, 30s)));
+    const auto second = a.app->find(b_id);
+    webcpp::test::require(BOOST_TEST(second != nullptr && second != first));
+    a.room->connection_ended(first, b_id, "a late end of the first connection");
+    advance(f, 5s);
+    BOOST_TEST_EQ(a.room->active_peers().size(), 1U);
+    BOOST_TEST_EQ(b_leaves, 1);
+    second->end("test");
+    BOOST_TEST(a.room->active_peers().empty());
+    a.room->abandon();
+}
+
 }  // namespace
 
 int main() {
@@ -1413,5 +1475,6 @@ int main() {
     a_connections_end_is_seen_and_the_peers_meet_again();
     a_frame_of_an_unknown_token_is_dropped();
     malformed_envelopes_end_the_connection();
+    a_late_end_of_another_connection_keeps_the_peer();
     return boost::report_errors();
 }

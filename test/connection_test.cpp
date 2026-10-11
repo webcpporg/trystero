@@ -611,6 +611,23 @@ void a_detached_binding_neither_sends_nor_waits() {
     BOOST_TEST(p.a.c->live());
 }
 
+// A binding names its connection by identity, whether it detached and whether the connection
+// ended: never another connection, nor none.
+void a_binding_is_on_its_connection_alone() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    const link_pair p(tokens, tokens);
+    std::vector<std::vector<std::uint8_t>> got;
+    const auto t1 = make_binding(p.a.c, "T1", got);
+    BOOST_TEST(t1->is_on(p.a.c));
+    BOOST_TEST(!t1->is_on(p.b.c));
+    BOOST_TEST(!t1->is_on(nullptr));
+    t1->detach(false, 1000ms);
+    BOOST_TEST(t1->is_on(p.a.c));
+    p.a.c->end("test");
+    BOOST_TEST(t1->is_on(p.a.c));
+    BOOST_TEST(!t1->is_on(p.b.c));
+}
+
 // A wait with the channel at or below Trystero's threshold completes at once; one byte above
 // waits for the drain.
 void a_wait_at_the_threshold_completes_at_once() {
@@ -799,6 +816,7 @@ int main() {
     a_waiter_that_releases_its_binding_during_detach();
     detach_fails_the_waiters_of_its_binding_alone();
     a_detached_binding_neither_sends_nor_waits();
+    a_binding_is_on_its_connection_alone();
     a_wait_at_the_threshold_completes_at_once();
     a_binding_has_one_turn_per_drain();
     taking_every_kept_frame_restarts_the_window();

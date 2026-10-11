@@ -733,8 +733,12 @@ public:
 
     void frame_kept(std::string_view /*peer*/) override {}
 
-    void connection_ended(std::string_view peer, std::string_view reason) override {
-        if (peers_.contains(peer)) {
+    void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
+                          std::string_view reason) override {
+        // The peer may be bound to another connection by now: a late end of an older one is not
+        // its end (review of Task 4, I1).
+        if (const auto it = peers_.find(peer);
+            it != peers_.end() && it->second.link->is_on(ended)) {
             remove_peer(peer, reason, end_kind::connection_end);
         }
     }

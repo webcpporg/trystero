@@ -20,6 +20,7 @@
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <boost/asio/any_io_executor.hpp>  // lint-world: names the executor only
+#include <boost/assert.hpp>
 
 #include <array>
 #include <chrono>
@@ -50,8 +51,10 @@ public:
     [[nodiscard]] virtual bool keeps_frames_from(std::string_view peer) const = 0;
     /** A frame of this room's token from `peer` was kept. */
     virtual void frame_kept(std::string_view peer) = 0;
-    /** The app's connection to `peer` ended. */
-    virtual void connection_ended(std::string_view peer, std::string_view reason) = 0;
+    /** The app's connection `ended` to `peer` ended: not always the one the room is bound to, so a
+     * room acts only on what it holds on `ended` (review of Task 4, I1). */
+    virtual void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
+                                  std::string_view reason) = 0;
 
 protected:
     room_endpoint() = default;
@@ -323,6 +326,8 @@ private:
      * room: those of a connection the last user's release took out of the registry too. */
     void on_connection_end(const std::shared_ptr<connection>& ended, std::string_view peer_view,
                            std::string_view reason_view) {
+        // The slot is filled before the connection starts, and its end holds it alive.
+        BOOST_ASSERT(ended);
         const std::pmr::string peer(peer_view, memory_);
         const std::pmr::string reason(reason_view, memory_);
         if (const auto it = connections_.find(peer);
@@ -338,7 +343,7 @@ private:
             }
         }
         for (const auto& room : rooms) {
-            room->connection_ended(peer, reason);
+            room->connection_ended(ended, peer, reason);
         }
     }
 

@@ -302,6 +302,12 @@ public:
     /** The binding's id on its connection, which no other binding of the connection has. */
     [[nodiscard]] std::uint64_t id() const { return id_; }
 
+    /** Whether this binding is on `c`, by identity, alive or not: by the owner, so that a
+     * connection made at the address of one destroyed is not taken for it. */
+    [[nodiscard]] bool is_on(const std::shared_ptr<connection>& c) const {
+        return !connection_.owner_before(c) && !c.owner_before(connection_);
+    }
+
     /** The connection, until the binding detaches or the connection is gone. */
     [[nodiscard]] std::shared_ptr<connection> shared_connection() const {
         return detached_ ? nullptr : connection_.lock();

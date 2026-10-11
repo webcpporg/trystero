@@ -62,7 +62,8 @@ void settle(asio::io_context& io) {
     }
 }
 
-/** A room as the app sees it, which records every call: "+P", "-P", "kept P", "ended P: why". */
+/** A room as the app sees it, which records every call: "+P", "-P", "kept P", "ended P: why", and
+ * the connection each end names. */
 class fake_room final : public detail::room_endpoint {
 public:
     void presence_changed(std::string_view peer, bool present) override {
@@ -75,7 +76,9 @@ public:
         events.push_back("kept " + std::string(peer));
     }
 
-    void connection_ended(std::string_view peer, std::string_view reason) override {
+    void connection_ended(const std::shared_ptr<detail::connection>& ended, std::string_view peer,
+                          std::string_view reason) override {
+        ended_connections.push_back(ended);
         events.push_back("ended " + std::string(peer) + ": " + std::string(reason));
         if (on_end) {
             on_end();
@@ -83,6 +86,9 @@ public:
     }
 
     std::vector<std::string> events;
+    /** The connection each end named, in the order of `events`' ends; weak, so that the record
+     * keeps none alive. */
+    std::vector<std::weak_ptr<detail::connection>> ended_connections;
     bool keeps = true;
     /** Called after a connection's end is recorded: a room that leaves the registry there. */
     std::function<void()> on_end;
@@ -568,6 +574,9 @@ void an_adoption_from_inside_an_end_under_way() {
     BOOST_TEST(nested->live());
     BOOST_TEST(app->find("B") == nested);
     BOOST_TEST(room->events == (std::vector<std::string>{"ended B: test"}));
+    // The end the rooms hear names the connection that ended, not the peer's new one.
+    webcpp::test::require(BOOST_TEST_EQ(room->ended_connections.size(), 1U));
+    BOOST_TEST(room->ended_connections.front().lock() == c);
     settle(io);
     BOOST_TEST(app->find("B") == nested);
     BOOST_TEST_EQ(room->events.size(), 1U);
