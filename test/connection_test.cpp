@@ -396,6 +396,24 @@ void the_end_fails_every_drain_waiter() {
     BOOST_TEST_EQ(turns.back(), "!T1");
 }
 
+// The end fails the waiters in the order they began to wait, not in the order their bindings
+// attached.
+void the_end_fails_the_waiters_in_the_order_of_waiting() {
+    const std::array<std::string_view, 2> tokens{"T1", "T2"};
+    link_pair p(tokens, tokens);
+    std::vector<std::vector<std::uint8_t>> got;
+    const auto t1 = make_binding(p.a.c, "T1", got);
+    const auto t2 = make_binding(p.a.c, "T2", got);
+    p.net.channel_capacity = 1;
+    fill(*t1);
+    std::vector<std::string> turns;
+    t2->wait_drained(record(turns, "T2"));
+    t1->wait_drained(record(turns, "T1"));
+    BOOST_TEST(turns.empty());
+    p.a.c->end("test");
+    BOOST_TEST(turns == (std::vector<std::string>{"!T2", "!T1"}));
+}
+
 // The last binding to detach ends the connection after a kick, or with no idle time; otherwise
 // after the idle time, which a new binding cancels.
 void the_last_binding_ends_or_idles_the_connection() {
@@ -772,6 +790,7 @@ int main() {
     a_closing_channel_is_not_live();
     drain_turns_follow_the_order_of_waiting();
     the_end_fails_every_drain_waiter();
+    the_end_fails_the_waiters_in_the_order_of_waiting();
     the_last_binding_ends_or_idles_the_connection();
     a_binding_made_during_a_drain_waits_for_the_next();
     an_end_inside_a_drain_fails_the_waiters_after_it();
