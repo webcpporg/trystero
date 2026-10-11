@@ -20,6 +20,7 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/json_resource.hpp>
+#include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
@@ -206,32 +207,6 @@ struct send_options {
     /** The metadata, as JSON text, or empty for none. */
     std::pmr::string metadata = {};
 };
-
-/**
- * Trystero's default STUN servers, its `defaultIceServers`: Google's and Cloudflare's.
- *
- * @param memory The resource the list and its strings are allocated in.
- * @return The servers, a room's when its configuration names none.
- */
-inline std::pmr::vector<backend::ice_server> default_ice_servers(
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::vector<backend::ice_server> out(memory);
-    for (const std::string_view url : {
-             "stun:stun.l.google.com:19302",
-             "stun:stun1.l.google.com:19302",
-             "stun:stun2.l.google.com:19302",
-             "stun:stun.cloudflare.com:3478",
-         }) {
-        backend::ice_server server{
-            .urls = std::pmr::vector<std::pmr::string>(memory),
-            .username = std::pmr::string(memory),
-            .credential = std::pmr::string(memory),
-        };
-        server.urls.emplace_back(url);
-        out.push_back(std::move(server));
-    }
-    return out;
-}
 
 namespace detail {
 

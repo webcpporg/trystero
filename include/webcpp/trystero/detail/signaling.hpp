@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
+#include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/replay_cache.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -39,21 +40,6 @@
 #include <vector>
 
 namespace webcpp::trystero::detail {
-
-/** A copy of `servers` whose every string is in `memory`. */
-inline std::pmr::vector<backend::ice_server> copy_ice_servers(
-    std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) {
-    std::pmr::vector<backend::ice_server> out(memory);
-    out.reserve(servers.size());
-    for (const auto& server : servers) {
-        out.push_back({
-            .urls = std::pmr::vector<std::pmr::string>(server.urls, memory),
-            .username = std::pmr::string(server.username, memory),
-            .credential = std::pmr::string(server.credential, memory),
-        });
-    }
-    return out;
-}
 
 /**
  * The negotiation with each peer seen on the signaling topics, after Trystero's signal handler.

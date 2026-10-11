@@ -59,6 +59,8 @@ webcpp.run room : room_test.cpp ;
 webcpp.run memory_backend : memory_backend_test.cpp ;
 # The shared connection alone, over a memory pair.
 webcpp.run connection : connection_test.cpp ;
+# The state an app and its rooms share, alone, over the memory backend.
+webcpp.run app_impl : app_impl_test.cpp ;
 # end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
