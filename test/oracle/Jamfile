@@ -24,12 +24,12 @@ webcpp.lane oracle : cases-protocol ;
 # exists only with them, since libdatachannel reports errors by throwing. It
 # is built with the standard libraries' own checks, so that a completion
 # that touches a container its socket cleared fails at once. Each driver has
-# 900 s, beyond its scenarios' own limits (838 s on native: one wait of
-# 45 s, nineteen of 30 s, fourteen of 10 s, twelve of 5 s, one of 15 s and one
-# of 8 s) and Chrome's start, so that a scenario that does not complete
-# fails by name, with what each peer saw, before the bound stops it; a run
-# where every page also hangs, each of its DevTools calls waiting 10 s, may
-# still meet the bound. They pass in about 30 s.
+# 900 s, beyond its scenarios' own limits (878 s on native: one wait of
+# 45 s, nineteen of 30 s, two flood calls of 20 s, fourteen of 10 s, twelve
+# of 5 s, one of 15 s and one of 8 s) and Chrome's start, so that a scenario
+# that does not complete fails by name, with what each peer saw, before the
+# bound stops it; a run where every page also hangs, each of its DevTools
+# calls waiting 10 s, may still meet the bound. They pass in about 30 s.
 # tag::interop[]
 webcpp.drive interop_browser : interop/peer.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>900

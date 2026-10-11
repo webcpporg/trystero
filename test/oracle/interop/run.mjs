@@ -160,13 +160,13 @@ const openPage = async (path, label) => {
     let id = 0
     const pending = new Map()
     const problems = []
-    // Every call settles within 10 s: a closing tab may never answer.
-    const send = (method, params = {}) => new Promise(resolve => {
+    // Every call settles within ms, 10 s unless it says: a closing tab may never answer.
+    const send = (method, params = {}, ms = 10_000) => new Promise(resolve => {
         const i = ++id
         const timer = setTimeout(() => {
             pending.delete(i)
             resolve(undefined)
-        }, 10_000)
+        }, ms)
         pending.set(i, result => {
             clearTimeout(timer)
             resolve(result)
@@ -185,14 +185,19 @@ const openPage = async (path, label) => {
     await new Promise(r => (ws.onopen = r))
     await send('Runtime.enable')
     await send('Page.navigate', {url: base + path})
-    const evaluate = async expression => (await send('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true})).result?.value
+    // A call that does not answer in time fails by name, with the expression it ran.
+    const evaluate = async (expression, ms = 10_000) => {
+        const answer = await send('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true}, ms)
+        if (answer === undefined) throw new Error(`${label}: ${expression} did not answer in ${ms / 1000} s`)
+        return answer.result?.value
+    }
     return {
         label,
         problems,
         events: async () => (await evaluate('window.events ?? []')) ?? [],
         log: async () => (await evaluate("document.getElementById('log')?.innerText ?? ''")) ?? '',
         leave: () => evaluate('window.leave()'),
-        value: expression => evaluate(expression),
+        value: (expression, ms) => evaluate(expression, ms),
         close: async () => {
             ws.close()
             await fetch(`${devtools}/json/close/${target.id}`).catch(() => {})
@@ -396,18 +401,21 @@ const unusableIceScenario = (name, cppKind) =>
 // joined.
 const floodCount = 300
 const unconnectedBound = 32
+const floodCallMs = 20_000
 const floodScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}
         const self = '00000000000000000000'
         const forger = await open('forger', {...params, target: self})
         if (!(await until(async () => (await forger.events()).some(e => e.kind === 'watching'), 10_000))) return 'the forger never watched'
+        const opened = Date.now()
         const cpp = await open(cppKind, {...params, self})
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
-        await js.value(`window.flood(${floodCount}, '0000000000')`)
-        await js.value(`window.floodOffers(${floodCount}, '1111111111', '${self}')`)
+        // Each call answers once its flood is sent, which on a busy machine takes the page more than 10 s.
+        await js.value(`window.flood(${floodCount}, '0000000000')`, floodCallMs)
+        await js.value(`window.floodOffers(${floodCount}, '1111111111', '${self}')`, floodCallMs)
         const ids = async (prefix, said) =>
             new Set([...(await cpp.log()).matchAll(new RegExp(`(?:${said}|refusing) (${prefix}\\w{10})`, 'g'))].map(m => m[1]))
         const floodIds = () => ids('0000000000', 'announcement from')
@@ -433,7 +441,9 @@ const floodScenario = (name, cppKind) =>
         // The flooders' offers, and at most two for the peer that joined.
         if (made > unconnectedBound + 2) return `${facts}; more than ${unconnectedBound + 2} connections`
         // The forged signals are reported once per 10 s, not once per fresh id: the first at once, the rest together.
-        if (reports > 2) return `${facts}; more than 2 reports of signals that did not open`
+        // So at most one report, and one more for each 10 s the C++ peer has been open, however slow the machine is.
+        const reportBound = 1 + Math.floor((Date.now() - opened) / 10_000)
+        if (reports > reportBound) return `${facts}; more than ${reportBound} reports of signals that did not open`
         if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return `${facts}; a peer left`
         return null
     })
