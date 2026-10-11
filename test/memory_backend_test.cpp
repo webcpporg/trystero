@@ -185,18 +185,35 @@ void an_injected_frame_reaches_the_end_named() {
     BOOST_TEST(run_until(io, [&] { return p.at_offerer.size() == 1; }));
 }
 
+// `failed` is reported while the channel is still open, and the channel's close after it.
 void a_failed_connection_reports_failed_then_closes() {
     asio::io_context io;
     memory_network net{io};
     pair p;
     connect(net, p);
     webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    std::vector<std::string_view> events;
+    p.offerer->set_handlers({
+        .ice_candidate = {},
+        .data_channel = {},
+        .state =
+            [&](trystero::backend::connection_state s) {
+                if (s == trystero::backend::connection_state::failed) {
+                    events.emplace_back(p.offer_end->is_open() ? "failed while open"
+                                                               : "failed once closed");
+                }
+            },
+    });
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = {},
+        .close = [&events] { events.emplace_back("closed"); },
+        .buffered_amount_low = {},
+    });
     net.fail(p.offerer_id);
-    BOOST_TEST(run_until(io, [&] {
-        return !p.offerer_states.empty() &&
-               p.offerer_states.back() == trystero::backend::connection_state::failed;
-    }));
-    BOOST_TEST(run_until(io, [&] { return !p.offer_end->is_open(); }));
+    BOOST_TEST(run_until(io, [&] { return events.size() == 2; }));
+    BOOST_TEST((events == std::vector<std::string_view>{"failed while open", "closed"}));
+    BOOST_TEST(!p.offer_end->is_open());
 }
 
 // A frame larger than drain_per_post drains byte by byte and is delivered with its last byte.
@@ -211,11 +228,86 @@ void a_frame_is_delivered_once_its_last_byte_drained() {
     const std::vector<std::uint8_t> frame(std::size_t{16} * 1024, 5);
     p.offer_end->send(frame);
     BOOST_TEST_EQ(net.buffered(p.offerer_id), frame.size());
-    io.poll_one();  // one drain step
+    // Each poll_one runs one drain step, the only handler queued, which posts the next.
+    io.poll_one();
     BOOST_TEST_EQ(net.buffered(p.offerer_id), frame.size() - 1024);
-    BOOST_TEST(p.at_answerer.empty());
+    for (int step = 1; step < 15; ++step) {
+        io.poll_one();
+    }
+    BOOST_TEST_EQ(net.buffered(p.offerer_id), 1024U);
+    BOOST_TEST(p.at_answerer.empty());  // its last 1024 bytes have not drained yet
     BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 1; }));
     BOOST_TEST_EQ(net.buffered(p.offerer_id), 0U);
+}
+
+// A channel closed while it drains transmits nothing more: its next step drops what it buffered.
+void a_closed_channel_drains_nothing_more() {
+    asio::io_context io;
+    memory_network net{io};
+    net.channel_capacity = 1;
+    net.drain_per_post = 1024;
+    pair p;
+    connect(net, p);
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    const std::vector<std::uint8_t> frame(std::size_t{16} * 1024, 5);
+    p.offer_end->send(frame);
+    io.poll_one();
+    BOOST_TEST_EQ(net.buffered(p.offerer_id), frame.size() - 1024);
+    p.offer_end->close();
+    io.poll_one();  // the next drain step, queued before the close's handlers
+    BOOST_TEST_EQ(net.buffered(p.offerer_id), 0U);
+    run_until(io, [] { return false; }, 100ms);
+    BOOST_TEST(p.at_answerer.empty());
+}
+
+// Release filters each frame again: a frame the filter still holds stays held, with what is behind
+// it, until the next release.
+void a_release_filters_each_frame_again() {
+    asio::io_context io;
+    memory_network net{io};
+    pair p;
+    connect(net, p);
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t>) {
+        return memory_network::verdict::hold;
+    };
+    const std::array<std::uint8_t, 1> a{'A'};
+    const std::array<std::uint8_t, 1> b{'B'};
+    p.offer_end->send(a);
+    p.offer_end->send(b);
+    net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+        return frame[0] == 'B' ? memory_network::verdict::hold : memory_network::verdict::deliver;
+    };
+    net.release(p.answerer_id);
+    BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 1; }));
+    run_until(io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(p.at_answerer.size(), 1U);
+    BOOST_TEST(p.at_answerer.at(0).at(0) == 'A');
+    net.filter = {};
+    net.release(p.answerer_id);
+    BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 2; }));
+    BOOST_TEST(p.at_answerer.at(1).at(0) == 'B');
+}
+
+// A frame held for an end whose sending connection no longer has the channel that sent it, which
+// the connection replaced by one never paired, is dropped on release.
+void a_release_after_the_sending_channel_was_replaced_drops_its_frames() {
+    asio::io_context io;
+    memory_network net{io};
+    pair p;
+    connect(net, p);
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t>) {
+        return memory_network::verdict::hold;
+    };
+    const std::array<std::uint8_t, 1> a{'A'};
+    p.offer_end->send(a);
+    net.filter = {};
+    const auto replacement = p.offerer->create_data_channel("again");
+    BOOST_TEST(replacement != p.offer_end);
+    net.release(p.answerer_id);
+    run_until(io, [] { return false; }, 100ms);
+    BOOST_TEST(p.at_answerer.empty());
 }
 
 // A frame held for an end whose sender is gone is dropped on release (review M14).
@@ -262,6 +354,31 @@ void the_virtual_clock_moves_only_when_advanced() {
     net.advance(3s);
     BOOST_TEST((fired == std::vector<int>{5, 10}));
     BOOST_TEST_EQ(net.now_ms(), 10000.0);
+    // Two timers due at the same instant both fire, in the order they were started, not made.
+    const auto made_first = net.make_timer(m);
+    const auto made_second = net.make_timer(m);
+    made_second->start(2s, [&fired] { fired.push_back(21); });
+    made_first->start(2s, [&fired] { fired.push_back(22); });
+    net.advance(2s);
+    BOOST_TEST((fired == std::vector<int>{5, 10, 21, 22}));
+}
+
+// The clock moves from the first advance, before any timer is made, and a timer made then starts
+// from there.
+void the_virtual_clock_moves_before_any_timer() {
+    asio::io_context io;
+    memory_network net{io};
+    net.virtual_clock = true;
+    BOOST_TEST(net.advance(5s));
+    BOOST_TEST_EQ(net.now_ms(), 5000.0);
+    const auto t = net.make_timer(std::pmr::get_default_resource());
+    bool fired = false;
+    t->start(1s, [&fired] { fired = true; });
+    net.advance(999ms);
+    BOOST_TEST(!fired);
+    net.advance(1ms);
+    BOOST_TEST(fired);
+    BOOST_TEST_EQ(net.now_ms(), 6000.0);
 }
 
 /** Counts the bytes it has out, from the default resource. */
@@ -325,6 +442,25 @@ void a_timer_rearmed_without_delay_stops_the_clock() {
     t->cancel();
 }
 
+// A run of exactly max_steps timers is finite: advance fires them all, reaches its end and says so.
+void a_run_of_max_steps_timers_reaches_the_end() {
+    asio::io_context io;
+    memory_network net{io};
+    net.virtual_clock = true;
+    net.max_steps = 3;
+    auto* m = std::pmr::get_default_resource();
+    std::size_t fired = 0;
+    const auto t1 = net.make_timer(m);
+    const auto t2 = net.make_timer(m);
+    const auto t3 = net.make_timer(m);
+    t1->start(1s, [&fired] { ++fired; });
+    t2->start(2s, [&fired] { ++fired; });
+    t3->start(3s, [&fired] { ++fired; });
+    BOOST_TEST(net.advance(5s));
+    BOOST_TEST_EQ(fired, 3U);
+    BOOST_TEST_EQ(net.now_ms(), 5000.0);
+}
+
 void a_buffering_channel_drains_and_says_so() {
     asio::io_context io;
     memory_network net{io};
@@ -359,9 +495,14 @@ int main() {
     a_failed_connection_reports_failed_then_closes();
     a_buffering_channel_drains_and_says_so();
     a_frame_is_delivered_once_its_last_byte_drained();
+    a_closed_channel_drains_nothing_more();
+    a_release_filters_each_frame_again();
     a_release_after_the_sender_went_drops_its_frames();
+    a_release_after_the_sending_channel_was_replaced_drops_its_frames();
     the_virtual_clock_moves_only_when_advanced();
+    the_virtual_clock_moves_before_any_timer();
     a_virtual_timer_leaves_the_clock_at_once();
     a_timer_rearmed_without_delay_stops_the_clock();
+    a_run_of_max_steps_timers_reaches_the_end();
     return boost::report_errors();
 }

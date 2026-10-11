@@ -104,7 +104,6 @@ public:
     ~memory_timer() override { unschedule(); }
 
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
-        const std::uint64_t wait = ++*waits_;
         if (on_clock_) {
             unschedule();  // a restart replaces the pending expiry
             fire_ = std::move(fire);
@@ -115,6 +114,7 @@ public:
             }
             return;
         }
+        const std::uint64_t wait = ++*waits_;
         timer_.expires_after(delay / time_scale_);
         timer_.async_wait(boost::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
@@ -129,26 +129,23 @@ public:
     /** Never runs the handler, as a cancelled timer of every backend does; on the virtual clock,
      * frees it now. */
     void cancel() override {
-        ++*waits_;
         if (on_clock_) {
             unschedule();
             fire_ = {};
             return;
         }
+        ++*waits_;
         timer_.cancel();
     }
 
     /** Called by the virtual clock, which has removed the timer's entry: posts the handler, as Asio
-     * completes a timer, which a cancel or a restart before it runs still keeps from running. */
+     * completes a timer.
+     *
+     * Tip: unlike Asio's queued expiry, nothing can cancel it before it runs: step() posts it to an
+     * empty queue and runs it first. */
     void expire() {
         key_.reset();
-        post_in(io_, memory_,
-                [waits = std::weak_ptr<std::uint64_t>(waits_), wait = *waits_,
-                 fire = std::move(fire_)]() mutable {
-                    if (const auto current = waits.lock(); current && *current == wait) {
-                        fire();
-                    }
-                });
+        post_in(io_, memory_, [fire = std::move(fire_)]() mutable { fire(); });
     }
 
 private:
@@ -789,8 +786,11 @@ private:
 
     /** Holds, drops or delivers `frame`, as the filter and the frames held before it say. */
     void route(std::size_t from, std::size_t to, std::span<const std::uint8_t> frame);
-    /** Hands `frame` to the end `to`, or to the queue of the end `from` when channels buffer. */
-    void deliver(std::size_t from, std::size_t to, std::span<const std::uint8_t> frame);
+    /** Hands `frame` to the other end of the channel of `from`, or to that channel's queue when
+     * channels buffer. */
+    void deliver(std::size_t from, std::span<const std::uint8_t> frame);
+    /** Whether a timer of the virtual clock is due at or before `until_ms`. */
+    [[nodiscard]] bool due_by(double until_ms) const;
 
     boost::asio::io_context& io_;
     std::mt19937_64 random_;
@@ -956,7 +956,7 @@ inline void memory_network::route(std::size_t from, std::size_t to,
             return;
         case verdict::deliver: break;
     }
-    deliver(from, to, frame);
+    deliver(from, frame);
 }
 
 inline void memory_network::release(std::size_t to) {
@@ -971,13 +971,14 @@ inline void memory_network::release(std::size_t to) {
     }
 }
 
-inline void memory_network::deliver(std::size_t from, std::size_t to,
-                                    std::span<const std::uint8_t> frame) {
-    // A frame released after its sending end was destroyed is dropped (review M14).
+inline void memory_network::deliver(std::size_t from, std::span<const std::uint8_t> frame) {
+    // A frame released after its sending end was destroyed is dropped (review M14), as is one whose
+    // sending connection's channel is no longer paired: a connection pairs once, so its channel's
+    // other end is the end the frame was sent to while it was paired.
     const auto sender = find(from);
     const auto sending = sender ? sender->channel() : nullptr;
     const auto receiving = sending ? sending->remote() : nullptr;
-    if (!receiving || receiving->pc() != to) {
+    if (!receiving) {
         return;
     }
     backend::bytes copy(frame.begin(), frame.end(), receiving->memory());
@@ -1027,10 +1028,18 @@ inline std::size_t memory_network::buffered(std::size_t pc) const {
     return channel ? channel->buffered_amount() : 0;
 }
 
+inline bool memory_network::due_by(double until_ms) const {
+    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until_ms;
+}
+
 inline bool memory_network::step(double until_ms) {
+    // The clock moves from the first step, before any timer is made (review I1).
+    if (virtual_clock && !clock_) {
+        clock_ = std::make_shared<virtual_clock_state>();
+    }
     io_.restart();
     io_.poll();
-    if (!clock_ || clock_->due.empty() || clock_->due.begin()->first.first > until_ms) {
+    if (!due_by(until_ms)) {
         if (clock_) {
             clock_->now_ms = std::max(clock_->now_ms, until_ms);
         }
@@ -1048,14 +1057,19 @@ inline bool memory_network::step(double until_ms) {
 
 inline bool memory_network::advance(std::chrono::milliseconds by) {
     const double until = now_ms() + static_cast<double>(by.count());
-    for (std::size_t i = 0; i < max_steps; ++i) {
+    // A run of exactly max_steps timers is finite: only one more due timer stops it.
+    for (std::size_t fired = 0;; ++fired) {
+        io_.restart();
+        io_.poll();
+        if (fired == max_steps && due_by(until)) {
+            return false;
+        }
         if (!step(until)) {
             io_.restart();
             io_.poll();
             return true;
         }
     }
-    return false;
 }
 
 inline std::size_t memory_network::scheduled() const {
