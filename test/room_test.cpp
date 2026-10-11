@@ -1084,6 +1084,7 @@ void counter_announcements_are_paced() {
     const auto before = f.net.relay(relay_a).events_seen;
     attacker.announce(flood, "0low");
     BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
+    f.io.poll();  // the room handles what the relay forwarded, posted behind every event it took
     const auto elapsed = std::chrono::steady_clock::now() - start;
     BOOST_TEST_GE(asked, 1U);
     BOOST_TEST_LE(asked, 1 + static_cast<std::size_t>(elapsed / 5333ms));
