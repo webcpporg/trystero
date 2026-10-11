@@ -1332,6 +1332,18 @@ void a_room_left_with_no_idle_time_sends_its_presence() {
     BOOST_TEST_EQ(seen, 1);
 }
 
+// The errors' values are fixed and never reused; their messages name what failed.
+void the_errors_have_their_values() {
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::already_joined), 14);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::too_many_rooms), 15);
+    BOOST_TEST_EQ(make_error_code(trystero::error::already_joined).message(),
+                  "the app has already joined a room of that id");
+    BOOST_TEST_EQ(make_error_code(trystero::error::too_many_rooms).message(),
+                  "the app holds as many rooms as a peer accepts, 64");
+    BOOST_TEST_EQ(make_error_code(trystero::error::invalid_configuration).message(),
+                  "the configuration is unusable");
+}
+
 }  // namespace
 
 int main() {
@@ -1371,5 +1383,6 @@ int main() {
     a_withdrawn_presence_is_a_departure();
     a_kick_by_the_last_room_ends_the_connection();
     a_room_left_with_no_idle_time_sends_its_presence();
+    the_errors_have_their_values();
     return boost::report_errors();
 }
