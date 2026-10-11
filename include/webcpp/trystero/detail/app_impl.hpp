@@ -224,26 +224,20 @@ public:
      * a live one to that peer, is closed and the existing one returned (C/shared-peer.mjs:105-108).
      *
      * Tip: a stale connection to the peer, one whose channel is closing, ends first, as Trystero
-     * clears it (C/shared-peer.mjs:139-145): ended later, it would take its replacement's place
-     * in the registry with it. */
+     * clears it (C/shared-peer.mjs:142-149): the rooms hear its end before the new connection is
+     * adopted, and a room may adopt one to the peer from inside that call, which is then the one
+     * shared. */
     std::shared_ptr<connection> adopt(std::string_view peer,
                                       std::shared_ptr<backend::peer_connection> pc,
                                       std::shared_ptr<backend::data_channel> channel) {
-        if (auto existing = find(peer)) {
-            channel->set_handlers({});
-            pc->set_handlers({});
-            channel->close();
-            pc->close();
-            log_("webrtc", "a second connection with ", peer, " closed: the first is shared");
-            return existing;
-        }
-        if (const auto it = connections_.find(peer); it != connections_.end()) {
+        if (const auto it = connections_.find(peer);
+            it != connections_.end() && !it->second->live()) {
             // `peer` may be a view into the stale connection, which the end below may free.
             const std::pmr::string held(peer, memory_);
             it->second->end("replaced by a new connection to the peer");
-            return adopt_new(held, std::move(pc), std::move(channel));
+            return share_or_adopt(held, std::move(pc), std::move(channel));
         }
-        return adopt_new(peer, std::move(pc), std::move(channel));
+        return share_or_adopt(peer, std::move(pc), std::move(channel));
     }
 
 private:
@@ -256,10 +250,22 @@ private:
         const room_endpoint* raw;  // identity only, for unregister_room; never dereferenced
     };
 
-    std::shared_ptr<connection> adopt_new(std::string_view peer,
-                                          std::shared_ptr<backend::peer_connection> pc,
-                                          std::shared_ptr<backend::data_channel> channel) {
+    /** Closes the new connection and returns the live one to `peer`, if any; else adopts it. */
+    std::shared_ptr<connection> share_or_adopt(std::string_view peer,
+                                               std::shared_ptr<backend::peer_connection> pc,
+                                               std::shared_ptr<backend::data_channel> channel) {
+        if (auto existing = find(peer)) {
+            channel->set_handlers({});
+            pc->set_handlers({});
+            channel->close();
+            pc->close();
+            log_("webrtc", "a second connection with ", peer, " closed: the first is shared");
+            return existing;
+        }
         const auto weak = weak_from_this();
+        // The connection whose `ended` this is, set once it exists: its end erases its own entry
+        // only, never one a room adopted since (Trystero's owns(), C/shared-peer.mjs:210-212).
+        const auto owner = std::allocate_shared<std::weak_ptr<connection>>(allocator());
         auto c = std::allocate_shared<connection>(
             allocator(), factory_, peer, std::move(pc), std::move(channel),
             connection_callbacks{
@@ -286,13 +292,14 @@ private:
                         }
                     }),
                 .ended = bind<void(std::string_view, std::string_view)>(
-                    [weak](std::string_view p, std::string_view reason) {
+                    [weak, owner](std::string_view p, std::string_view reason) {
                         if (const auto self = weak.lock()) {
-                            self->on_connection_end(p, reason);
+                            self->on_connection_end(owner->lock(), p, reason);
                         }
                     }),
             },
             log_, memory_);
+        *owner = c;
         connections_.insert_or_assign(std::pmr::string(peer, memory_), c);
         std::pmr::vector<std::string_view> tokens(memory_);
         for (const auto& [token, e] : rooms_) {
@@ -307,10 +314,16 @@ private:
         return it == rooms_.end() ? nullptr : it->second.room.lock();
     }
 
-    void on_connection_end(std::string_view peer_view, std::string_view reason_view) {
+    /** Forgets `ended`, unless another connection to the peer took its place, and tells every
+     * room: those of a connection the last user's release took out of the registry too. */
+    void on_connection_end(const std::shared_ptr<connection>& ended, std::string_view peer_view,
+                           std::string_view reason_view) {
         const std::pmr::string peer(peer_view, memory_);
         const std::pmr::string reason(reason_view, memory_);
-        connections_.erase(peer);
+        if (const auto it = connections_.find(peer);
+            it != connections_.end() && it->second == ended) {
+            connections_.erase(it);
+        }
         // A room may leave the registry from inside the call: the rooms are locked first, each
         // kept alive across its call.
         std::pmr::vector<std::shared_ptr<room_endpoint>> rooms(memory_);

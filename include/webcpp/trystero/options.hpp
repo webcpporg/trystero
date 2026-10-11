@@ -83,7 +83,10 @@ struct app_config {
      * the resource from its executor only, so it need not be thread-safe when that executor runs
      * on one thread. It must outlive the app, its rooms and every operation they leave pending: on
      * Asio, until the io_context their executor belongs to has run out of their work or has been
-     * destroyed, so a resource is declared before its io_context.
+     * destroyed, so a resource is declared before its io_context; in the browser, until the app's
+     * and its rooms' pending promises have settled. The app and its rooms allocate and free per
+     * event, so a resource that reuses what is freed (a pool) suits a long-lived app, and a
+     * monotonic one only a short-lived one.
      *
      * @see "Allocation", in the guide.
      */
@@ -119,7 +122,7 @@ struct room_options {
  * Trystero's default STUN servers, its `defaultIceServers`: Google's and Cloudflare's.
  *
  * @param memory The resource the list and its strings are allocated in.
- * @return The servers, a room's when its configuration names none.
+ * @return The servers, an app's when its configuration names none.
  */
 inline std::pmr::vector<backend::ice_server> default_ice_servers(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {

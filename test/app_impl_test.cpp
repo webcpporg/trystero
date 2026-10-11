@@ -258,13 +258,15 @@ void what_no_peer_could_use_is_set_aside() {
     BOOST_TEST(log == logged);
 }
 
-// Every allocation of the app's construction, of its registry and of an adoption goes through
-// its resource: the default resource refuses every request meanwhile.
+// Every allocation of the app's construction, of its registry, of an adoption, of a stale
+// connection's replacement and end, of the list of live connections and of the last user's release
+// goes through its resource: the default resource refuses every request meanwhile.
 void every_allocation_goes_through_the_apps_resource() {
     std::pmr::unsynchronized_pool_resource pool;  // outlives the io_context and the connections
     asio::io_context io;
     trystero::test::memory_network net(io);
     const auto ends = negotiate(io, net);
+    const auto next = negotiate(io, net);
     trystero::app_config config{.memory = &pool};
     config.app_id = "app";
     config.self_id = std::pmr::string(40, 'x');  // beyond the short string
@@ -273,16 +275,25 @@ void every_allocation_goes_through_the_apps_resource() {
     config.log = [&sentences](std::string_view, std::string_view) { ++sentences; };
     const auto room = std::make_shared<fake_room>();
     std::shared_ptr<detail::app_impl> app;
+    std::size_t live = 0;
+    const std::string_view peer = "a peer id longer than the short string";
     auto* const previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
     {
         app = std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(&pool),
                                                      io.get_executor(), net, std::move(config));
         app->register_room("r1", "a room token longer than the short string", room);
-        app->adopt("a peer id longer than the short string", ends.local_pc, ends.local);
+        app->add_user();
+        app->adopt(peer, ends.local_pc, ends.local);
+        ends.local->close();
+        app->adopt(peer, next.local_pc, next.local);
+        live = app->live_connections().size();
+        app->release_user();
     }
     std::pmr::set_default_resource(previous);
-    BOOST_TEST_EQ(sentences, 1U);  // adopted
-    BOOST_TEST_EQ(app->live_connections().size(), 1U);
+    BOOST_TEST_EQ(live, 1U);
+    BOOST_TEST_EQ(sentences, 4U);  // adopted, ended, adopted, ended
+    BOOST_TEST_EQ(room->events.size(), 2U);
+    BOOST_TEST(app->live_connections().empty());
 }
 
 // Rooms are found by id through a weak reference, and a room leaves the registry only by its own
@@ -422,7 +433,7 @@ void the_last_user_ends_every_connection() {
 }
 
 // A connection whose channel is closing is not reused; the connection that replaces it ends it
-// first, as Trystero clears a stale peer (C/shared-peer.mjs:139-145), so the rooms hear its end
+// first, as Trystero clears a stale peer (C/shared-peer.mjs:142-149), so the rooms hear its end
 // before the new one is adopted, and its later close event ends nothing.
 void a_stale_connection_ends_before_its_replacement() {
     asio::io_context io;
@@ -445,6 +456,93 @@ void a_stale_connection_ends_before_its_replacement() {
     BOOST_TEST(app->find("B") == fresh);
     BOOST_TEST(fresh->live());
     BOOST_TEST_EQ(room->events.size(), 1U);
+}
+
+// A room that adopts a connection to the peer from inside the stale connection's end: the
+// replacement the outer adoption brought is closed, and the room's is the one kept, so the peer
+// has one connection, whose end leaves none (Trystero's owns(), C/shared-peer.mjs:210-212).
+void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto first = negotiate(io, net);
+    const auto second = negotiate(io, net);
+    const auto third = negotiate(io, net);
+    app->adopt("B", first.local_pc, first.local);
+    std::shared_ptr<detail::connection> nested;
+    room->on_end = [&] {
+        if (!nested) {
+            nested = app->adopt("B", third.local_pc, third.local);
+        }
+    };
+    first.local->close();
+    const auto outer = app->adopt("B", second.local_pc, second.local);
+    webcpp::test::require(BOOST_TEST(nested != nullptr));
+    BOOST_TEST(outer == nested);
+    BOOST_TEST(!second.local->is_open());
+    BOOST_TEST(nested->live());
+    BOOST_TEST_EQ(app->live_connections().size(), 1U);
+    settle(io);
+    BOOST_TEST(app->find("B") == nested);
+    room->on_end = {};
+    nested->end("test");
+    BOOST_TEST(app->find("B") == nullptr);
+    BOOST_TEST(app->live_connections().empty());
+    BOOST_TEST_EQ(room->events.back(), "ended B: test");
+}
+
+// A connection's end takes its own entry only: the last user's release ends the connections it
+// took out of the registry, and a room that adopts one to the same peer from inside the calls keeps
+// it registered, though the rooms still hear the released connection's end.
+void an_end_takes_only_its_own_entry() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto b = negotiate(io, net);
+    const auto c = negotiate(io, net);
+    const auto again = negotiate(io, net);
+    app->add_user();
+    app->adopt("B", b.local_pc, b.local);
+    app->adopt("C", c.local_pc, c.local);
+    std::shared_ptr<detail::connection> nested;
+    room->on_end = [&] {
+        if (!nested) {
+            nested = app->adopt("C", again.local_pc, again.local);
+        }
+    };
+    app->release_user();
+    webcpp::test::require(BOOST_TEST(nested != nullptr));
+    BOOST_TEST(room->events == (std::vector<std::string>{
+                                   "ended B: the app has no room left",
+                                   "ended C: the app has no room left",
+                               }));
+    BOOST_TEST(nested->live());
+    BOOST_TEST(app->find("C") == nested);
+}
+
+// The peer named by a view into the stale connection, which its end frees: the replacement is
+// adopted under a copy taken before the end.
+void a_view_into_the_stale_connection_names_its_replacement() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto first = negotiate(io, net);
+    const auto second = negotiate(io, net);
+    const std::string id(40, 'p');  // beyond the short string: the view is into the heap
+    const std::weak_ptr<detail::connection> stale = app->adopt(id, first.local_pc, first.local);
+    first.local->close();
+    const auto view = stale.lock()->peer();
+    const auto fresh = app->adopt(view, second.local_pc, second.local);
+    BOOST_TEST(stale.expired());
+    BOOST_TEST_EQ(fresh->peer(), id);
+    BOOST_TEST(app->find(id) == fresh);
 }
 
 // The app's destruction ends nothing and calls nothing back, and a connection that outlives it
@@ -486,6 +584,9 @@ int main() {
     the_connections_events_reach_the_rooms();
     the_last_user_ends_every_connection();
     a_stale_connection_ends_before_its_replacement();
+    an_adoption_from_inside_a_stale_end_is_the_one_kept();
+    an_end_takes_only_its_own_entry();
+    a_view_into_the_stale_connection_names_its_replacement();
     the_apps_destruction_is_quiet();
     return boost::report_errors();
 }
