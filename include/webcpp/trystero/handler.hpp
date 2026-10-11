@@ -213,13 +213,19 @@ private:
     static constexpr bool fits_inline = sizeof(T) <= inline_size && alignof(T) <= alignof(void*) &&
                                         std::is_nothrow_move_constructible_v<T>;
 
-    /** What a target's type does, one table per type. */
+    /**
+     * What a target's type does, one table per type.
+     *
+     * Tip: each member has an initializer, else MSVC 14.3 and 14.5 warn (C4268, an error under
+     * /WX) that `operations_of`, which sets every member, is filled with zeros.
+     */
     struct operations {
-        R (*invoke)(unsigned char* storage, Args&&... args);
-        void (*move)(unsigned char* from, unsigned char* to) noexcept;
+        R (*invoke)(unsigned char* storage, Args&&... args) = nullptr;
+        void (*move)(unsigned char* from, unsigned char* to) noexcept = nullptr;
         void (*rehome)(unsigned char* from, std::pmr::memory_resource& from_resource,
-                       unsigned char* to, std::pmr::memory_resource& to_resource);
-        void (*destroy)(unsigned char* storage, std::pmr::memory_resource& resource) noexcept;
+                       unsigned char* to, std::pmr::memory_resource& to_resource) = nullptr;
+        void (*destroy)(unsigned char* storage,
+                        std::pmr::memory_resource& resource) noexcept = nullptr;
     };
 
     /** A target made in `allocator`'s storage; the storage is given back if the construction fails.
@@ -263,6 +269,8 @@ private:
         return *std::launder(reinterpret_cast<T**>(storage));
     }
 
+    // A target is destroyed with std::destroy_at: MSVC 14.3 and 14.5 refuse `p->~T()` in these
+    // functions when T is a closure type (C2300, "class does not have a destructor called '~T'").
     template <class T>
     static constexpr operations operations_of = [] {
         if constexpr (fits_inline<T>) {
@@ -280,7 +288,7 @@ private:
                        unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
                         T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
                         ::new (static_cast<void*>(to)) T(std::move(*source));
-                        source->~T();
+                        std::destroy_at(source);
                     },
                 .rehome =
                     [](unsigned char* from, std::pmr::memory_resource& /*from_resource*/,
@@ -288,11 +296,11 @@ private:
                        std::pmr::memory_resource& /*to_resource*/) {
                         T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
                         ::new (static_cast<void*>(to)) T(std::move(*source));
-                        source->~T();
+                        std::destroy_at(source);
                     },
                 .destroy =
                     [](unsigned char* storage, std::pmr::memory_resource& /*resource*/) noexcept {
-                        inline_target<T>(storage)->~T();
+                        std::destroy_at(inline_target<T>(storage));
                     },
             };
         } else {
@@ -314,13 +322,13 @@ private:
                         T* const source = allocated_target<T>(from);
                         ::new (static_cast<void*>(to))
                             T*(make<T>(allocator_type(&to_resource), std::move(*source)));
-                        source->~T();
+                        std::destroy_at(source);
                         allocator_type(&from_resource).deallocate_object(source);
                     },
                 .destroy =
                     [](unsigned char* storage, std::pmr::memory_resource& resource) noexcept {
                         T* const target = allocated_target<T>(storage);
-                        target->~T();
+                        std::destroy_at(target);
                         allocator_type(&resource).deallocate_object(target);
                     },
             };

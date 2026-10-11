@@ -292,8 +292,10 @@ void signals() {
     BOOST_TEST_EQ(back->offer_id, "o1");
     BOOST_TEST(back->passive);
     // Escaping matches JSON.stringify, so a sealed text or a candidate with quotes survives the
-    // round trip.
-    BOOST_TEST_EQ(tp::write_signal({.peer_id = "q\"\\\n"}), R"({"peerId":"q\"\\\n"})");
+    // round trip. The expected text is named outside the macro: MSVC 14.3's preprocessor, which
+    // stringizes the macro's arguments, reads a raw string's \" as an escape and stops (C2017).
+    constexpr std::string_view escaped = R"({"peerId":"q\"\\\n"})";
+    BOOST_TEST_EQ(tp::write_signal({.peer_id = "q\"\\\n"}), escaped);
     // A fixed seed: the test checks the form of an id, the same on every run.
     // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
     std::mt19937 generator(42);

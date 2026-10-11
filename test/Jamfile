@@ -4,7 +4,10 @@
 # accompanying file LICENSE_1_0.txt or copy at
 # https://www.boost.org/LICENSE_1_0.txt)
 
-project : requirements <library>/webcpp/trystero//trystero ;
+# MSVC deprecates std::getenv, which room_test.cpp reads, for a getenv_s of
+# its own (C4996), an error under /WX: the tests keep the standard's.
+project : requirements <library>/webcpp/trystero//trystero
+  <toolset>msvc:<define>_CRT_SECURE_NO_WARNINGS ;
 
 import webcpp ;
 
