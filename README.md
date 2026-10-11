@@ -365,7 +365,7 @@ Boost Software License alone.
 ## Documentation
 
 trystero's page, with its API reference, is published at
-<https://webcpporg.github.io/webcpp/libs/trystero/>.
+<https://webcpporg.github.io/libs/trystero/>.
 
 ## License
 

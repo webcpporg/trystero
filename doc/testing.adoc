@@ -205,4 +205,4 @@ Each lane builds from scratch and records what b2 built and ran; webcpp's
 `tools/report/report.py` merges the files of every lane into a matrix, where
 each cell says whether that program passed in that lane, or how it failed.
 The matrix is published with the documentation, at
-https://webcpporg.github.io/webcpp/report/.
+https://webcpporg.github.io/report/.
