@@ -216,6 +216,25 @@ void a_failed_connection_reports_failed_then_closes() {
     BOOST_TEST(!p.offer_end->is_open());
 }
 
+// A disconnection and a reconnection are reported as states, and the channel stays open: only a
+// failure closes it.
+void a_disconnection_and_a_reconnection_are_reported() {
+    asio::io_context io;
+    memory_network net{io};
+    pair p;
+    connect(net, p);
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    p.offerer_states.clear();
+    net.disconnect(p.offerer_id);
+    net.reconnect(p.offerer_id);
+    BOOST_TEST(run_until(io, [&] { return p.offerer_states.size() == 2; }));
+    BOOST_TEST((p.offerer_states == std::vector<trystero::backend::connection_state>{
+                                        trystero::backend::connection_state::disconnected,
+                                        trystero::backend::connection_state::connected,
+                                    }));
+    BOOST_TEST(p.offer_end->is_open());
+}
+
 // A frame larger than drain_per_post drains byte by byte and is delivered with its last byte.
 void a_frame_is_delivered_once_its_last_byte_drained() {
     asio::io_context io;
@@ -493,6 +512,7 @@ int main() {
     deferred_opens_open_one_end_at_a_time();
     an_injected_frame_reaches_the_end_named();
     a_failed_connection_reports_failed_then_closes();
+    a_disconnection_and_a_reconnection_are_reported();
     a_buffering_channel_drains_and_says_so();
     a_frame_is_delivered_once_its_last_byte_drained();
     a_closed_channel_drains_nothing_more();

@@ -571,6 +571,16 @@ public:
 
     void connect_to(memory_peer_connection& answerer);
 
+    /** Posts `state` to the state handler, and nothing else: the channel stays as it is, as
+     * through a disconnection and a reconnection. */
+    void report(backend::connection_state state) {
+        post_in(io_, memory_, [self = shared_from_this(), state] {
+            if (self->h_.state) {
+                self->h_.state(state);
+            }
+        });
+    }
+
     /** Posts the state `failed`, then closes the channel, as a connection that fails does. */
     void fail() {
         post_in(io_, memory_, [self = shared_from_this()] {
@@ -607,8 +617,8 @@ public:
  * connections are in `memory`; everything it makes for a room is in the resource the room gives.
  *
  * Tip: its hooks let a test hold, drop or inject frames, open a pair's channels one end at a time,
- * fail a connection, buffer what a channel sends, and run the timers on a virtual clock that moves
- * only when the test advances it.
+ * fail, disconnect or reconnect a connection, buffer what a channel sends, and run the timers on a
+ * virtual clock that moves only when the test advances it.
  */
 class memory_network : public backend::factory {
 public:
@@ -748,6 +758,10 @@ public:
     void inject(std::size_t pc, std::span<const std::uint8_t> frame);
     /** Reports `failed` on `pc`, then closes its channel. */
     void fail(std::size_t pc);
+    /** Reports `disconnected` on `pc`; its channel stays open. */
+    void disconnect(std::size_t pc);
+    /** Reports `connected` on `pc`, as after a disconnection. */
+    void reconnect(std::size_t pc);
     /** 0: buffered_amount() stays 0, as today. Otherwise each channel holds what it was sent, up to
      * no limit, and delivers `drain_per_post` bytes per post, firing buffered_amount_low at the
      * threshold; buffered_amount() is the bytes sent and not yet delivered. */
@@ -1014,6 +1028,18 @@ inline void memory_network::inject(std::size_t pc, std::span<const std::uint8_t>
 inline void memory_network::fail(std::size_t pc) {
     if (const auto connection = find(pc)) {
         connection->fail();
+    }
+}
+
+inline void memory_network::disconnect(std::size_t pc) {
+    if (const auto connection = find(pc)) {
+        connection->report(backend::connection_state::disconnected);
+    }
+}
+
+inline void memory_network::reconnect(std::size_t pc) {
+    if (const auto connection = find(pc)) {
+        connection->report(backend::connection_state::connected);
     }
 }
 
