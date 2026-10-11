@@ -52,6 +52,10 @@ namespace webcpp::trystero::detail {
  */
 class nostr_strategy : public std::enable_shared_from_this<nostr_strategy> {
 public:
+    /** How many event ids the strategy remembers, the newest, to drop one a relay repeats or
+     * another relay carries too. */
+    static constexpr std::size_t remembered_events = 4096;
+
     /** A message on one of the subscribed topics, with the index of the relay that carried it;
      * views valid for the call. */
     using message_handler =
@@ -138,7 +142,6 @@ private:
     static constexpr double first_retry_ms = 3333;
     static constexpr double max_retry_ms = 60'000;
     static constexpr double healthy_ms = 60'000;
-    static constexpr std::size_t remembered_events = 4096;
 
     struct relay_state {
         relay_state(std::string_view address, std::pmr::memory_resource* memory)
