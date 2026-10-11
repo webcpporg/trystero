@@ -1323,8 +1323,8 @@ void a_connections_end_is_seen_and_the_peers_meet_again() {
         webcpp::test::require(BOOST_TEST(run_until(f, [&] { return joins == 1; })));
         const auto open_pc = f.net.live_connections();  // the pair, both ends
         BOOST_TEST_EQ(open_pc, 2U);
-        // A's end of the pair: the first connection made after A's room existed is A's offer, or
-        // the peer of B's; peer_of finds the other.
+        // The first connection made once A's room exists: A's offer in practice, A's id being the
+        // lower; an end of either side ends the pair, so every way holds for either.
         const std::size_t a_end = a_pcs.front();
         if (way == 0) {
             f.net.fail(a_end);
