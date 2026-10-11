@@ -8,8 +8,12 @@ import webcpp ;
 
 webcpp.doc trystero : trystero.adoc ;
 
-# No single target builds every header: the reference parses them natively
-# with the native backend's target, which brings libdatachannel and OpenSSL,
-# and with Emscripten's own headers, searched after the host's, for the
-# browser backend's.
-webcpp.reference trystero : <library>/webcpp/trystero//native <library>/webcpp//emscripten-headers ;
+# No single target builds every header: the browser backend's build only on
+# emscripten, whose own headers hold only for wasm32's types, so the
+# reference reads every header for Emscripten's target, as em++ compiles
+# (/webcpp//emscripten-reference), with the native backend's target, which
+# brings libdatachannel and OpenSSL, and the browser build's define of
+# build.jam, which a requirement conditioned on the emscripten toolset does
+# not give it.
+webcpp.reference trystero : <library>/webcpp/trystero//native
+  <library>/webcpp//emscripten-reference <define>BOOST_ASIO_DISABLE_THREADS ;
