@@ -35,7 +35,7 @@
 #include <string_view>
 
 // The rooms' shared test helpers: a memory network with two relays, a watcher of a room's relay
-// traffic, a flood of announcements, and the virtual clock's own waits (Task 1, Task 4). A case
+// traffic, a flood of announcements, and the virtual clock's own waits. A case
 // of room_test.cpp, connection_test.cpp or shared_test.cpp includes this header for them.
 namespace webcpp::trystero::test {
 
