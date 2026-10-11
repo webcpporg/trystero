@@ -15,6 +15,8 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 
+#include <boost/assert.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -76,7 +78,9 @@ public:
     static constexpr std::chrono::milliseconds kept_frames_ttl{10'000};
 
     /** A connection to `peer` over its negotiated connection and open channel, in `memory`, the
-     * app's resource. */
+     * app's resource.
+     *
+     * @pre Every handler of `cb` is set. */
     connection(backend::factory& factory, std::string_view peer,
                std::shared_ptr<backend::peer_connection> pc,
                std::shared_ptr<backend::data_channel> channel, connection_callbacks cb, logger log,
@@ -92,7 +96,9 @@ public:
           bound_(memory),
           kept_(memory),
           drain_order_(memory),
-          attached_(memory) {}
+          attached_(memory) {
+        BOOST_ASSERT(cb_.presence && cb_.keeps && cb_.kept && cb_.ended);
+    }
 
     connection(const connection&) = delete;
     connection& operator=(const connection&) = delete;
@@ -193,19 +199,18 @@ public:
         return ended_ ? 0 : channel_->buffered_amount();
     }
 
-    /** Registers a room's binding by its token, and keeps the connection from idling. */
-    void attach(binding& b);
+    /** Registers a room's binding by its token, and keeps the connection from idling; returns the
+     * binding's id, which no other binding of this connection has.
+     *
+     * @pre No binding of the same token is bound: the app binds a room to a connection once. */
+    std::uint64_t attach(binding& b);
 
     /** Removes a binding; with none left, ends the connection after a kick or a zero idle time,
      * else after `idle_timeout`. */
     void detach(binding& b, bool after_kick, std::chrono::milliseconds idle_timeout);
 
     /** Gives the binding a place in the drain order, once. */
-    void wait_drained(binding& b) {
-        if (std::ranges::find(drain_order_, &b) == drain_order_.end()) {
-            drain_order_.push_back(&b);
-        }
-    }
+    void wait_drained(const binding& b);
 
     /** The frames kept for `token`, in their order; they are no longer kept. */
     std::pmr::deque<backend::bytes> take_kept(std::string_view token) {
@@ -218,11 +223,7 @@ public:
                 ++it;
             }
         }
-        if (kept_.empty()) {
-            kept_timer_.reset();
-            // A cleared deque keeps blocks (libc++ keeps up to two): a new one frees them (I5).
-            kept_ = decltype(kept_)(memory_);
-        }
+        forget_kept_if_empty();
         return out;
     }
 
@@ -237,6 +238,7 @@ private:
     void on_state(backend::connection_state state);
     void on_drained(bool open);
     void keep(std::string_view token, backend::bytes&& frame);
+    void forget_kept_if_empty();
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
@@ -251,8 +253,11 @@ private:
     std::shared_ptr<backend::timer> kept_timer_;
     std::shared_ptr<backend::timer> idle_timer_;
     std::shared_ptr<backend::timer> disconnect_timer_;
-    std::pmr::deque<binding*> drain_order_;
-    std::pmr::set<binding*> attached_;
+    // Bindings are named by id, never by address: a binding made during a drain may take the block
+    // of one destroyed in it, and must not inherit its turn (review of Task 2, I1).
+    std::pmr::deque<std::uint64_t> drain_order_;
+    std::pmr::map<std::uint64_t, binding*> attached_;  // by id: in the order of attachment
+    std::uint64_t next_binding_id_ = 0;
     bool ended_ = false;
 };
 
@@ -271,7 +276,7 @@ public:
           token_(token, room_memory),
           deliver_(std::move(deliver)),
           waiters_(room_memory) {
-        c->attach(*this);
+        id_ = c->attach(*this);
     }
 
     binding(const binding&) = delete;
@@ -293,6 +298,9 @@ public:
 
     /** The room's token. */
     [[nodiscard]] std::string_view token() const { return token_; }
+
+    /** The binding's id on its connection, which no other binding of the connection has. */
+    [[nodiscard]] std::uint64_t id() const { return id_; }
 
     /** The connection, until the binding detaches or the connection is gone. */
     [[nodiscard]] std::shared_ptr<connection> shared_connection() const {
@@ -325,9 +333,14 @@ public:
 
     /** A room frame of this binding's token, from the connection. */
     void deliver(backend::bytes&& frame, std::span<const std::uint8_t> action) {
-        if (!detached_) {
-            deliver_(std::move(frame), action);
+        if (detached_) {
+            return;
         }
+        // The room may detach or destroy this binding from inside the call (a kick): it and its
+        // delivery stay alive until the call returns (review C1). A lock, not shared_from_this,
+        // which would abort without exceptions when no shared_ptr owns the binding.
+        const auto self = weak_from_this().lock();
+        deliver_(std::move(frame), action);
     }
 
     /** This binding's turn at a drain: each of its waiters, in its order. */
@@ -337,14 +350,18 @@ public:
         }
     }
 
-    /** Leaves the connection: every waiter is told `false` and freed, the delivery dropped, and
-     * the connection idles or ends when no binding is left. */
+    /** Leaves the connection: every waiter is told `false` and freed, no frame is delivered any
+     * more, and the connection idles or ends when no binding is left.
+     *
+     * Tip: the delivery is not reset here, since it may be the very call that detaches; it goes
+     * with the binding, which its room owns. */
     void detach(bool after_kick, std::chrono::milliseconds idle_timeout) {
         if (std::exchange(detached_, true)) {
             return;
         }
+        // A waiter told `false` may release the room's last reference to this binding.
+        const auto self = weak_from_this().lock();
         drained(false);
-        deliver_ = {};
         if (const auto c = connection_.lock()) {
             c->detach(*this, after_kick, idle_timeout);
         }
@@ -356,12 +373,22 @@ private:
     handler<void(backend::bytes&&, std::span<const std::uint8_t>)> deliver_;
     std::pmr::vector<handler<void(bool)>> waiters_;
     bool detached_ = false;
+    std::uint64_t id_ = 0;
 };
 
-inline void connection::attach(binding& b) {
+inline std::uint64_t connection::attach(binding& b) {
+    BOOST_ASSERT(!bound_.contains(b.token()));
     bound_.insert_or_assign(std::pmr::string(b.token(), memory_), &b);
-    attached_.insert(&b);
+    const auto id = ++next_binding_id_;
+    attached_.emplace(id, &b);
     idle_timer_.reset();
+    return id;
+}
+
+inline void connection::wait_drained(const binding& b) {
+    if (std::ranges::find(drain_order_, b.id()) == drain_order_.end()) {
+        drain_order_.push_back(b.id());
+    }
 }
 
 /** Forgets a binding, and nothing else: its maps, its place in the drain order. */
@@ -369,8 +396,8 @@ inline void connection::remove(binding& b) {
     if (const auto it = bound_.find(b.token()); it != bound_.end() && it->second == &b) {
         bound_.erase(it);
     }
-    attached_.erase(&b);
-    std::erase(drain_order_, &b);
+    attached_.erase(b.id());
+    std::erase(drain_order_, b.id());
 }
 
 inline void connection::detach(binding& b, bool after_kick,
@@ -410,13 +437,21 @@ inline void connection::end(std::string_view reason_view) {
     channel_->close();
     pc_->close();
     // The bindings are let go before anyone is told: a room may destroy its binding, or itself,
-    // from inside `ended` (Trystero's clear, C/shared-peer.mjs:170-180). A waiter's failure may
-    // detach another binding of the snapshot: each is checked first (review M5).
+    // from inside `ended` (Trystero's clear, C/shared-peer.mjs:170-180). Every attached binding is
+    // told, those of the drain order first, then the others in the order they attached: an end
+    // from inside a drain's turn leaves waiters of that drain in no drain order (review of Task 2,
+    // I2). A failure may detach or destroy another binding, so each is looked up before its turn
+    // (review M5); one attached meanwhile finds the connection not live, and fails at once.
     bound_.clear();
-    const auto order = std::exchange(drain_order_, std::pmr::deque<binding*>(memory_));
-    for (auto* b : order) {
-        if (attached_.contains(b)) {
-            b->drained(false);
+    auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
+    for (const auto& [id, b] : attached_) {
+        if (std::ranges::find(order, id) == order.end()) {
+            order.push_back(id);
+        }
+    }
+    for (const auto id : order) {
+        if (const auto it = attached_.find(id); it != attached_.end()) {
+            it->second->drained(false);
         }
     }
     attached_.clear();
@@ -446,6 +481,7 @@ inline void connection::on_message(backend::bytes&& frame) {
                 remote_tokens_.erase(it);
             }
             std::erase_if(kept_, [token](const auto& k) { return k.first == token; });
+            forget_kept_if_empty();
         }
         cb_.presence(peer_, token, envelope->present);
         return;
@@ -482,6 +518,17 @@ inline void connection::keep(std::string_view token, backend::bytes&& frame) {
     cb_.kept(peer_, kept_token);
 }
 
+/** With nothing kept, the window stops, so that the next kept frame has 10 s of its own, as
+ * Trystero's syncDataTimers (C/shared-peer.mjs:417-422). */
+inline void connection::forget_kept_if_empty() {
+    if (!kept_.empty()) {
+        return;
+    }
+    kept_timer_.reset();
+    // A cleared deque keeps blocks (libc++ keeps up to two): a new one frees them (I5).
+    kept_ = decltype(kept_)(memory_);
+}
+
 inline void connection::on_state(backend::connection_state state) {
     using backend::connection_state;
     if (state == connection_state::failed || state == connection_state::closed) {
@@ -505,13 +552,13 @@ inline void connection::on_state(backend::connection_state state) {
 
 inline void connection::on_drained(bool open) {
     // Every binding waiting at this drain gets its turn, in the order it began to wait. A turn may
-    // detach another binding of the snapshot, even destroy it: each is checked before its turn
-    // (review M5).
+    // detach another binding of the snapshot, even destroy it: each is looked up by its id before
+    // its turn (review M5), so that one made meanwhile, at the same address, is not taken for it.
     const auto self = shared_from_this();
-    const auto order = std::exchange(drain_order_, std::pmr::deque<binding*>(memory_));
-    for (auto* b : order) {
-        if (attached_.contains(b)) {
-            b->drained(open);
+    const auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
+    for (const auto id : order) {
+        if (const auto it = attached_.find(id); it != attached_.end()) {
+            it->second->drained(open);
         }
     }
 }
