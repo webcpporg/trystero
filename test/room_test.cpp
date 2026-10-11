@@ -632,7 +632,9 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
     const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
     const auto started = f.net.now_ms();
     const auto before = f.net.relay(relay_a).events_seen;
-    // Paced, so that each offer's open completes before later ids evict its negotiation.
+    // Paced, so that each offer's open completes before later ids evict its negotiation: every
+    // twenty, the executor runs until nothing is left to run, the relay, the room and the sealer's
+    // opens, however slowly the machine runs them.
     for (int i = 0; i < flood; ++i) {
         attacker.publish(a_topic, {
                                       .peer_id = "0garbage" + std::to_string(i),
@@ -640,7 +642,7 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
                                       .offer = "not a sealed offer",
                                   });
         if (i % 20 == 19) {
-            run_until(f.io, [] { return false; }, 5ms);
+            f.io.poll();
         }
     }
     BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
