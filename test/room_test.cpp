@@ -506,9 +506,15 @@ void a_flood_of_announcements_is_bounded() {
     // Announces `count` fresh ids, a thousand at a time, each thousand passed by the relay before
     // the next, then has a message go through, and returns what the room holds then, beyond what
     // it held once joined. The memory relay queues what it forwards in each room's resource, and
-    // a flood sent at once would hold it all there, more than Emscripten's 16 MiB.
+    // a flood sent at once would hold it all there, more than Emscripten's 16 MiB. The page's
+    // connections are counted from those it holds when the flood starts, the late peer's among
+    // them in the second. The flood adds at most `2 * bound`: the offers of the negotiations under
+    // way, and those of the ones just expired, closed but held by the completions queued for them
+    // until the executor reaches them, behind the relays' messages on a loaded machine.
     flooder attacker(f, "flood");
     const auto flooded = [&](std::size_t count, std::string_view prefix) {
+        const std::size_t held = f.net.live_connections();
+        f.net.peak_connections = held;
         constexpr std::size_t batch = 1000;
         for (std::size_t sent = 0; sent < count; sent += batch) {
             const std::size_t now = std::min(batch, count - sent);
@@ -520,7 +526,7 @@ void a_flood_of_announcements_is_bounded() {
         const std::size_t messages = heard.size() + 1;
         chat_a.async_send("after the flood", [](boost::system::error_code) {});
         BOOST_TEST(run_until(f.io, [&] { return heard.size() == messages; }));
-        BOOST_TEST_LE(f.net.peak_connections, joined_connections + (2 * bound));
+        BOOST_TEST_LE(f.net.peak_connections, held + (2 * bound));
         return memory.in_use - joined_in_use;
     };
     const std::size_t first = flooded(flood, "1flood");
