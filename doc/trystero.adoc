@@ -66,3 +66,5 @@ include::differences.adoc[]
 include::roadmap.adoc[]
 
 include::acknowledgements.adoc[]
+
+include::changelog.adoc[]
