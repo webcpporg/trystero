@@ -129,22 +129,25 @@ struct app_room {
     std::shared_ptr<trystero::detail::room_impl> room;
 };
 
-app_room make_app_room(fixture& f, std::string_view self_id, std::string_view room_id,
-                       std::chrono::milliseconds idle_timeout = std::chrono::milliseconds{
-                           123'333}) {
+app_room make_app_room(
+    fixture& f, std::string_view self_id, std::string_view room_id,
+    const std::function<void(trystero::app_config&, trystero::room_options&)>& edit = {}) {
     auto* m = std::pmr::get_default_resource();
     const std::pmr::polymorphic_allocator<> alloc(m);
+    trystero::app_config config{
+        .app_id = app_id,
+        .self_id = std::pmr::string(self_id),
+        .relay_urls = {relay_a, relay_b},
+    };
+    trystero::room_options options;
+    if (edit) {
+        edit(config, options);
+    }
     app_room out;
-    out.app =
-        std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
-                                                         trystero::app_config{
-                                                             .app_id = app_id,
-                                                             .self_id = std::pmr::string(self_id),
-                                                             .relay_urls = {relay_a, relay_b},
-                                                             .idle_timeout = idle_timeout,
-                                                         });
-    out.room = std::allocate_shared<trystero::detail::room_impl>(
-        alloc, out.app, trystero::room_options{}, room_id, m);
+    out.app = std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
+                                                               std::move(config));
+    out.room = std::allocate_shared<trystero::detail::room_impl>(alloc, out.app, std::move(options),
+                                                                 room_id, m);
     out.room->start();
     return out;
 }
@@ -1440,6 +1443,86 @@ void a_late_end_of_another_connection_keeps_the_peer() {
     a.room->abandon();
 }
 
+// A remote's presence(0) for the room is a departure: the peer leaves, and the connection, which
+// another room of the app could use, idles instead of ending.
+void a_withdrawn_presence_is_a_departure() {
+    fixture f{true};
+    const std::string b_id = "WWWWWWWWWWWWWWWWWWWW";
+    const auto a = make_app_room(f, "VVVVVVVVVVVVVVVVVVVV", "withdraw");
+    int leaves = 0;
+    a.room->on_peer_leave(
+        a.room->bind<void(std::string_view)>([&](std::string_view) { ++leaves; }));
+    std::vector<std::size_t> pcs;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        pcs.push_back(pc);
+    };
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "withdraw");
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.room->active_peers().size() == 1; })));
+    const auto c = a.app->find(b_id);
+    webcpp::test::require(BOOST_TEST(c != nullptr));
+    f.net.inject(pcs.front(), trystero::protocol::presence_frame(
+                                  trystero::protocol::room_token(app_id, "withdraw"), false));
+    BOOST_TEST(run_until(f, [&] { return leaves == 1; }));
+    BOOST_TEST(a.room->active_peers().empty());
+    BOOST_TEST(c->live());
+    BOOST_TEST(a.app->find(b_id) == c);
+    a.room->abandon();
+}
+
+// A kick by the connection's last room ends the connection at once, rather than idling it: the
+// handshake times out, since every room frame to A is dropped.
+void a_kick_by_the_last_room_ends_the_connection() {
+    fixture f{true};
+    const std::string b_id = "YYYYYYYYYYYYYYYYYYYY";
+    std::vector<std::string> log;
+    const auto a = make_app_room(
+        f, "XXXXXXXXXXXXXXXXXXXX", "kick", [&](trystero::app_config& c, trystero::room_options&) {
+            c.log = [&log](std::string_view category, std::string_view text) {
+                log.push_back(std::string(category) + ": " + std::string(text));
+            };
+        });
+    std::vector<std::size_t> pcs;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        pcs.push_back(pc);
+    };
+    f.net.filter = [&](std::size_t, std::size_t to, std::span<const std::uint8_t> frame) {
+        const bool room_frame_to_a = !pcs.empty() && to == pcs.front() && frame[0] == 1;
+        return room_frame_to_a ? trystero::test::memory_network::verdict::drop
+                               : trystero::test::memory_network::verdict::deliver;
+    };
+    const trystero::room b(f.io.get_executor(), f.net, config(b_id), "kick");
+    const std::string kicked =
+        "webrtc: connection with " + b_id + " ended: its last room kicked the peer";
+    BOOST_TEST(run_until(f, [&] { return std::ranges::count(log, kicked) > 0; }, 20s));
+    a.room->abandon();
+}
+
+// A room left with no idle time still says so on the connection, before its departure ends it
+// (review of Task 4, item 2): Trystero's idle close is always a later timer.
+void a_room_left_with_no_idle_time_sends_its_presence() {
+    fixture f{true};
+    const auto a = make_app_room(f, "ZZZZZZZZZZZZZZZZZZZZ", "no-idle",
+                                 [](trystero::app_config& c, trystero::room_options&) {
+                                     c.idle_timeout = std::chrono::milliseconds::zero();
+                                 });
+    const trystero::room b(f.io.get_executor(), f.net, config("zzzzzzzzzzzzzzzzzzzz"), "no-idle");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return a.room->active_peers().size() == 1 && b.peers().size() == 1; })));
+    const auto absent = trystero::protocol::presence_frame(
+        trystero::protocol::room_token(app_id, "no-idle"), false);
+    int seen = 0;
+    f.net.filter = [&](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+        if (std::ranges::equal(frame, absent)) {
+            ++seen;
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    a.room->abandon();
+    advance(f, 1s);
+    BOOST_TEST_EQ(seen, 1);
+}
+
 }  // namespace
 
 int main() {
@@ -1476,5 +1559,8 @@ int main() {
     a_frame_of_an_unknown_token_is_dropped();
     malformed_envelopes_end_the_connection();
     a_late_end_of_another_connection_keeps_the_peer();
+    a_withdrawn_presence_is_a_departure();
+    a_kick_by_the_last_room_ends_the_connection();
+    a_room_left_with_no_idle_time_sends_its_presence();
     return boost::report_errors();
 }
