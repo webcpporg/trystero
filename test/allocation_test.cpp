@@ -547,8 +547,6 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     warm(io);
     std::size_t a_lines = 0;
     std::size_t z_lines = 0;
-    auto a_config = config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines);
-    auto z_config = config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines);
     std::size_t files = 0;
     std::size_t pings = 0;
     std::size_t left = 0;
@@ -564,10 +562,17 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     {
         // z is subscribed and announcing before a arrives, so that z, whose id is
         // the higher, also asks a to offer, as Trystero's counter-announcement does.
-        trystero::room z(io.get_executor(), network, std::move(z_config), "room");
+        // Each configuration is a temporary, which leaves no moved-from object behind:
+        // MSVC's debug standard library keeps, in a moved-from std::pmr::string or
+        // vector, 16 bytes of its resource for the container's debug proxy, 64 bytes
+        // of a moved-from configuration's four, which the test would count as the
+        // room's until the end of the function.
+        trystero::room z(io.get_executor(), network,
+                         config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines), "room");
         run_for(io, 100);
         {
-            trystero::room a(io.get_executor(), network, std::move(a_config), "room");
+            trystero::room a(io.get_executor(), network,
+                             config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines), "room");
             a.on_peer_leave([&left](std::string_view /*peer*/) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
                 [&files](const trystero::pmr_bytes& data, const trystero::message_info& /*info*/) {

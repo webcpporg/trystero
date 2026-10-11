@@ -4,7 +4,10 @@
 # accompanying file LICENSE_1_0.txt or copy at
 # https://www.boost.org/LICENSE_1_0.txt)
 
-project : requirements <library>/webcpp/trystero//trystero ;
+# A program of rooms over Asio holds more sections than MSVC's object format
+# allows by default (C1128, measured in native_quick_start): /bigobj.
+project : requirements <library>/webcpp/trystero//trystero
+  <toolset>msvc:<cxxflags>/bigobj ;
 
 import webcpp ;
 

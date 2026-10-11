@@ -5,9 +5,12 @@
 # https://www.boost.org/LICENSE_1_0.txt)
 
 # MSVC deprecates std::getenv, which room_test.cpp reads, for a getenv_s of
-# its own (C4996), an error under /WX: the tests keep the standard's.
+# its own (C4996), an error under /WX: the tests keep the standard's. A test
+# of rooms over Asio holds more sections than MSVC's object format allows by
+# default (C1128, measured in room, native_websocket, native_peer_connection
+# and native_room): /bigobj.
 project : requirements <library>/webcpp/trystero//trystero
-  <toolset>msvc:<define>_CRT_SECURE_NO_WARNINGS ;
+  <toolset>msvc:<define>_CRT_SECURE_NO_WARNINGS <toolset>msvc:<cxxflags>/bigobj ;
 
 import webcpp ;
 
