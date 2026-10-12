@@ -398,7 +398,8 @@ const unusableIceScenario = (name, cppKind) =>
 // The C++ peer offers to at most the room's bound of them at once, makes no connection for a forged offer or answer,
 // logs each id it refuses once, makes at most the room's bound of connections in the window (counted as Chromium
 // counts them, every one made), reports the forged signals once, not once per id, and goes on with the peer that
-// joined.
+// joined. The flood is judged by what happens once it begins: before it, the two peers meet as in any scenario, and a
+// first meeting whose handshake times out (Trystero's 10 s) and meets again is that meeting's, not the flood's.
 const floodCount = 300
 const unconnectedBound = 32
 const floodCallMs = 20_000
@@ -413,6 +414,10 @@ const floodScenario = (name, cppKind) =>
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
+        const connections = async () => cppKind === 'native'
+            ? (await cpp.events()).filter(e => e.kind === 'made-connection').length
+            : await cpp.value('window.madePeerConnections')
+        const before = {connections: await connections(), cpp: (await cpp.events()).length, js: (await js.events()).length}
         // Each call answers once its flood is sent, which on a busy machine takes the page more than 10 s.
         await js.value(`window.flood(${floodCount}, '0000000000')`, floodCallMs)
         await js.value(`window.floodOffers(${floodCount}, '1111111111', '${self}')`, floodCallMs)
@@ -425,26 +430,26 @@ const floodScenario = (name, cppKind) =>
         const offered = new Set([...log.matchAll(/announcement from (0000000000\w{10}): our id is lower, so we offer/g)].map(m => m[1]))
         const refused = new Set([...log.matchAll(/refusing ([01]{10}\w{10})/g)].map(m => m[1]))
         const forged = (await forger.events()).filter(e => e.kind === 'forged').length
-        const made = cppKind === 'native'
-            ? (await cpp.events()).filter(e => e.kind === 'made-connection').length
-            : await cpp.value('window.madePeerConnections')
+        const made = await connections() - before.connections
         const peak = await cpp.value('window.peakPeerConnections')
         const reports = (await cpp.events()).filter(e => e.kind === 'error' && e.error === 'the peer uses another room password').length
         const facts = `the C++ peer logged ${(await floodIds()).size} of ${floodCount} announcing ids and ` +
             `${(await offerIds()).size} of ${floodCount} offering ids, offered to ${offered.size}, refused ${refused.size}, ` +
-            `made ${made} connections` + (peak === undefined ? '' : `, held at most ${peak}`) +
+            `made ${made} connections in the flood, ${before.connections} before it` +
+            (peak === undefined ? '' : `, held at most ${peak}`) +
             `, reported ${reports} wrong passwords; the watcher forged ${forged} answers`
         console.log(`  ${facts}`)
         if (!seen) return `${facts}; not every flooding signal was handled in 30 s`
         if (offered.size > unconnectedBound) return `${facts}; offered to more than ${unconnectedBound}`
         if (forged < 1) return `${facts}; the watcher forged no answer`
-        // The flooders' offers, and at most two for the peer that joined.
-        if (made > unconnectedBound + 2) return `${facts}; more than ${unconnectedBound + 2} connections`
+        // The flooders' offers alone: the peer that joined is joined before the flood begins.
+        if (made > unconnectedBound) return `${facts}; more than ${unconnectedBound} connections in the flood`
         // The forged signals are reported once per 10 s, not once per fresh id: the first at once, the rest together.
         // So at most one report, and one more for each 10 s the C++ peer has been open, however slow the machine is.
         const reportBound = 1 + Math.floor((Date.now() - opened) / 10_000)
         if (reports > reportBound) return `${facts}; more than ${reportBound} reports of signals that did not open`
-        if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return `${facts}; a peer left`
+        const during = [...(await cpp.events()).slice(before.cpp), ...(await js.events()).slice(before.js)]
+        if (during.some(e => e.kind === 'peer-leave')) return `${facts}; a peer left during the flood`
         return null
     })
 
