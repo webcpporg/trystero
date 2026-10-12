@@ -83,7 +83,7 @@ rule native-dependencies ( properties * )
 # tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
   : : <include>include <library>/boost//headers <library>/webcpp//boost_json
-  <library>secp256k1
+  <library>/webcpp/config//config <library>secp256k1
   <toolset>emscripten:<define>BOOST_ASIO_DISABLE_THREADS
   <toolset>emscripten:<linkflags>-lembind ;
 # end::trystero[]

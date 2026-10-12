@@ -23,9 +23,9 @@ trystero raises no exception of its own: an operation that can fail completes
 with an error code. The rooms, the protocol and the browser backend compile
 without exceptions. The native backend's WebRTC needs them, since
 libdatachannel reports errors by throwing: without exceptions, or with
-`WEBCPP_TRYSTERO_NO_EXCEPTIONS` defined, `native::data_channel`,
-`native::peer_connection` and `native::backend` do not exist, and the native
-timer, sealer and WebSockets remain.
+`WEBCPP_NO_EXCEPTIONS` or `WEBCPP_TRYSTERO_NO_EXCEPTIONS` defined,
+`native::data_channel`, `native::peer_connection` and `native::backend` do
+not exist, and the native timer, sealer and WebSockets remain.
 
 Every allocation of a room goes through the `std::pmr::memory_resource` its
 `room_config::memory` names, the default resource unless it names another:
@@ -319,7 +319,8 @@ the rooms, the protocol and their details on both targets, the native
 backend natively, against libdatachannel and OpenSSL and with exceptions
 whatever the build asks, and the browser backend on emscripten. It also
 checks that `<webcpp/trystero/config.hpp>` defines
-`WEBCPP_TRYSTERO_NO_EXCEPTIONS` exactly when the build has no exceptions.
+`WEBCPP_TRYSTERO_NO_EXCEPTIONS` exactly when webcpp has no exceptions, and
+when a program defines `WEBCPP_NO_EXCEPTIONS`.
 `test/support/memory_backend.hpp` is a backend in memory, whose relays,
 peer connections and data channels run whole rooms in one process.
 

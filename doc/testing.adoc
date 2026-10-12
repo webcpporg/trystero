@@ -51,10 +51,12 @@ include::{library-root}/test/Jamfile[tag=allocation]
   native backend natively, against libdatachannel and OpenSSL, and the
   browser backend on emscripten.
 
-| `config`, `config_developer_defined`
+| `config`, `config_developer_defined`, `config_all_off`
 | `<webcpp/trystero/config.hpp>` defines `WEBCPP_TRYSTERO_NO_EXCEPTIONS`
-  exactly when the build has no exceptions, and keeps it when a developer
-  defines it in a build that has them.
+  exactly when webcpp has no exceptions (`WEBCPP_HAS_EXCEPTIONS` is not
+  defined: the compiler has none, or the program defined
+  `WEBCPP_NO_EXCEPTIONS`), and keeps it when a developer defines it for
+  trystero alone in a build that has them.
 
 | `protocol`
 | The protocol against values Trystero JS 0.26.0 computed itself: topics,

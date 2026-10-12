@@ -22,15 +22,17 @@ on it or polling it (<<trystero-quick-start-native>>).
 trystero raises no exception of its own, but libdatachannel reports errors by
 throwing, and the native backend's data channel and peer connection catch
 what it throws on refused input and complete with `error::backend_failure`.
-So they need exceptions: without them, or with
+So they need exceptions: without them, or with `WEBCPP_NO_EXCEPTIONS` or
 `WEBCPP_TRYSTERO_NO_EXCEPTIONS` defined, `native::data_channel`,
 `native::peer_connection` and `native::backend`, which makes their objects,
 do not exist, and code that uses them does not compile. The native timer,
 sealer and WebSockets, and the rest of trystero, are unchanged.
 
 `<webcpp/trystero/config.hpp>`, which every header includes first, defines
-`WEBCPP_TRYSTERO_NO_EXCEPTIONS` when the compiler has no exceptions
-(`BOOST_NO_EXCEPTIONS`); a developer may define it in a build that has them.
+`WEBCPP_TRYSTERO_NO_EXCEPTIONS` when webcpp has no exceptions
+(`WEBCPP_HAS_EXCEPTIONS` is not defined: the compiler has none, or the
+program defined `WEBCPP_NO_EXCEPTIONS`); a developer may define it for
+trystero alone in a build that has them.
 Each program and test that uses the native backend's WebRTC declares
 `<exception-handling>on` itself, whatever the build asks
 (<<trystero-building-project>>). One function of the backend throws: its

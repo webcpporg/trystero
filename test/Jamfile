@@ -34,12 +34,16 @@ webcpp.headers-alone trystero : ../include
   : <library>/webcpp/trystero//native <exception-handling>on : native ;
 webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
 
-# config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when the build has
-# no exceptions, and keeps it when a developer defines it in a build that
-# has them.
+# config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when webcpp has no
+# exceptions, and keeps it when a developer defines it in a build that has
+# them.
 webcpp.compile config : config_test.cpp ;
 webcpp.compile config_developer_defined : config_test.cpp
   : <define>WEBCPP_TRYSTERO_NO_EXCEPTIONS <define>WEBCPP_TEST_TRYSTERO_DEVELOPER_DEFINED ;
+# WEBCPP_NO_EXCEPTIONS, which a developer defines for every webcpp library at
+# once, defines WEBCPP_TRYSTERO_NO_EXCEPTIONS in a build that has exceptions.
+webcpp.compile config_all_off : config_test.cpp
+  : <define>WEBCPP_NO_EXCEPTIONS <define>WEBCPP_TEST_TRYSTERO_ALL_OFF ;
 
 # The protocol against what Trystero JS computed, which the original's oracle
 # wrote into fixtures/expected/expected.json, and whole rooms over the memory

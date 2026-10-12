@@ -17,4 +17,8 @@ of every version are on webcpp's index page.
 
 // tag::unreleased[]
 * Added a changelog, the page's last appendix, with each version's changes.
+* Changed `config.hpp` to include `<webcpp/config.hpp>`, webcpp's
+configuration, which the build adds.
+* Added `WEBCPP_NO_EXCEPTIONS`, which disables trystero's exceptions with
+every webcpp library's.
 // end::unreleased[]
