@@ -267,6 +267,19 @@ const until = async (condition, ms) => {
     return condition()
 }
 
+// Whether a peer of a mesh of three is joined to both others and has a file from each. Joins are counted as
+// peers present, joins less leaves in their order: Trystero JS gives up a handshake after 10 s and tries
+// again, so a peer may see another leave and join anew, a third join that is still a mesh of three.
+const meshFormed = events => {
+    const present = new Set()
+    for (const e of events) {
+        if (e.kind === 'peer-join') present.add(e.peer)
+        else if (e.kind === 'peer-leave') present.delete(e.peer)
+    }
+    const senders = new Set(events.filter(e => e.kind === 'file').map(e => e.from))
+    return present.size === 2 && senders.size === 2
+}
+
 /** What a peer must have seen of a partner: the join, both messages, the echo of its own, the file, a ping, its sends. */
 const exchangeComplete = (events, partnerIsCpp) => {
     const has = (kind, f = () => true) => events.some(e => e.kind === kind && f(e))
@@ -696,9 +709,7 @@ const scenarios = async () => {
                 const peers = [await open('js', params), await open('native', params), await open('js', params)]
                 const ok = await until(async () => {
                     for (const p of peers) {
-                        const events = await p.events()
-                        if (events.filter(e => e.kind === 'peer-join').length !== 2) return false
-                        if (events.filter(e => e.kind === 'file').length !== 2) return false
+                        if (!meshFormed(await p.events())) return false
                     }
                     return true
                 }, 30_000)
@@ -725,9 +736,7 @@ const scenarios = async () => {
             const peers = [await open('js', params), await open('cpp', params), await open('js', params)]
             const ok = await until(async () => {
                 for (const p of peers) {
-                    const events = await p.events()
-                    if (events.filter(e => e.kind === 'peer-join').length !== 2) return false
-                    if (events.filter(e => e.kind === 'file').length !== 2) return false
+                    if (!meshFormed(await p.events())) return false
                 }
                 return true
             }, 30_000)
