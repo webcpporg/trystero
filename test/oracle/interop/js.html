@@ -57,21 +57,108 @@ window.RTCPeerConnection = class extends PeerConnection {
     constructor(...args) {
         super(...args)
         connections.push(this)
+        this.addEventListener('datachannel', ({channel}) => watchChannel(channel))
     }
 }
-// With `text-messages`, this peer also sends each C++ peer, once it joins, two text messages on the data channel, as
-// a broken or hostile peer can, then a chat message the C++ peer must still receive. Its channels are found by
-// watching createDataChannel: this peer offers, so it opens them.
+// Every data channel of the page's connections, the ones it opens (createDataChannel) and the ones it accepts (the
+// datachannel event, below), and the room tokens the remote peers advertised on them: presence frames,
+// [2, present, length (uint16 BE), token], as Trystero's wrapRoomPresenceFrame writes them. With `text-messages`,
+// the open ones also carry the text messages of that scenario.
 const textMessages = params.get('text-messages')
 const channels = []
-if (textMessages) {
-    const create = RTCPeerConnection.prototype.createDataChannel
-    RTCPeerConnection.prototype.createDataChannel = function (...args) {
-        const channel = create.apply(this, args)
-        channels.push(channel)
-        return channel
+const advertised = new Set()
+const receivedRoomFrames = new Map()
+const receivedRoomActions = new Map()
+const encoder = new TextEncoder()
+const decoder = new TextDecoder()
+const watchChannel = channel => {
+    channels.push(channel)
+    channel.addEventListener('message', ({data}) => {
+        if (!(data instanceof ArrayBuffer)) return
+        const b = new Uint8Array(data)
+        if (b.length < 3) return
+        if (b[0] === 1) {
+            const start = 3 + ((b[1] << 8) | b[2])
+            const token = decoder.decode(b.subarray(3, start))
+            receivedRoomFrames.set(token, (receivedRoomFrames.get(token) ?? 0) + 1)
+            // Inline messages and transfer offers carry the action name; control and chunk frames do not.
+            if (b.length >= start + 36 && b[start] === 2 && (b[start + 1] & 15) <= 1) {
+                const name = decoder.decode(b.subarray(start + 2, start + 34)).replace(/\0+$/, '')
+                const actions = receivedRoomActions.get(token) ?? new Map()
+                actions.set(name, (actions.get(name) ?? 0) + 1)
+                receivedRoomActions.set(token, actions)
+            }
+            return
+        }
+        if (b.length < 4 || b[0] !== 2) return
+        const token = decoder.decode(b.subarray(4, 4 + ((b[2] << 8) | b[3])))
+        if (b[1] === 1) advertised.add(token)
+        else advertised.delete(token)
+    })
+}
+const create = RTCPeerConnection.prototype.createDataChannel
+RTCPeerConnection.prototype.createDataChannel = function (...args) {
+    const channel = create.apply(this, args)
+    watchChannel(channel)
+    return channel
+}
+
+// `idle` and `handshake` reach every room: Trystero's test-only idle time of a shared connection
+// (C/strategy.mjs:44), and its handshake timeout, a callbacks option (C/strategy.mjs:32).
+const idle = params.get('idle')
+const handshake = params.get('handshake')
+const configOf = password => ({
+    appId: params.get('app'),
+    // No ICE server: Chrome gathers its host candidates alone, and asks no public STUN server.
+    rtcConfig: {iceServers: []},
+    ...(password ? {password} : {}),
+    ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
+    ...(idle ? {_test_only_sharedPeerIdleMs: Number(idle)} : {}),
+})
+const callbacksOf = which => ({
+    onJoinError: details => record('error', {...(which ? {room: which} : {}), peer: details.peerId, error: details.error}),
+    ...(handshake ? {handshakeTimeoutMs: Number(handshake)} : {}),
+})
+
+// The token that names a room in a data channel's envelope: the hexadecimal SHA-256 of "Trystero:<app>:<room>".
+const tokenOf = async roomId => Array.from(
+    new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(`Trystero:${params.get('app')}:${roomId}`))),
+    b => b.toString(16).padStart(2, '0')).join('')
+
+// With `hold-hsdata`, the page's first @_hsdata room frame of room2 is held for 12 s, with every later frame of that
+// channel behind it, as a data channel delivers in order (S:6.4 scenario 9). An action frame starts with the version
+// (2), the kind and format byte, and the name, NUL-padded to 32 bytes (P/include/webcpp/trystero/protocol/
+// action_wire.hpp:142-152), after the envelope's 3 bytes and token.
+if (params.get('hold-hsdata')) {
+    const token2 = await tokenOf(params.get('room2'))
+    const channelSend = RTCDataChannel.prototype.send
+    const bytesOf = data => data instanceof ArrayBuffer ? new Uint8Array(data)
+        : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null
+    const isHsdata = data => {
+        const b = bytesOf(data)
+        if (!b || b.length < 3 || b[0] !== 1) return false
+        const n = (b[1] << 8) | b[2]
+        if (decoder.decode(b.subarray(3, 3 + n)) !== token2) return false
+        return decoder.decode(b.subarray(3 + n + 2, 3 + n + 34)).replace(/\0+$/, '') === '@_hsdata'
+    }
+    let held = null
+    RTCDataChannel.prototype.send = function (data) {
+        if (held?.channel === this) return void held.queue.push(data)
+        if (held === null && isHsdata(data)) {
+            held = {channel: this, queue: [data]}
+            record('held', {what: '@_hsdata'})
+            setTimeout(() => {
+                const {channel, queue} = held
+                held = {channel: null, queue: []}
+                for (const d of queue) channelSend.call(channel, d)
+                record('released', {count: queue.length})
+            }, 12_000)
+            return
+        }
+        channelSend.call(this, data)
     }
 }
+
 const checksum = bytes => {
     let sum = 0
     for (let i = 0; i < bytes.length; i++) sum = (sum + bytes[i] * (i + 1)) >>> 0
@@ -81,22 +168,14 @@ const sent = (what, peer) => [() => record('sent', {what, peer, error: ''}), e =
 // Joins the room, with the actions and the handlers every scenario relies on; the page's peer id is Trystero's
 // selfId, the same for every join of the page.
 let room
+let firstChat
 const join = () => {
-    room = joinRoom(
-        {
-            appId: params.get('app'),
-            // No ICE server: Chrome gathers its host candidates alone, and asks no public STUN server.
-            rtcConfig: {iceServers: []},
-            ...(params.get('password') ? {password: params.get('password')} : {}),
-            ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
-        },
-        params.get('room'),
-        {onJoinError: details => record('error', {peer: details.peerId, error: details.error})}
-    )
+    room = joinRoom(configOf(params.get('password')), params.get('room'), callbacksOf(null))
     record('joined', {self: selfId})
     log('room', 'self id ' + selfId)
 
     const chat = room.makeAction('chat')
+    firstChat = chat
     const drink = room.makeAction('drink')
     const file = room.makeAction('file')
     chat.onMessage = (text, {peerId}) => {
@@ -133,34 +212,78 @@ const join = () => {
     }
 }
 join()
-// With `room2`, this page also joins that room of the same app, as one Trystero JS page does: Trystero keeps one
-// connection per app and peer id, which both rooms share. Its events carry `room: 'second'`.
-if (params.get('room2')) {
-    const second = joinRoom(
-        {
-            appId: params.get('app'),
-            rtcConfig: {iceServers: []},
-            ...(params.get('password') ? {password: params.get('password')} : {}),
-            ...(relays ? {relayConfig: {urls: relays.split(',')}} : {}),
-        },
-        params.get('room2'),
-        {onJoinError: details => record('error', {room: 'second', peer: details.peerId, error: details.error})}
-    )
-    const chat = second.makeAction('chat')
-    const file = second.makeAction('file')
-    chat.onMessage = (text, {peerId}) => record('chat', {room: 'second', from: peerId, text})
+// With `room2` and `room3`, this page also joins those rooms of the same app, as one Trystero JS page does: Trystero
+// keeps one connection per app and peer id, which the rooms share. Their events carry `room: 'second'` and `'third'`.
+const joinExtra = (which, roomId, password) => {
+    const extra = joinRoom(configOf(password), roomId, callbacksOf(which))
+    const chat = extra.makeAction('chat')
+    const file = extra.makeAction('file')
+    chat.onMessage = (text, {peerId}) => record('chat', {room: which, from: peerId, text})
     file.onMessage = (data, {peerId}) => {
         const bytes = new Uint8Array(data)
-        record('file', {room: 'second', from: peerId, size: bytes.length, checksum: checksum(bytes)})
+        record('file', {room: which, from: peerId, size: bytes.length, checksum: checksum(bytes)})
     }
-    second.onPeerJoin = peer => {
-        record('peer-join', {room: 'second', peer})
+    extra.onPeerJoin = peer => {
+        record('peer-join', {room: which, peer})
         chat.send('hello from Trystero JS', {target: peer})
         file.send(new Uint8Array(100_000).map((_, i) => (i * 7) % 256), {target: peer})
     }
-    second.onPeerLeave = peer => record('peer-leave', {room: 'second', peer})
+    extra.onPeerLeave = peer => record('peer-leave', {room: which, peer})
+    return {room: extra, chat}
 }
+// A delayed second join lets the remote room finish its initial relay announcement warmup before binding.
+let second = null
+if (params.get('room2')) {
+    const joinSecond = () => { second = joinExtra('second', params.get('room2'), params.get('password2') ?? params.get('password')) }
+    const delay = Number(params.get('room2Delay'))
+    if (delay > 0) setTimeout(joinSecond, delay)
+    else joinSecond()
+}
+const third = params.get('room3') ? joinExtra('third', params.get('room3'), params.get('password3')) : null
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
+// The scenarios' hooks (run.mjs, S:6.4).
+window.leave2 = () => second.room.leave().then(() => record('left', {room: 'second', error: ''}))
+window.chat1 = text => firstChat.send(text)
+window.chat2 = text => second.chat.send(text)
+window.flood5000 = () => {
+    for (let i = 0; i < 5000; ++i) firstChat.send('flood ' + i)
+    record('flooded', {count: 5000})
+}
+window.connectionStates = () => connections.map(c => c.connectionState)
+window.advertisedCount = () => advertised.size
+window.roomFrames = async (roomId, action) => {
+    const token = await tokenOf(roomId)
+    return action ? receivedRoomActions.get(token)?.get(action) ?? 0 : receivedRoomFrames.get(token) ?? 0
+}
+// Sends, on every open channel, presence(1, T) and an @_hsready room frame for every token T the remote peers
+// advertised: what a peer in one room can send for the app's other rooms (ruling 7). The @_hsready frame is an inline
+// action frame (version 2, kind and format 0, the name NUL-padded to 32 bytes, metadata length 0, no payload) in the
+// room envelope [1, length (uint16 BE), token].
+const presenceFrame = token => {
+    const t = encoder.encode(token)
+    return Uint8Array.of(2, 1, t.length >> 8, t.length & 0xff, ...t)
+}
+const hsreadyFrame = token => {
+    const t = encoder.encode(token)
+    const frame = new Uint8Array(3 + t.length + 36)
+    frame.set([1, t.length >> 8, t.length & 0xff])
+    frame.set(t, 3)
+    frame.set([2, 0], 3 + t.length)
+    frame.set(encoder.encode('@_hsready'), 3 + t.length + 2)
+    return frame
+}
+window.echoPresence = () => {
+    const open = channels.filter(c => c.readyState === 'open')
+    for (const channel of open) {
+        for (const token of advertised) {
+            channel.send(presenceFrame(token))
+            channel.send(hsreadyFrame(token))
+        }
+    }
+    record('echoed', {channels: open.length, tokens: advertised.size})
+    return advertised.size
+}
+
 // window.drop(): closes every connection the page made, as a network drop ends them; Trystero then meets its peers
 // again, with the same peer id.
 window.drop = () => {

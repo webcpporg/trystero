@@ -290,7 +290,7 @@ holds only what is specific to trystero.
     interface that holds the default route and leads nowhere, a dummy
     device, to which nothing but the kernel's IPv6 router solicitations was
     sent.
-  - Each driver is bounded by 900 s (`<webcpp-drive-timeout>`), beyond its
+  - Each driver is bounded by 2400 s (`<webcpp-drive-timeout>`), beyond its
     scenarios' own limits, so that a scenario that does not complete fails by
     name with what each peer saw. A native peer that dies by a signal the
     driver did not send, as a crash does, is named as soon as it dies

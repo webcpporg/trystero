@@ -7,18 +7,26 @@
 // The native C++ side of the interop test: the browser peer's behaviour (peer.cpp), as a process.
 // The driver (run.mjs) starts it with the room's parameters, reads one JSON event per line on
 // stdout, and writes "leave" on stdin to make it leave, "replace" to move a room of another room
-// id over the joined one, with a receive of the joined room's pending, or "abort" to make it die
-// by a signal, as a crash does. Diagnostics go to stderr.
-// Its peer connections are bound to 127.0.0.1, so that it meets the other peers of this machine on
-// the loopback alone, with no network beyond it.
+// id over the joined one with a receive pending, "leave-room" to leave the first room and go on,
+// or "abort" to make it die by a signal, as a crash does. Diagnostics go to
+// stderr. Its peer connections are bound to 127.0.0.1, so that it meets the other peers of this
+// machine on the loopback alone, with no network beyond it.
 //
-// | Argument      | Meaning                                                          |
-// | --app, --room | the app id and room id                                           |
-// | --password    | the room password, optional                                      |
-// | --self        | this peer's id, optional                                         |
-// | --relays      | comma-separated relay URLs, optional (Trystero's default list)   |
-// | --ice         | a STUN or TURN server's URL, optional (Trystero's default list)  |
-// | --room2       | a second room of the same app id to join too, optional           |
+// | Argument        | Meaning                                                            |
+// | --app, --room   | the app id and room id                                             |
+// | --password      | the room password, optional                                        |
+// | --self          | this peer's id, optional                                           |
+// | --relays        | comma-separated relay URLs, optional (Trystero's default list)     |
+// | --ice           | a STUN or TURN server's URL, optional (Trystero's default list)    |
+// | --room2         | a second room of the same app id to join too, optional             |
+// | --room3         | a third room of the same app, optional                             |
+// | --room2Delay    | the ms before joining room2, optional (0)                          |
+// | --room3Delay    | the ms before joining room3, optional (0)                          |
+// | --password2     | room2's password, optional (password's)                            |
+// | --password3     | room3's password, optional (none)                                  |
+// | --idle          | the app's idle_timeout in ms, optional (123,333)                   |
+// | --handshake     | every room's handshake_timeout in ms, optional (10,000)            |
+// | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
@@ -30,13 +38,18 @@
 #include <boost/json.hpp>
 
 #include <unistd.h>
+#include <charconv>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <memory_resource>
 #include <span>
 #include <string>
+#include <system_error>
 
 namespace trystero = webcpp::trystero;
 
@@ -47,6 +60,34 @@ void record(std::string_view kind, boost::json::object fields = {}) {
     fields["kind"] = kind;
     // flushed: the driver reads each event from a pipe as it comes
     std::cout << boost::json::serialize(fields) << '\n' << std::flush;
+}
+
+/** Milliseconds from a parameter's digits, or `fallback` when it has none. */
+std::chrono::milliseconds millis(std::string_view text, std::chrono::milliseconds fallback) {
+    std::int64_t value = 0;
+    const char* const begin = text.data();
+    const char* const end = begin + text.size();
+    const auto [at, ec] = std::from_chars(begin, end, value);
+    return text.empty() || ec != std::errc{} || at != end || value < 0
+               ? fallback
+               : std::chrono::milliseconds(value);
+}
+
+/** The events the driver counts connections by, from the app's log lines
+ * `connection with <peer> adopted` and `connection with <peer> ended: <reason>`. */
+void record_connection(std::string_view category, std::string_view text) {
+    constexpr std::string_view prefix = "connection with ";
+    constexpr std::string_view adopted = " adopted";
+    constexpr std::string_view ended = " ended: ";
+    if (category != "webrtc" || !text.starts_with(prefix)) {
+        return;
+    }
+    const auto rest = text.substr(prefix.size());
+    if (rest.ends_with(adopted)) {
+        record("adopted", {{"peer", rest.substr(0, rest.size() - adopted.size())}});
+    } else if (const auto at = rest.find(ended); at != std::string_view::npos) {
+        record("ended", {{"peer", rest.substr(0, at)}, {"reason", rest.substr(at + ended.size())}});
+    }
 }
 
 std::uint32_t checksum(const trystero::bytes& data) {
@@ -82,21 +123,27 @@ trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
         config.ice_servers.push_back(
             {.urls = {std::pmr::string(args["ice"])}, .username = {}, .credential = {}});
     }
+    config.idle_timeout = millis(args["idle"], std::chrono::milliseconds(123'333));
     config.log = [](std::string_view category, std::string_view text) {
+        record_connection(category, text);
         std::cerr << category << ": " << text << '\n';
     };
     return config;
 }
 
-/** A room's options, from the driver's arguments. */
-trystero::room_options options_of(std::map<std::string, std::string>& args) {
-    return {.password = std::pmr::string(args["password"])};
+/** A room's options: `password`, and the driver's handshake timeout. */
+trystero::room_options options_of(std::map<std::string, std::string>& args,
+                                  std::string_view password) {
+    return {
+        .password = std::pmr::string(password),
+        .handshake_timeout = millis(args["handshake"], std::chrono::milliseconds(10'000)),
+    };
 }
 
 /** Joins `room_id` through `app`; when the app refuses, the process ends after an event. */
 trystero::room join(trystero::app& app, const std::string& room_id,
-                    std::map<std::string, std::string>& args) {
-    auto joined = app.join(room_id, options_of(args));
+                    trystero::room_options options) {
+    auto joined = app.join(room_id, std::move(options));
     if (!joined) {
         record("not-joined", {{"room", room_id}, {"error", joined.error().message()}});
         std::exit(1);
@@ -122,28 +169,22 @@ public:
 };
 
 /**
- * A second room of the same app id, with the configuration and the options of the first: it sends
- * each peer that joins a chat message and a 100 KB file, and records what it sees with
- * `room: second`.
- *
- * Tip: its app is its own. Trystero JS keeps one connection per peer id, and answers no second
- * offer from it, so a room of an app already connected to the page meets it only by binding over
- * that connection on the page's presence for the room, which the library does not do yet.
+ * A further room of the app: it sends each peer that joins a chat message and a 100 KB file,
+ * echoes each chat message, and records what it sees with `room: <which>`.
  */
-struct second_room {
-    trystero::app app;
+struct extra_room {
+    std::string which;
     trystero::room room;
     trystero::action<std::string> chat = room.make_action<std::string>("chat");
     trystero::action<trystero::bytes> file = room.make_action<trystero::bytes>("file");
 
-    second_room(boost::asio::io_context& io, trystero::native::backend& backend,
-                std::map<std::string, std::string>& args)
-        : app(io.get_executor(), backend, app_config_of(args)),
-          room(join(app, args["room2"], args)) {
-        record("joined", {{"room", "second"}, {"self", room.self_id()}});
+    extra_room(trystero::app& app, std::string which_room, std::string_view room_id,
+               trystero::room_options options)
+        : which(std::move(which_room)), room(join(app, std::string(room_id), std::move(options))) {
+        record("joined", {{"room", which}, {"self", room.self_id()}});
         room.on_peer_join([this](std::string_view peer_view) {
             const trystero::peer_id peer(peer_view);
-            record("peer-join", {{"room", "second"}, {"peer", peer}});
+            record("peer-join", {{"room", which}, {"peer", peer}});
             chat.async_send("hello from C++",
                             trystero::send_options{.targets = {peer}, .metadata = {}},
                             [](boost::system::error_code) {});
@@ -155,20 +196,25 @@ struct second_room {
                             trystero::send_options{.targets = {peer}, .metadata = {}},
                             [](boost::system::error_code) {});
         });
-        room.on_peer_leave([](std::string_view peer) {
-            record("peer-leave", {{"room", "second"}, {"peer", peer}});
+        room.on_peer_leave([this](std::string_view peer) {
+            record("peer-leave", {{"room", which}, {"peer", peer}});
         });
-        room.on_error([](std::string_view peer, boost::system::error_code ec,
-                         std::string_view what) {
-            record("error",
-                   {{"room", "second"}, {"peer", peer}, {"error", ec.message()}, {"what", what}});
+        room.on_error(
+            [this](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+                record("error",
+                       {{"room", which}, {"peer", peer}, {"error", ec.message()}, {"what", what}});
+            });
+        chat.on_message([this](std::string text, const trystero::message_info& info) {
+            record("chat", {{"room", which}, {"from", info.from}, {"text", text}});
+            if (!text.starts_with("echo: ")) {
+                chat.async_send("echo: " + text,
+                                trystero::send_options{.targets = {info.from}, .metadata = {}},
+                                [](boost::system::error_code) {});
+            }
         });
-        chat.on_message([](std::string text, const trystero::message_info& info) {
-            record("chat", {{"room", "second"}, {"from", info.from}, {"text", text}});
-        });
-        file.on_message([](const trystero::bytes& data, const trystero::message_info& info) {
+        file.on_message([this](const trystero::bytes& data, const trystero::message_info& info) {
             record("file", {
-                               {"room", "second"},
+                               {"room", which},
                                {"from", info.from},
                                {"size", data.size()},
                                {"checksum", checksum(data)},
@@ -200,6 +246,99 @@ void leave(trystero::room& room, boost::asio::io_context& io) {
     });
 }
 
+/** Pings every joined peer of room2 once a second, with an id for each start and completion. */
+struct room_pinger {
+    boost::asio::steady_timer timer;
+    const std::unique_ptr<extra_room>& second;
+    std::uint64_t next_ping = 0;
+
+    room_pinger(boost::asio::io_context& io, const std::unique_ptr<extra_room>& room)
+        : timer(io), second(room) {}
+
+    void ping() {
+        if (second) {
+            for (const auto& peer : second->room.peers()) {
+                const auto id = ++next_ping;
+                record("ping-started", {{"room", "second"}, {"peer", peer}, {"id", id}});
+                second->room.async_ping(
+                    peer, [peer = trystero::peer_id(peer), id](boost::system::error_code ec,
+                                                               std::chrono::milliseconds rtt) {
+                        record("ping", {
+                                           {"room", "second"},
+                                           {"peer", peer},
+                                           {"id", id},
+                                           {"error", ec ? ec.message() : ""},
+                                           {"ms", rtt.count()},
+                                       });
+                    });
+            }
+        }
+        timer.expires_after(std::chrono::seconds(1));
+        timer.async_wait([this](boost::system::error_code ec) {
+            if (!ec) {
+                ping();
+            }
+        });
+    }
+};
+
+/** Reads the driver's commands while the rooms and timers continue running. */
+struct command_reader {
+    boost::asio::io_context& io;
+    trystero::app& app;
+    trystero::room& room;
+    std::map<std::string, std::string>& args;
+    boost::asio::posix::stream_descriptor input;
+    boost::asio::streambuf line;
+    std::function<void()> read_again;
+
+    command_reader(boost::asio::io_context& context, trystero::app& application,
+                   trystero::room& joined, std::map<std::string, std::string>& arguments)
+        : io(context),
+          app(application),
+          room(joined),
+          args(arguments),
+          input(context, ::dup(STDIN_FILENO)),
+          read_again([this] { read(); }) {}
+
+    /** Whether another command should be read after this one. */
+    bool handle(std::string_view command) {
+        if (command.starts_with("abort")) {
+            std::abort();
+        }
+        if (command.starts_with("leave-room")) {
+            room.async_leave([](boost::system::error_code ec) {
+                record("left", {{"room", "first"}, {"error", ec ? ec.message() : ""}});
+            });
+            return true;
+        }
+        if (command.starts_with("replace")) {
+            replace(room,
+                    join(app, args["room"] + "-replaced", options_of(args, args["password"])));
+            return true;
+        }
+        if (command.starts_with("leave")) {
+            leave(room, io);
+            return false;
+        }
+        return true;
+    }
+
+    void read() {
+        boost::asio::async_read_until(
+            input, line, '\n', [this](boost::system::error_code ec, std::size_t size) {
+                if (ec) {
+                    return;
+                }
+                const std::string command(static_cast<const char*>(line.data().data()), size);
+                line.consume(size);
+                if (handle(command)) {
+                    read_again();
+                }
+            });
+    }
+};
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -210,7 +349,7 @@ int main(int argc, char* argv[]) {
     app.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
     });
-    trystero::room room = join(app, args["room"], args);
+    trystero::room room = join(app, args["room"], options_of(args, args["password"]));
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {
         relays.emplace_back(url);
@@ -245,8 +384,11 @@ int main(int argc, char* argv[]) {
             done("file"));
         room.async_ping(peer, [peer = trystero::peer_id(peer)](boost::system::error_code ec,
                                                                std::chrono::milliseconds rtt) {
-            record("ping",
-                   {{"peer", peer}, {"error", ec ? ec.message() : ""}, {"ms", rtt.count()}});
+            record("ping", {
+                               {"peer", peer},
+                               {"error", ec ? ec.message() : ""},
+                               {"ms", rtt.count()},
+                           });
         });
     });
     room.on_peer_leave([](std::string_view peer) { record("peer-leave", {{"peer", peer}}); });
@@ -273,34 +415,35 @@ int main(int argc, char* argv[]) {
                        });
     });
 
-    const std::unique_ptr<second_room> second =
-        args["room2"].empty() ? nullptr : std::make_unique<second_room>(io, backend, args);
+    const std::string password2 = args["password2"].empty() ? args["password"] : args["password2"];
+    std::unique_ptr<extra_room> second;
+    boost::asio::steady_timer second_delay(io);
+    if (!args["room2"].empty()) {
+        second_delay.expires_after(millis(args["room2Delay"], std::chrono::milliseconds(0)));
+        second_delay.async_wait([&](boost::system::error_code ec) {
+            if (!ec) {
+                second = std::make_unique<extra_room>(app, "second", args["room2"],
+                                                      options_of(args, password2));
+            }
+        });
+    }
+    std::unique_ptr<extra_room> third;
+    boost::asio::steady_timer third_delay(io);
+    if (!args["room3"].empty()) {
+        third_delay.expires_after(millis(args["room3Delay"], std::chrono::milliseconds(0)));
+        third_delay.async_wait([&](boost::system::error_code ec) {
+            if (!ec) {
+                third = std::make_unique<extra_room>(app, "third", args["room3"],
+                                                     options_of(args, args["password3"]));
+            }
+        });
+    }
+    room_pinger pinger(io, second);
+    if (!args["room2"].empty() && !args["ping2"].empty()) {
+        pinger.ping();
+    }
 
-    // "leave" on stdin: Trystero's farewell, then the process ends; "replace": a room moved over;
-    // "abort": SIGABRT, for the scenario that checks the driver names a peer killed by a signal.
-    boost::asio::posix::stream_descriptor input(io, ::dup(STDIN_FILENO));
-    boost::asio::streambuf line;
-    std::function<void()> read_command = [&] {
-        boost::asio::async_read_until(
-            input, line, '\n', [&](boost::system::error_code ec, std::size_t size) {
-                if (ec) {
-                    return;
-                }
-                const std::string command(static_cast<const char*>(line.data().data()), size);
-                line.consume(size);
-                if (command.starts_with("abort")) {
-                    std::abort();
-                }
-                if (command.starts_with("replace")) {
-                    replace(room, join(app, args["room"] + "-replaced", args));
-                }
-                if (!command.starts_with("leave")) {
-                    read_command();
-                    return;
-                }
-                leave(room, io);
-            });
-    };
-    read_command();
+    command_reader commands(io, app, room, args);
+    commands.read();
     io.run();  // lint-run: a process whose purpose is network I/O, until "leave" stops it
 }

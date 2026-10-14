@@ -221,6 +221,12 @@ The shared-connection scenarios run in both lanes:
 . A held handshake frame recovers in both id orders after one timeout,
   without a false password report; the other room keeps exchanging.
 
+The {cpp} peers accept `room2Delay` and `room3Delay` in milliseconds; the JS
+page also accepts `room2Delay`. These delayed joins establish the first room
+before a shared-binding scenario begins;
+the password-pacing scenario also lets the initial relay announcement burst
+finish before the other peer joins the protected room.
+
 The adoption scenarios allow crossed duplicates to retry, but fail with
 connection counts if either side constructs more than four. Transient
 recovery accounts for JS reuse during the higher id's dropping window
@@ -232,7 +238,7 @@ native peer binds its connections to 127.0.0.1, and the Trystero JS peers
 have no ICE server. Chrome is the one `CHROME` names, else on macOS
 Playwright's `chrome-headless-shell`; the continuous integration names Chrome
 for Testing's `chrome-headless-shell`, at the version webcpp pins. Each driver
-is bounded by 900 s, beyond its scenarios' own limits, so that a scenario that
+is bounded by 2,400 s, beyond its scenarios' own limits, so that a scenario that
 does not complete fails by name with what each peer saw.
 
 [source,bash]
