@@ -463,7 +463,6 @@ public:
           factory_(app_->factory()),
           log_(app_->log()),
           options_{
-              .password = std::pmr::string(std::move(options.password), memory_),
               .handshake_timeout = options.handshake_timeout,
               .max_receive_bytes = options.max_receive_bytes,
               .memory = memory_,
@@ -487,9 +486,8 @@ public:
                                            std::string_view room_id) {
         std::pmr::memory_resource* const memory =
             options.memory != nullptr ? options.memory : app->memory();
-        auto impl =
-            std::allocate_shared<room_impl>(std::pmr::polymorphic_allocator<>(memory),
-                                            std::move(app), std::move(options), room_id, memory);
+        auto impl = std::allocate_shared<room_impl>(std::pmr::polymorphic_allocator<>(memory),
+                                                    std::move(app), options, room_id, memory);
         impl->start();
         return impl;
     }
@@ -506,7 +504,7 @@ public:
     void start() {
         const auto weak = weak_from_this();
         sealer_ = factory_.make_sealer(
-            protocol::seal_key(options_.password, app_->app_id(), room_id_), memory_);
+            protocol::seal_key(app_->password(), app_->app_id(), room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
             allocator(), factory_, token_, options_.max_receive_bytes,
             action_wire::callbacks{
@@ -596,8 +594,6 @@ public:
                     }
                 }),
             log_, memory_, json_);
-        log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
-             " over ", app_->relay_urls().size(), " relays");
         register_and_advertise();
     }
 
@@ -608,6 +604,9 @@ public:
         app_->register_room(room_id_, token_,
                             std::static_pointer_cast<room_endpoint>(shared_from_this()));
         app_->add_user();
+        // The registry reserves this room before the sink can reenter app::join.
+        log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
+             " over ", app_->relay_urls().size(), " relays");
         strategy_->start();
         // As Trystero joins a room: bound over every live connection whose remote advertised it,
         // then announced on every live connection, so that each remote binds in turn.
@@ -785,6 +784,9 @@ public:
             return;
         }
         log_("room", "leaving room ", room_id_);
+        if (ended_) {
+            return;  // a rejoin or destruction in the sink already finished this farewell
+        }
         for (const auto& [id, p] : peers_) {
             send_internal("@_leave", id);
         }
@@ -1003,10 +1005,14 @@ private:
     }
 
     void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        log_("room", "peer ", peer, ": ", what);
+        // The sink may end the room and release the storage behind either view.
+        std::pmr::string peer_copy(peer, memory_);
+        std::pmr::string what_copy(what, memory_);
+        log_("room", "peer ", peer_copy, ": ", what_copy);
         if (on_error_) {
-            post([f = on_error_, peer = std::pmr::string(peer, memory_), ec,
-                  what = std::pmr::string(what, memory_)] { (*f)(peer, ec, what); });
+            post([f = on_error_, peer = std::move(peer_copy), ec, what = std::move(what_copy)] {
+                (*f)(peer, ec, what);
+            });
         }
     }
 
@@ -1179,7 +1185,7 @@ private:
     }
 
     void start_handshake(std::string_view peer, peer_state& state) {
-        if (options_.password.empty()) {
+        if (app_->password().empty()) {
             pass_local(peer);
             return;
         }
@@ -1215,7 +1221,7 @@ private:
             const bool proves =
                 field("__trystero_pw") == "response" && r != rebinds_.end() &&
                 r->second.challenges.any_of([&](std::string_view c) {
-                    return h == protocol::handshake_proof(c, options_.password, app_->app_id(),
+                    return h == protocol::handshake_proof(c, app_->password(), app_->app_id(),
                                                           room_id_, memory_);
                 });
             if (proves) {
@@ -1236,14 +1242,15 @@ private:
         }
         std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
         protocol::json::append_string(
-            text, protocol::handshake_proof(field("c"), options_.password, app_->app_id(), room_id_,
+            text, protocol::handshake_proof(field("c"), app_->password(), app_->app_id(), room_id_,
                                             memory_));
         text += '}';
         send_internal("@_hsdata", peer, protocol::payload_format::json, text);
         pass_local(peer);
     }
 
-    void fail_handshake(std::string_view peer) {
+    void fail_handshake(std::string_view peer_view) {
+        const std::pmr::string peer(peer_view, memory_);
         report(peer, make_error_code(error::wrong_password),
                "incorrect password for overlapping room");
         kick(peer, "handshake failed");
@@ -1272,9 +1279,13 @@ private:
             history->second.timer.reset();
         }
         it->second.handshake_timer.reset();
-        log_("room", "peer joined: ", it->first);
-        if (on_join_) {
-            post([f = on_join_, peer = std::pmr::string(it->first, memory_)] { (*f)(peer); });
+        std::pmr::string peer_copy(it->first, memory_);
+        const auto link = it->second.link;
+        log_("room", "peer joined: ", peer_copy);
+        // The sink may leave the room or remove this binding before notification is posted.
+        const auto current = peers_.find(peer_copy);
+        if (!left_ && current != peers_.end() && current->second.link == link && on_join_) {
+            post([f = on_join_, peer = std::move(peer_copy)] { (*f)(peer); });
         }
     }
 
@@ -1307,20 +1318,30 @@ private:
         } else if (name.starts_with("@_")) {
             // Media and renegotiation actions: not implemented yet (doc: #trystero-roadmap).
         } else if (const auto it = actions_.find(name); it != actions_.end()) {
-            auto& slot = it->second;
-            if (slot.handler) {
-                post_call(slot.handler, std::move(m));
-            } else if (!slot.receivers.empty()) {
-                auto receiver = std::move(slot.receivers.front());
-                slot.receivers.pop_front();
-                complete(std::move(receiver), boost::system::error_code{}, std::move(m));
-            } else {
-                if (slot.queue.size() >= max_queued_messages) {
-                    log_("action", "dropping the oldest unread message of ", it->first);
-                    slot.queue.pop_front();
-                }
-                slot.queue.push_back(std::move(m));
+            deliver_action(it->first, it->second, std::move(m));
+        }
+    }
+
+    /** Delivers an application message, rechecking consumers after a queue-limit log sink. */
+    void deliver_action(std::string_view name, action_slot& slot, incoming&& message) {
+        if (!slot.handler && slot.receivers.empty() && slot.queue.size() >= max_queued_messages) {
+            log_("action", "dropping the oldest unread message of ", name);
+            if (left_) {
+                return;
             }
+            // Installing a handler or receiving from the sink can drain the queue synchronously.
+            if (slot.queue.size() >= max_queued_messages) {
+                slot.queue.pop_front();
+            }
+        }
+        if (slot.handler) {
+            post_call(slot.handler, std::move(message));
+        } else if (!slot.receivers.empty()) {
+            auto receiver = std::move(slot.receivers.front());
+            slot.receivers.pop_front();
+            complete(std::move(receiver), boost::system::error_code{}, std::move(message));
+        } else {
+            slot.queue.push_back(std::move(message));
         }
     }
 
@@ -1501,6 +1522,10 @@ class action;
  * leaves at once. Its peers meet over the relays, connect over WebRTC through the connections its
  * app shares between its rooms, and exchange the messages of the actions it makes, wire compatible
  * with Trystero's JavaScript.
+ *
+ * Every room uses its app's immutable password. Initial sealed signaling authenticates that
+ * domain before a connection is adopted. The unchanged JS room handshake verifies only at the
+ * lower id; different passwords require separate apps with distinct self ids.
  *
  * Tip: every handler the room calls, and every completion, runs on its app's executor. The views a
  * handler receives are valid for the duration of the call. Every allocation of the room goes

@@ -14,7 +14,7 @@
 //
 // | Argument        | Meaning                                                            |
 // | --app, --room   | the app id and room id                                             |
-// | --password      | the room password, optional                                        |
+// | --password      | the app password, shared by all its rooms, optional                |
 // | --self          | this peer's id, optional                                           |
 // | --relays        | comma-separated relay URLs, optional (Trystero's default list)     |
 // | --ice           | a STUN or TURN server's URL, optional (Trystero's default list)    |
@@ -22,8 +22,6 @@
 // | --room3         | a third room of the same app, optional                             |
 // | --room2Delay    | the ms before joining room2, optional (0)                          |
 // | --room3Delay    | the ms before joining room3, optional (0)                          |
-// | --password2     | room2's password, optional (password's)                            |
-// | --password3     | room3's password, optional (none)                                  |
 // | --idle          | the app's idle_timeout in ms, optional (123,333)                   |
 // | --handshake     | every room's handshake_timeout in ms, optional (10,000)            |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
@@ -114,6 +112,7 @@ trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
     trystero::app_config config;
     config.app_id = args["app"];
     config.self_id = args["self"];
+    config.password = args["password"];
     for (std::string_view relays = args["relays"]; !relays.empty();) {
         const auto comma = relays.find(',');
         config.relay_urls.emplace_back(relays.substr(0, comma));
@@ -131,11 +130,9 @@ trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
     return config;
 }
 
-/** A room's options: `password`, and the driver's handshake timeout. */
-trystero::room_options options_of(std::map<std::string, std::string>& args,
-                                  std::string_view password) {
+/** A room's options: the driver's handshake timeout. */
+trystero::room_options options_of(std::map<std::string, std::string>& args) {
     return {
-        .password = std::pmr::string(password),
         .handshake_timeout = millis(args["handshake"], std::chrono::milliseconds(10'000)),
     };
 }
@@ -143,7 +140,7 @@ trystero::room_options options_of(std::map<std::string, std::string>& args,
 /** Joins `room_id` through `app`; when the app refuses, the process ends after an event. */
 trystero::room join(trystero::app& app, const std::string& room_id,
                     trystero::room_options options) {
-    auto joined = app.join(room_id, std::move(options));
+    auto joined = app.join(room_id, options);
     if (!joined) {
         record("not-joined", {{"room", room_id}, {"error", joined.error().message()}});
         std::exit(1);
@@ -180,7 +177,7 @@ struct extra_room {
 
     extra_room(trystero::app& app, std::string which_room, std::string_view room_id,
                trystero::room_options options)
-        : which(std::move(which_room)), room(join(app, std::string(room_id), std::move(options))) {
+        : which(std::move(which_room)), room(join(app, std::string(room_id), options)) {
         record("joined", {{"room", which}, {"self", room.self_id()}});
         room.on_peer_join([this](std::string_view peer_view) {
             const trystero::peer_id peer(peer_view);
@@ -313,8 +310,7 @@ struct command_reader {
             return true;
         }
         if (command.starts_with("replace")) {
-            replace(room,
-                    join(app, args["room"] + "-replaced", options_of(args, args["password"])));
+            replace(room, join(app, args["room"] + "-replaced", options_of(args)));
             return true;
         }
         if (command.starts_with("leave")) {
@@ -349,7 +345,7 @@ int main(int argc, char* argv[]) {
     app.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
     });
-    trystero::room room = join(app, args["room"], options_of(args, args["password"]));
+    trystero::room room = join(app, args["room"], options_of(args));
     boost::json::array relays;
     for (const auto& url : room.relay_urls()) {
         relays.emplace_back(url);
@@ -415,15 +411,14 @@ int main(int argc, char* argv[]) {
                        });
     });
 
-    const std::string password2 = args["password2"].empty() ? args["password"] : args["password2"];
     std::unique_ptr<extra_room> second;
     boost::asio::steady_timer second_delay(io);
     if (!args["room2"].empty()) {
         second_delay.expires_after(millis(args["room2Delay"], std::chrono::milliseconds(0)));
         second_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                second = std::make_unique<extra_room>(app, "second", args["room2"],
-                                                      options_of(args, password2));
+                second =
+                    std::make_unique<extra_room>(app, "second", args["room2"], options_of(args));
             }
         });
     }
@@ -433,8 +428,7 @@ int main(int argc, char* argv[]) {
         third_delay.expires_after(millis(args["room3Delay"], std::chrono::milliseconds(0)));
         third_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                third = std::make_unique<extra_room>(app, "third", args["room3"],
-                                                     options_of(args, args["password3"]));
+                third = std::make_unique<extra_room>(app, "third", args["room3"], options_of(args));
             }
         });
     }

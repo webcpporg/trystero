@@ -15,7 +15,8 @@ an optional resource for each room.
 === The app's resource and the room's
 
 * `app_config::memory`, `std::pmr::get_default_resource()` by default,
-  receives the app's state, configuration copy, self id, registry, shared
+  receives the app's state, configuration copy including its password, self id,
+  registry, shared
   connections, advertised tokens, kept frames, drain order and presence
   frames. Peer connections, data channels and received frames use it even
   while a room negotiates them. The logger, sink and every sentence of the

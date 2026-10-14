@@ -42,6 +42,11 @@ using namespace std::chrono_literals;
 
 namespace {
 
+template <class Options>
+concept has_password_option = requires(Options options) { options.password; };
+static_assert(has_password_option<trystero::app_config>);
+static_assert(!has_password_option<trystero::room_options>);
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
                std::chrono::milliseconds limit = 5s) {
     const auto end = std::chrono::steady_clock::now() + limit;
@@ -196,6 +201,7 @@ void the_configuration_is_copied_and_completed() {
     lines log;
     const auto app = make_app(io, net, log);
     BOOST_TEST_EQ(app->app_id(), "app");
+    BOOST_TEST(app->password().empty());
     BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::id_alphabet),
                   std::string_view::npos);
@@ -223,12 +229,14 @@ void what_the_configuration_names_is_kept() {
     const std::string id(trystero::protocol::max_peer_id_bytes, 'x');
     const auto app = make_app(io, net, log, [&](trystero::app_config& c) {
         c.self_id = id;
+        c.password = "the immutable password of every room in this app";
         c.relay_urls.emplace_back("wss://relay.example");
         c.relay_redundancy = 1;
         c.ice_servers.push_back(server("STUN:stun.example:3478"));
         c.idle_timeout = 0ms;
     });
     BOOST_TEST_EQ(app->self_id(), id);
+    BOOST_TEST_EQ(app->password(), "the immutable password of every room in this app");
     BOOST_TEST_EQ(app->relay_urls().size(), 1U);
     BOOST_TEST_EQ(app->relay_urls()[0], "wss://relay.example");
     BOOST_TEST(urls_of(app->ice_servers()) == (std::vector<std::string>{"stun:stun.example:3478"}));
@@ -279,6 +287,8 @@ void every_allocation_goes_through_the_apps_resource() {
     const auto next = negotiate(io, net);
     trystero::app_config config{.memory = &pool};
     config.app_id = "app";
+    const std::string expected_password(60, 'p');
+    config.password = expected_password;
     config.self_id = std::pmr::string(40, 'x');  // beyond the short string
     config.ice_servers.push_back(server("stun:stun.example:3478"));
     std::size_t sentences = 0;
@@ -291,6 +301,7 @@ void every_allocation_goes_through_the_apps_resource() {
     {
         app = std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(&pool),
                                                      io.get_executor(), net, std::move(config));
+        BOOST_TEST_EQ(app->password(), expected_password);
         app->register_room("r1", "a room token longer than the short string", room);
         app->add_user();
         app->adopt(peer, ends.local_pc, ends.local);

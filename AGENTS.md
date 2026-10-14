@@ -162,16 +162,24 @@ holds only what is specific to trystero.
     back as a new peer, with the same id, and is kept out the same way:
     the room has no renegotiation that would keep its place. Trystero JS
     bounds none of this.
-- **The app and shared admission.** An `app` scopes one self id and one
-  connection per remote peer, with no static registry. `join` returns a
-  result, refusing duplicate membership (`already_joined`) and a 65th room
-  (`too_many_rooms`), counting farewells until withdrawal. Configuration
-  errors go to `app::on_error`; room errors name peer problems. Presence
-  reveals every local token to every connected peer, so passwordless rooms
-  are open to peers of the app's other rooms. Protected rooms require
-  their handshake; a chosen lower-id peer can obtain a challenge response
-  for offline guessing, as Trystero JS permits. One app id links its rooms
-  through the same self id; unrelated rooms use separate apps.
+- **The app and shared admission.** An `app` scopes one self id, one
+  immutable password and one connection per remote peer, with no static
+  registry. `app_config::password`, after `self_id`, is copied into the
+  app's resource; every room reads it there. `room_options` has no password.
+  Different passwords require separate apps with distinct self ids; their
+  connections, presence and tokens are never reused. The initial encrypted
+  signaling authenticates a protected app's password before any room can
+  reuse that connection. `join` returns a result, refusing duplicates
+  (`already_joined`) and a 65th room (`too_many_rooms`), counting farewells
+  until withdrawal. A changed domain password requires a new app.
+  Configuration errors go to `app::on_error`; room errors name peer
+  problems. A passwordless app's connected peers can echo another room's
+  token and join it. The Trystero JS 0.26.0 wire is unchanged: a JS page
+  that mixes room passwords retains its one-way handshake exposure,
+  including admission to its higher-id rooms without their password and
+  offline-guess material. C++ app domains protect the C++ app's admission;
+  they do not repair a remote JS page. A peer that already knows the domain
+  password can still send a bad room proof, kicked and paced by rebinding.
 - **Shared connection bounds.** A connection accepts 64 advertised tokens
   and at most 64 kept frames for local unbound rooms, expiring 10 s after
   the first, and drops unknown room tokens. A malformed envelope ends all
@@ -187,7 +195,7 @@ holds only what is specific to trystero.
   Reuse is a first-meeting path; later relay signals cannot shorten that
   backoff. The initiator accepts correct answers to its last eight
   challenges since the last completed handshake. Only the lower id reports
-  a shared wrong password. One room's departure does not close another's
+  an invalid shared room proof. One room's departure does not close another's
   transport; waiting sends take turns by binding at each drain.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
@@ -259,9 +267,10 @@ holds only what is specific to trystero.
     connection, with chat and 100 KB files both ways; (2) a third room
     joining later by presence; (3) the page's rooms joined before the C++
     app's; (4) admission to a passwordless room by token and refusal by a
-    protected room; (5) either side leaving one room while another keeps
-    exchanging without a new connection; (6) departure from every room,
-    followed by idle expiry; (7) wrong passwords in both id orders, with
+    protected app with another password and self id, in both id orders;
+    (5) either side leaving one room while another keeps exchanging without a new connection; (6) departure from every room,
+    followed by idle expiry; (7) corrupted room proofs after authenticated
+    connection establishment, in both id orders, with
     paced reports and the other room unaffected; (8) a 5,000-message flood
     while another room pings; (9) a held handshake frame recovering in both
     id orders with no false password report. Crossed adoption races allow
@@ -309,7 +318,8 @@ holds only what is specific to trystero.
   these rules.
   - **The app's resource and the room's.** `app_config::memory` defaults
     to `std::pmr::get_default_resource()` and must not be null. It receives
-    app state, copied configuration, self id, registry, logger and sink,
+    app state, copied configuration including the immutable password, self id,
+    registry, logger and sink,
     every log sentence from the app and its rooms, connections, advertised
     tokens, kept frames, drain order and presence. Peer connections, data
     channels and received frames use it even while a room negotiates them.

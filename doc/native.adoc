@@ -12,7 +12,8 @@ https://github.com/paullouisageneau/libdatachannel[libdatachannel] for
 WebRTC, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM,
 and Asio's timers. A native room is the same room as a browser's or Trystero
 JS's: they meet over the same relays and exchange the same frames. One
-backend serves every room of the application, beside the executor it runs
+backend serves every app and room of the program, with separate app
+objects and distinct self ids for different passwords, beside the executor it runs
 on, and a native program runs that executor's `io_context` itself, blocking
 on it or polling it (<<trystero-quick-start-native>>).
 

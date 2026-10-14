@@ -63,7 +63,7 @@ struct fixture {
     fixture() { relays.relay(relay_url); }
 };
 
-trystero::app_config app_config(std::string_view self_id) {
+trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
     trystero::app_config c;
     c.app_id = "webcpp-trystero-native-tests";
     c.relay_urls = {relay_url};
@@ -71,13 +71,14 @@ trystero::app_config app_config(std::string_view self_id) {
     // candidate is the only one, and it is enough.
     c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
     c.self_id = self_id;
+    c.password = password;
     return c;
 }
 
 /** Joins `room_id`, which must succeed: a failure ends the test. */
 trystero::room join(trystero::app& a, std::string_view room_id,
                     trystero::room_options options = {}) {
-    auto r = a.join(room_id, std::move(options));
+    auto r = a.join(room_id, options);
     webcpp::test::require(BOOST_TEST(r.has_value()));
     return std::move(*r);
 }
@@ -96,10 +97,12 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 
 void native_rooms_join_and_exchange_every_format() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend, app_config("AAAAAAAAAAAAAAAAAAAA"));
-    auto a = join(a_app, "lobby", {.password = "s3cret"});
-    trystero::app z_app(f.io.get_executor(), f.backend, app_config("zzzzzzzzzzzzzzzzzzzz"));
-    auto z = join(z_app, "lobby", {.password = "s3cret"});
+    trystero::app a_app(f.io.get_executor(), f.backend,
+                        app_config("AAAAAAAAAAAAAAAAAAAA", "s3cret"));
+    auto a = join(a_app, "lobby");
+    trystero::app z_app(f.io.get_executor(), f.backend,
+                        app_config("zzzzzzzzzzzzzzzzzzzz", "s3cret"));
+    auto z = join(z_app, "lobby");
     std::string text;
     boost::json::value json;
     trystero::bytes file;
@@ -150,10 +153,12 @@ void native_rooms_join_and_exchange_every_format() {
 
 void another_password_never_joins() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend, app_config("BBBBBBBBBBBBBBBBBBBB"));
-    const auto a = join(a_app, "private", {.password = "s3cret"});
-    trystero::app b_app(f.io.get_executor(), f.backend, app_config("CCCCCCCCCCCCCCCCCCCC"));
-    auto b = join(b_app, "private", {.password = "guess"});
+    trystero::app a_app(f.io.get_executor(), f.backend,
+                        app_config("BBBBBBBBBBBBBBBBBBBB", "s3cret"));
+    const auto a = join(a_app, "private");
+    trystero::app b_app(f.io.get_executor(), f.backend,
+                        app_config("CCCCCCCCCCCCCCCCCCCC", "guess"));
+    auto b = join(b_app, "private");
     std::vector<boost::system::error_code> errors;
     b.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
         errors.push_back(ec);

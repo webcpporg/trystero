@@ -35,6 +35,9 @@ namespace webcpp::trystero {
  * This program in one app: one peer id, and one connection per remote peer, shared by the rooms it
  * joins, as a Trystero JS page shares them.
  *
+ * Every room uses the app's immutable password;
+ * different passwords require separate apps with distinct peer ids.
+ *
  * Tip: the `app` and every room of it share one state; destroying the `app` while rooms remain
  * changes nothing for them. Every allocation of the app goes through `app_config::memory`, which
  * must outlive the app, its rooms and every operation they leave pending.
@@ -175,7 +178,7 @@ public:
      * the relays and announces this peer on the room's topic.
      *
      * @param room_id The room's id, Trystero's `roomId`, read during the call.
-     * @param options The password, handshake timeout, receive bound and resource of the room.
+     * @param options The handshake timeout, receive bound and resource of the room.
      * @return The room, or `error::already_joined` while a room of that id is joined in the app,
      * or `error::too_many_rooms` when `max_rooms` rooms count.
      */
@@ -192,7 +195,7 @@ public:
         if (impl_->counted_rooms() >= max_rooms) {
             return error::too_many_rooms;
         }
-        return room(detail::room_impl::make(impl_, std::move(options), room_id));
+        return room(detail::room_impl::make(impl_, options, room_id));
     }
 
 private:

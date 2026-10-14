@@ -59,7 +59,7 @@ library's own, which webcpp's lint checks, keeps it so.
 | None
 
 | `detail::app_impl`
-| Configuration, self id, logger, room registry by token and id, connections and user count
+| Configuration and immutable password, self id, logger, room registry by token and id, connections and user count
 | While any shared reference lives; its last user closes its connections
 | App's
 
@@ -92,7 +92,9 @@ library's own, which webcpp's lint checks, keeps it so.
   keeps the objects alive.
 * Sharing is scoped by the `app` the user constructs, with no registry
   outside it and no static state keyed by the backend. Two apps with the
-  same application id in one process are two peers.
+  same application id in one process are two peers. Each app has one
+  immutable password. Different passwords use separate apps with distinct
+  self ids, so their connections, tokens and presence are never reused.
 * The action wire continues to write its room token and send through a
   `channel_link`. The binding implements that link: each room keeps its
   own actions, transfers, queues and bounds.

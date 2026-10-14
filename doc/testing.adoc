@@ -104,7 +104,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `shared`, `shared_no_exceptions`, `shared_hardened`
 | Multiple apps and rooms with one connection per remote peer, adoption
   races, presence and reuse, room isolation, departures, idle connections,
-  wrong passwords, transient handshake recovery, fairness, bounds and
+  password-domain isolation, invalid room proofs, transient handshake recovery,
+  fairness, bounds and
   resource ownership. The suite also runs without exceptions and with
   standard-library hardening; sanitizers check lifetimes and detachment.
 
@@ -209,12 +210,14 @@ The shared-connection scenarios run in both lanes:
   connected transport.
 . A third room joins later through presence on that transport.
 . Rooms the JS page joined first bind when the {cpp} app joins them later.
-. A peer of another room can enter a passwordless room by token, while a
-  protected room never admits it without the password.
+. A peer can enter another room of a passwordless app by token, while a
+  protected app with another password and self id shares no connection or
+  presence with it, in either id order.
 . Either side leaves one room while the other keeps exchanging, making
   no connection.
 . Leaving every room closes the transport after the configured idle time.
-. Wrong passwords in both id orders give paced lower-id reports while
+. An authenticated peer sending wrong room proofs in both id orders gives
+  paced lower-id reports while
   the other room keeps exchanging over the same connection.
 . A 5,000-message flood in one room leaves pings in another completing
   within 2 s.
@@ -224,8 +227,8 @@ The shared-connection scenarios run in both lanes:
 The {cpp} peers accept `room2Delay` and `room3Delay` in milliseconds; the JS
 page also accepts `room2Delay`. These delayed joins establish the first room
 before a shared-binding scenario begins;
-the password-pacing scenario also lets the initial relay announcement burst
-finish before the other peer joins the protected room.
+the proof-pacing scenario first authenticates the shared password domain,
+then corrupts room proofs after the initial announcement burst.
 
 The adoption scenarios allow crossed duplicates to retry, but fail with
 connection counts if either side constructs more than four. Transient

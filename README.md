@@ -28,11 +28,15 @@ libdatachannel reports errors by throwing: without exceptions, or with
 not exist, and the native timer, sealer and WebSockets remain.
 
 An `app` represents this program in one application: one peer id and one
-connection per remote peer, shared by its rooms. Construct it with the
+connection per remote peer, shared by its rooms, with one immutable password
+for the app. Different passwords use separate apps with distinct self ids.
+Construct it with the
 executor, backend and moved `app_config`, then call `join` and test its
 `boost::system::result<room>`. The standalone room constructor and
-`room_config` are removed: shared configuration moves to `app_config`, and
-password, handshake timeout and receive limit to `room_options`. Two peers
+`room_config` are removed: shared configuration, including the password,
+moves to `app_config`; handshake timeout and receive limit move to
+`room_options`. Rooms have no password override. A new password requires a
+new app. Two peers
 in one process use two apps; rooms that must not be linked use one app each.
 
 `app_config::memory` receives the app's state, shared connections, received
@@ -48,10 +52,14 @@ before the io_context and drain or destroy it first; in a browser keep them
 for the page's life. Pools suit long-lived apps and rooms. libdatachannel,
 OpenSSL and the browser retain their own internal allocations.
 
-A passwordless room is open to peers connected through another room of the
-app: presence reveals its token. Use a password or a separate app when it
-must be private. A room's kick leaves other rooms using the connection;
-only the lower peer id reports a wrong password over that shared connection.
+A passwordless app's rooms are open to peers already connected through any
+of its rooms: presence reveals their tokens. A protected app uses a separate
+identity and connection; the initial sealed signaling authenticates its
+password before its rooms can share that connection. The Trystero JS 0.26.0
+wire remains unchanged, including its one-way room handshake: a JS page
+that mixes room passwords still exposes its own rooms. Configure each JS
+app with one password too. A peer that knows a C++ app's password can still
+send a wrong room proof, reported by the lower id only.
 
 ## Building inside the superproject
 

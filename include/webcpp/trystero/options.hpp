@@ -41,6 +41,15 @@ struct app_config {
      */
     std::pmr::string self_id = {};
     /**
+     * The password shared by every room of this app, Trystero's `password`.
+     *
+     * The app copies it into its resource and keeps it unchanged. Different passwords require
+     * separate apps with distinct peer ids, so a connection authenticated in one domain cannot
+     * be reused in another. Empty means a passwordless domain. Signals are still sealed with the
+     * app and room ids, and the room handshake then has no password challenge.
+     */
+    std::pmr::string password = {};
+    /**
      * The Nostr relays to use, Trystero's `relayConfig.urls`; empty means Trystero's defaults,
      * derived from the app id.
      */
@@ -98,14 +107,6 @@ struct app_config {
  * the room's own.
  */
 struct room_options {
-    /**
-     * The room's password, Trystero's `password`: part of the key the signals are sealed with,
-     * and a challenge added to the handshake, so peers with another password never join.
-     *
-     * Empty means none: the signals are still sealed, under a key of the app and the room alone,
-     * as Trystero's `genKey` does, and the handshake has no challenge.
-     */
-    std::pmr::string password = {};
     /**
      * How long a connected peer has to finish the handshake before it is dropped, Trystero's
      * `handshakeTimeoutMs`.

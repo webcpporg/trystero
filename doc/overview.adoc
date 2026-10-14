@@ -27,12 +27,12 @@ The library provides:
 * `action<T>`, a named channel of messages: text, JSON
   (`boost::json::value`), binary, or any of the three, with optional JSON
   metadata, of any size, sent inline or in chunks with backpressure;
-* the password of a room, part of the key that seals the signaling and a
-  challenge added to the handshake;
+* one immutable password per app, part of every room's sealed signaling
+  key and challenge handshake; separate passwords use separate apps and ids;
 * every asynchronous operation as an Asio initiating function, so it
   completes with a callback, `boost::asio::use_awaitable`,
   `boost::asio::deferred` or any other completion token;
-* an `app` per program in one application, with one identity and one
+* an `app` per program in one application and password domain, with one identity and one
   connection per remote peer shared by its rooms;
 * a resource for the app and an optional resource for each room, which
   receive their allocations (<<trystero-allocation>>);

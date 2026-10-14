@@ -8,7 +8,8 @@
 == Quick start
 
 The two smallest programs that join a room: one for the browser, one native.
-Both join the room `lobby` of the app `webcpp-trystero-quick-start`, so they
+Both use an empty app password and join the room `lobby` of
+`webcpp-trystero-quick-start`, so they
 meet each other, and any Trystero JS page that joins the same room,
 `joinRoom({appId: 'webcpp-trystero-quick-start'}, 'lobby')`, meets them
 both. <<trystero-building-examples>> builds and runs them.

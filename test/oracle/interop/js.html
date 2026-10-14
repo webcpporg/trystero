@@ -141,12 +141,16 @@ if (params.get('hold-hsdata')) {
         if (decoder.decode(b.subarray(3, 3 + n)) !== token2) return false
         return decoder.decode(b.subarray(3 + n + 2, 3 + n + 34)).replace(/\0+$/, '') === '@_hsdata'
     }
+    const present = new WeakSet()
     let held = null
     RTCDataChannel.prototype.send = function (data) {
         if (held?.channel === this) return void held.queue.push(data)
+        const b = bytesOf(data)
+        if (b?.length >= 4 && b[0] === 2 && b[1] === 1 &&
+            decoder.decode(b.subarray(4, 4 + ((b[2] << 8) | b[3]))) === token2) present.add(this)
         if (held === null && isHsdata(data)) {
             held = {channel: this, queue: [data]}
-            record('held', {what: '@_hsdata'})
+            record('held', {what: '@_hsdata', presenceBefore: present.has(this)})
             setTimeout(() => {
                 const {channel, queue} = held
                 held = {channel: null, queue: []}
@@ -231,10 +235,14 @@ const joinExtra = (which, roomId, password) => {
     extra.onPeerLeave = peer => record('peer-leave', {room: which, peer})
     return {room: extra, chat}
 }
-// A delayed second join lets the remote room finish its initial relay announcement warmup before binding.
+// The driver may defer room2 until room1 has completed its exchange, or until the relay warmup ends.
 let second = null
-if (params.get('room2')) {
-    const joinSecond = () => { second = joinExtra('second', params.get('room2'), params.get('password2') ?? params.get('password')) }
+const joinSecond = () => {
+    if (!second && params.get('room2')) {
+        second = joinExtra('second', params.get('room2'), params.get('password2') ?? params.get('password'))
+    }
+}
+if (params.get('room2') && !params.has('deferRoom2')) {
     const delay = Number(params.get('room2Delay'))
     if (delay > 0) setTimeout(joinSecond, delay)
     else joinSecond()
@@ -242,6 +250,7 @@ if (params.get('room2')) {
 const third = params.get('room3') ? joinExtra('third', params.get('room3'), params.get('password3')) : null
 window.leave = () => room.leave().then(() => record('left', {error: ''}))
 // The scenarios' hooks (run.mjs, S:6.4).
+window.join2 = joinSecond
 window.leave2 = () => second.room.leave().then(() => record('left', {room: 'second', error: ''}))
 window.chat1 = text => firstChat.send(text)
 window.chat2 = text => second.chat.send(text)
@@ -272,16 +281,17 @@ const hsreadyFrame = token => {
     frame.set(encoder.encode('@_hsready'), 3 + t.length + 2)
     return frame
 }
-window.echoPresence = () => {
+window.echoPresence = async (roomIds = []) => {
+    const tokens = new Set([...advertised, ...await Promise.all(roomIds.map(tokenOf))])
     const open = channels.filter(c => c.readyState === 'open')
     for (const channel of open) {
-        for (const token of advertised) {
+        for (const token of tokens) {
             channel.send(presenceFrame(token))
             channel.send(hsreadyFrame(token))
         }
     }
-    record('echoed', {channels: open.length, tokens: advertised.size})
-    return advertised.size
+    record('echoed', {channels: open.length, tokens: tokens.size})
+    return tokens.size
 }
 
 // window.drop(): closes every connection the page made, as a network drop ends them; Trystero then meets its peers

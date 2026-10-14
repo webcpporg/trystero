@@ -52,11 +52,12 @@ constexpr const char* app_id = "webcpp-trystero-tests";
 
 /** An app of the tests' app id over the two memory relays, with `self_id`; with
  * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */
-inline trystero::app_config app_config(std::string_view self_id) {
+inline trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
     trystero::app_config c;
     c.app_id = app_id;
     c.relay_urls = {relay_a, relay_b};
     c.self_id = self_id;
+    c.password = password;
     if (std::getenv("WEBCPP_TEST_TRYSTERO_VERBOSE") != nullptr) {
         c.log = [id = std::pmr::string(self_id)](std::string_view category, std::string_view text) {
             std::cerr << "  [" << id << "] " << category << ": " << text << "\n";
@@ -68,7 +69,7 @@ inline trystero::app_config app_config(std::string_view self_id) {
 /** Joins `room_id`, which must succeed: a failure ends the test. */
 inline trystero::room join(trystero::app& a, std::string_view room_id,
                            trystero::room_options options = {}) {
-    auto r = a.join(room_id, std::move(options));
+    auto r = a.join(room_id, options);
     webcpp::test::require(BOOST_TEST(r.has_value()));
     return std::move(*r);
 }

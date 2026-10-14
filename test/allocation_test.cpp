@@ -426,7 +426,7 @@ void the_counts_see_an_allocation() {
 /** Joins `room_id`, which must succeed: a failure ends the test. */
 trystero::room join(trystero::app& a, std::string_view room_id,
                     trystero::room_options options = {}) {
-    auto r = a.join(room_id, std::move(options));
+    auto r = a.join(room_id, options);
     webcpp::test::require(BOOST_TEST(r.has_value()));
     return std::move(*r);
 }
@@ -527,6 +527,7 @@ trystero::app_config app_config_in(counting_resource& memory, std::string_view s
     return trystero::app_config{
         .app_id = std::pmr::string("allocation", &memory),
         .self_id = std::pmr::string(self_id, &memory),
+        .password = std::pmr::string("a password", &memory),
         .relay_urls =
             std::pmr::vector<std::pmr::string>({std::pmr::string(relay, &memory)}, &memory),
         .ice_servers = std::pmr::vector<trystero::backend::ice_server>(&memory),
@@ -540,9 +541,9 @@ trystero::app_config app_config_in(counting_resource& memory, std::string_view s
     };
 }
 
-/** A room's options, its password in `memory`. */
+/** A room's options, naming `memory` explicitly. */
 trystero::room_options options_in(counting_resource& memory) {
-    return trystero::room_options{.password = std::pmr::string("a password", &memory)};
+    return trystero::room_options{.memory = &memory};
 }
 
 // end::config[]
@@ -665,10 +666,8 @@ void rooms_of_one_app_allocate_through_their_resources() {
     // Construct configurations in their resources before the counting window.
     auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
     auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
-    auto a_own = options_in(a_room_memory);
-    a_own.memory = &a_room_memory;
-    auto z_own = options_in(z_room_memory);
-    z_own.memory = &z_room_memory;
+    const auto a_own = options_in(a_room_memory);
+    const auto z_own = options_in(z_room_memory);
     // An inline payload of a size no other allocation has: its frame is at most 256 bytes longer.
     constexpr std::size_t payload_size = 12'345;
     trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
@@ -683,9 +682,9 @@ void rooms_of_one_app_allocate_through_their_resources() {
             trystero::app a(io.get_executor(), network, std::move(a_config));
             trystero::app z(io.get_executor(), network, std::move(z_config));
             auto a1 = join(a, "shared", options_in(a_memory));
-            auto a2 = join(a, "own", std::move(a_own));
+            auto a2 = join(a, "own", a_own);
             auto z1 = join(z, "shared", options_in(z_memory));
-            auto z2 = join(z, "own", std::move(z_own));
+            auto z2 = join(z, "own", z_own);
             std::size_t got = 0;
             auto in_shared = z1.make_action<trystero::pmr_bytes>("b");
             auto in_own = z2.make_action<trystero::pmr_bytes>("b");

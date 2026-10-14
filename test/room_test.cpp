@@ -82,7 +82,7 @@ app_room make_app_room(
     app_room out;
     out.app = std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
                                                                std::move(config));
-    out.room = trystero::detail::room_impl::make(out.app, std::move(options), room_id);
+    out.room = trystero::detail::room_impl::make(out.app, options, room_id);
     return out;
 }
 
@@ -207,17 +207,18 @@ void ping_measures_a_round_trip() {
 
 void the_same_password_joins_and_another_does_not() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.net, app_config("FFFFFFFFFFFFFFFFFFFF"));
-    auto a = join(a_app, "private", {.password = "s3cret"});
-    trystero::app b_app(f.io.get_executor(), f.net, app_config("GGGGGGGGGGGGGGGGGGGG"));
-    auto b = join(b_app, "private", {.password = "s3cret"});
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("FFFFFFFFFFFFFFFFFFFF", "s3cret"));
+    auto a = join(a_app, "private");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("GGGGGGGGGGGGGGGGGGGG", "s3cret"));
+    auto b = join(b_app, "private");
     BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; }));
 
     // The intruder's signals cannot be opened with the room key, so it never connects; both sides
     // report it.
     std::vector<boost::system::error_code> errors;
-    trystero::app intruder_app(f.io.get_executor(), f.net, app_config("HHHHHHHHHHHHHHHHHHHH"));
-    auto intruder = join(intruder_app, "private", {.password = "guess"});
+    trystero::app intruder_app(f.io.get_executor(), f.net,
+                               app_config("HHHHHHHHHHHHHHHHHHHH", "guess"));
+    auto intruder = join(intruder_app, "private");
     intruder.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
         errors.push_back(ec);
     });

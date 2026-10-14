@@ -72,7 +72,9 @@ These features of Trystero are not ported, each for its reason:
 
 | Scope of sharing and of the self id | the page: one `selfId` for every app and room, one manager per strategy | an `app` object: its self id and its connections | no static state; several peers in one process; an id across apps is a program's choice (`app_config::self_id`) and never reaches the wire of another app
 
-| A peer kicked from a room, or that kicked us, over a live connection | bound again by its next signal or presence | bound again at a rebinding time, 11 s doubling to 5 min; the lower id refuses it meanwhile and keeps its frames | a wrong password in one room would otherwise loop reports and announcements without end; one refusing side cannot alternate with another
+| Passwords across rooms | independently configured per room, including mixed passwords on one shared connection | one immutable `app_config::password` for every room, separate apps and self ids for different passwords | the initial sealed negotiation authenticates one password domain before any of its rooms reuse the connection; the JS wire remains unchanged
+
+| A peer kicked from a room, or that kicked us, over a live connection | bound again by its next signal or presence | bound again at a rebinding time, 11 s doubling to 5 min; the lower id refuses it meanwhile and keeps its frames | a peer sending invalid room proofs would otherwise loop reports and announcements without end; one refusing side cannot alternate with another
 
 | Reuse over a live connection | binds on any signal of that peer id | binds only a peer that advertised the room's token itself, and by reuse only on their first meeting over that connection | a forged announcement must not bind an innocent peer
 

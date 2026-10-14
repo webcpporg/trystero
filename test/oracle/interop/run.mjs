@@ -766,31 +766,55 @@ const leavingEveryRoomScenario = (name, cppKind) =>
         return seconds >= 1.5 ? null : `the connection closed ${seconds} s after the leaves, before the idle time of 2 s`
     })
 
-// 4. A passwordless room is open to the app's other rooms (ruling 7): the C++ peer joins room, a passwordless room2
-// and room3 with a password; the page joins room only, then sends presence and @_hsready for every token the C++ peer
-// advertised (window.echoPresence): the C++ peer's room2 reports the page joined and sends it its messages; its room3
-// never reports it joined.
+// 4. A public app exposes its other rooms to a peer on its connection. A separate password-protected app has
+// another peer id, so public-channel presence and readiness injections cannot reach its rooms or broadcasts.
 const openToOtherRoomsScenario = (name, cppKind) =>
     scenario(name, async open => {
-        const rooms = {room: room(), room2: room(), room3: room()}
-        const cpp = await open(cppKind, {...rooms, password3: 'vault', ...relayParams})
-        const js = await open('js', {room: rooms.room, ...relayParams})
-        const ok = await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
-            exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000)
-        if (!ok) return 'room did not complete in 30 s'
-        if (!(await until(async () => (await js.value('window.advertisedCount()')) >= 3, 10_000))) {
-            return `the C++ peer advertised ${await js.value('window.advertisedCount()')} tokens, not 3`
+        for (const protectedSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
+            const publicSelf = protectedSelf.startsWith('0') ? 'zzzzzzzzzzzzzzzzzzzz' : '00000000000000000000'
+            const rooms = {room: room(), room2: room(), secret: room()}
+            const cpp = await open(cppKind, {room: rooms.room, room2: rooms.room2, self: publicSelf, ...relayParams})
+            const protectedCpp = await open(cppKind, {
+                room: rooms.room, room2: rooms.secret, self: protectedSelf, password: 'vault', ...relayParams,
+            })
+            // The page knows the protected room id but has no password. It also injects that token over its public
+            // connection, alongside the public app's actual advertisements.
+            const js = await open('js', {room: rooms.room, room3: rooms.secret, ...relayParams})
+            const ok = await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+                exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000)
+            if (!ok) return `${protectedSelf}: the public room did not complete in 30 s`
+            const refused = async () => inRoom(await protectedCpp.events(), 'second').some(e => e.kind === 'error') ||
+                inRoom(await js.events(), 'third').some(e => e.kind === 'error' && e.peer === protectedSelf)
+            if (!(await until(refused, 15_000))) return `${protectedSelf}: the protected room saw no attempted negotiation`
+            if (!(await until(async () => (await js.value('window.advertisedCount()')) >= 2, 10_000))) {
+                return `${protectedSelf}: the public app did not advertise both rooms`
+            }
+            const before = await connectionCounts(cpp, cppKind, js)
+            const echoed = await js.value(`window.echoPresence([${JSON.stringify(rooms.secret)}])`)
+            if (echoed < 3) return `${protectedSelf}: the injection omitted a public or protected token`
+            const joined2 = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join')
+            if (!(await until(joined2, 15_000))) return `${protectedSelf}: the public app's room2 did not admit the page`
+            const sent2 = async () => (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'chat')`)) > 0 &&
+                (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'file')`)) > 0
+            if (!(await until(sent2, 10_000))) return `${protectedSelf}: the public room2 did not send chat and file frames`
+            await new Promise(r => setTimeout(r, 15_000))
+            const protectedEvents = await protectedCpp.events()
+            if (protectedEvents.some(e => e.kind === 'peer-join' || e.kind === 'adopted')) {
+                return `${protectedSelf}: the protected app admitted a peer without its password`
+            }
+            if (inRoom(await js.events(), 'third').some(e => e.kind === 'peer-join')) {
+                return `${protectedSelf}: the page joined the protected room`
+            }
+            if ((await js.value(`window.roomFrames(${JSON.stringify(rooms.secret)}, 'chat')`)) !== 0 ||
+                (await js.value(`window.roomFrames(${JSON.stringify(rooms.secret)}, 'file')`)) !== 0) {
+                return `${protectedSelf}: protected broadcasts reached the public page`
+            }
+            const after = await connectionCounts(cpp, cppKind, js)
+            if (after.cppMade !== before.cppMade || after.jsConnected !== 1) {
+                return `${protectedSelf}: the public connection changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+            }
         }
-        const echoed = await js.value('window.echoPresence()')
-        const joined2 = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join')
-        if (!(await until(joined2, 15_000))) return `the C++ peer's room2 did not report the page joined (${echoed} tokens echoed)`
-        const sent2 = async () => (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'chat')`)) > 0 &&
-            (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'file')`)) > 0
-        if (!(await until(sent2, 10_000))) return "the C++ peer's room2 did not send both chat and file action frames"
-        await new Promise(r => setTimeout(r, 15_000))
-        return inRoom(await cpp.events(), 'third').some(e => e.kind === 'peer-join')
-            ? "the C++ peer's room3, with a password, reported the page joined"
-            : null
+        return null
     })
 
 // 7. A wrong password in room2, in both id orders (ruling 9). With the C++ peer the lower id, it reports
@@ -806,8 +830,8 @@ const wrongPasswordScenario = (name, cppKind) =>
             // Both passwords are nonempty: a passwordless C++ room sends readiness, not a password challenge.
             // The page joins room2 after the C++ room's initial relay announcement warmup has ended.
             // A later C++ join would send that warmup to JS and trigger extra reuse handshakes by its design.
-            const cpp = await open(cppKind, {...params, self: cppSelf, password2: 'p'})
-            const js = await open('js', {...params, password2: 'another', room2Delay: 15000})
+            const cpp = await open(cppKind, {...params, self: cppSelf, password: 'p'})
+            const js = await open('js', {...params, password: 'p', password2: 'another', room2Delay: 15000})
             const cppReports = async () => inRoom(await cpp.events(), 'second').filter(e => e.kind === 'error').length
             const cppWrong = async () => inRoom(await cpp.events(), 'second').filter(e => e.kind === 'error' && e.error === wrong).length
             const jsReports = async () => inRoom(await js.events(), 'second').filter(e => e.kind === 'error').length
@@ -878,14 +902,19 @@ const transientHandshakeScenario = (name, cppKind) =>
     scenario(name, async open => {
         for (const cppSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
             const pageLower = !cppSelf.startsWith('0')
-            const params = {room: room(), room2: room(), password2: 'p', ...relayParams}
-            // Room1 must finish its readiness handshake before the channel-wide hold in room2 begins.
-            const cpp = await open(cppKind, {...params, self: cppSelf, room2Delay: 5000})
-            const js = await open('js', {...params, 'hold-hsdata': '1', handshake: 30000})
-            if (!(await until(async () => inRoom(await cpp.events(), 'first').some(e => e.kind === 'peer-join'), 10_000))) {
-                return `${cppSelf}: room did not join before the transient handshake timed out`
+            const params = {room: room(), room2: room(), password: 'p', ...relayParams}
+            const cpp = await open(cppKind, {...params, self: cppSelf})
+            const js = await open('js', {...params, deferRoom2: 1, 'hold-hsdata': '1', handshake: 30000})
+            // Join room2 explicitly only after both directions of room1's exchange have completed.
+            if (!(await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+                exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000))) {
+                return `${cppSelf}: room did not complete before joining room2`
             }
             const before = await connectionCounts(cpp, cppKind, js)
+            await js.value('window.join2()')
+            if (!(await until(async () => (await js.events()).some(e => e.kind === 'held' && e.presenceBefore), 10_000))) {
+                return `${cppSelf}: room2 presence did not precede its first held handshake frame`
+            }
             const cppTimeouts = async () => inRoom(await cpp.events(), 'second')
                 .filter(e => e.kind === 'error' && e.error === 'the handshake timed out').length
             if (!(await until(async () => (await cppTimeouts()) >= 1, 30_000))) return `${cppSelf}: the C++ peer did not time out in room2`
@@ -934,7 +963,7 @@ const scenarios = async () => {
             await pageFirstScenario('A room the page joined first binds over the connection within 5 s', 'cpp')
             await oneRoomLeavingScenario('One room leaving, either side, leaves the other room and the connection', 'cpp')
             await leavingEveryRoomScenario('A peer leaving every room closes the connection after the idle time', 'cpp')
-            await openToOtherRoomsScenario('A passwordless room is open to the app\'s other rooms, a password\'s is not', 'cpp')
+            await openToOtherRoomsScenario('A public app exposes its rooms while a separate protected app stays isolated in both id orders', 'cpp')
             await wrongPasswordScenario('A wrong password in one room, in both id orders, paced by the rebinding times', 'cpp')
             await roomFloodScenario('A flood in one room does not delay the pings of another', 'cpp')
             await transientHandshakeScenario('A transient handshake failure converges, in both id orders', 'cpp')
@@ -963,7 +992,7 @@ const scenarios = async () => {
             await pageFirstScenario('Native C++: a room the page joined first binds over the connection within 5 s', 'native')
             await oneRoomLeavingScenario('Native C++: one room leaving, either side, leaves the other room and the connection', 'native')
             await leavingEveryRoomScenario('Native C++: a peer leaving every room closes the connection after the idle time', 'native')
-            await openToOtherRoomsScenario('Native C++: a passwordless room is open to the app\'s other rooms, a password\'s is not', 'native')
+            await openToOtherRoomsScenario('Native C++: a public app exposes its rooms while a separate protected app stays isolated in both id orders', 'native')
             await wrongPasswordScenario('Native C++: a wrong password in one room, in both id orders, paced by the rebinding times', 'native')
             await roomFloodScenario('Native C++: a flood in one room does not delay the pings of another', 'native')
             await transientHandshakeScenario('Native C++: a transient handshake failure converges, in both id orders', 'native')

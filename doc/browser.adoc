@@ -11,7 +11,8 @@ In the browser, `browser::backend` implements the backend interface over the
 page's own `WebSocket`, `RTCPeerConnection`, `RTCDataChannel`, `setTimeout`
 and `crypto.subtle`, through embind's `emscripten::val`, and
 `browser::event_loop` runs the room's executor from the page's events. One
-of each serves every room of the page.
+of each serves every app and room of the page. Apps with different
+passwords use distinct self ids and share no connection or presence.
 
 [#trystero-browser-loop]
 === Driving Asio from the page's event loop

@@ -28,11 +28,15 @@ by_ `protocol`, against the values the `oracle` lane has Trystero 0.26.0
 write, and by the `oracle` lane, which fails when Trystero would write
 other values than those committed; and by `native_sealer`, which opens what
 Trystero JS sealed with Web Crypto.
-. [[trystero-invariant-3]]*A peer with another password never joins.* Its
-signals do not open, and over a connection shared with another room its
-handshake fails, so neither side reports it joined. _Held by_ `room` (`the_same_password_joins_and_another_does_not`),
-`native_room` (`another_password_never_joins`), and the wrong-password
-scenario of the `interop` lane.
+. [[trystero-invariant-3]]*A peer with another password never joins a
+protected {cpp} app's rooms.* Its initial signals do not open under the
+app's password, so it obtains no shared connection into that domain. Every
+room of that app uses the same immutable password. This promise concerns
+the {cpp} app's admission; an upstream JS page that mixes passwords retains
+its one-way handshake exposure (<<trystero-protocol-limitations>>). _Held
+by_ `room` (`the_same_password_joins_and_another_does_not`), `native_room`
+(`another_password_never_joins`), and password-domain tests of `shared` and
+`interop`.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
 both ways.* It is offered, accepted and sent in chunks of at most 16,370
 bytes, and arrives whole, from either peer. _Held by_ `room`
@@ -76,6 +80,8 @@ scenario.
 . [[trystero-invariant-10]]*A room's departure leaves the app's other rooms
 joined.* They continue sending over the same connection. _Held by_
 `shared`, case 8, and shared interop scenario 5, with either side leaving.
-. [[trystero-invariant-11]]*A protected room never admits a peer of another
-room without its password.* Presence reaches its handshake, which keeps
-that peer out. _Held by_ `shared`, case 19, and shared interop scenario 4.
+. [[trystero-invariant-11]]*Different passwords share no {cpp} app
+connection or presence.* Protected rooms use a separate app with a
+distinct self id; a peer of a passwordless app gains no binding to that
+protected app by echoing tokens. _Held by_ the password-domain cases of
+`shared` and shared interop scenario 4.

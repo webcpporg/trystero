@@ -92,6 +92,7 @@ public:
           log_(std::move(config.log), memory_),
           app_id_(config.app_id, memory_),
           self_id_(config.self_id, memory_),
+          password_(config.password, memory_),
           relay_urls_(config.relay_urls, memory_),
           ice_servers_(copy_ice_servers(config.ice_servers, memory_)),
           idle_timeout_(config.idle_timeout),
@@ -161,6 +162,9 @@ public:
 
     /** The local peer id shared by every room. */
     [[nodiscard]] std::string_view self_id() const { return self_id_; }
+
+    /** The immutable password shared by this app's rooms and authenticated connections. */
+    [[nodiscard]] std::string_view password() const { return password_; }
 
     /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
@@ -426,6 +430,7 @@ private:
     logger log_;
     std::pmr::string app_id_;
     std::pmr::string self_id_;
+    std::pmr::string password_;
     std::pmr::vector<std::pmr::string> relay_urls_;
     std::pmr::vector<backend::ice_server> ice_servers_;
     std::chrono::milliseconds idle_timeout_;

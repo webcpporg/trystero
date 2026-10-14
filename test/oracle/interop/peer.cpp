@@ -10,7 +10,7 @@
 //
 // | Query parameter | Meaning                                                            |
 // | app, room       | the app id and room id                                             |
-// | password        | the room password, optional                                        |
+// | password        | the app password, shared by all its rooms, optional                |
 // | self            | this peer's id, optional                                           |
 // | relays          | comma-separated relay URLs, optional (Trystero's default list)     |
 // | ice             | a STUN or TURN server's URL, optional (Trystero's default list)    |
@@ -18,8 +18,6 @@
 // | room3           | a third room of the same app, optional                             |
 // | room2Delay      | the ms before joining room2, optional (0)                          |
 // | room3Delay      | the ms before joining room3, optional (0)                          |
-// | password2       | room2's password, optional (password's)                            |
-// | password3       | room3's password, optional (none)                                  |
 // | idle            | the app's idle_timeout in ms, optional (123,333)                   |
 // | handshake       | every room's handshake_timeout in ms, optional (10,000)            |
 // | ping2           | any value: ping each peer of room2 every second, optional          |
@@ -143,6 +141,7 @@ trystero::app_config config_of_page() {
     trystero::app_config config;
     config.app_id = param("app");
     config.self_id = param("self");
+    config.password = param("password");
     for (std::string relays = param("relays"); !relays.empty();) {
         const auto comma = relays.find(',');
         config.relay_urls.emplace_back(relays.substr(0, comma));
@@ -157,10 +156,9 @@ trystero::app_config config_of_page() {
     return config;
 }
 
-/** A room's options: `password`, and the page's handshake timeout. */
-trystero::room_options options_of_page(std::string_view password) {
+/** A room's options: the page's handshake timeout. */
+trystero::room_options options_of_page() {
     return {
-        .password = std::pmr::string(password),
         .handshake_timeout = millis(param("handshake"), std::chrono::milliseconds(10'000)),
     };
 }
@@ -168,7 +166,7 @@ trystero::room_options options_of_page(std::string_view password) {
 /** Joins `room_id` through `app`; null, with an event, when the app refuses. */
 std::unique_ptr<trystero::room> join(trystero::app& app, const std::string& room_id,
                                      std::string_view which) {
-    auto joined = app.join(room_id, options_of_page(param("password")));
+    auto joined = app.join(room_id, options_of_page());
     if (!joined) {
         record("not-joined", {{"room", which}, {"error", joined.error().message()}});
         return nullptr;
@@ -181,9 +179,9 @@ std::unique_ptr<trystero::room> join(trystero::app& app, const std::string& room
  * message and a 100 KB file, echoes each chat message it receives, and records what it sees with
  * `room: <which>`.
  */
-void join_extra(extra_room& extra, std::string_view room_id, std::string_view password) {
+void join_extra(extra_room& extra, std::string_view room_id) {
     page& app = the_page();
-    auto joined = app.app->join(room_id, options_of_page(password));
+    auto joined = app.app->join(room_id, options_of_page());
     if (!joined) {
         record("error", {
                             {"room", extra.which},
@@ -346,17 +344,13 @@ void start() {
     });
     if (!param("room2").empty()) {
         app.second_delay = app.backend.make_timer(std::pmr::get_default_resource());
-        app.second_delay->start(millis(param("room2Delay"), std::chrono::milliseconds(0)), [] {
-            const std::string password2 = param("password2");
-            join_extra(the_page().second, param("room2"),
-                       password2.empty() ? param("password") : password2);
-        });
+        app.second_delay->start(millis(param("room2Delay"), std::chrono::milliseconds(0)),
+                                [] { join_extra(the_page().second, param("room2")); });
     }
     if (!param("room3").empty()) {
         app.third_delay = app.backend.make_timer(std::pmr::get_default_resource());
-        app.third_delay->start(millis(param("room3Delay"), std::chrono::milliseconds(0)), [] {
-            join_extra(the_page().third, param("room3"), param("password3"));
-        });
+        app.third_delay->start(millis(param("room3Delay"), std::chrono::milliseconds(0)),
+                               [] { join_extra(the_page().third, param("room3")); });
     }
     if (!param("ping2").empty()) {
         app.pinger = app.backend.make_timer(std::pmr::get_default_resource());

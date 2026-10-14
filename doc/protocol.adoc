@@ -63,8 +63,8 @@ itself on the other's peer topic, so the lower one offers: at most once a
 second per peer, and once in 5.3 s per relay for the whole room, Trystero's
 announce interval, so that a flood of low ids does not have the relays
 rate-limit the room. Offers, answers and candidates are sealed with AES-GCM
-under the SHA-256 of `<password>:<app>:<room>`, the password empty when there
-is none, with a 16-byte IV, as the text `<iv>$<ciphertext>`: the IV's bytes
+under the SHA-256 of `<password>:<app>:<room>`, using the immutable
+`app_config::password`, empty for a passwordless app, with a 16-byte IV, as the text `<iv>$<ciphertext>`: the IV's bytes
 in decimal joined by commas, and the ciphertext with its tag in base64.
 Candidates follow their offer or answer, trickled. A negotiation ends when
 the data channel opens: the app adopts the connection, and signals from a
@@ -252,10 +252,13 @@ per connection; each of at most 64 bound rooms retains its own peer bounds.
 A flood spends its room's queues, transfers and reservations; routing never
 holds one room's frame for another room.
 
-With the lower id a wrong password causes at most six kicks and reports in
+With the lower id an invalid room response proof causes at most six kicks and reports in
 the first ten minutes, then one per 5 minutes. The higher id can be rebound
 by a lower-id peer at that peer's pace, but reports at most one handshake
-timeout per `handshake_timeout` and no wrong password.
+timeout per `handshake_timeout`, and does not verify a response proof.
+Malformed challenges are rejected by their receiver and can also report
+`wrong_password`; their report rate follows the malicious peer's repeated
+bindings, rather than the timeout bound.
 
 [#trystero-protocol-replay]
 === Replayed offers and answers
@@ -275,8 +278,13 @@ as a peer's offer or answer.
 [#trystero-protocol-limitations]
 === What remains
 
-Sharing preserves Trystero's wire, including its security limits. A password
-protects admission, while an app's identity and presence link its rooms.
+Sharing preserves Trystero JS 0.26.0's wire. Each {cpp} app is one password
+domain: it copies one password at construction, and all its rooms use it.
+The initial sealed signaling authenticates that password before the data
+channel is adopted. Later room binding reuses this authenticated connection.
+There are no per-room overrides, and different passwords require separate
+apps with distinct self ids. This protects admission to the {cpp} app's
+rooms without changing the room handshake on the wire.
 
 *A watcher not connected to the app, without the key, can keep two peers apart.* A sealed offer or
 answer the room neither made nor acted on still opens and is acted on. Such
@@ -299,24 +307,33 @@ with the same id, and is kept out the same way: the room has no
 renegotiation that would keep its place. Closing it needs announcements that
 prove the room key, a wire change Trystero would have to share.
 
-*A passwordless room is open to the app's other peers.* Presence gives
-any peer connected through any room the token of every room in the app.
-Relay events reveal their topics in the clear, and announcements reveal
-the app's peer id. The token alone binds an existing connection; a
-passwordless room has no further gate beyond `@_hsready`. Such a peer can
-echo a token and join without knowing that room's id. A watcher not
-connected to the app still needs the room id to derive its topics and key.
-Use a password or a separate `app` for a room that must be private.
+*A passwordless app's rooms are open to its connected peers.* Presence
+gives a peer connected through any room the token of every room of that
+app. Relay events reveal their topics in the clear, and announcements
+reveal the app's peer id. The token alone binds the existing connection,
+and the empty app password goes straight to `@_hsready`, so that peer can
+join another room without knowing its id. A watcher not connected to the
+app still needs the room id to derive its topics and signaling key.
+Protected rooms belong to another app with a password and a distinct self
+id. Its presence, tokens and connections never reach the passwordless app.
 
-*A shared connection exposes material for password guesses.* A peer
-connected through another room reaches a protected room's handshake by
-presence without knowing its key. It cannot join with another password.
-It can choose a lower id, send a challenge and receive the SHA-256 of
-`<challenge>:<password>:<app>:<room>`, enough for an offline password guess.
-The responder answers one challenge per binding; a lower-id peer can
-rebind it at its own pace, so the number of answers is unbounded, and one
-suffices. Trystero JS has the same exposure; closing it needs a wire change
-shared with Trystero.
+*The upstream one-way handshake remains.* The responder to a room
+challenge answers and passes its side; only the lower id verifies the
+password proof. A Trystero JS page that itself mixes different passwords
+on one app's shared connection can therefore admit a peer to its own
+higher-id room without that room's password, and can expose a challenge
+response for offline guessing. The {cpp} app-domain boundary does not
+repair such a JS page. Configure all rooms of one JS app with one password,
+and use separate page contexts for different password domains. The wire
+has not gained bilateral room proofs.
+
+*A domain member can send an invalid room proof.* A peer already
+connected to a protected {cpp} app knows its domain password from the
+initial sealed negotiation. It can nevertheless answer a later room's
+challenge incorrectly or send malformed handshake data. The room kicks
+that binding and applies the documented backoff; only the lower id checks
+and reports a wrong response. These checks isolate faulty peers within an
+authenticated domain, rather than admitting another password domain.
 
 *One identity links the app's rooms.* Each room announces the same
 `peerId` in clear, and connected peers see it across shared rooms. Relay
