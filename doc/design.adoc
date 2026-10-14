@@ -23,10 +23,13 @@
 | the WebSocket, peer connection, data channel, timer and AES-GCM sealer a
   platform provides
 
+| App
+| `app.hpp`, `detail/app_impl.hpp`, `detail/connection.hpp`
+| one identity, the room registry, shared connections and their routing
+
 | Room
 | `room.hpp`, `detail/*.hpp`
-| the Nostr strategy, the signaling, the peer links, the action wire and the
-  public API
+| the Nostr strategy, signaling, bindings, action wire and room API
 
 | Browser backend
 | `browser/*.hpp`
@@ -42,6 +45,57 @@ targets: the same room runs over the browser's APIs, over libdatachannel, and
 over the memory relays of the tests (<<trystero-testing>>). The core never
 includes a backend, libdatachannel, OpenSSL or Emscripten: a boundary of the
 library's own, which webcpp's lint checks, keeps it so.
+
+[#trystero-design-sharing]
+=== Connections shared by the rooms of an app
+
+[cols="1,3,2,1",options="header"]
+|===
+| Object | Owns | Lives | Resource
+
+| `app`
+| A reference to `detail::app_impl`, counted as one user
+| While the user keeps its handle
+| None
+
+| `detail::app_impl`
+| Configuration, self id, logger, room registry by token and id, connections and user count
+| While any shared reference lives; its last user closes its connections
+| App's
+
+| `detail::connection`
+| One peer's connection and channel, advertised tokens, kept frames, idle timer and plain pointers to bindings and their drain order
+| From adoption until its end
+| App's
+
+| `detail::binding`
+| One room's use of a connection: a weak reference, drain waiters and delivery to its room
+| Until detachment, owned by its room's peer state
+| Room's
+
+| `room`
+| A reference to `detail::room_impl`
+| While the user keeps its handle; destruction leaves
+| None
+
+| `detail::room_impl`
+| Signaling, strategy, actions, peers, bindings, handlers, rebinding counts, backoffs and a shared reference to the app
+| Until its state and pending operations end
+| Room's, the app's by default
+|===
+
+* A room holds the app strongly; the app reaches rooms weakly. A binding
+  holds its connection weakly, and the connection holds plain pointers to
+  bindings. Detachment removes those pointers and every drain registration
+  before returning. Ending a room removes its registry entry, so the app
+  keeps no allocation of that room's resource after it ends, and no cycle
+  keeps the objects alive.
+* Sharing is scoped by the `app` the user constructs, with no registry
+  outside it and no static state keyed by the backend. Two apps with the
+  same application id in one process are two peers.
+* The action wire continues to write its room token and send through a
+  `channel_link`. The binding implements that link: each room keeps its
+  own actions, transfers, queues and bounds.
 
 [#trystero-design-backend]
 === Why abstract classes for the backend

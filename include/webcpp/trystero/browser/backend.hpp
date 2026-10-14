@@ -328,7 +328,7 @@ public:
      *
      * @param loop The page's loop, which must outlive the channel.
      * @param channel The `RTCDataChannel`.
-     * @param memory The room's resource, which the channel's handlers, registration and received
+     * @param memory The app's resource, which the channel's handlers, registration and received
      * frames are allocated in.
      */
     data_channel(event_loop& loop, val channel, std::pmr::memory_resource* memory)
@@ -456,7 +456,7 @@ public:
      *
      * @param loop The page's loop, which must outlive the connection.
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The room's resource, which the connection, its handlers, registration,
+     * @param memory The app's resource, which the connection, its handlers, registration,
      * channels and texts are allocated in.
      * @return The connection, or null when the browser refuses to make one: it throws for a
      * server it cannot use, and when the page holds as many connections as it allows. The page's
@@ -497,7 +497,7 @@ public:
      *
      * @param loop The page's loop, which must outlive the connection.
      * @param connection The `RTCPeerConnection`.
-     * @param memory The room's resource, which the connection's handlers, registration, channels
+     * @param memory The app's resource, which the connection's handlers, registration, channels
      * and texts are allocated in.
      */
     peer_connection(event_loop& loop, val connection, std::pmr::memory_resource* memory)
@@ -896,8 +896,9 @@ private:
 /**
  * The browser's factory: one per page, beside the page's `event_loop`.
  *
- * It makes each object in the memory resource the room gives it, `room_config::memory`: the
- * objects, their handlers and registrations, and the frames and texts they hand to the room. What
+ * It makes peer connections, data channels and received frames in `app_config::memory`, and
+ * WebSockets, sealers and room timers in the room's effective `room_options::memory`. Objects,
+ * handlers and registrations use the resource supplied to their factory method. What
  * `emscripten::val` holds is in the JavaScript heap. It needs a secure context, where
  * `crypto.subtle` exists.
  *
@@ -945,7 +946,7 @@ public:
      * Makes a peer connection, with the page's `RTCPeerConnection`.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * @param memory The app's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
      * @return The connection, or null when the page holds `max_peer_connections`, or when the
      * browser refuses to make one, as `peer_connection::create` says.

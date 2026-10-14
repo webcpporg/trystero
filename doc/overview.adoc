@@ -32,8 +32,10 @@ The library provides:
 * every asynchronous operation as an Asio initiating function, so it
   completes with a callback, `boost::asio::use_awaitable`,
   `boost::asio::deferred` or any other completion token;
-* a memory resource per room, which every allocation of the room goes
-  through (<<trystero-allocation>>);
+* an `app` per program in one application, with one identity and one
+  connection per remote peer shared by its rooms;
+* a resource for the app and an optional resource for each room, which
+  receive their allocations (<<trystero-allocation>>);
 * a backend interface that separates the room from the platform, and its
   two implementations, for the browser and for native programs.
 

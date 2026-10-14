@@ -162,6 +162,33 @@ holds only what is specific to trystero.
     back as a new peer, with the same id, and is kept out the same way:
     the room has no renegotiation that would keep its place. Trystero JS
     bounds none of this.
+- **The app and shared admission.** An `app` scopes one self id and one
+  connection per remote peer, with no static registry. `join` returns a
+  result, refusing duplicate membership (`already_joined`) and a 65th room
+  (`too_many_rooms`), counting farewells until withdrawal. Configuration
+  errors go to `app::on_error`; room errors name peer problems. Presence
+  reveals every local token to every connected peer, so passwordless rooms
+  are open to peers of the app's other rooms. Protected rooms require
+  their handshake; a chosen lower-id peer can obtain a challenge response
+  for offline guessing, as Trystero JS permits. One app id links its rooms
+  through the same self id; unrelated rooms use separate apps.
+- **Shared connection bounds.** A connection accepts 64 advertised tokens
+  and at most 64 kept frames for local unbound rooms, expiring 10 s after
+  the first, and drops unknown room tokens. A malformed envelope ends all
+  bindings. A kick ends only its binding; if the last binding was kicked,
+  close at once. After departures, idle expiry is `app_config::idle_timeout`,
+  123,333 ms by default, 0 closes immediately. A remote must advertise the token
+  itself before any binding; forged relay announcements bind nothing.
+  Rebinding after a kick or peer leave uses the larger of handshake timeout
+  and 10 s plus 1 s, doubling to 5 minutes until a completed handshake or
+  connection end. The lower id refuses bindings during its own-kick
+  backoff and keeps frames; the higher drops frames after its own kick
+  until it sends presence and accepts the lower's presence immediately.
+  Reuse is a first-meeting path; later relay signals cannot shorten that
+  backoff. The initiator accepts correct answers to its last eight
+  challenges since the last completed handshake. Only the lower id reports
+  a shared wrong password. One room's departure does not close another's
+  transport; waiting sends take turns by binding at each drain.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair
@@ -169,6 +196,18 @@ holds only what is specific to trystero.
   sealer that opens only what was sealed under the same key, each event
   posted to the `io_context`. A test of a whole room runs over it, on both
   targets, without the network.
+  Its optional fault hooks use `std::size_t` connection ids, `on_made`
+  (with ICE servers) and `peer_of`, a deliver/drop/hold filter, ordered
+  `release`, deferred one-end `open`, `inject` and `fail`. A held frame
+  holds every later frame from its sending end behind it. Buffered channels
+  drain up to `drain_per_post` bytes per post, delivering only complete
+  frames and reporting exact unsent bytes through `buffered`. Set
+  `virtual_clock` before making timers: `advance`, `step` and `poll_ready` run due
+  timers and ready work deterministically, in due-time and registration
+  order. Optional hook storage uses the default resource only when enabled;
+  allocation tests enable none. `connection`, `memory_backend`, `shared`,
+  `shared_no_exceptions` and `shared_hardened` cover these paths, with
+  sanitizers and library hardening checking resource lifetimes.
 - **The oracle and the interop tests, trystero's own lanes.**
   `test/oracle/` pins Trystero 0.26.0 (`trystero`, `@trystero-p2p/core` and
   `@trystero-p2p/nostr`, with `ws` 8.22.0 and `@noble/secp256k1` 3.2.0 for
@@ -184,7 +223,7 @@ holds only what is specific to trystero.
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
   headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, in sixteen scenarios each:
+  Nostr relay `interop/relay.mjs` on 127.0.0.1, with the existing scenarios and the shared scenarios below:
   C++ offering, Trystero JS offering with a password, a Trystero JS peer
   that also sends malformed candidates (`js.html`'s
   `malformed-candidate-to`), a first relay whose URL no WebSocket can be
@@ -202,9 +241,8 @@ holds only what is specific to trystero.
   `window.floodOffers`) whose offers the watcher answers too, a relay text
   longer than 1 MiB, once and then after every subscription
   (`relay.broadcast`, `relay.options.afterSubscribe`), the C++ peer and a
-  Trystero JS page each in two rooms of one app (`room2`), every C++ room
-  with its own peer id, since Trystero keeps one connection per app and
-  peer id, which its rooms share, and drops a second one, a wrong password,
+  Trystero JS page each in two rooms of one app (`room2`), sharing one
+  connection and one self id per app, a wrong password,
   and a mesh of three; and, for the native peer, three
   more: a room moved over the joined one, which must leave it as
   destroying it does; a relay that ends the connection just as the peer
@@ -217,6 +255,17 @@ holds only what is specific to trystero.
   assertions), so that a completion that touches a cleared container
   fails at once. Both lanes are of the kind `original`, so the CI gives
   them its Node.
+  - Shared scenarios on both backends cover: (1) two rooms on one
+    connection, with chat and 100 KB files both ways; (2) a third room
+    joining later by presence; (3) the page's rooms joined before the C++
+    app's; (4) admission to a passwordless room by token and refusal by a
+    protected room; (5) either side leaving one room while another keeps
+    exchanging without a new connection; (6) departure from every room,
+    followed by idle expiry; (7) wrong passwords in both id orders, with
+    paced reports and the other room unaffected; (8) a 5,000-message flood
+    while another room pings; (9) a held handshake frame recovering in both
+    id orders with no false password report. Crossed adoption races allow
+    retries but fail by connection count above four constructions per side.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to
@@ -258,47 +307,34 @@ holds only what is specific to trystero.
 - **Allocation.** trystero is born with webcpp's allocation rule, through
   `std::pmr`, header-only. The page's section "Allocation" is written from
   these rules.
-  - **One resource per room.** `room_config::memory`, a
-    `std::pmr::memory_resource*` that defaults to
-    `std::pmr::get_default_resource()`, is the resource every allocation of
-    the room goes through, from its construction to its destruction: the
-    room itself, the copy of its configuration, its peers, actions, queues,
-    frames, transfers, negotiations and relays, its handlers, the text it
-    composes for its log, the objects its backend makes for it, the context
-    libsecp256k1 signs with (`secp256k1_context_preallocated_create`, in the
-    resource), and the JSON it parses and writes. trystero touches it only
-    from the room's executor, so it need not be thread-safe when that
-    executor runs on one thread. A null `memory` is a programming error,
-    which `BOOST_ASSERT` catches when the room is constructed.
-  - **The resource's lifetime.** The resource must outlive the room, every
-    value the room handed out (a `std::pmr::string`, a `pmr_bytes` or a
-    `boost::json::value` a handler kept), and every operation the room left
-    pending: destroying a room closes everything, but what it closed still
-    has operations queued that free into the resource. On Asio, the resource
-    lives until the io_context of the room's executor has run out of the
-    room's work or has been destroyed, so it is declared before the
-    io_context; in the browser, until the room's pending promises have
-    settled (a promise's registration with the page's `event_loop` keeps its
-    handler, in the room's resource), in practice for the page's life. The
-    order that holds:
-
-    ```cpp
-    std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
-    boost::asio::io_context io;                     // destroyed before memory
-    {
-        trystero::room room(io.get_executor(), backend, {.memory = &memory}, "lobby");
-        // ...
-    }
-    io.run();  // or destroy io: the room's pending operations free into memory
-    ```
-
-    The test measures it: once two rooms are destroyed, their resources
-    still have memory out, and none once the io_context has drained. No
-    check in debug builds catches the misuse: trystero holds a raw pointer
-    and cannot see the resource end, and the use comes after the room is
-    gone, from an operation of Asio's or the browser's; a resource that
-    asserts nothing is out when it is destroyed, as the test's counts, is
-    the check, and it is the user's.
+  - **The app's resource and the room's.** `app_config::memory` defaults
+    to `std::pmr::get_default_resource()` and must not be null. It receives
+    app state, copied configuration, self id, registry, logger and sink,
+    every log sentence from the app and its rooms, connections, advertised
+    tokens, kept frames, drain order and presence. Peer connections, data
+    channels and received frames use it even while a room negotiates them.
+    `room_options::memory`, the app's resource when null, receives room
+    state, bindings and drain waiters, negotiation records, rebinding
+    counts and backoffs, sealed texts, relay sockets, signing context,
+    actions, outgoing frames, queues, transfers, JSON storage and handlers.
+    Every touch runs on the app's executor; one thread needs no thread-safe
+    resource, multiple threads require a strand.
+  - **References and detachment.** Rooms hold the app strongly, the app
+    reaches rooms weakly, bindings hold connections weakly and connections
+    hold plain pointers to bindings. Detachment fails and frees all drain
+    waiters and removes all pointer registrations before returning. The
+    app keeps no room-resource allocation after that room ends. Adoption
+    replaces the room's negotiation handlers with the app's; ending a
+    negotiation clears the room's handlers.
+  - **The resources' lifetimes.** The app's resource must outlive its
+    state: its handle, all its rooms, retained values and pending
+    operations. A room's own resource must outlive its state, retained
+    values and pending operations. Declare both before the io_context,
+    then the backend, app and rooms, and drain or destroy the io_context
+    before either resource. Browser resources live until pending promises
+    settle, in practice for the page's life. A raw resource pointer cannot
+    detect early destruction; a counting resource that checks nothing is
+    outstanding at destruction makes this the user's check.
   - **Which resource.** A room allocates and frees on every event (a frame,
     a parsed text, a post, a log line), so a resource that reuses what is
     freed, a pool, suits a long-lived room; a
@@ -311,7 +347,7 @@ holds only what is specific to trystero.
     `std::pmr::string` (and `peer_id`), `std::pmr::vector` (and
     `backend::bytes`, `protocol::bytes` and `pmr_bytes`), `std::pmr::deque`,
     `std::pmr::map`, `std::pmr::set`, `std::pmr::unordered_map` and
-    `std::pmr::unordered_set`, built over the room's resource. A struct that
+    `std::pmr::unordered_set`, built over its owner's resource. A struct that
     holds them takes the room's `std::pmr::polymorphic_allocator<>` in its
     constructor, and a container of such structs is given it when it makes
     one (`try_emplace(key, allocator)`). A `std::pmr` container is never
@@ -331,19 +367,18 @@ holds only what is specific to trystero.
     (the handlers of `timer`, `websocket`, `data_channel`,
     `peer_connection` and `sealer`), of the room and of
     `detail::logger::sink`, since `std::function` takes no allocator since
-    C++17. Constructed from `f` alone it uses the default resource; the room
-    moves a handler it is given (`room_config::log`) into its own resource
-    with the allocator-extended move, which makes `room_config` move-only:
-    a room is given its configuration by value, moved
-    (`room(ex, factory, std::move(config), id)`). A move assignment carries
+    C++17. Constructed from `f` alone it uses the default resource; the app
+    moves `app_config::log` into its resource with the allocator-extended
+    move, which makes `app_config` move-only: pass it moved or build it in place. A move assignment carries
     the source's allocator with its target. Where a handler must survive its
     own replacement during its call, its owner keeps it in a
     `std::shared_ptr` made in the resource and calls it through a copy of
     that pointer.
   - **The backend.** Each method of `backend::factory` that makes an object
-    takes the room's `std::pmr::memory_resource*` as its last parameter, and
-    the backend allocates its objects, their handlers and the frames and
-    texts it hands to the room through it.
+    takes a `std::pmr::memory_resource*` as its last parameter. Peer
+    connections, data channels and received frames use the app's; relay
+    sockets, sealers and room timers use the room's. The backend allocates
+    objects, handlers and their frames or texts through that resource.
   - **Asio.** Every `boost::asio::post`, `dispatch`, timer wait and
     `any_completion_handler` the room makes carries
     `boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
@@ -385,7 +420,11 @@ holds only what is specific to trystero.
     room's JSON storage, which the message carries. `std::string`, `bytes`
     and `payload` stay as they are, with `std::allocator`: the user's
     choice, and a received `bytes`, or the binary of a `payload`, is a copy
-    of the frame, which is in the room's resource. `encode`
+    of the frame, which starts in the app's resource. An owning pmr binary
+    payload is moved when its message buffer and the room use the same
+    resource, and copied once otherwise; chunked transfers assemble their
+    buffer in the room's resource. A received std::pmr::string always copies
+    the text once into the room's resource. `encode`
     takes the resource too, for what keeps the payload alive.
   - **The protocol** (`protocol/`) takes a `std::pmr::memory_resource*` as
     the last parameter of every function that returns what it allocates,
@@ -427,7 +466,11 @@ holds only what is specific to trystero.
     both are destroyed and the io_context is drained, while `operator new`
     sees exactly the two rooms' JSON storage counters and the C library
     nothing, and the rooms' resources have nothing out once the io_context
-    has drained. The counting resources also count a return of memory they
+    has drained. Two apps with two rooms each also prove one binary payload
+    copy into a distinct room resource, with size-specific counters, and
+    no extra copy when resources match; their global count sees only four
+    JSON storage counters and all resources return to zero.
+    The counting resources also count a return of memory they
     never gave, a pmr object freed through the wrong resource, which must be
     none. Only the thread `main` runs on is counted: the C library reports
     allocations from every thread, and a system thread's are not the rooms'.

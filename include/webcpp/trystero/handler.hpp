@@ -39,11 +39,11 @@ class handler;
  * A move-only callable of the signature `R(Args...)`, which holds its target inline when the target
  * fits in three pointers and is nothrow-movable, and otherwise in storage of its allocator.
  *
- * It replaces `std::function` wherever trystero keeps a handler (the backend's, the room's and
- * its logger's sink), since `std::function` takes no allocator since C++17. A room gives each
- * handler it keeps its `std::pmr::polymorphic_allocator<>`, over `room_config::memory`; one
- * constructed from a callable alone uses the default resource. The resource must outlive the
- * handler.
+ * It replaces `std::function` wherever trystero keeps a handler, including the backend, app,
+ * rooms and log sink, since `std::function` takes no allocator since C++17. Each handler uses
+ * its owner's `std::pmr::polymorphic_allocator<>`, over `app_config::memory` or the effective
+ * `room_options::memory`; one constructed from a callable alone uses the default resource.
+ * The resource must outlive the handler.
  *
  * Tip: a move assignment carries the source's allocator with its target, as moving the target there
  * does; the allocator-extended move, which a `std::pmr` container uses, moves the target into

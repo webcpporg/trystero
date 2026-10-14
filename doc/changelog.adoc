@@ -16,6 +16,9 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* Changed room construction to `app::join`, sharing connections between rooms.
+* *Breaking change:* Removed `room_config`; construct `app` and use `join`
+with `app_config` and `room_options`.
 * Added a changelog, the page's last appendix, with each version's changes.
 * Changed `config.hpp` to include `<webcpp/config.hpp>`, webcpp's
 configuration, which the build adds.

@@ -47,11 +47,13 @@ runs a handler there: each event copies what it carries and is posted to the
 room's executor, through a weak reference, so an event that arrives after its
 object is gone does nothing. Every handler of the room and every completion
 runs on the executor, as in the browser. An application that runs the
-`io_context` on several threads gives the room a strand.
+`io_context` on several threads gives the app a strand, shared by all its rooms.
 
 A received data channel message is copied once, out of libdatachannel's
-`std::vector<std::byte>` into the room's resource, on the executor; from
-there it is delivered without another copy. A text message, as a peer can
+`std::vector<std::byte>` into the app's resource, on the executor. A view
+handler reads it there. A binary payload moves when its message buffer
+and the room use the same resource, and is copied once otherwise; chunked
+transfers assemble their buffer in the room's resource. A text message, as a peer can
 send, or a binary one larger than any room frame, is dropped on
 libdatachannel's thread: neither can be a frame.
 
@@ -65,14 +67,14 @@ libdatachannel's thread: neither can be a frame.
 * Local candidates leave as the JSON of an `RTCIceCandidateInit`, the form
   Trystero JS adds with `addIceCandidate`.
 * The `rtc::PeerConnection` object and its control block are made in the
-  room's resource; what that object allocates inside libdatachannel is
+  app's resource; what that object allocates inside libdatachannel is
   libdatachannel's (<<trystero-allocation-outside>>).
 
 [#trystero-native-config]
 === Its configuration
 
 `native::backend_config` is what the backend makes its peer connections
-with, beside the room's `ice_servers`:
+with, beside the app's `ice_servers`:
 
 [cols="1,3",options="header"]
 |===
@@ -86,10 +88,11 @@ with, beside the room's `ice_servers`:
 
 | `max_peer_connections_per_minute`
 | The most peer connections the backend makes in any minute, for every room
-  it serves together, 256: beyond, it makes none, and a room reports each
+  in every app it serves together, 256: beyond, it makes none, and a room reports each
   negotiation it cannot start. A room makes at most 64 in any 57 s however
   its peers behave (<<trystero-protocol-bounds>>), so the default lets four
-  rooms do so at once.
+  rooms do so at once. A connection still counts against its negotiating
+  room's 57 s window after adoption by the app; presence and reuse make none.
 
 | `relay_limits`
 | What the relays' WebSockets tolerate of a relay that stops reading or

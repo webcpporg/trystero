@@ -101,8 +101,8 @@ private:
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
 /**
- * What a native backend makes its peer connections with, beside the room's
- * `room_config::ice_servers`.
+ * What a native backend makes its peer connections with, beside the app's
+ * `app_config::ice_servers`.
  *
  * @see "The native backend", in the guide.
  */
@@ -117,7 +117,7 @@ struct backend_config {
     std::pmr::string bind_address = {};
 
     /**
-     * The most peer connections the backend makes in any minute, for every room it serves
+     * The most peer connections the backend makes in any minute, for every app and room it serves
      * together: beyond, it makes none, and a room reports each negotiation it cannot start.
      *
      * Tip: a room makes at most 64 in any 57 s however its peers behave, so the default lets four
@@ -132,11 +132,11 @@ struct backend_config {
 /**
  * The native factory: one per application, beside the executor it runs on.
  *
- * It makes each object in the memory resource the room gives it, `room_config::memory`: the
- * WebSockets, peer connections, data channels, timers and sealers, their handlers, and the frames
- * and texts they hand to the room. What libdatachannel and OpenSSL allocate stays theirs. Its
- * peer connections need exceptions: without them (`WEBCPP_TRYSTERO_NO_EXCEPTIONS`) it does not
- * exist.
+ * It makes peer connections, data channels and received frames in `app_config::memory`, and
+ * WebSockets, sealers and room timers in the room's effective `room_options::memory`. Objects
+ * and their handlers use the resource supplied to their factory method. What libdatachannel and
+ * OpenSSL allocate stays theirs. Its peer connections need exceptions: without them
+ * (`WEBCPP_TRYSTERO_NO_EXCEPTIONS`) it does not exist.
  *
  * @see "The native backend", in the guide.
  */
@@ -187,7 +187,7 @@ public:
      * Makes a peer connection of libdatachannel, bound to `backend_config::bind_address`.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * @param memory The app's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
      * @return The connection, or null when the backend made
      * `backend_config::max_peer_connections_per_minute` in the last minute, or when libdatachannel

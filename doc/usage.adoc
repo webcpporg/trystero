@@ -13,70 +13,125 @@ A room is what Trystero's `joinRoom` returns, and an action what its
 [#trystero-usage-joining]
 === Joining
 
-Constructing a `room` joins it: it connects to the relays and announces its
-peer on the room's topic. It takes the executor every handler and completion
-of the room runs on, the backend, which must outlive it, its configuration,
-moved, and the room's id. Its configuration, `room_config`, names the
-application, and everything else has Trystero's default; the quick start
-builds one in place with designated initializers
-(<<trystero-quick-start-browser>>):
+An `app` is this program in one application: one peer id, and one connection
+to each remote peer, which every room of the app it shares with that peer
+uses, as a Trystero JS page shares them. Constructing it takes the executor
+every handler and completion runs on, the backend, which must outlive it,
+and its configuration, `app_config`, moved. A room is joined with `join`,
+which returns a `boost::system::result<room>` to test, or an error:
+`error::already_joined` while a room of that id is joined in the app, and
+`error::too_many_rooms` when 64 rooms count, since a peer drops a connection
+that advertises more. Joining an id in its 99 ms farewell finishes that
+farewell first and joins afresh.
+
+`join` and the app's other methods run where its executor runs. An app and
+all its rooms use that executor; a multithreaded `io_context` needs a strand.
+Destroying or moving over the app handle releases it; its rooms keep the
+app's state alive and continue. Two `app` objects, even with the same app
+id, are two peers. No registry or identity is kept in static storage.
 
 [cols="1,3",options="header"]
 |===
-| Member | What it is
+| `app_config` member | What it is
 
 | `app_id`
-| The application's id, Trystero's `appId`: rooms of different apps never
-  meet.
-
-| `password`
-| Trystero's `password`: part of the key the signals are sealed with, and a
-  challenge added to the handshake, so peers with another password never
-  join. Empty, the signals are still sealed, under a key of the app and the
-  room alone, and the handshake has no challenge.
-
-| `relay_urls`
-| The Nostr relays. Empty, the room uses `relay_redundancy` (5) of
-  Trystero's 29 default relays, chosen by a shuffle seeded with the app id,
-  so that every peer of the app picks the same ones, as Trystero JS does.
-
-| `ice_servers`
-| The STUN and TURN servers; empty, Trystero's STUN servers,
-  `default_ice_servers()`. A server WebRTC would refuse, a URL that is not
-  `stun:`, `stuns:`, `turn:` or `turns:` `host[:port]`, or a TURN server
-  without a user name and a credential, is dropped when the room joins and
-  reported with `error::invalid_configuration`.
+| The application's id, Trystero's `appId`: rooms of different apps never meet.
 
 | `self_id`
-| This peer's id in the room, Trystero's `selfId`; empty, 20 random
-  characters, drawn for each room. One longer than 64 bytes, which other
-  peers would ignore, is replaced and reported. Rooms of one app that meet
-  a Trystero JS peer need ids of their own: Trystero keeps one connection
-  per app and peer id, which all its rooms share, and drops a second one to
-  the same id, while each room here makes its own, so two rooms given one
-  id meet a Trystero JS peer in one of them only
-  (<<trystero-differences>>).
+| One id for every room of the app; empty, 20 random characters drawn once.
+  An id longer than 64 bytes is replaced and reported. This id links the
+  app's rooms: rooms that must not be linked to one program use an `app`
+  each (<<trystero-protocol-limitations>>).
 
-| `handshake_timeout`
-| How long a connected peer has to finish the handshake, 10 s.
+| `relay_urls`
+| The Nostr relays. Empty, `relay_redundancy` of Trystero's 29 defaults,
+  shuffled with the app id so every peer picks the same ones. Their
+  configuration is the app's; sockets and the Nostr signing key remain per room.
 
-| `max_receive_bytes`
-| The most bytes the room reserves at once for the transfers it receives,
-  across peers, 256 MiB.
+| `relay_redundancy`
+| The number of default relays to use, 5.
+
+| `ice_servers`
+| The STUN and TURN servers; empty, `default_ice_servers()`. An unusable
+  URL, or a TURN server without a user name and credential, is dropped and
+  reported to `app::on_error` with `error::invalid_configuration`.
+
+| `idle_timeout`
+| How long a connection with no rooms stays after a departure, 123,333 ms;
+  0 closes it immediately. A negative value becomes 0 and is reported. A
+  connection whose last binding was kicked closes at once.
 
 | `log`
-| Where the room's diagnostics go, called with a category (`nostr`,
-  `signal`, `webrtc`, `room` or `action`) and a sentence. Empty, no text is
-  composed.
+| One sink for the app and its rooms, called with a category (`app`, `nostr`,
+  `signal`, `webrtc`, `room` or `action`) and a sentence composed in the
+  app's resource. Empty, no text is composed.
 
 | `memory`
-| The resource every allocation of the room goes through
-  (<<trystero-allocation>>).
+| The app's resource, `std::pmr::get_default_resource()` by default; it
+  must be non-null (<<trystero-allocation>>).
 |===
 
-`room_config` is move-only, since its `log` is a `handler`
-(<<trystero-allocation-handlers>>): a room is given its configuration moved,
-or built in place.
+`app_config` is move-only because its log sink is a `handler`: pass it
+moved, or build it in place. Each room adds `room_options`:
+
+[cols="1,3",options="header"]
+|===
+| `room_options` member | What it is
+
+| `password`
+| Part of the key the signals are sealed with and the room's challenge
+  handshake. Empty, signals are sealed with the app and room ids alone,
+  and the handshake has no challenge. A passwordless room is also open to
+  peers connected through another room of the app (<<trystero-protocol-limitations>>).
+
+| `handshake_timeout`
+| How long a binding has to finish the handshake, 10 s.
+
+| `max_receive_bytes`
+| The most bytes the room reserves for incoming transfers across peers, 256 MiB.
+
+| `memory`
+| The room's own resource; null uses the app's resource.
+|===
+
+[#trystero-usage-migration]
+==== Moving from `room_config`
+
+`room(executor, backend, room_config, room_id)` and `room_config` are gone:
+a room is joined through an `app`.
+
+[cols="2,3",options="header"]
+|===
+| Previous use | New use
+
+| Standalone room construction
+| Construct `app` with the executor, backend and `app_config`, then call
+  `join` with the room id and `room_options`; test the returned result.
+
+| `room_config::{app_id, self_id, relay_urls, relay_redundancy, ice_servers}`
+| `app_config`
+
+| `room_config::log`
+| `app_config::log`: one sink for the app and its rooms, with sentences in the app's resource
+
+| `room_config::{password, handshake_timeout, max_receive_bytes}`
+| `room_options`
+
+| `room_config::memory`
+| `app_config::memory`, with `room_options::memory` for a room's own resource
+
+| Configuration reports from `room::on_error`, with an empty peer id
+| `app::on_error`; `room::on_error` reports problems with peers
+
+| Two rooms with separate peer ids to meet Trystero JS in both
+| Two calls to `join` on one `app`
+
+| Two peers in one process
+| Two `app` objects
+
+| Rooms that must not be linked to one program
+| One `app` each
+|===
 
 [#trystero-usage-peers]
 === Peers
@@ -86,8 +141,7 @@ handshake completed, and with each joined peer that leaves; `peers()` lists
 the joined peers. `on_error` sets what is called with each problem with one
 peer that the room handled itself, as Trystero's `onPeerError`: a peer with
 another password, a handshake that timed out, a connection the backend
-refused. It is called with an empty peer id for each part of the
-configuration the room dropped when it joined, and for a count of signals
+refused. It is called with an empty peer id for a count of signals
 that did not open with the room key (<<trystero-protocol-bounds>>). Each
 handler replaces the one set before, and every view it receives is valid for
 the call.
@@ -96,12 +150,23 @@ the call.
 `@_ping` to receiving its `@_pong`.
 
 `async_leave` says goodbye to every peer, Trystero's `@_leave`, gives the
-farewell 99 ms, as Trystero waits, then closes the connections and the relay
+farewell 99 ms, as Trystero waits, then detaches its bindings and closes its relay
 sockets, and every pending operation completes with `error::room_left`.
 Destroying a room leaves at once, without the 99 ms, and so does assigning
 another room over a joined one: every peer is told, and every pending
 operation completes with `error::room_left`, even while an `action` of it
 lives.
+
+A kick or a peer's `@_leave` ends only that room's binding: the app's other
+rooms keep using the connection. When it stays live, rebinding waits one
+step after the end, initially the larger of `handshake_timeout` and 10 s,
+plus 1 s, doubling after each further end to at most 5 minutes. A completed
+handshake or the connection's end resets the count. After its own kick the
+lower id refuses bindings until that time and keeps frames; the higher id
+drops frames until it sends presence, but accepts the lower id's presence.
+A binding also requires the peer to have advertised the token itself.
+Only the lower id reports a wrong password over a shared connection: the
+higher id answers the challenge and sees the peer leave without a report.
 
 [#trystero-usage-actions]
 === Actions
@@ -120,7 +185,7 @@ messages travel and how they are received:
 | `std::string_view` | text | a view of the frame it arrived in, valid during the handler
 | `boost::json::value` | JSON | parsed, in the room's JSON storage
 | `trystero::bytes` | binary | a copy of the bytes
-| `trystero::pmr_bytes` | binary | the transfer's buffer, moved, in the room's resource
+| `trystero::pmr_bytes` | binary | the transfer's buffer, moved when resources match, otherwise copied once into the room's resource
 | `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the handler
 | `trystero::payload` | any | a `std::variant` of `std::string`, `boost::json::value` and `bytes`, by format
 |===
@@ -188,5 +253,7 @@ Operations complete with a `boost::system::error_code` in the category
 | `handshake_timed_out` | a connected peer did not finish the handshake in time
 | `handshake_failed` | reserved: nothing reports it today
 | `backend_failure` | the browser or the native stack refused an operation
-| `invalid_configuration` | the configuration names something no backend can use; the room goes on without it
+| `invalid_configuration` | the app dropped an unusable configuration value and continues without it
+| `already_joined` | a room of that id is already joined in the app
+| `too_many_rooms` | the app already holds 64 rooms, including farewells
 |===

@@ -16,10 +16,11 @@ both. <<trystero-building-examples>> builds and runs them.
 [#trystero-quick-start-browser]
 === In the browser
 
-A browser program keeps four things alive for as long as its page: an
+A browser program keeps five things alive for as long as its page: an
 `io_context`, the `browser::event_loop` that drives it from the page's
 JavaScript events, the `browser::backend` that implements the platform over
-the browser's APIs, and the room. Actions are made from the room by name and
+the browser's APIs, the app that owns its identity and shared connections,
+and the room joined through that app. Actions are made from the room by name and
 payload type:
 
 [source]
@@ -58,7 +59,7 @@ the `io_context` (<<trystero-browser>>).
 [#trystero-quick-start-native]
 === Natively
 
-The same room, natively, whole: a program that greets every peer that joins
+The same app and its joined room, natively, whole: a program that greets every peer that joins
 and prints what it receives on `chat`. A native program runs its
 `io_context` itself, since there is no event loop of a page to drive it, and
 the native backend posts what libdatachannel's threads report to it:

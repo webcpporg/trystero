@@ -27,19 +27,31 @@ libdatachannel reports errors by throwing: without exceptions, or with
 `native::data_channel`, `native::peer_connection` and `native::backend` do
 not exist, and the native timer, sealer and WebSockets remain.
 
-Every allocation of a room goes through the `std::pmr::memory_resource` its
-`room_config::memory` names, the default resource unless it names another:
-its state, its handlers, its JSON, the objects its backend makes for it, and
-a message an action's handler receives as a `std::pmr::string`, a
-`trystero::pmr_bytes` or a `boost::json::value`. A completion handler is
-allocated as its own associated allocator says, which
-`boost::asio::bind_allocator` sets. What libdatachannel, OpenSSL and the
-browser's JavaScript allocate stays theirs. The resource must outlive the
-room, every value it handed out, and the operations it leaves pending when
-it is destroyed: declare it before the io_context, which then drains or is
-destroyed first; in the browser, keep it for the page's life. A room
-allocates and frees on every event, so a pool suits a long-lived room better
-than a monotonic buffer. `room_config` is move-only: pass it moved.
+An `app` represents this program in one application: one peer id and one
+connection per remote peer, shared by its rooms. Construct it with the
+executor, backend and moved `app_config`, then call `join` and test its
+`boost::system::result<room>`. The standalone room constructor and
+`room_config` are removed: shared configuration moves to `app_config`, and
+password, handshake timeout and receive limit to `room_options`. Two peers
+in one process use two apps; rooms that must not be linked use one app each.
+
+`app_config::memory` receives the app's state, shared connections, received
+frames and every log sentence. `room_options::memory` receives a room's
+state, bindings, actions, relays, handlers and JSON; null uses the app's
+resource. A received owning binary payload moves when its message buffer
+and room resources match, and is copied once otherwise; received pmr text
+is always copied once. Completion handlers use their own associated allocator,
+which `boost::asio::bind_allocator` sets. The app's resource must outlive
+its handle, all its rooms, retained values and pending operations; each
+room's resource must outlive its values and operations too. Declare both
+before the io_context and drain or destroy it first; in a browser keep them
+for the page's life. Pools suit long-lived apps and rooms. libdatachannel,
+OpenSSL and the browser retain their own internal allocations.
+
+A passwordless room is open to peers connected through another room of the
+app: presence reveals its token. Use a password or a separate app when it
+must be private. A room's kick leaves other rooms using the connection;
+only the lower peer id reports a wrong password over that shared connection.
 
 ## Building inside the superproject
 

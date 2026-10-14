@@ -29,8 +29,8 @@ write, and by the `oracle` lane, which fails when Trystero would write
 other values than those committed; and by `native_sealer`, which opens what
 Trystero JS sealed with Web Crypto.
 . [[trystero-invariant-3]]*A peer with another password never joins.* Its
-signals do not open, and its handshake fails, so neither side reports it
-joined. _Held by_ `room` (`the_same_password_joins_and_another_does_not`),
+signals do not open, and over a connection shared with another room its
+handshake fails, so neither side reports it joined. _Held by_ `room` (`the_same_password_joins_and_another_does_not`),
 `native_room` (`another_password_never_joins`), and the wrong-password
 scenario of the `interop` lane.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
@@ -38,8 +38,8 @@ both ways.* It is offered, accepted and sent in chunks of at most 16,370
 bytes, and arrives whole, from either peer. _Held by_ `room`
 (`large_payloads_travel_in_chunks_both_ways`, 100 KB each way), and the
 file transfers of the `interop` lane.
-. [[trystero-invariant-5]]*Every allocation of a room goes through its
-resource,* but what <<trystero-allocation-outside>> lists: from its
+. [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
+resources,* but what <<trystero-allocation-outside>> lists: from its
 construction until its `io_context` has drained, the global `operator new`
 sees only the room's JSON storage counter, and the C library nothing. _Held
 by_ `allocation`, natively and on emscripten.
@@ -68,3 +68,14 @@ does to any relay that closes. _Held by_ `native_websocket`
 on emscripten, with exceptions and without them, which also checks that the
 socket never holds more than 4 MiB; the reconnection by `room`
 (`a_relay_that_closes_at_once_is_tried_less_and_less_often`).
+
+. [[trystero-invariant-9]]*One connection per remote peer per app is shared
+by its rooms.* Each room keeps its own membership and actions on that
+connection. _Held by_ `shared`, cases 1 to 3, and the interop's first shared
+scenario.
+. [[trystero-invariant-10]]*A room's departure leaves the app's other rooms
+joined.* They continue sending over the same connection. _Held by_
+`shared`, case 8, and shared interop scenario 5, with either side leaving.
+. [[trystero-invariant-11]]*A protected room never admits a peer of another
+room without its password.* Presence reaches its handshake, which keeps
+that peer out. _Held by_ `shared`, case 19, and shared interop scenario 4.

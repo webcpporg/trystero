@@ -21,6 +21,22 @@ event posted to the `io_context`. It is in the namespace
 `webcpp::trystero::test`, outside the library's public headers, and a
 program may copy it.
 
+The memory network identifies connection ends with `std::size_t` ids.
+`on_made` records construction and ICE servers, and `peer_of` identifies the
+paired end. A `filter` delivers, drops or holds frames; a held frame holds
+all later frames from its sending end behind it, preserving channel order
+until `release`. Deferred `open` calls open each end separately; `inject`
+and `fail` supply malformed frames and transport failure.
+
+With `channel_capacity` enabled, the channel queues bytes and drains up to
+`drain_per_post` per post. It delivers a frame only after its last byte
+drains, and `buffered` reports the exact unsent amount. Set `virtual_clock`
+before making timers: `advance` fires due timers in order and runs ready
+work between them; `step` and `poll_ready` give tests finer control. Timeouts,
+backoffs and late frames are tested without wall-clock sleeps. Optional
+fault hooks allocate outside the measured resources only when enabled;
+the allocation test leaves them disabled.
+
 A test of the native backend's own WebRTC binds its connections to the
 loopback, `native::backend_config::bind_address` set to `"127.0.0.1"`, and
 names a STUN server where nothing answers, `stun:127.0.0.1:9`, in place of
@@ -72,8 +88,28 @@ include::{library-root}/test/Jamfile[tag=allocation]
   signals, a relay that closes at once or rate-limits, a three-peer mesh,
   coroutines and view handlers.
 
+| `app_impl`
+| Configuration copying and validation, resource ownership, weak room
+  registration, shared adoption, stale replacement, reentrant adoption,
+  last-user closure and quiet destruction with pending work.
+
+| `connection`
+| Shared transport routing, advertised token and kept-frame limits, binding
+  detachment, departures and kicks, idle expiry and drain ordering.
+
+| `memory_backend`
+| Virtual timer ordering, cancellation, held-frame order, deferred opens,
+  injection and failures, and byte-accurate buffering and drain.
+
+| `shared`, `shared_no_exceptions`, `shared_hardened`
+| Multiple apps and rooms with one connection per remote peer, adoption
+  races, presence and reuse, room isolation, departures, idle connections,
+  wrong passwords, transient handshake recovery, fairness, bounds and
+  resource ownership. The suite also runs without exceptions and with
+  standard-library hardening; sanitizers check lifetimes and detachment.
+
 | `allocation`
-| Every allocation of two rooms goes through their resources
+| Every allocation of two apps and their rooms goes through their resources
   (<<trystero-allocation-proof>>).
 
 | `native_sealer`, `native_websocket`, `native_timer`
@@ -159,13 +195,36 @@ offer with garbage in the other peer's name, that resends a sealed answer
 and offer it recorded, and that sends the {cpp} peer its own sealed offer
 back, which the {cpp} peer must refuse; a flood of announcements and of
 unsealed offers from fresh peer ids; a relay text longer than 1 MiB; a {cpp}
-peer and a Trystero JS page each in two rooms of one app, every {cpp} room
-with its own peer id (<<trystero-differences-behaviour>>); a wrong password;
+peer and a Trystero JS page each in two rooms of one app, sharing one
+connection and one peer id per app; a wrong password;
 and a mesh of three. The native peer meets three more: a room
 moved over the joined one, which must leave it as destroying it does; a
 relay that ends the connection just as the peer writes, which twelve peers in
 turn must survive; and the driver's own check that a peer killed by a signal
 is named at once.
+
+The shared-connection scenarios run in both lanes:
+
+. Two rooms exchange chat and 100 KB files both ways on one adopted,
+  connected transport.
+. A third room joins later through presence on that transport.
+. Rooms the JS page joined first bind when the {cpp} app joins them later.
+. A peer of another room can enter a passwordless room by token, while a
+  protected room never admits it without the password.
+. Either side leaves one room while the other keeps exchanging, making
+  no connection.
+. Leaving every room closes the transport after the configured idle time.
+. Wrong passwords in both id orders give paced lower-id reports while
+  the other room keeps exchanging over the same connection.
+. A 5,000-message flood in one room leaves pings in another completing
+  within 2 s.
+. A held handshake frame recovers in both id orders after one timeout,
+  without a false password report; the other room keeps exchanging.
+
+The adoption scenarios allow crossed duplicates to retry, but fail with
+connection counts if either side constructs more than four. Transient
+recovery accounts for JS reuse during the higher id's dropping window
+(<<trystero-protocol-limitations>>).
 
 Every peer gathers its ICE candidates on the machine alone: the {cpp} peers
 get `stun:127.0.0.1:9` in place of Trystero's public STUN servers, the
