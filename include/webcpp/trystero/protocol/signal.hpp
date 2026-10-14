@@ -73,7 +73,7 @@ static_assert(sealed_size(8192) <= max_sealed_candidate_bytes);
  * The raw AES-GCM key of a room, what Trystero's `genKey` imports: the SHA-256 of
  * "<password>:<app>:<room>".
  *
- * @param password The room's password, empty when there is none.
+ * @param password The password used for this room, shared by its app; empty means none.
  * @param app_id The application's id.
  * @param room_id The room's id.
  * @return The AES-256 key.
@@ -275,7 +275,7 @@ inline std::pmr::string write_signal(
  * "<challenge>:<password>:<app>:<room>".
  *
  * @param challenge The challenge the other peer sent.
- * @param password The room's password.
+ * @param password The password used for this room, shared by its app.
  * @param app_id The application's id.
  * @param room_id The room's id.
  * @param memory The resource the proof is allocated in.

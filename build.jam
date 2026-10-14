@@ -58,6 +58,11 @@ lib crypto : : <name>libcrypto <toolset>msvc <search>$(openssl-root)/lib
   : : <include>$(openssl-root)/include ;
 lib crypto : : <name>crypto <search>$(openssl-root)/lib
   : : <include>$(openssl-root)/include ;
+# Searched libraries, used only through <library>: built as dependencies, with
+# the properties of what uses them. Requested alone, by b2 at the
+# superproject's root or b2 libs/trystero, their alternatives would be matched
+# against a request without the <cxxstd>20 each inherits, and none chosen.
+explicit secp256k1 datachannel ssl crypto ;
 # end::dependencies[]
 
 # The dependencies of the rooms: libsecp256k1, the emscripten build of it on

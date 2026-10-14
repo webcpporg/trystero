@@ -64,6 +64,10 @@ enum class error {
      * WebRTC refuses; the room goes on without it, and `room::on_error` reports it with no peer.
      */
     invalid_configuration,
+    /** The app already holds a room of that id; a room is joined once per app. */
+    already_joined,
+    /** The app already holds as many rooms as a peer accepts, 64 of them. */
+    too_many_rooms,
 };
 
 /**
@@ -117,7 +121,9 @@ private:
             case error::handshake_timed_out: return "the handshake timed out";
             case error::handshake_failed: return "the handshake failed";
             case error::backend_failure: return "the WebRTC backend refused an operation";
-            case error::invalid_configuration: return "the room's configuration is unusable";
+            case error::invalid_configuration: return "the configuration is unusable";
+            case error::already_joined: return "the app has already joined a room of that id";
+            case error::too_many_rooms: return "the app holds as many rooms as a peer accepts, 64";
         }
         return "unknown webcpp.trystero error";
     }

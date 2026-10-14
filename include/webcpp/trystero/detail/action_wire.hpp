@@ -101,7 +101,7 @@ struct payload_ref {
     std::shared_ptr<const void> owner;
 };
 
-/** What the wire sends through: one peer's data channel, which `detail::peer_link` is. */
+/** What the wire sends through: a room's use of a peer's connection, a `detail::binding`. */
 class channel_link {
 public:
     /** Sends a room frame; false when the channel is no longer open. */

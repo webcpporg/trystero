@@ -14,8 +14,10 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace webcpp::trystero::detail {
 
@@ -129,6 +131,21 @@ inline std::string_view ice_server_fault(const backend::ice_server& server) {
         return "is a TURN server without a user name and a credential";
     }
     return {};
+}
+
+/** A copy of `servers` whose every string is in `memory`. */
+inline std::pmr::vector<backend::ice_server> copy_ice_servers(
+    std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) {
+    std::pmr::vector<backend::ice_server> out(memory);
+    out.reserve(servers.size());
+    for (const auto& server : servers) {
+        out.push_back({
+            .urls = std::pmr::vector<std::pmr::string>(server.urls, memory),
+            .username = std::pmr::string(server.username, memory),
+            .credential = std::pmr::string(server.credential, memory),
+        });
+    }
+    return out;
 }
 
 }  // namespace webcpp::trystero::detail

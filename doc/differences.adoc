@@ -47,11 +47,6 @@ These features of Trystero are not ported, each for its reason:
 | Passive rooms, `passive: true`
 | Not ported yet: a room always announces itself.
 
-| One connection shared by every room of an app between two peers
-| Not ported yet: each room makes its own connections, and ignores a frame
-  that names another room's token. So rooms of one app that meet a Trystero
-  JS peer need peer ids of their own, which they draw by default (below).
-
 | The BitTorrent, MQTT, Firebase, Supabase, IPFS and WebSocket relay
   strategies
 | Each is a strategy of its own to port; Nostr's public relays need no
@@ -71,22 +66,52 @@ These features of Trystero are not ported, each for its reason:
 [#trystero-differences-behaviour]
 === Where a ported feature behaves otherwise
 
-*A peer id per room, not per app.* Trystero's `selfId` is one id for the
-whole page, and `joinRoom` returns the same room when it is called again for
-the same app and room. A `room` is an object of its own, with its own
-membership, connections and `self_id`, drawn for each room unless the
-configuration names one. Trystero keeps one connection per app and peer id,
-which all its rooms share, and drops a second connection to the same id. So
-two rooms of one app given the same `self_id` meet a Trystero JS peer in one
-of them only: the page drops the second room's connection and sends that
-room's frames over the first room's, which the first room ignores. Given an
-id of its own each, or none, both rooms meet it, which the `interop` lane
-checks, natively and in the browser.
+[cols="2,3,3,3",options="header"]
+|===
+| Behaviour | Trystero JS | Here | Why
+
+| Scope of sharing and of the self id | the page: one `selfId` for every app and room, one manager per strategy | an `app` object: its self id and its connections | no static state; several peers in one process; an id across apps is a program's choice (`app_config::self_id`) and never reaches the wire of another app
+
+| Passwords across rooms | independently configured per room, including mixed passwords on one shared connection | one immutable `app_config::password` for every room, separate apps and self ids for different passwords | the initial sealed negotiation authenticates one password domain before any of its rooms reuse the connection; the JS wire remains unchanged
+
+| A peer kicked from a room, or that kicked us, over a live connection | bound again by its next signal or presence | bound again at a rebinding time, 11 s doubling to 5 min; the lower id refuses it meanwhile and keeps its frames | a peer sending invalid room proofs would otherwise loop reports and announcements without end; one refusing side cannot alternate with another
+
+| Reuse over a live connection | binds on any signal of that peer id | binds only a peer that advertised the room's token itself, and by reuse only on their first meeting over that connection | a forged announcement must not bind an innocent peer
+
+| Announcements after a peer leaves | restarted after every leave | restarted only when no live connection to that peer remains | over a live connection, rebinding goes through the connection
+
+| Presence after binding | sent when a room registers | also sent again when a room binds by reuse or at its rebinding time | it makes the other side, Trystero JS included, bind at once
+
+| An answer to an earlier challenge | checked against the current challenge only | accepted when it is correct for any of the last 8 challenges sent since the last completed handshake | a late answer of an ended binding is honest and proves the password; failing it reports a false error
+
+| Frames after the higher id's own kick | kept for the next binding | dropped until the higher id sends presence | they belong to the ended binding; flushed into the next one, they would answer or be answered in its place
+
+| Joining a room already joined | the same room | `error::already_joined` | a `room` is a handle whose destruction leaves
+
+| Rooms per app | unbounded; a peer advertising a 65th is dropped by the other side | `join` refuses the 65th, counting rooms in their farewell | the 65th would cost every connection of the app
+
+| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection, as today
+
+| Relay sockets and the Nostr key | shared by the rooms of the page, topics batched per socket | per room, as today | not part of this decision; invisible to peers; shared through the app in a later change
+
+| Relay and ICE configuration | the first room's relays; each negotiating room's RTC configuration | the app's, for every room | one configuration for what the rooms share
+
+| `idle_timeout` | test-only (`_test_only_sharedPeerIdleMs`) | a configuration member, Trystero's default | tests and programs that close sooner
+
+| Frames waiting for a bound room's handler | 64, 10 s, then the connection drops | no such state | a binding's delivery is set when it is made
+
+| Renegotiation and media over a shared connection | routed through a control room, streams owned per room; a connection with any media is destroyed when its last room goes | not ported | media is on the roadmap (<<trystero-roadmap>>)
+
+| Passive rooms | presence only for active rooms | not ported | as today
+
+| Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
+
+|===
 
 *`on_peer_join` does not replay the joined peers.* Trystero calls a newly
 assigned `onPeerJoin` with each peer already joined. A room reports a join
-from its executor, after the call that constructed it has returned, so a
-handler set right after the constructor sees every join; `peers()` lists the
+from its executor, after the call to `join` has returned, so a
+handler set right after `join` sees every join; `peers()` lists the
 joined peers for a handler set later.
 
 *`peers()` lists ids.* Trystero's `getPeers` maps each id to its

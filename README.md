@@ -27,19 +27,39 @@ libdatachannel reports errors by throwing: without exceptions, or with
 `native::data_channel`, `native::peer_connection` and `native::backend` do
 not exist, and the native timer, sealer and WebSockets remain.
 
-Every allocation of a room goes through the `std::pmr::memory_resource` its
-`room_config::memory` names, the default resource unless it names another:
-its state, its handlers, its JSON, the objects its backend makes for it, and
-a message an action's handler receives as a `std::pmr::string`, a
-`trystero::pmr_bytes` or a `boost::json::value`. A completion handler is
-allocated as its own associated allocator says, which
-`boost::asio::bind_allocator` sets. What libdatachannel, OpenSSL and the
-browser's JavaScript allocate stays theirs. The resource must outlive the
-room, every value it handed out, and the operations it leaves pending when
-it is destroyed: declare it before the io_context, which then drains or is
-destroyed first; in the browser, keep it for the page's life. A room
-allocates and frees on every event, so a pool suits a long-lived room better
-than a monotonic buffer. `room_config` is move-only: pass it moved.
+An `app` represents this program in one application: one peer id and one
+connection per remote peer, shared by its rooms, with one immutable password
+for the app. Different passwords use separate apps with distinct self ids.
+Construct it with the
+executor, backend and moved `app_config`, then call `join` and test its
+`boost::system::result<room>`. The standalone room constructor and
+`room_config` are removed: shared configuration, including the password,
+moves to `app_config`; handshake timeout and receive limit move to
+`room_options`. Rooms have no password override. A new password requires a
+new app. Two peers
+in one process use two apps; rooms that must not be linked use one app each.
+
+`app_config::memory` receives the app's state, shared connections, received
+frames and every log sentence. `room_options::memory` receives a room's
+state, bindings, actions, relays, handlers and JSON; null uses the app's
+resource. A received owning binary payload moves when its message buffer
+and room resources match, and is copied once otherwise; received pmr text
+is always copied once. Completion handlers use their own associated allocator,
+which `boost::asio::bind_allocator` sets. The app's resource must outlive
+its handle, all its rooms, retained values and pending operations; each
+room's resource must outlive its values and operations too. Declare both
+before the io_context and drain or destroy it first; in a browser keep them
+for the page's life. Pools suit long-lived apps and rooms. libdatachannel,
+OpenSSL and the browser retain their own internal allocations.
+
+A passwordless app's rooms are open to peers already connected through any
+of its rooms: presence reveals their tokens. A protected app uses a separate
+identity and connection; the initial sealed signaling authenticates its
+password before its rooms can share that connection. The Trystero JS 0.26.0
+wire remains unchanged, including its one-way room handshake: a JS page
+that mixes room passwords still exposes its own rooms. Configure each JS
+app with one password too. A peer that knows a C++ app's password can still
+send a wrong room proof, reported by the lower id only.
 
 ## Building inside the superproject
 
@@ -93,6 +113,7 @@ The native quick start, whole:
 
 <!-- include::example/native_quick_start.cpp[tag=program] -->
 ```cpp
+#include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -100,14 +121,20 @@ The native quick start, whole:
 
 #include <iostream>
 #include <string>
+#include <utility>
 
 namespace trystero = webcpp::trystero;
 
 int main() {
     boost::asio::io_context io;
     trystero::native::backend backend(io.get_executor());
-    trystero::room room(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"},
-                        "lobby");
+    trystero::app app(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"});
+    auto joined = app.join("lobby");
+    if (!joined) {
+        std::cerr << "not joined: " << joined.error().message() << '\n';
+        return 1;
+    }
+    trystero::room room = std::move(*joined);
     auto chat = room.make_action<std::string>("chat");
 
     room.on_peer_join([&](std::string_view peer) {
@@ -124,19 +151,36 @@ int main() {
 }
 ```
 
-The browser quick start's room, which a page keeps alive as long as the tab:
+The browser quick start's app and the room it joins, which a page keeps alive as long as the tab:
 
 <!-- include::example/quick_start.cpp[tag=application] -->
 ```cpp
-/** What the page keeps alive: event loop, backend, room and actions. */
+/** The room the page joined, and its actions. */
+struct lobby {
+    trystero::room room;
+    trystero::action<std::string> chat = room.make_action<std::string>("chat");
+    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+};
+
+/** What the page keeps alive: event loop, backend, app, and the room it joined. */
 struct application {
     asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
-    trystero::room room{
-        loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}, "lobby"};
-    trystero::action<std::string> chat = room.make_action<std::string>("chat");
-    trystero::action<std::string> echo = room.make_action<std::string>("echo");
+    trystero::app app{loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
+    std::optional<lobby> joined;
+
+    /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses
+     * (a room of that id joined already, or 64 rooms). */
+    lobby* join() {
+        auto result = app.join("lobby");
+        if (!result) {
+            const std::string reason = result.error().message();
+            std::printf("not joined: %s\n", reason.c_str());
+            return nullptr;
+        }
+        return &joined.emplace(std::move(*result));
+    }
 };
 ```
 

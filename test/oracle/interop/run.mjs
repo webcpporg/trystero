@@ -189,6 +189,7 @@ const openPage = async (path, label) => {
     const evaluate = async (expression, ms = 10_000) => {
         const answer = await send('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true}, ms)
         if (answer === undefined) throw new Error(`${label}: ${expression} did not answer in ${ms / 1000} s`)
+        if (answer.exceptionDetails) throw new Error(`${label}: ${expression}: ${answer.exceptionDetails.exception?.description ?? answer.exceptionDetails.text}`)
         return answer.result?.value
     }
     return {
@@ -197,6 +198,7 @@ const openPage = async (path, label) => {
         events: async () => (await evaluate('window.events ?? []')) ?? [],
         log: async () => (await evaluate("document.getElementById('log')?.innerText ?? ''")) ?? '',
         leave: () => evaluate('window.leave()'),
+        leaveRoom: () => evaluate('window.leave()'),
         value: (expression, ms) => evaluate(expression, ms),
         close: async () => {
             ws.close()
@@ -242,6 +244,7 @@ const openNative = (params, label) => {
         log: async () => lines.join('\n'),
         value: async () => undefined,
         leave: async () => child.stdin.write('leave\n'),
+        leaveRoom: async () => child.stdin.write('leave-room\n'),
         replace: async () => child.stdin.write('replace\n'),
         abort: async () => child.stdin.write('abort\n'),
         close: async () => {
@@ -392,8 +395,8 @@ const textMessagesScenario = (name, cppKind) =>
         return (await cpp.log()).includes('invalid or incompatible room frame') ? 'the C++ peer took a text message for a frame' : null
     })
 
-// The C++ peer is given a TURN server without credentials, which WebRTC refuses: the room drops it when it joins and
-// reports it, and the exchange completes over the host candidates.
+// The C++ peer is given a TURN server without credentials, which WebRTC refuses: the app drops it when it is made and
+// reports it to app::on_error, and the exchange completes over the host candidates.
 const unusableIceScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}
@@ -401,7 +404,7 @@ const unusableIceScenario = (name, cppKind) =>
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
-        const reported = (await cpp.events()).some(e => e.kind === 'error' && e.error === "the room's configuration is unusable")
+        const reported = (await cpp.events()).some(e => e.kind === 'error' && e.error === 'the configuration is unusable')
         return reported ? null : 'the C++ peer did not report the unusable ICE server'
     })
 
@@ -602,32 +605,343 @@ const reflectScenario = (name, cppKind, side) =>
         return (await cpp.log()).includes(`refused the ${side} from`) ? null : `the C++ peer refused no ${side}`
     })
 
-// Every scenario the options ask for, in turn.
-// A C++ peer and a Trystero JS page, each in two rooms of one app (room2 of peer.cpp, native_peer.cpp and js.html).
-// Trystero keeps one connection per app and peer id, which the page's two rooms share, and drops a second one to the
-// same id; a C++ room makes its own connections, so each C++ room needs a peer id of its own, which a room draws when
-// its configuration names none. With them both rooms meet, as these check: the first room's whole exchange, and the
-// second room's join, chat message and 100 KB file, both ways. Given one self_id for both rooms, the second room
-// never joins: the page drops its connection and sends its frames over the first room's, which the C++ room drops.
-const twoRoomsScenario = (name, cppKind) =>
+// ---- rooms of one app sharing one connection (S:6.4) ---------------------------------------------------------------
+const inRoom = (events, which) => events.filter(e => (e.room ?? 'first') === which)
+const roomComplete = (events, which, file) => {
+    const mine = inRoom(events, which)
+    return mine.some(e => e.kind === 'peer-join') && mine.some(e => e.kind === 'chat') &&
+        mine.some(e => e.kind === 'file' && e.size === file.size && e.checksum === file.checksum)
+}
+// What each side did with connections: the C++ peer's made (Chromium's count in cpp.html, or the native backend's
+// made-connection events) and adopted (its app's log), the page's made and connected (its RTCPeerConnection wrapper).
+const connectionCounts = async (cpp, cppKind, js) => ({
+    cppMade: cppKind === 'native'
+        ? (await cpp.events()).filter(e => e.kind === 'made-connection').length
+        : await cpp.value('window.madePeerConnections'),
+    cppAdopted: (await cpp.events()).filter(e => e.kind === 'adopted').length,
+    jsMade: await js.value('window.connectionStates().length'),
+    jsConnected: await js.value("window.connectionStates().filter(s => s === 'connected').length"),
+})
+// Rooms that negotiate at once can meet the crossed race of S:2.4, where both sides lose both connections and meet
+// again: past this many connections on a side the scenario fails naming the counts, so that a livelock fails by name.
+const crossedBound = 4
+const overBound = c => c.cppMade > crossedBound || c.jsMade > crossedBound || c.cppAdopted > crossedBound
+// Watches `count()` for `ms`, noting the driver's time of each increase: the instants of a peer's reports, within
+// the 250 ms of a poll.
+const instants = async (count, ms) => {
+    const end = Date.now() + ms
+    const seen = []
+    while (Date.now() < end && deaths === deathsBefore) {
+        const n = await count()
+        while (seen.length < n) seen.push(Date.now())
+        await new Promise(r => setTimeout(r, 250))
+    }
+    return seen
+}
+// The exchanges of the first room and of room2, both ways.
+const twoRoomsComplete = async (cpp, js) => {
+    const c = await cpp.events(), j = await js.events()
+    return exchangeComplete(inRoom(c, 'first'), false) && exchangeComplete(inRoom(j, 'first'), true) &&
+        roomComplete(c, 'second', fromJs) && roomComplete(j, 'second', fromCpp)
+}
+
+// 1. Two rooms on one connection, no password: both rooms' exchanges complete both ways; at the end the page holds
+// one connected RTCPeerConnection, and the C++ peer's app adopted one connection, or, when the page made more than one
+// (a crossing), at most crossedBound (the plan's conflict 14).
+const twoRoomsOneConnectionScenario = (name, cppKind) =>
     scenario(name, async open => {
         const params = {room: room(), room2: room(), ...relayParams}
         const cpp = await open(cppKind, params)
         const js = await open('js', params)
-        const first = events => events.filter(e => e.room === undefined)
-        const second = (events, file) => events.some(e => e.room === 'second' && e.kind === 'peer-join') &&
-            events.some(e => e.room === 'second' && e.kind === 'chat') &&
-            events.some(e => e.room === 'second' && e.kind === 'file' && e.size === file.size && e.checksum === file.checksum)
-        const ok = await until(async () => {
-            const c = await cpp.events(), j = await js.events()
-            return exchangeComplete(first(c), false) && exchangeComplete(first(j), true) && second(c, fromJs) && second(j, fromCpp)
-        }, 45_000)
-        if (ok) return null
-        const c = await cpp.events(), j = await js.events()
-        return `the two rooms did not both complete in 45 s: first room ${exchangeComplete(first(c), false)} for C++, ` +
-            `${exchangeComplete(first(j), true)} for JS; second room ${second(c, fromJs)} for C++, ${second(j, fromCpp)} for JS`
+        const ok = await until(() => twoRoomsComplete(cpp, js), 60_000)
+        const counts = await connectionCounts(cpp, cppKind, js)
+        const facts = `connections ${JSON.stringify(counts)}`
+        if (overBound(counts)) return `${facts}: past the bound of ${crossedBound}`
+        if (!ok) return `the two rooms did not both complete in 60 s; ${facts}`
+        if (counts.jsConnected !== 1) return `the page does not hold exactly one connected connection; ${facts}`
+        if (counts.jsMade === 1 && counts.cppAdopted !== 1) return `no crossing, yet ${counts.cppAdopted} adoptions; ${facts}`
+        return null
     })
 
+// 2. Three rooms on one connection: the C++ peer joins room3 5 s after the others, over the connection already there
+// (by presence): room3 completes both ways, and no side makes a connection for it.
+const threeRoomsScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), room2: room(), room3: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, room3Delay: 5000})
+        const js = await open('js', params)
+        if (!(await until(() => twoRoomsComplete(cpp, js), 4500))) return 'the first two rooms did not complete before room3 joined'
+        const before = await connectionCounts(cpp, cppKind, js)
+        const joined3 = async () => inRoom(await cpp.events(), 'third').some(e => e.kind === 'joined')
+        if (!(await until(joined3, 20_000))) return 'the C++ peer did not join room3'
+        const ok = await until(async () => (await twoRoomsComplete(cpp, js)) &&
+            roomComplete(await cpp.events(), 'third', fromJs) && roomComplete(await js.events(), 'third', fromCpp), 60_000)
+        const after = await connectionCounts(cpp, cppKind, js)
+        const facts = `connections before room3 joined ${JSON.stringify(before)}, at the end ${JSON.stringify(after)}`
+        if (overBound(after)) return `${facts}: past the bound of ${crossedBound}`
+        if (!ok) return `the three rooms did not all complete in 60 s; ${facts}`
+        if (before.jsConnected !== 1) return `the connection was not up when the C++ peer joined room3; ${facts}`
+        if (after.cppMade !== before.cppMade || after.jsMade !== before.jsMade) return `room3 made a connection; ${facts}`
+        return after.jsConnected === 1 ? null : `the page does not hold one connected connection; ${facts}`
+    })
+
+// 3. A room the page joined first: the page joins room and room2; 15 s later the C++ peer joins room, then room2:
+// room2 joins within 5 s of the C++ peer's join of it, over the connection, by the page's presence.
+const pageFirstScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), room2: room(), ...relayParams}
+        const js = await open('js', params)
+        await new Promise(r => setTimeout(r, 15_000))
+        const cpp = await open(cppKind, {...params, room2Delay: 5000})
+        const firstComplete = async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+            exchangeComplete(inRoom(await js.events(), 'first'), true)
+        if (!(await until(firstComplete, 4500))) return 'room did not complete before the delayed room2 join'
+        const before = await connectionCounts(cpp, cppKind, js)
+        if (before.jsConnected !== 1) return `room2 has no existing connection to reuse: ${JSON.stringify(before)}`
+        const joined2 = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'joined')
+        if (!(await until(joined2, 10_000))) return 'the C++ peer did not join room2'
+        const met = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join') &&
+            inRoom(await js.events(), 'second').some(e => e.kind === 'peer-join')
+        if (!(await until(met, 5_000))) return 'room2 did not join within 5 s of the C++ peer joining it'
+        if (!(await until(() => twoRoomsComplete(cpp, js), 30_000))) return 'the two rooms did not complete their exchanges'
+        const after = await connectionCounts(cpp, cppKind, js)
+        const facts = `connections before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+        if (overBound(after)) return `${facts}: past the bound of ${crossedBound}`
+        if (after.cppMade !== before.cppMade || after.jsMade !== before.jsMade) return `room2 made a connection; ${facts}`
+        return after.jsConnected === 1 ? null : facts
+    })
+
+// 5. One room leaving, either side: the leaver leaves room; the other side sees peer-leave in room only; a chat sent in
+// room2 afterwards crosses both ways (the C++ room2 echoes it); no connection is made.
+const oneRoomLeavingScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        for (const leaver of ['cpp', 'js']) {
+            const params = {room: room(), room2: room(), ...relayParams}
+            const cpp = await open(cppKind, params)
+            const js = await open('js', params)
+            if (!(await until(() => twoRoomsComplete(cpp, js), 60_000))) return `${leaver}: the two rooms did not complete in 60 s`
+            const before = await connectionCounts(cpp, cppKind, js)
+            const [goes, stays] = leaver === 'cpp' ? [cpp, js] : [js, cpp]
+            await goes.leaveRoom()
+            const seen = async () => inRoom(await stays.events(), 'first').some(e => e.kind === 'peer-leave')
+            if (!(await until(seen, 10_000))) return `${leaver} left room, and the other side saw no peer-leave in it`
+            const text = `after ${leaver} left`
+            await js.value(`window.chat2(${JSON.stringify(text)})`)
+            const crossed = async () =>
+                inRoom(await cpp.events(), 'second').some(e => e.kind === 'chat' && e.text === text) &&
+                inRoom(await js.events(), 'second').some(e => e.kind === 'chat' && e.text === `echo: ${text}`)
+            const ok = await until(crossed, 10_000)
+            const after = await connectionCounts(cpp, cppKind, js)
+            const facts = `connections before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+            if (!ok) return `${leaver}: a chat in room2 did not cross both ways after the leave; ${facts}`
+            const second = [...inRoom(await cpp.events(), 'second'), ...inRoom(await js.events(), 'second')]
+            if (second.some(e => e.kind === 'peer-leave')) return `${leaver}: room2 saw a peer leave; ${facts}`
+            if (after.cppMade !== before.cppMade || after.jsMade !== before.jsMade) return `${leaver}: a connection was made; ${facts}`
+        }
+        return null
+    })
+
+// 6. A peer leaving every room: both sides are given an idle time of 2 s; the page leaves both rooms: the C++ peer
+// records both leaves, and the connection closes on both sides after the idle time, not before.
+const leavingEveryRoomScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), room2: room(), idle: 2000, ...relayParams}
+        const cpp = await open(cppKind, params)
+        const js = await open('js', params)
+        if (!(await until(() => twoRoomsComplete(cpp, js), 60_000))) return 'the two rooms did not complete in 60 s'
+        const endedBefore = (await cpp.events()).filter(e => e.kind === 'ended').length
+        await js.value('window.leave()')
+        const leftAt = Date.now()
+        await js.value('window.leave2()')
+        const bothLeft = async () => {
+            const c = await cpp.events()
+            return inRoom(c, 'first').some(e => e.kind === 'peer-leave') && inRoom(c, 'second').some(e => e.kind === 'peer-leave')
+        }
+        if (!(await until(bothLeft, 10_000))) return 'the C++ peer did not see the page leave both rooms'
+        const closed = async () =>
+            (await js.value("window.connectionStates().filter(s => s === 'connected').length")) === 0 &&
+            (await cpp.events()).filter(e => e.kind === 'ended').length > endedBefore
+        if (!(await until(closed, 10_000))) return 'the connection did not close on both sides within 10 s of the leaves'
+        const seconds = (Date.now() - leftAt) / 1000
+        return seconds >= 1.5 ? null : `the connection closed ${seconds} s after the leaves, before the idle time of 2 s`
+    })
+
+// 4. A public app exposes its other rooms to a peer on its connection. A separate password-protected app has
+// another peer id, so public-channel presence and readiness injections cannot reach its rooms or broadcasts.
+const openToOtherRoomsScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        for (const protectedSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
+            const publicSelf = protectedSelf.startsWith('0') ? 'zzzzzzzzzzzzzzzzzzzz' : '00000000000000000000'
+            const rooms = {room: room(), room2: room(), secret: room()}
+            const cpp = await open(cppKind, {room: rooms.room, room2: rooms.room2, self: publicSelf, ...relayParams})
+            const protectedCpp = await open(cppKind, {
+                room: rooms.room, room2: rooms.secret, self: protectedSelf, password: 'vault', ...relayParams,
+            })
+            // The page knows the protected room id but has no password. It also injects that token over its public
+            // connection, alongside the public app's actual advertisements.
+            const js = await open('js', {room: rooms.room, room3: rooms.secret, ...relayParams})
+            const ok = await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+                exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000)
+            if (!ok) return `${protectedSelf}: the public room did not complete in 30 s`
+            const refused = async () => inRoom(await protectedCpp.events(), 'second').some(e => e.kind === 'error') ||
+                inRoom(await js.events(), 'third').some(e => e.kind === 'error' && e.peer === protectedSelf)
+            if (!(await until(refused, 15_000))) return `${protectedSelf}: the protected room saw no attempted negotiation`
+            if (!(await until(async () => (await js.value('window.advertisedCount()')) >= 2, 10_000))) {
+                return `${protectedSelf}: the public app did not advertise both rooms`
+            }
+            const before = await connectionCounts(cpp, cppKind, js)
+            const echoed = await js.value(`window.echoPresence([${JSON.stringify(rooms.secret)}])`)
+            if (echoed < 3) return `${protectedSelf}: the injection omitted a public or protected token`
+            const joined2 = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join')
+            if (!(await until(joined2, 15_000))) return `${protectedSelf}: the public app's room2 did not admit the page`
+            const sent2 = async () => (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'chat')`)) > 0 &&
+                (await js.value(`window.roomFrames(${JSON.stringify(rooms.room2)}, 'file')`)) > 0
+            if (!(await until(sent2, 10_000))) return `${protectedSelf}: the public room2 did not send chat and file frames`
+            await new Promise(r => setTimeout(r, 15_000))
+            const protectedEvents = await protectedCpp.events()
+            if (protectedEvents.some(e => e.kind === 'peer-join' || e.kind === 'adopted')) {
+                return `${protectedSelf}: the protected app admitted a peer without its password`
+            }
+            if (inRoom(await js.events(), 'third').some(e => e.kind === 'peer-join')) {
+                return `${protectedSelf}: the page joined the protected room`
+            }
+            if ((await js.value(`window.roomFrames(${JSON.stringify(rooms.secret)}, 'chat')`)) !== 0 ||
+                (await js.value(`window.roomFrames(${JSON.stringify(rooms.secret)}, 'file')`)) !== 0) {
+                return `${protectedSelf}: protected broadcasts reached the public page`
+            }
+            const after = await connectionCounts(cpp, cppKind, js)
+            if (after.cppMade !== before.cppMade || after.jsConnected !== 1) {
+                return `${protectedSelf}: the public connection changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+            }
+        }
+        return null
+    })
+
+// 7. A wrong password in room2, in both id orders (ruling 9). With the C++ peer the lower id, it reports
+// wrong_password in room2 3 times in 60 s, at about 0, 11 and 33 s from the first. With it the higher id, the page
+// records Trystero's password error at most 4 times in 60 s, and the C++ peer reports nothing in room2. In both, room
+// keeps exchanging, and no connection is made.
+const wrongPasswordScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const wrong = 'the peer uses another room password'
+        for (const cppSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
+            const lower = cppSelf.startsWith('0')
+            const params = {room: room(), room2: room(), ...relayParams}
+            // Both passwords are nonempty: a passwordless C++ room sends readiness, not a password challenge.
+            // The page joins room2 after the C++ room's initial relay announcement warmup has ended.
+            // A later C++ join would send that warmup to JS and trigger extra reuse handshakes by its design.
+            const cpp = await open(cppKind, {...params, self: cppSelf, password: 'p'})
+            const js = await open('js', {...params, password: 'p', password2: 'another', room2Delay: 15000})
+            const cppReports = async () => inRoom(await cpp.events(), 'second').filter(e => e.kind === 'error').length
+            const cppWrong = async () => inRoom(await cpp.events(), 'second').filter(e => e.kind === 'error' && e.error === wrong).length
+            const jsReports = async () => inRoom(await js.events(), 'second').filter(e => e.kind === 'error').length
+            // Watched from the start, so that the first report, which can come before room completes, has its time.
+            const watching = instants(lower ? cppWrong : jsReports, 60_000)
+            const ok = await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+                exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000)
+            const before = await connectionCounts(cpp, cppKind, js)
+            const seen = await watching
+            if (!ok) return `${cppSelf}: room did not complete in 30 s`
+            const offsets = seen.map(t => (t - seen[0]) / 1000)
+            if (lower) {
+                const expected = [0, 11, 33]
+                const near = offsets.length === 3 && offsets.every((s, i) => Math.abs(s - expected[i]) <= 3)
+                if (!near) return `the C++ peer, the lower id, reported wrong_password at ${offsets.join(', ')} s, not about 0, 11 and 33`
+            } else {
+                if (seen.length < 1 || seen.length > 4) return `the page reported ${seen.length} password errors in 60 s, not 1 to 4`
+                if ((await cppReports()) !== 0) return 'the C++ peer, the higher id, reported in room2'
+            }
+            const second = [...inRoom(await cpp.events(), 'second'), ...inRoom(await js.events(), 'second')]
+            if (second.some(e => e.kind === 'peer-join')) return `${cppSelf}: room2 joined with different passwords`
+            const text = `still here ${cppSelf}`
+            await js.value(`window.chat1(${JSON.stringify(text)})`)
+            const echoed = async () => inRoom(await js.events(), 'first').some(e => e.kind === 'chat' && e.text === `echo: ${text}`)
+            if (!(await until(echoed, 10_000))) return `${cppSelf}: room stopped exchanging`
+            const after = await connectionCounts(cpp, cppKind, js)
+            if (after.cppMade !== before.cppMade || after.jsMade !== before.jsMade) {
+                return `${cppSelf}: a connection was made: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+            }
+        }
+        return null
+    })
+
+// 8. A flood in one room: the page sends 5,000 messages on room's chat while the C++ peer pings room2 every second:
+// every ping completes within 2 s, and the C++ peer stays joined in both rooms.
+const roomFloodScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        const params = {room: room(), room2: room(), ...relayParams}
+        const cpp = await open(cppKind, {...params, ping2: 1})
+        const js = await open('js', params)
+        if (!(await until(() => twoRoomsComplete(cpp, js), 60_000))) return 'the two rooms did not complete in 60 s'
+        const started = events => inRoom(events, 'second').filter(e => e.kind === 'ping-started')
+        const before = started(await cpp.events()).length
+        await js.value('window.flood5000()')
+        await new Promise(r => setTimeout(r, 10_000))
+        const issued = started(await cpp.events()).slice(before)
+        if (issued.length < 5) return `only ${issued.length} pings of room2 began during the flood`
+        const pingsOf = async () => inRoom(await cpp.events(), 'second').filter(e => e.kind === 'ping')
+        const completed = await until(async () => {
+            const pings = await pingsOf()
+            return issued.every(start => pings.some(e => e.id === start.id))
+        }, 2000)
+        if (!completed) return 'a ping issued during the flood did not complete within 2 s of its end'
+        const ids = new Set(issued.map(e => e.id))
+        const pings = (await pingsOf()).filter(e => ids.has(e.id))
+        const slow = pings.filter(e => e.error !== '' || e.ms > 2000)
+        if (slow.length) return `pings of room2 failed or took over 2 s during the flood: ${JSON.stringify(slow)}`
+        return (await cpp.events()).some(e => e.kind === 'peer-leave') ? 'the C++ peer saw the page leave a room' : null
+    })
+
+// 9. A transient handshake failure with Trystero JS, in both id orders (ruling 9): room2 with a password; the page
+// holds its first @_hsdata of room2 for 12 s (hold-hsdata) and waits 30 s for a handshake, so that the C++ peer, with
+// its 10 s, times out first. With the page the higher id its held answer is accepted; with the page the lower id its
+// held challenge is dropped in the C++ peer's window. Both are joined within 15 s of the C++ peer's kick, or, when the
+// page bound by reuse inside that window (the first residual case of S:4.2), within 50 s, the page having reported
+// one handshake timeout. No password error on either side, and room keeps exchanging.
+const transientHandshakeScenario = (name, cppKind) =>
+    scenario(name, async open => {
+        for (const cppSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
+            const pageLower = !cppSelf.startsWith('0')
+            const params = {room: room(), room2: room(), password: 'p', ...relayParams}
+            const cpp = await open(cppKind, {...params, self: cppSelf})
+            const js = await open('js', {...params, deferRoom2: 1, 'hold-hsdata': '1', handshake: 30000})
+            // Join room2 explicitly only after both directions of room1's exchange have completed.
+            if (!(await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
+                exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000))) {
+                return `${cppSelf}: room did not complete before joining room2`
+            }
+            const before = await connectionCounts(cpp, cppKind, js)
+            await js.value('window.join2()')
+            if (!(await until(async () => (await js.events()).some(e => e.kind === 'held' && e.presenceBefore), 10_000))) {
+                return `${cppSelf}: room2 presence did not precede its first held handshake frame`
+            }
+            const cppTimeouts = async () => inRoom(await cpp.events(), 'second')
+                .filter(e => e.kind === 'error' && e.error === 'the handshake timed out').length
+            if (!(await until(async () => (await cppTimeouts()) >= 1, 30_000))) return `${cppSelf}: the C++ peer did not time out in room2`
+            const met = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join') &&
+                inRoom(await js.events(), 'second').some(e => e.kind === 'peer-join')
+            let ok = await until(met, 15_000)
+            const pageTimeouts = async () => inRoom(await js.events(), 'second')
+                .filter(e => e.kind === 'error' && String(e.error).includes('timed out')).length
+            if (!ok && pageLower) ok = (await until(met, 35_000)) && (await pageTimeouts()) === 1
+            if (!ok) return `${cppSelf}: room2 did not join in time; the page reported ${await pageTimeouts()} timeouts`
+            if ((await cppTimeouts()) !== 1) return `${cppSelf}: the C++ peer timed out ${await cppTimeouts()} times`
+            const passwordErrors = [...inRoom(await cpp.events(), 'second'), ...inRoom(await js.events(), 'second')]
+                .filter(e => e.kind === 'error' && String(e.error).includes('password'))
+            if (passwordErrors.length) return `${cppSelf}: password errors ${JSON.stringify(passwordErrors)}`
+            const text = `still here ${cppSelf}`
+            await js.value(`window.chat1(${JSON.stringify(text)})`)
+            const echoed = async () => inRoom(await js.events(), 'first').some(e => e.kind === 'chat' && e.text === `echo: ${text}`)
+            if (!(await until(echoed, 10_000))) return `${cppSelf}: room stopped exchanging`
+            const after = await connectionCounts(cpp, cppKind, js)
+            if (after.cppMade !== before.cppMade || after.jsMade !== before.jsMade || after.jsConnected !== 1) {
+                return `${cppSelf}: the shared connection changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
+            }
+        }
+        return null
+    })
+
+// Every scenario the options ask for, in turn.
 const scenarios = async () => {
     if (browserPeer) {
         await pairScenario('C++ offers (lower id), Trystero JS answers; C++ leaves', {cppSelf: '00000000000000000000', leaver: 'cpp'})
@@ -644,7 +958,15 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; C++ joins', 'cpp', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
-            await twoRoomsScenario('C++ and Trystero JS meet in two rooms of one app, each C++ room with its own id', 'cpp')
+            await twoRoomsOneConnectionScenario('C++ and Trystero JS share one connection between two rooms', 'cpp')
+            await threeRoomsScenario('Three rooms share one connection, the third joined later by presence', 'cpp')
+            await pageFirstScenario('A room the page joined first binds over the connection within 5 s', 'cpp')
+            await oneRoomLeavingScenario('One room leaving, either side, leaves the other room and the connection', 'cpp')
+            await leavingEveryRoomScenario('A peer leaving every room closes the connection after the idle time', 'cpp')
+            await openToOtherRoomsScenario('A public app exposes its rooms while a separate protected app stays isolated in both id orders', 'cpp')
+            await wrongPasswordScenario('A wrong password in one room, in both id orders, paced by the rebinding times', 'cpp')
+            await roomFloodScenario('A flood in one room does not delay the pings of another', 'cpp')
+            await transientHandshakeScenario('A transient handshake failure converges, in both id orders', 'cpp')
         }
     }
 
@@ -665,8 +987,15 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; native C++ joins', 'native', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
-            await twoRoomsScenario('Native C++ and Trystero JS meet in two rooms of one app, each C++ room with its own id',
-                'native')
+            await twoRoomsOneConnectionScenario('Native C++ and Trystero JS share one connection between two rooms', 'native')
+            await threeRoomsScenario('Native C++: three rooms share one connection, the third joined later by presence', 'native')
+            await pageFirstScenario('Native C++: a room the page joined first binds over the connection within 5 s', 'native')
+            await oneRoomLeavingScenario('Native C++: one room leaving, either side, leaves the other room and the connection', 'native')
+            await leavingEveryRoomScenario('Native C++: a peer leaving every room closes the connection after the idle time', 'native')
+            await openToOtherRoomsScenario('Native C++: a public app exposes its rooms while a separate protected app stays isolated in both id orders', 'native')
+            await wrongPasswordScenario('Native C++: a wrong password in one room, in both id orders, paced by the rebinding times', 'native')
+            await roomFloodScenario('Native C++: a flood in one room does not delay the pings of another', 'native')
+            await transientHandshakeScenario('Native C++: a transient handshake failure converges, in both id orders', 'native')
             await strikeScenario('A relay that ends the connection during a write: native C++ survives and reconnects', 'native')
             await scenario('A room moved over a joined native C++ one leaves it, as destroying it does', async open => {
                 const params = {room: room(), ...relayParams}

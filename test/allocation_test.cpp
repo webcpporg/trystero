@@ -12,6 +12,7 @@
 
 #include <webcpp/trystero.hpp>
 
+#include "require.hpp"
 #include "support/memory_backend.hpp"
 
 #include <boost/asio/bind_allocator.hpp>
@@ -34,6 +35,7 @@
 #include <memory_resource>
 #include <new>
 #include <string_view>
+#include <utility>
 #include <vector>
 #ifdef _MSC_VER
 #include <malloc.h>
@@ -327,6 +329,9 @@ public:
     std::size_t allocations = 0;
     std::size_t outstanding = 0;
     std::size_t foreign = 0;
+    std::size_t sized_from = 0;
+    std::size_t sized_to = 0;
+    std::size_t sized = 0;
 
 private:
     std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20U);
@@ -335,6 +340,7 @@ private:
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         ++allocations;
+        sized += bytes >= sized_from && bytes < sized_to ? 1 : 0;
         outstanding += bytes;
         return buffer_.allocate(bytes, alignment);
     }
@@ -417,6 +423,14 @@ void the_counts_see_an_allocation() {
     BOOST_TEST_EQ(giver.foreign, 0U);
 }
 
+/** Joins `room_id`, which must succeed: a failure ends the test. */
+trystero::room join(trystero::app& a, std::string_view room_id,
+                    trystero::room_options options = {}) {
+    auto r = a.join(room_id, options);
+    webcpp::test::require(BOOST_TEST(r.has_value()));
+    return std::move(*r);
+}
+
 /** Two rooms exchange two payloads that make builds; the second is counted. */
 template <class Payload, class Make>
 void exchange_allocates_through_the_rooms_resources(Make make) {
@@ -431,22 +445,22 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     network.relay(relay);
     const boost::json::storage_ptr json_storage =
         boost::json::make_shared_resource<trystero::json_resource>(&a_memory);
-    trystero::room a(io.get_executor(), network,
-                     {
-                         .app_id = "allocation",
-                         .relay_urls = {std::pmr::string(relay)},
-                         .self_id = "AAAAAAAAAAAAAAAAAAAA",
-                         .memory = &a_memory,
-                     },
-                     "room");
-    trystero::room z(io.get_executor(), network,
-                     {
-                         .app_id = "allocation",
-                         .relay_urls = {std::pmr::string(relay)},
-                         .self_id = "zzzzzzzzzzzzzzzzzzzz",
-                         .memory = &z_memory,
-                     },
-                     "room");
+    trystero::app a_app(io.get_executor(), network,
+                        {
+                            .app_id = "allocation",
+                            .self_id = "AAAAAAAAAAAAAAAAAAAA",
+                            .relay_urls = {std::pmr::string(relay)},
+                            .memory = &a_memory,
+                        });
+    trystero::app z_app(io.get_executor(), network,
+                        {
+                            .app_id = "allocation",
+                            .self_id = "zzzzzzzzzzzzzzzzzzzz",
+                            .relay_urls = {std::pmr::string(relay)},
+                            .memory = &z_memory,
+                        });
+    auto a = join(a_app, "room");
+    auto z = join(z_app, "room");
     std::size_t received = 0;
     auto from_a = a.make_action<Payload>("chat");
     z.make_action<Payload>("chat").on_message(
@@ -507,15 +521,16 @@ void warm(boost::asio::io_context& io) {
 }
 
 // tag::config[]
-/** A room's configuration, every part of it in `memory`, made before the window. */
-trystero::room_config config_in(counting_resource& memory, std::string_view self_id,
-                                std::string_view relay, std::size_t& lines) {
-    return trystero::room_config{
+/** An app's configuration, every part of it in `memory`, made before the window. */
+trystero::app_config app_config_in(counting_resource& memory, std::string_view self_id,
+                                   std::string_view relay, std::size_t& lines) {
+    return trystero::app_config{
         .app_id = std::pmr::string("allocation", &memory),
+        .self_id = std::pmr::string(self_id, &memory),
         .password = std::pmr::string("a password", &memory),
         .relay_urls =
             std::pmr::vector<std::pmr::string>({std::pmr::string(relay, &memory)}, &memory),
-        .self_id = std::pmr::string(self_id, &memory),
+        .ice_servers = std::pmr::vector<trystero::backend::ice_server>(&memory),
         .log =
             {
                 std::allocator_arg,
@@ -526,15 +541,20 @@ trystero::room_config config_in(counting_resource& memory, std::string_view self
     };
 }
 
+/** A room's options, naming `memory` explicitly. */
+trystero::room_options options_in(counting_resource& memory) {
+    return trystero::room_options{.memory = &memory};
+}
+
 // end::config[]
 
 /**
- * Two rooms with a password, a log and a relay of their own are made one after
- * the other, join, exchange a payload that travels in chunks, measure a round
- * trip, and one says goodbye; both are destroyed and the io_context drained. From the first
- * construction to the drain, operator new sees the two rooms' JSON storage
- * counters alone, which Boost.JSON allocates once per room, and the C library
- * nothing (doc: #trystero-allocation).
+ * Two apps, each with a log and a relay of its own, are made one after the other
+ * and join a room with a password, whose two sides exchange a payload that travels
+ * in chunks, measure a round trip, and one says goodbye; both are destroyed and the
+ * io_context drained. From the first construction to the drain, operator new sees
+ * the two rooms' JSON storage counters alone, which Boost.JSON allocates once per
+ * room, and the C library nothing (doc: #trystero-allocation).
  */
 void a_room_allocates_through_its_resource_from_join_to_destruction() {
     counting_resource network_memory;
@@ -562,17 +582,18 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     {
         // z is subscribed and announcing before a arrives, so that z, whose id is
         // the higher, also asks a to offer, as Trystero's counter-announcement does.
-        // Each configuration is a temporary, which leaves no moved-from object behind:
-        // MSVC's debug standard library keeps, in a moved-from std::pmr::string or
-        // vector, 16 bytes of its resource for the container's debug proxy, 64 bytes
-        // of a moved-from configuration's four, which the test would count as the
-        // room's until the end of the function.
-        trystero::room z(io.get_executor(), network,
-                         config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines), "room");
+        // Each configuration and each room's options is a temporary, which leaves no
+        // moved-from object behind: MSVC's debug standard library keeps, in a moved-from
+        // std::pmr::string or vector, 16 bytes of its resource for the container's debug
+        // proxy, which the test would count as the app's until the end of the function.
+        trystero::app z_app(io.get_executor(), network,
+                            app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines));
+        auto z = join(z_app, "room", options_in(z_memory));
         run_for(io, 100);
         {
-            trystero::room a(io.get_executor(), network,
-                             config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines), "room");
+            trystero::app a_app(io.get_executor(), network,
+                                app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
+            auto a = join(a_app, "room", options_in(a_memory));
             a.on_peer_leave([&left](std::string_view /*peer*/) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
                 [&files](const trystero::pmr_bytes& data, const trystero::message_info& /*info*/) {
@@ -603,7 +624,8 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //     std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
     //     boost::asio::io_context io;                     // destroyed before the resource
     //     {
-    //         trystero::room room(io.get_executor(), factory, {.memory = &memory}, "id");
+    //         trystero::app app(io.get_executor(), factory, {.memory = &memory});
+    //         auto room = app.join("id");
     //         ...
     //     }
     //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
@@ -622,6 +644,91 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST_EQ(global_allocations, 2U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
+    global_allocations = 0;
+    c_allocations = 0;
+}
+
+/**
+ * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
+ * exchange binary payloads: from construction until the io_context drains, operator new sees only
+ * the rooms' JSON storage counters and the C library nothing. A payload received by the room with
+ * its own resource is copied into that resource once, the received frame staying the app's; by the
+ * room in the app's resource, the payload taken out of the frame is moved into the value (doc:
+ * #trystero-allocation).
+ */
+void rooms_of_one_app_allocate_through_their_resources() {
+    counting_resource network_memory;
+    counting_resource a_memory;
+    counting_resource a_room_memory;
+    counting_resource z_memory;
+    counting_resource z_room_memory;
+    std::size_t lines = 0;
+    // Construct configurations in their resources before the counting window.
+    auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
+    auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
+    const auto a_own = options_in(a_room_memory);
+    const auto z_own = options_in(z_room_memory);
+    // An inline payload of a size no other allocation has: its frame is at most 256 bytes longer.
+    constexpr std::size_t payload_size = 12'345;
+    trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
+    trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
+    {
+        boost::asio::io_context io;  // after the resources: destroyed before them
+        trystero::test::memory_network network{io, 1, &network_memory};
+        network.relay("wss://relay.test");
+        warm(io);
+        counting = true;
+        {
+            trystero::app a(io.get_executor(), network, std::move(a_config));
+            trystero::app z(io.get_executor(), network, std::move(z_config));
+            auto a1 = join(a, "shared", options_in(a_memory));
+            auto a2 = join(a, "own", a_own);
+            auto z1 = join(z, "shared", options_in(z_memory));
+            auto z2 = join(z, "own", z_own);
+            std::size_t got = 0;
+            auto in_shared = z1.make_action<trystero::pmr_bytes>("b");
+            auto in_own = z2.make_action<trystero::pmr_bytes>("b");
+            in_shared.on_message(
+                [&](const trystero::pmr_bytes& data, const trystero::message_info&) {
+                    got += data.get_allocator().resource() == &z_memory ? 1 : 0;
+                });
+            in_own.on_message([&](const trystero::pmr_bytes& data, const trystero::message_info&) {
+                got += data.get_allocator().resource() == &z_room_memory ? 1 : 0;
+            });
+            BOOST_TEST(run_until(io, [&] {
+                return a1.peers().size() == 1 && a2.peers().size() == 1 && z1.peers().size() == 1 &&
+                       z2.peers().size() == 1;
+            }));
+            for (auto* m : {&z_memory, &z_room_memory}) {
+                m->sized_from = payload_size;
+                m->sized_to = payload_size + 256;
+            }
+            a2.make_action<trystero::pmr_bytes>("b").async_send(
+                trystero::pmr_bytes(to_own, &a_room_memory),
+                boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
+                                            [](boost::system::error_code) {}));
+            BOOST_TEST(run_until(io, [&] { return got == 1; }));
+            BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
+            BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
+            z_memory.sized = 0;
+            a1.make_action<trystero::pmr_bytes>("b").async_send(
+                trystero::pmr_bytes(to_shared, &a_memory),
+                boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                            [](boost::system::error_code) {}));
+            BOOST_TEST(run_until(io, [&] { return got == 2; }));
+            BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
+        }
+        run_for(io, 300);  // the io_context runs out of the rooms' work
+    }
+    counting = false;
+    trystero::pmr_bytes(&a_memory).swap(to_shared);
+    trystero::pmr_bytes(&a_room_memory).swap(to_own);
+    BOOST_TEST_EQ(global_allocations, 4U);  // the four rooms' JSON storage counters
+    BOOST_TEST_EQ(c_allocations, 0U);
+    for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
+        BOOST_TEST_EQ(m->outstanding, 0U);
+        BOOST_TEST_EQ(m->foreign, 0U);
+    }
     global_allocations = 0;
     c_allocations = 0;
 }
@@ -683,5 +790,6 @@ int main() {
                                       storage);
         });
     a_room_allocates_through_its_resource_from_join_to_destruction();
+    rooms_of_one_app_allocate_through_their_resources();
     return boost::report_errors();
 }

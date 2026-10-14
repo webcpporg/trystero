@@ -26,7 +26,8 @@ namespace webcpp::trystero {
 /**
  * A `boost::container::pmr::memory_resource` that allocates from a `std::pmr::memory_resource`.
  *
- * A room makes one over `room_config::memory`, as the JSON storage every JSON value of the room is
+ * A room makes one over `room_options::memory`, or the app's resource when null, as the JSON
+ * storage every JSON value of the room is
  * allocated in: what it parses from a relay, a signal or the handshake, and the
  * `boost::json::value` an action's handler receives. The storage is counted, so a value a handler
  * keeps keeps it alive; Boost.JSON allocates that count with `operator new`, once per room.

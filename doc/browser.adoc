@@ -11,7 +11,8 @@ In the browser, `browser::backend` implements the backend interface over the
 page's own `WebSocket`, `RTCPeerConnection`, `RTCDataChannel`, `setTimeout`
 and `crypto.subtle`, through embind's `emscripten::val`, and
 `browser::event_loop` runs the room's executor from the page's events. One
-of each serves every room of the page.
+of each serves every app and room of the page. Apps with different
+passwords use distinct self ids and share no connection or presence.
 
 [#trystero-browser-loop]
 === Driving Asio from the page's event loop
@@ -49,7 +50,7 @@ handler it made as dead.
 
 Text that crosses into JavaScript is decoded straight from the WebAssembly
 memory a view points into, by a `TextDecoder` the loop keeps, and text that
-comes back is encoded by a `TextEncoder` straight into a string of the room's
+comes back is encoded by a `TextEncoder` straight into a string of the object's
 resource: no `std::string` is made to carry either.
 
 [#trystero-browser-exceptions]
@@ -83,12 +84,16 @@ peer's malformed message never stops the page's loop.
   ping, so the browser has no idle timeout, which the native backend has
   (<<trystero-native-relays>>).
 * A page makes at most `browser::backend::max_peer_connections` (256) peer
-  connections, counted from their construction until the garbage collector
+  connections across all apps and rooms it serves, counted from their construction until the garbage collector
   frees them, as Chromium counts them against its own 500 (measured with
   headless Chrome: the 501st throws "Cannot create so many
   PeerConnections", and a closed one counts until a collection). Beyond,
   the rooms report each negotiation they cannot start, and the rest of
   Chromium's count stays free for what the page makes without a room.
+
+Peer connections, data channels and received frames use the app's resource;
+relay sockets and sealed signaling texts use the room's. Presence or reuse
+binds another room without making another peer connection.
 
 [#trystero-browser-page]
 === What a page needs

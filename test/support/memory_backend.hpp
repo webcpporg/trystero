@@ -27,9 +27,13 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <deque>
+#include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <random>
 #include <set>
 #include <span>
@@ -48,7 +52,9 @@
  * Tip: what a room makes, and what a room receives, is allocated in that room's resource, which
  * each factory method is given; the network's own state (its relays, their subscriptions, its
  * record of the connections) is in the resource the network is constructed with, and changes only
- * when a room joins, connects or leaves.
+ * when a room joins, connects or leaves. The state of the hooks a test drives (held frames,
+ * deferred opens, a buffering channel's queue, the virtual clock) is in the default resource and is
+ * made only when the test sets the hook.
  */
 namespace webcpp::trystero::test {
 
@@ -61,18 +67,53 @@ void post_in(boost::asio::io_context& io, std::pmr::memory_resource* memory, F&&
                                                       std::forward<F>(f)));
 }
 
+class memory_timer;
+
+/** The virtual clock: the timers scheduled on it, each once, by due time and then by the order of
+ * scheduling. A timer leaves when it fires, and when it is restarted, cancelled or destroyed, so
+ * that nothing keeps it, or its memory in the resource of the room or connection that made it,
+ * past that call. */
+struct virtual_clock_state {
+    using key = std::pair<double, std::uint64_t>;
+    std::map<key, memory_timer*> due;
+    std::uint64_t scheduled = 0;
+    double now_ms = 0;
+};
+
 /** An Asio timer, as the native backend's: a wait cancelled, replaced or destroyed never fires,
- * even when Asio had already queued its expiry. */
+ * even when Asio had already queued its expiry. On the virtual clock, it waits there instead, until
+ * the test moves the clock past its due time. */
 class memory_timer : public backend::timer {
 public:
-    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1)
-        : timer_(io),
+    /** A timer on the virtual clock `clock`, or on Asio's when `clock` is empty. */
+    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1,
+                 std::weak_ptr<virtual_clock_state> clock = {})
+        : io_(io),
+          timer_(io),
           memory_(memory),
           time_scale_(time_scale),
+          on_clock_(!clock.expired()),
+          clock_(std::move(clock)),
           waits_(
               std::allocate_shared<std::uint64_t>(std::pmr::polymorphic_allocator<>(memory), 0)) {}
 
+    memory_timer(const memory_timer&) = delete;
+    memory_timer& operator=(const memory_timer&) = delete;
+
+    /** Leaves the virtual clock, if it is on it. */
+    ~memory_timer() override { unschedule(); }
+
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
+        if (on_clock_) {
+            unschedule();  // a restart replaces the pending expiry
+            fire_ = std::move(fire);
+            if (const auto c = clock_.lock()) {
+                key_ = virtual_clock_state::key{c->now_ms + static_cast<double>(delay.count()),
+                                                c->scheduled++};
+                c->due.emplace(*key_, this);
+            }
+            return;
+        }
         const std::uint64_t wait = ++*waits_;
         timer_.expires_after(delay / time_scale_);
         timer_.async_wait(boost::asio::bind_allocator(
@@ -85,15 +126,44 @@ public:
             }));
     }
 
+    /** Never runs the handler, as a cancelled timer of every backend does; on the virtual clock,
+     * frees it now. */
     void cancel() override {
+        if (on_clock_) {
+            unschedule();
+            fire_ = {};
+            return;
+        }
         ++*waits_;
         timer_.cancel();
     }
 
+    /** Called by the virtual clock, which has removed the timer's entry: posts the handler, as Asio
+     * completes a timer.
+     *
+     * Tip: unlike Asio's queued expiry, nothing can cancel it before it runs: step() posts it to an
+     * empty queue and runs it first. */
+    void expire() {
+        key_.reset();
+        post_in(io_, memory_, [fire = std::move(fire_)]() mutable { fire(); });
+    }
+
 private:
+    void unschedule() {
+        if (const auto c = clock_.lock(); c && key_) {
+            c->due.erase(*key_);
+        }
+        key_.reset();
+    }
+
+    boost::asio::io_context& io_;
     boost::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
     int time_scale_;
+    bool on_clock_;
+    std::weak_ptr<virtual_clock_state> clock_;
+    std::optional<virtual_clock_state::key> key_;
+    handler<void()> fire_;
     std::shared_ptr<std::uint64_t> waits_;
 };
 
@@ -309,7 +379,7 @@ class memory_peer_connection;
  * and leaves it when it is destroyed, through a weak reference, since a connection may outlive
  * the network while the io_context it posted to still holds it.
  */
-using connection_registry = std::pmr::map<int, memory_peer_connection*>;
+using connection_registry = std::pmr::map<std::size_t, memory_peer_connection*>;
 
 class memory_data_channel : public backend::data_channel,
                             public std::enable_shared_from_this<memory_data_channel> {
@@ -321,24 +391,12 @@ public:
 
     bool is_open() const override { return open_; }
 
-    std::size_t buffered_amount() const override { return 0; }
+    std::size_t buffered_amount() const override { return buffered_; }
 
-    /** The frame arrives at the other end as a copy in the other end's resource, as a received
-     * frame is. */
-    void send(std::span<const std::uint8_t> frame) override {
-        const auto remote = remote_.lock();
-        if (!open_ || !remote) {
-            return;
-        }
-        bytes_sent += frame.size();
-        post_in(
-            io_, remote->memory_,
-            [remote, data = backend::bytes(frame.begin(), frame.end(), remote->memory_)]() mutable {
-                if (remote->open_ && remote->h_.message) {
-                    remote->h_.message(std::move(data));
-                }
-            });
-    }
+    /** The frame goes through the network's filter, in this end's order, then arrives at the other
+     * end as a copy in the other end's resource, as a received frame is. With a channel capacity,
+     * the frames queue and drain by `drain_per_post` bytes per post. */
+    void send(std::span<const std::uint8_t> frame) override;
 
     void close() override {
         if (!open_) {
@@ -360,6 +418,24 @@ public:
 
     void pair_with(const std::shared_ptr<memory_data_channel>& remote) { remote_ = remote; }
 
+    /** Makes this channel the end of the connection `pc` of `net`, whose hooks then see what it
+     * sends. */
+    void bind_to(memory_network& net, std::size_t pc);
+
+    /** Posts `frame`, made in this end's resource, to the message handler, if the channel is still
+     * open then. */
+    void receive(backend::bytes frame);
+
+    /** Queues `frame`, made in the other end's resource, which receives it once its last byte has
+     * drained, `drain_per_post` bytes per post. */
+    void enqueue(backend::bytes frame, std::size_t drain_per_post);
+
+    [[nodiscard]] std::size_t pc() const { return pc_; }
+
+    [[nodiscard]] std::pmr::memory_resource* memory() const { return memory_; }
+
+    [[nodiscard]] std::shared_ptr<memory_data_channel> remote() const { return remote_.lock(); }
+
     void opened() {
         open_ = true;
         if (h_.open) {
@@ -370,11 +446,25 @@ public:
     std::size_t bytes_sent = 0;
 
 private:
+    /** Moves up to `drain_per_post_` bytes from the head of the queue to the other end, which
+     * receives each frame whose last byte it moved. */
+    void drain();
+
     boost::asio::io_context& io_;
     std::pmr::memory_resource* memory_;
     std::weak_ptr<memory_data_channel> remote_;
     handlers h_;
     bool open_ = false;
+    memory_network* net_ = nullptr;
+    // Alive exactly while the network is: a channel that outlives it sends nothing.
+    std::weak_ptr<connection_registry> registry_;
+    std::size_t pc_ = 0;
+    // The frames sent and not yet received, and how much of the first one has drained.
+    std::list<backend::bytes> queue_;
+    std::size_t head_drained_ = 0;
+    std::size_t buffered_ = 0;
+    std::size_t drain_per_post_ = 1;
+    bool draining_ = false;
 };
 
 /** Peer connections pair through their descriptions: "mem:<id>" names the connection that wrote it.
@@ -383,7 +473,7 @@ class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
     memory_peer_connection(boost::asio::io_context& io, memory_network& net,
-                           std::weak_ptr<connection_registry> registry, int id,
+                           std::weak_ptr<connection_registry> registry, std::size_t id,
                            std::pmr::memory_resource* memory)
         : io_(io),
           net_(net),
@@ -404,6 +494,7 @@ public:
         std::string_view /*label*/) override {
         channel_ = std::allocate_shared<memory_data_channel>(
             std::pmr::polymorphic_allocator<>(memory_), io_, memory_);
+        channel_->bind_to(net_, id_);
         return channel_;
     }
 
@@ -416,14 +507,14 @@ public:
             }
             self->local_set_ = true;
             std::pmr::string sdp("mem:", self->memory_);
-            protocol::json::append_integer(sdp, self->id_);
-            done({}, self->remote_id_ < 0 ? "offer" : "answer", sdp);
+            protocol::json::append_integer(sdp, static_cast<std::int64_t>(self->id_));
+            done({}, self->remote_id_ ? "answer" : "offer", sdp);
             post_in(self->io_, self->memory_, [self] {
                 if (self->closed_ || !self->h_.ice_candidate) {
                     return;
                 }
                 std::pmr::string candidate(R"({"candidate":"candidate:mem )", self->memory_);
-                protocol::json::append_integer(candidate, self->id_);
+                protocol::json::append_integer(candidate, static_cast<std::int64_t>(self->id_));
                 candidate += R"(","sdpMid":"0","sdpMLineIndex":0})";
                 self->h_.ice_candidate(candidate);
             });
@@ -436,7 +527,7 @@ public:
         post_in(io_, memory_,
                 [self = shared_from_this(), sdp = std::pmr::string(sdp_view, memory_),
                  done = std::move(done)]() mutable {
-                    int remote = -1;
+                    std::size_t remote = 0;
                     const bool ours =
                         sdp.starts_with("mem:") &&
                         std::from_chars(sdp.data() + 4, sdp.data() + sdp.size(), remote).ec ==
@@ -457,7 +548,7 @@ public:
         post_in(io_, memory_, [done = std::move(done)]() mutable { done({}); });
     }
 
-    bool has_remote_description() const override { return remote_id_ >= 0; }
+    bool has_remote_description() const override { return remote_id_.has_value(); }
 
     void close() override {
         if (closed_) {
@@ -469,13 +560,38 @@ public:
         }
     }
 
-    int id() const { return id_; }
+    [[nodiscard]] std::size_t id() const { return id_; }
 
-    int remote_id() const { return remote_id_; }
+    /** The id of the connection whose description this one applied; empty until then. */
+    [[nodiscard]] std::optional<std::size_t> remote_id() const { return remote_id_; }
 
-    bool ready() const { return local_set_ && remote_id_ >= 0 && !closed_; }
+    [[nodiscard]] bool ready() const { return local_set_ && remote_id_ && !closed_; }
+
+    [[nodiscard]] std::shared_ptr<memory_data_channel> channel() const { return channel_; }
 
     void connect_to(memory_peer_connection& answerer);
+
+    /** Posts `state` to the state handler, and nothing else: the channel stays as it is, as
+     * through a disconnection and a reconnection. */
+    void report(backend::connection_state state) {
+        post_in(io_, memory_, [self = shared_from_this(), state] {
+            if (self->h_.state) {
+                self->h_.state(state);
+            }
+        });
+    }
+
+    /** Posts the state `failed`, then closes the channel, as a connection that fails does. */
+    void fail() {
+        post_in(io_, memory_, [self = shared_from_this()] {
+            if (self->h_.state) {
+                self->h_.state(backend::connection_state::failed);
+            }
+            if (self->channel_) {
+                self->channel_->close();
+            }
+        });
+    }
 
 private:
     void try_connect();
@@ -483,9 +599,9 @@ private:
     boost::asio::io_context& io_;
     memory_network& net_;
     std::weak_ptr<connection_registry> registry_;
-    int id_;
+    std::size_t id_;
     std::pmr::memory_resource* memory_;
-    int remote_id_ = -1;
+    std::optional<std::size_t> remote_id_;
     bool local_set_ = false;
     bool closed_ = false;
     bool connected_ = false;
@@ -499,6 +615,10 @@ public:
 /**
  * The factory: one per test, shared by every room in it. Its relays and its record of the
  * connections are in `memory`; everything it makes for a room is in the resource the room gives.
+ *
+ * Tip: its hooks let a test hold, drop or inject frames, open a pair's channels one end at a time,
+ * fail, disconnect or reconnect a connection, buffer what a channel sends, and run the timers on a
+ * virtual clock that moves only when the test advances it.
  */
 class memory_network : public backend::factory {
 public:
@@ -552,12 +672,23 @@ public:
             memory);
         connections_->insert_or_assign(pc->id(), pc.get());
         peak_connections = std::max(peak_connections, connections_->size());
+        if (on_made) {
+            on_made(pc->id(), servers);
+        }
         return pc;
     }
 
     std::shared_ptr<backend::timer> make_timer(std::pmr::memory_resource* memory) override {
+        if (!virtual_clock) {
+            return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory),
+                                                      io_, memory, time_scale);
+        }
+        if (!clock_) {
+            clock_ = std::make_shared<virtual_clock_state>();
+        }
         return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory), io_,
-                                                  memory, time_scale);
+                                                  memory, time_scale,
+                                                  std::weak_ptr<virtual_clock_state>(clock_));
     }
 
     std::shared_ptr<backend::sealer> make_sealer(std::array<std::uint8_t, 32> key,
@@ -574,12 +705,15 @@ public:
     }
 
     double now_ms() override {
+        if (virtual_clock) {
+            return clock_ ? clock_->now_ms : 0.0;
+        }
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
                    .count() *
                time_scale;
     }
 
-    std::shared_ptr<memory_peer_connection> find(int id) {
+    std::shared_ptr<memory_peer_connection> find(std::size_t id) {
         const auto it = connections_->find(id);
         return it == connections_->end() ? nullptr : it->second->shared_from_this();
     }
@@ -602,7 +736,80 @@ public:
     /** The URLs recorded, in the default resource: only a test that records them allocates. */
     std::pmr::vector<std::pmr::string> server_urls;
 
+    /** What a filter does with a frame one end sends to the other. */
+    enum class verdict { deliver, drop, hold };
+
+    /** Called when a connection is made, before make_peer_connection returns, with its id and the
+     * ICE servers it was made with: a test gives each app ICE servers of its own to tell them
+     * apart. */
+    std::function<void(std::size_t pc, std::span<const backend::ice_server> servers)> on_made;
+    /** Called with the sending end, the receiving end and the frame; empty: every frame delivered.
+     * A held frame holds every later frame from that end behind it, unfiltered until released, as
+     * a real data channel delivers in order. */
+    std::function<verdict(std::size_t from, std::size_t to, std::span<const std::uint8_t>)> filter;
+    /** Delivers the frames held for `to`, in the order they were sent, each then filtered again;
+     * those whose sending end is gone are dropped. */
+    void release(std::size_t to);
+    /** When true, a pair's channels open only through open(), one end at a time. */
+    bool defer_opens = false;
+    /** Opens the channel of `pc`, whose pair is connected. */
+    void open(std::size_t pc);
+    /** Delivers `frame` on the channel of `pc`, as if its other end had sent it. */
+    void inject(std::size_t pc, std::span<const std::uint8_t> frame);
+    /** Reports `failed` on `pc`, then closes its channel. */
+    void fail(std::size_t pc);
+    /** Reports `disconnected` on `pc`; its channel stays open. */
+    void disconnect(std::size_t pc);
+    /** Reports `connected` on `pc`, as after a disconnection. */
+    void reconnect(std::size_t pc);
+    /** 0: buffered_amount() stays 0, as today. Otherwise each channel holds what it was sent, up to
+     * no limit, and delivers `drain_per_post` bytes per post, firing buffered_amount_low at the
+     * threshold; buffered_amount() is the bytes sent and not yet delivered. */
+    std::size_t channel_capacity = 0;
+    /** How many bytes a buffering channel delivers per post. */
+    std::size_t drain_per_post = std::size_t{16} * 1024;
+    /** The other end of `pc`, once the two are paired; `pc` itself until then. */
+    [[nodiscard]] std::size_t peer_of(std::size_t pc) const;
+    /** The buffered_amount() of the channel of `pc`, or 0 when it has none. */
+    [[nodiscard]] std::size_t buffered(std::size_t pc) const;
+
+    /** Whether the timers made from now on run on the virtual clock, which now_ms() and
+     * unix_seconds() then read, and which moves only through advance() and step(). */
+    bool virtual_clock = false;
+    /** How many timers one advance() fires at most before it gives up. */
+    std::size_t max_steps = 1'000'000;
+    /** Moves the clock by `by`, firing every timer due meanwhile, in order; false when it stopped
+     * after `max_steps` timers without reaching its end, which only a timer re-armed without delay
+     * does. */
+    bool advance(std::chrono::milliseconds by);
+    /** Pumps at most max_steps ready handlers, bounding self-posting cycles as well as timers. */
+    bool poll_ready();
+    /** A ready-handler budget was exhausted; the caller must report a test failure. */
+    bool handlers_exhausted = false;
+    /** Runs the io_context's ready work, then fires the earliest timer due at or before
+     * `until_ms`, moving the clock to it; false, with the clock at `until_ms`, when none is due. */
+    bool step(double until_ms);
+    /** How many timers wait on the virtual clock. */
+    [[nodiscard]] std::size_t scheduled() const;
+
 private:
+    friend class memory_data_channel;
+    friend class memory_peer_connection;
+
+    /** A frame held by the filter, and every frame its sending end sent after it. */
+    struct held_frame {
+        std::size_t from;
+        std::vector<std::uint8_t> bytes;
+    };
+
+    /** Holds, drops or delivers `frame`, as the filter and the frames held before it say. */
+    void route(std::size_t from, std::size_t to, std::span<const std::uint8_t> frame);
+    /** Hands `frame` to the other end of the channel of `from`, or to that channel's queue when
+     * channels buffer. */
+    void deliver(std::size_t from, std::span<const std::uint8_t> frame);
+    /** Whether a timer of the virtual clock is due at or before `until_ms`. */
+    [[nodiscard]] bool due_by(double until_ms) const;
+
     boost::asio::io_context& io_;
     std::mt19937_64 random_;
     std::chrono::steady_clock::time_point start_;
@@ -610,7 +817,10 @@ private:
     std::pmr::map<std::pmr::string, memory_relay, std::less<>> relays_;
     std::pmr::set<std::pmr::string, std::less<>> unreachable_;
     std::shared_ptr<connection_registry> connections_;
-    int next_pc_ = 0;
+    std::size_t next_pc_ = 0;
+    std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end
+    std::map<std::size_t, std::weak_ptr<memory_data_channel>> deferred_;  // ends waiting for open()
+    std::shared_ptr<virtual_clock_state> clock_;
 };
 
 inline memory_peer_connection::~memory_peer_connection() {
@@ -620,10 +830,10 @@ inline memory_peer_connection::~memory_peer_connection() {
 }
 
 inline void memory_peer_connection::try_connect() {
-    if (connected_ || !ready()) {
+    if (connected_ || !remote_id_ || !ready()) {
         return;
     }
-    const auto remote = net_.find(remote_id_);
+    const auto remote = net_.find(*remote_id_);
     if (!remote || !remote->ready() || remote->remote_id() != id_) {
         return;
     }
@@ -642,24 +852,270 @@ inline void memory_peer_connection::connect_to(memory_peer_connection& answerer)
     const auto answer_end = std::allocate_shared<memory_data_channel>(
         std::pmr::polymorphic_allocator<>(answerer.memory_), io_, answerer.memory_);
     answerer.channel_ = answer_end;
+    answer_end->bind_to(answerer.net_, answerer.id_);
     offer_end->pair_with(answer_end);
     answer_end->pair_with(offer_end);
-    post_in(
-        io_, memory_,
-        [self = shared_from_this(), other = answerer.shared_from_this(), offer_end, answer_end] {
-            for (auto* pc : {self.get(), other.get()}) {
-                if (pc->h_.state) {
-                    pc->h_.state(backend::connection_state::connected);
+    const bool deferred = net_.defer_opens;
+    if (deferred) {
+        net_.deferred_.insert_or_assign(id_, offer_end);
+        net_.deferred_.insert_or_assign(answerer.id_, answer_end);
+    }
+    post_in(io_, memory_,
+            [self = shared_from_this(), other = answerer.shared_from_this(), offer_end, answer_end,
+             deferred] {
+                for (auto* pc : {self.get(), other.get()}) {
+                    if (pc->h_.state) {
+                        pc->h_.state(backend::connection_state::connected);
+                    }
                 }
-            }
-            if (other->h_.data_channel) {
-                other->h_.data_channel(answer_end);
-            }
-            post_in(self->io_, self->memory_, [offer_end, answer_end] {
-                offer_end->opened();
-                answer_end->opened();
+                if (other->h_.data_channel) {
+                    other->h_.data_channel(answer_end);
+                }
+                if (deferred) {
+                    return;
+                }
+                post_in(self->io_, self->memory_, [offer_end, answer_end] {
+                    offer_end->opened();
+                    answer_end->opened();
+                });
             });
-        });
+}
+
+inline void memory_data_channel::bind_to(memory_network& net, std::size_t pc) {
+    net_ = &net;
+    registry_ = net.connections_;
+    pc_ = pc;
+}
+
+inline void memory_data_channel::send(std::span<const std::uint8_t> frame) {
+    const auto remote = remote_.lock();
+    if (!open_ || !remote || registry_.expired()) {
+        return;
+    }
+    bytes_sent += frame.size();
+    net_->route(pc_, remote->pc_, frame);
+}
+
+inline void memory_data_channel::receive(backend::bytes frame) {
+    post_in(io_, memory_, [self = shared_from_this(), frame = std::move(frame)]() mutable {
+        if (self->open_ && self->h_.message) {
+            self->h_.message(std::move(frame));
+        }
+    });
+}
+
+inline void memory_data_channel::enqueue(backend::bytes frame, std::size_t drain_per_post) {
+    buffered_ += frame.size();
+    drain_per_post_ = std::max<std::size_t>(drain_per_post, 1);
+    queue_.push_back(std::move(frame));
+    if (draining_) {
+        return;
+    }
+    draining_ = true;
+    post_in(io_, memory_, [self = shared_from_this()] { self->drain(); });
+}
+
+// Each step posts the next, which runs from the io_context's queue and not from within this call:
+// misc-no-recursion sees through the post, hence its exemption.
+// NOLINTBEGIN(misc-no-recursion)
+inline void memory_data_channel::drain() {
+    // A closed channel transmits nothing more: what it buffered is gone.
+    if (!open_) {
+        queue_.clear();
+        head_drained_ = 0;
+        buffered_ = 0;
+        draining_ = false;
+        return;
+    }
+    const bool above = buffered_ > low_threshold;
+    const auto remote = remote_.lock();
+    std::size_t budget = drain_per_post_;
+    while (!queue_.empty()) {
+        const std::size_t left = queue_.front().size() - head_drained_;
+        const std::size_t take = std::min(budget, left);
+        head_drained_ += take;
+        buffered_ -= take;
+        budget -= take;
+        if (take < left) {
+            break;
+        }
+        auto frame = std::move(queue_.front());
+        queue_.pop_front();
+        head_drained_ = 0;
+        if (remote) {
+            remote->receive(std::move(frame));
+        }
+    }
+    draining_ = !queue_.empty();
+    if (draining_) {
+        boost::asio::post(
+            io_, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
+                                             [self = shared_from_this()] { self->drain(); }));
+    }
+    // Last, since the handler may send again, which queues behind what is left.
+    if (above && buffered_ <= low_threshold && h_.buffered_amount_low) {
+        h_.buffered_amount_low();
+    }
+}
+
+// NOLINTEND(misc-no-recursion)
+
+inline void memory_network::route(std::size_t from, std::size_t to,
+                                  std::span<const std::uint8_t> frame) {
+    // A frame behind a held one waits too: the channel delivers in order.
+    if (const auto it = held_.find(to); it != held_.end() && !it->second.empty()) {
+        it->second.push_back({.from = from, .bytes = {frame.begin(), frame.end()}});
+        return;
+    }
+    switch (filter ? filter(from, to, frame) : verdict::deliver) {
+        case verdict::drop: return;
+        case verdict::hold:
+            held_[to].push_back({.from = from, .bytes = {frame.begin(), frame.end()}});
+            return;
+        case verdict::deliver: break;
+    }
+    deliver(from, frame);
+}
+
+inline void memory_network::release(std::size_t to) {
+    const auto it = held_.find(to);
+    if (it == held_.end()) {
+        return;
+    }
+    const auto queue = std::move(it->second);
+    held_.erase(it);
+    for (const auto& h : queue) {
+        route(h.from, to, h.bytes);
+    }
+}
+
+inline void memory_network::deliver(std::size_t from, std::span<const std::uint8_t> frame) {
+    // A frame released after its sending end was destroyed is dropped, as is one whose
+    // sending connection's channel is no longer paired: a connection pairs once, so its channel's
+    // other end is the end the frame was sent to while it was paired.
+    const auto sender = find(from);
+    const auto sending = sender ? sender->channel() : nullptr;
+    const auto receiving = sending ? sending->remote() : nullptr;
+    if (!receiving) {
+        return;
+    }
+    backend::bytes copy(frame.begin(), frame.end(), receiving->memory());
+    if (channel_capacity == 0) {
+        receiving->receive(std::move(copy));
+        return;
+    }
+    sending->enqueue(std::move(copy), drain_per_post);
+}
+
+inline void memory_network::open(std::size_t pc) {
+    const auto it = deferred_.find(pc);
+    if (it == deferred_.end()) {
+        return;
+    }
+    const auto channel = it->second.lock();
+    deferred_.erase(it);
+    if (!channel) {
+        return;
+    }
+    post_in(io_, channel->memory(), [channel] { channel->opened(); });
+}
+
+inline void memory_network::inject(std::size_t pc, std::span<const std::uint8_t> frame) {
+    const auto connection = find(pc);
+    const auto channel = connection ? connection->channel() : nullptr;
+    if (!channel || !channel->is_open()) {
+        return;
+    }
+    channel->receive(backend::bytes(frame.begin(), frame.end(), channel->memory()));
+}
+
+inline void memory_network::fail(std::size_t pc) {
+    if (const auto connection = find(pc)) {
+        connection->fail();
+    }
+}
+
+inline void memory_network::disconnect(std::size_t pc) {
+    if (const auto connection = find(pc)) {
+        connection->report(backend::connection_state::disconnected);
+    }
+}
+
+inline void memory_network::reconnect(std::size_t pc) {
+    if (const auto connection = find(pc)) {
+        connection->report(backend::connection_state::connected);
+    }
+}
+
+inline std::size_t memory_network::peer_of(std::size_t pc) const {
+    const auto it = connections_->find(pc);
+    return it == connections_->end() ? pc : it->second->remote_id().value_or(pc);
+}
+
+inline std::size_t memory_network::buffered(std::size_t pc) const {
+    const auto it = connections_->find(pc);
+    const auto channel = it == connections_->end() ? nullptr : it->second->channel();
+    return channel ? channel->buffered_amount() : 0;
+}
+
+inline bool memory_network::due_by(double until_ms) const {
+    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until_ms;
+}
+
+inline bool memory_network::poll_ready() {
+    if (handlers_exhausted) {
+        return false;
+    }
+    io_.restart();
+    for (std::size_t n = 0; n < max_steps; ++n) {
+        if (io_.poll_one() == 0) {
+            return true;
+        }
+    }
+    handlers_exhausted = true;
+    return false;
+}
+
+inline bool memory_network::step(double until_ms) {
+    // The clock moves from the first step, before any timer is made.
+    if (virtual_clock && !clock_) {
+        clock_ = std::make_shared<virtual_clock_state>();
+    }
+    if (!poll_ready()) {
+        return false;
+    }
+    if (!due_by(until_ms)) {
+        if (clock_) {
+            clock_->now_ms = std::max(clock_->now_ms, until_ms);
+        }
+        return false;
+    }
+    const auto it = clock_->due.begin();
+    clock_->now_ms = std::max(clock_->now_ms, it->first.first);
+    memory_timer* const timer = it->second;
+    clock_->due.erase(it);
+    timer->expire();
+    return poll_ready();
+}
+
+inline bool memory_network::advance(std::chrono::milliseconds by) {
+    const double until = now_ms() + static_cast<double>(by.count());
+    // A run of exactly max_steps timers is finite: only one more due timer stops it.
+    for (std::size_t fired = 0;; ++fired) {
+        if (!poll_ready()) {
+            return false;
+        }
+        if (fired == max_steps && due_by(until)) {
+            return false;
+        }
+        if (!step(until)) {
+            return poll_ready();
+        }
+    }
+}
+
+inline std::size_t memory_network::scheduled() const {
+    return clock_ ? clock_->due.size() : 0;
 }
 
 /** Seals as "<iv>$<base64(plaintext)>" whose IV is the key's first 16 bytes: only the same key

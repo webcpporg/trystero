@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
+#include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/replay_cache.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -39,21 +40,6 @@
 #include <vector>
 
 namespace webcpp::trystero::detail {
-
-/** A copy of `servers` whose every string is in `memory`. */
-inline std::pmr::vector<backend::ice_server> copy_ice_servers(
-    std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) {
-    std::pmr::vector<backend::ice_server> out(memory);
-    out.reserve(servers.size());
-    for (const auto& server : servers) {
-        out.push_back({
-            .urls = std::pmr::vector<std::pmr::string>(server.urls, memory),
-            .username = std::pmr::string(server.username, memory),
-            .credential = std::pmr::string(server.credential, memory),
-        });
-    }
-    return out;
-}
 
 /**
  * The negotiation with each peer seen on the signaling topics, after Trystero's signal handler.
@@ -129,6 +115,8 @@ public:
 
     /** What the signaling asks of its room. */
     struct callbacks {
+        /** Whether the room claims a signal over an existing app connection. */
+        handler<bool(std::string_view peer)> claim;
         /** Publishes a signal on a topic, through the relay given. */
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)> publish;
         /** A negotiation ended with an open data channel: the connection is the room's. */
@@ -144,13 +132,16 @@ public:
     };
 
     /** Every allocation goes through `memory`, the parsed signals through `json`, a storage of that
-     * resource. */
+     * resource, but the peer connections, which are made in `connection_memory`, the app's: the
+     * one a negotiation opens becomes the app's connection. */
     signaling(backend::factory& factory, std::shared_ptr<backend::sealer> sealer,
               std::string_view app_id, std::string_view room_id, std::string_view self_id,
               std::span<const backend::ice_server> ice_servers, callbacks cb, logger log,
-              std::pmr::memory_resource* memory, boost::json::storage_ptr json)
+              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory,
+              boost::json::storage_ptr json)
         : factory_(factory),
           memory_(memory),
+          connection_memory_(connection_memory),
           json_(std::move(json)),
           sealer_(std::move(sealer)),
           app_id_(app_id, memory),
@@ -170,6 +161,9 @@ public:
         const auto document = protocol::json::parse(content, json_, ec);
         const auto message = ec ? std::nullopt : protocol::read_signal(document);
         if (!message || message->peer_id == self_id_) {
+            return;
+        }
+        if (cb_.claim && cb_.claim(message->peer_id)) {
             return;
         }
         auto it = peers_.find(message->peer_id);
@@ -203,6 +197,18 @@ public:
             reset_answer(it->second);
             peers_.erase(it);
         }
+    }
+
+    /** A room is bound to `peer`: its negotiation ends, its entry stays marked connected, and every
+     * later signal of that peer is ignored until `forget`. */
+    void bound(std::string_view peer) {
+        auto it = peers_.find(peer);
+        if (it == peers_.end()) {
+            it = peers_.try_emplace(std::pmr::string(peer, memory_), allocator()).first;
+        }
+        reset_offer(it->second);
+        reset_answer(it->second);
+        it->second.connected = true;
     }
 
     /** Ends every negotiation, and ignores every signal from now on. */
@@ -383,7 +389,7 @@ private:
             }
             return nullptr;
         }
-        auto pc = factory_.make_peer_connection(ice_servers_, memory_);
+        auto pc = factory_.make_peer_connection(ice_servers_, connection_memory_);
         if (!pc) {
             refused(peer);
         }
@@ -1130,6 +1136,7 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
+    std::pmr::memory_resource* connection_memory_;
     boost::json::storage_ptr json_;
     std::shared_ptr<backend::sealer> sealer_;
     std::pmr::string app_id_;

@@ -25,17 +25,17 @@
 namespace webcpp::trystero::detail {
 
 /**
- * A room's diagnostics: a category ("nostr", "signal", "webrtc", "room", "action") and a sentence,
- * handed to the application's `room_config::log`. The sentence is given as its parts (texts,
- * integers, error codes), joined into a string of the room's resource only when there is a sink: a
- * room without one composes no text at all.
+ * An app's diagnostics, its rooms' among them: a category ("app", "nostr", "signal", "webrtc",
+ * "room", "action") and a sentence, handed to the application's `app_config::log`, the app's log.
+ * The sentence is given as its parts (texts, integers, error codes), joined into a string of the
+ * app's resource only when there is a sink: an app without one composes no text at all.
  *
- * Tip: every part of a room shares the one sink, through a `std::shared_ptr` made in the room's
- * resource, so the sink outlives a part that is still running when the room goes.
+ * Tip: every part of an app and of its rooms shares the one sink, through a `std::shared_ptr` made
+ * in the app's resource, so the sink outlives a part that is still running when the app goes.
  */
 class logger {
 public:
-    /** Where the sentences go: `room_config::log`. */
+    /** Where the sentences go: `app_config::log`. */
     using sink = handler<void(std::string_view category, std::string_view text)>;
 
     /** A logger without a sink, which composes nothing. */

@@ -50,7 +50,7 @@ namespace webcpp::trystero::native {
  * | exceptions on refused input | `error::backend_failure`                                        |
  * | `Candidate`                 | the JSON of an `RTCIceCandidateInit`, as the browser writes it  |
  *
- * Tip: the connection, its handlers and the texts it hands to the room are in the room's resource,
+ * Tip: the connection, its handlers and the texts it hands to the app are in the app's resource,
  * and so are the `rtc::PeerConnection` object and its control block, which `create` makes with
  * `std::allocate_shared`; what that object allocates inside libdatachannel, the data channels it
  * creates, and the `std::string` and `rtc::Description` its API takes and returns, are
@@ -247,8 +247,8 @@ public:
     /**
      * libdatachannel's own `rtc::PeerConnection`, what media will be added to.
      *
-     * The object and its control block are in the room's resource: no copy of the pointer may
-     * outlive `room_config::memory`.
+     * The object and its control block are in the app's resource: no copy of the pointer may
+     * outlive `app_config::memory`.
      *
      * @return The connection.
      * @see "Roadmap", in the guide.
@@ -278,7 +278,7 @@ private:
         return out;
     }
 
-    /** Posts a completion from the executor, in the room's resource. */
+    /** Posts a completion from the executor, in the app's resource. */
     template <class F>
     void post(F&& f) {
         trystero::detail::post(ex_, memory_, std::forward<F>(f));

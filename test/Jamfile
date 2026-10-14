@@ -55,6 +55,22 @@ webcpp.compile config_all_off : config_test.cpp
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
+# Rooms of one app that share one connection per remote peer; once as the
+# build asks, once without exceptions, on both targets; and, natively, once
+# with the standard libraries' checks, so that a kept frame that kicks during
+# a binding, or a waiter failed during a connection's end, fails at once when
+# it touches what it removed.
+webcpp.run shared : shared_test.cpp ;
+webcpp.run shared_no_exceptions : shared_test.cpp : <exception-handling>off ;
+webcpp.run shared_hardened : shared_test.cpp
+  : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
+  : native ;
+# The memory backend's hooks, which the tests of shared connections drive.
+webcpp.run memory_backend : memory_backend_test.cpp ;
+# The shared connection alone, over a memory pair.
+webcpp.run connection : connection_test.cpp ;
+# The state an app and its rooms share, alone, over the memory backend.
+webcpp.run app_impl : app_impl_test.cpp ;
 # end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;

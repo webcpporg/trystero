@@ -63,12 +63,13 @@ itself on the other's peer topic, so the lower one offers: at most once a
 second per peer, and once in 5.3 s per relay for the whole room, Trystero's
 announce interval, so that a flood of low ids does not have the relays
 rate-limit the room. Offers, answers and candidates are sealed with AES-GCM
-under the SHA-256 of `<password>:<app>:<room>`, the password empty when there
-is none, with a 16-byte IV, as the text `<iv>$<ciphertext>`: the IV's bytes
+under the SHA-256 of `<password>:<app>:<room>`, using the immutable
+`app_config::password`, empty for a passwordless app, with a 16-byte IV, as the text `<iv>$<ciphertext>`: the IV's bytes
 in decimal joined by commas, and the ciphertext with its tag in base64.
 Candidates follow their offer or answer, trickled. A negotiation ends when
-the data channel opens: the connection is the room's, and signals from that
-peer are ignored until it leaves.
+the data channel opens: the app adopts the connection, and signals from a
+bound peer are ignored. A live connection is reused for another room only
+after the peer advertised that room's token itself on the connection.
 
 [#trystero-protocol-channel]
 === The data channel
@@ -77,6 +78,53 @@ Every message is a room frame: `1`, the length of the room token (16 bits,
 big-endian), the token, the hexadecimal SHA-256 of `Trystero:<app>:<room>`,
 then an action frame. A presence frame, `2`, present or not, the token's
 length and the token, announces or withdraws the room.
+
+Presence advertises every room of the app on each connection. It records
+which rooms the remote peer joined and binds matching local rooms; a
+withdrawal detaches only that room. The connection routes by token:
+
+[cols="2,3",options="header"]
+|===
+| Frame | What happens
+
+| An envelope that does not decode
+| The connection ends for every room.
+
+| `presence(1, T)`, new token
+| Record it; a 65th distinct token ends the connection. Bind the matching
+  local room when its binding conditions permit.
+
+| `presence(1, T)`, known token
+| Bind the matching unbound local room when permitted.
+
+| `presence(0, T)`
+| Forget the token and its kept frames, and end its binding as a departure.
+
+| Room frame, token bound
+| Deliver it to that room's action wire.
+
+| Room frame after the higher id's own kick, before it sends presence
+| Drop it: it belongs to the ended binding.
+
+| Room frame for another room of the app, not bound to this connection
+| Keep it, at most 64 frames per connection, all expiring 10 s after the
+  first. Bind only when the peer advertised the token and no backoff runs.
+
+| Room frame for any other token
+| Drop it silently; keep the connection.
+|===
+
+On binding, kept frames arrive before later frames; a kept `@_leave`
+discards itself and everything kept before it for that token. There is no
+buffer for a bound room awaiting its handler: delivery is installed in the
+same call that makes its binding.
+
+Waiting sends take turns by binding on each channel drain, preserving each
+binding's waiter order and the 10 s stall bound. Chunked transfers send one
+chunk per drain, giving waiting sends from other rooms a turn. Inline sends
+at a buffered amount of at most 64 KiB go straight to the channel: they have
+no trystero rate bound, so a flood of pings can delay every room's traffic
+to that peer, and that peer only.
 
 Action frames are Trystero's action wire, version 2: an inline frame carries
 the payload whole; a larger payload is an offer, accepted or refused by the
@@ -142,6 +190,76 @@ what each costs a room.
   holds unsent for it at 4 MiB, and, natively, its silence at 30 s
   (<<trystero-native-relays>>).
 
+[cols="2,1,3",options="header"]
+|===
+| Bound | Scope | Value and consequence
+
+| Joined rooms
+| App
+| 64, counting farewells until withdrawal; `join` returns `error::too_many_rooms` beyond it.
+
+| Advertised room tokens
+| Connection
+| 64 distinct tokens; a 65th ends the connection.
+
+| Kept frames for unbound local rooms
+| Connection
+| 64, at most 64 x 16,515 bytes; expire together 10 s after the first.
+  Other tokens retain nothing.
+
+| Room frame and token
+| Connection
+| 16,515 bytes, token 1 to 128 bytes; an invalid envelope ends the connection.
+
+| No bindings
+| Connection
+| `idle_timeout` after a departure, 123,333 ms by default, 0 closes immediately;
+  closed at once if its last binding was kicked.
+
+| Handshake
+| Room and peer
+| `handshake_timeout`, 10 s; failure kicks that binding only.
+
+| Earlier challenges
+| Room and peer
+| Last 8 since the last completed handshake; a correct answer to any passes.
+
+| Pending action frames
+| Room and peer
+| 64 for 120 s; one incoming transfer per peer, `max_receive_bytes` across
+  peers, and 1024 queued messages per action.
+|===
+
+After a kick or the peer's `@_leave`, a live connection is rebound one step
+after that binding ended. The initial step is the larger of
+`handshake_timeout` and 10 s, plus 1 s (11 s by default), doubling at each
+further end to 5 minutes. Only a completed handshake or the connection's
+end resets it. After its own kicks the lower id refuses bindings until its
+backoff ends, ignores signals and keeps frames; the higher id drops frames
+until it next sends presence and accepts the lower id's presence at once.
+The room sends presence again on reuse or scheduled rebinding, making the
+other side bind without a relay response. Announcements restart only when
+no live connection remains. A forged announcement never binds a peer that
+has not advertised that token itself.
+
+A connection counts against its negotiating room's 64-per-57-s window even
+after the app adopts it; presence and reuse make no connections. Fresh ids
+that connect and depart keep at most `64 x ceil(idle_timeout / 57 s)` idle
+connections per room, 192 by default, within the backend's own bound.
+Leaving a room with many peers retains no more connections than the app
+already held. Kept frames and tokens cost at most about 1 MiB and 8 KiB
+per connection; each of at most 64 bound rooms retains its own peer bounds.
+A flood spends its room's queues, transfers and reservations; routing never
+holds one room's frame for another room.
+
+With the lower id an invalid room response proof causes at most six kicks and reports in
+the first ten minutes, then one per 5 minutes. The higher id can be rebound
+by a lower-id peer at that peer's pace, but reports at most one handshake
+timeout per `handshake_timeout`, and does not verify a response proof.
+Malformed challenges are rejected by their receiver and can also report
+`wrong_password`; their report rate follows the malicious peer's repeated
+bindings, rather than the timeout bound.
+
 [#trystero-protocol-replay]
 === Replayed offers and answers
 
@@ -160,16 +278,21 @@ as a peer's offer or answer.
 [#trystero-protocol-limitations]
 === What remains
 
-Two limitations remain, both of Trystero's wire, which only a change that
-Trystero JS shares can close.
+Sharing preserves Trystero JS 0.26.0's wire. Each {cpp} app is one password
+domain: it copies one password at construction, and all its rooms use it.
+The initial sealed signaling authenticates that password before the data
+channel is adopted. Later room binding reuses this authenticated connection.
+There are no per-room overrides, and different passwords require separate
+apps with distinct self ids. This protects admission to the {cpp} app's
+rooms without changing the room handshake on the wire.
 
-*A watcher without the key can keep two peers apart.* A sealed offer or
+*A watcher not connected to the app, without the key, can keep two peers apart.* A sealed offer or
 answer the room neither made nor acted on still opens and is acted on. Such
 texts are not scarce: every peer seals a fresh offer for any id announced
 above its own, and announcements need no key. So anyone who reads and
 publishes on the relays, without the key, can keep any two peers of a room
 apart from their first meeting for as long as it keeps at it, each attempt
-costing the other peer a connection of its window. It cannot read or alter
+costing the other peer a connection of its window. A watcher not connected to the app cannot read or alter
 anything the peers exchange, join the room, or touch peers already joined; a
 joined peer that drops is a new peer again. The room refuses only what it
 made or already acted on. Only a wire that seals the offer id and both peer
@@ -183,3 +306,50 @@ at a time. A joined peer whose connection drops comes back as a new peer,
 with the same id, and is kept out the same way: the room has no
 renegotiation that would keep its place. Closing it needs announcements that
 prove the room key, a wire change Trystero would have to share.
+
+*A passwordless app's rooms are open to its connected peers.* Presence
+gives a peer connected through any room the token of every room of that
+app. Relay events reveal their topics in the clear, and announcements
+reveal the app's peer id. The token alone binds the existing connection,
+and the empty app password goes straight to `@_hsready`, so that peer can
+join another room without knowing its id. A watcher not connected to the
+app still needs the room id to derive its topics and signaling key.
+Protected rooms belong to another app with a password and a distinct self
+id. Its presence, tokens and connections never reach the passwordless app.
+
+*The upstream one-way handshake remains.* The responder to a room
+challenge answers and passes its side; only the lower id verifies the
+password proof. A Trystero JS page that itself mixes different passwords
+on one app's shared connection can therefore admit a peer to its own
+higher-id room without that room's password, and can expose a challenge
+response for offline guessing. The {cpp} app-domain boundary does not
+repair such a JS page. Configure all rooms of one JS app with one password,
+and use separate page contexts for different password domains. The wire
+has not gained bilateral room proofs.
+
+*A domain member can send an invalid room proof.* A peer already
+connected to a protected {cpp} app knows its domain password from the
+initial sealed negotiation. It can nevertheless answer a later room's
+challenge incorrectly or send malformed handshake data. The room kicks
+that binding and applies the documented backoff; only the lower id checks
+and reports a wrong response. These checks isolate faulty peers within an
+authenticated domain, rather than admitting another password domain.
+
+*One identity links the app's rooms.* Each room announces the same
+`peerId` in clear, and connected peers see it across shared rooms. Relay
+observers and peers can link those rooms to one program. Separate apps
+provide separate identities and connections for rooms that must remain
+unlinked. A forged announcement in a connected peer's name binds nothing:
+only the peer itself, on its encrypted connection, can advertise the token.
+It causes no report or rebinding count against that innocent peer.
+
+*Two transient cases remain with a Trystero JS lower id.* If it binds by
+reuse during the higher {cpp} id's dropping window, its challenge is
+dropped and its handshake can time out once. With the default 10 s timeout
+the next rebinding joins by at most 43 s after the first kick plus one-way
+delay, with no false password error on either side. If a JS page's timer
+that expires a stale answer runs later than the 1 s margin before presence
+arrives, JS can flush the old answer into a new handshake and report a
+false password error. One-minute timer lag can repeat this at the 11, 22
+and 44 s steps, at most three times, before the 88 s step exceeds that lag.
+The {cpp} side reports nothing false in either case.
