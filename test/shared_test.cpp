@@ -1623,6 +1623,26 @@ void a_password_challenge_requires_a_string() {
     }
 }
 
+// A higher-id protected room must verify that a lower-id peer knows its password.
+void a_protected_room_requires_proof_from_either_id() {
+    two_apps t("ZZZZZZZZZZZZZZZZZZZ1", "AAAAAAAAAAAAAAAAAAA2");
+    const ends e(t);
+    t.a_rooms.push_back(join(t.a, "lobby"));
+    t.a_rooms.push_back(join(t.a, "vault", {.password = "pw"}));
+    t.b_rooms.push_back(join(t.b, "lobby"));
+    webcpp::test::require(BOOST_TEST(run_until(t.f, [&] {
+        return t.a_rooms[0].peers().size() == 1 && t.b_rooms[0].peers().size() == 1;
+    })));
+    const auto higher_end = t.f.net.peer_of(e.a());
+    t.f.net.inject(higher_end, trystero::protocol::presence_frame(
+                                   trystero::protocol::room_token(app_id, "vault"), true));
+    t.f.net.inject(higher_end, internal_frame("vault", "@_hsdata",
+                                              R"({"__trystero_pw":"challenge","c":"unverified"})"));
+    t.f.net.inject(higher_end, internal_frame("vault", "@_hsready"));
+    webcpp::trystero::test::advance(t.f, 1ms);
+    BOOST_TEST(t.a_rooms[1].peers().empty());
+}
+
 }  // namespace
 
 int main(int argc, const char* const argv[]) {
@@ -1632,6 +1652,10 @@ int main(int argc, const char* const argv[]) {
         {
             "a_log_sink_can_destroy_another_room_during_adoption",
             a_log_sink_can_destroy_another_room_during_adoption,
+        },
+        {
+            "a_protected_room_requires_proof_from_either_id",
+            a_protected_room_requires_proof_from_either_id,
         },
         {"a_rooms_own_resource_returns_to_zero", a_rooms_own_resource_returns_to_zero},
         {
