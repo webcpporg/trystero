@@ -469,6 +469,73 @@ void a_connections_end_is_every_rooms() {
     }
 }
 
+/** Every relay text of `topics` the watcher reads: whether an offer or an answer was published. */
+struct offers_on {
+    std::vector<relayed> seen;
+
+    bool offer_or_answer() const {
+        return std::ranges::any_of(
+            seen, [](const relayed& r) { return !r.offer.empty() || !r.answer.empty(); });
+    }
+};
+
+// a late join, both directions: r2 joins over the existing connection, no connection is
+// made, and no offer and no answer is published on r2's topics for the whole case.
+void a_late_join_binds_over_the_connection() {
+    for (const bool a_first : {true, false}) {
+        two_apps t("LLLLLLLLLLLLLLLLLLLL", "MMMMMMMMMMMMMMMMMMMM");
+        t.a_rooms.push_back(join(t.a, "r1"));
+        t.b_rooms.push_back(join(t.b, "r1"));
+        webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); })));
+        flooder watcher(t.f, "r2");
+        offers_on r2;
+        watcher.on_text = [&](std::string_view text) {
+            if (auto s = relayed_signal(text)) {
+                r2.seen.push_back(std::move(*s));
+            }
+        };
+        watcher.watch(trystero::protocol::root_topic(app_id, "r2"));
+        watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
+        watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
+        const auto made = t.f.net.made_connections;
+        if (a_first) {
+            t.a_rooms.push_back(join(t.a, "r2"));
+            advance(t.f, 500ms);
+            t.b_rooms.push_back(join(t.b, "r2"));
+        } else {
+            t.b_rooms.push_back(join(t.b, "r2"));
+            advance(t.f, 500ms);
+            t.a_rooms.push_back(join(t.a, "r2"));
+        }
+        BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }));
+        advance(t.f,
+                70s);  // past r2's regular announcements, at once, 233, 533, 1333, 5333 ms, 60 s
+        BOOST_TEST_EQ(t.f.net.made_connections, made);
+        BOOST_TEST(!r2.offer_or_answer());
+    }
+}
+
+// an announcement forged in X's name in r2, before X joins r2, binds nothing, reports
+// nothing and publishes no offer; X then joins within a round trip (no timer runs meanwhile).
+void a_forged_announcement_binds_nothing() {
+    two_apps t("PPPPPPPPPPPPPPPPPPPP", "QQQQQQQQQQQQQQQQQQQQ");
+    joined_in(t, {"r1"});
+    t.a_rooms.push_back(join(t.a, "r2"));
+    std::vector<boost::system::error_code> errors;
+    t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+        errors.push_back(ec);
+    });
+    const auto made = t.f.net.made_connections;
+    flooder forger(t.f, "r2");
+    forger.announce_as(t.b.self_id(), 3);
+    advance(t.f, 15s);
+    BOOST_TEST(t.a_rooms[1].peers().empty());
+    BOOST_TEST(errors.empty());
+    BOOST_TEST_EQ(t.f.net.made_connections, made);
+    t.b_rooms.push_back(join(t.b, "r2"));
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
+}
+
 }  // namespace
 
 int main() {
@@ -488,5 +555,7 @@ int main() {
     a_kept_frame_binds_its_room();
     a_leaving_room_binds_no_one();
     a_connections_end_is_every_rooms();
+    a_late_join_binds_over_the_connection();
+    a_forged_announcement_binds_nothing();
     return boost::report_errors();
 }

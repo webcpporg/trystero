@@ -115,6 +115,8 @@ public:
 
     /** What the signaling asks of its room. */
     struct callbacks {
+        /** Whether the room claims a signal over an existing app connection. */
+        handler<bool(std::string_view peer)> claim;
         /** Publishes a signal on a topic, through the relay given. */
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)> publish;
         /** A negotiation ended with an open data channel: the connection is the room's. */
@@ -159,6 +161,9 @@ public:
         const auto document = protocol::json::parse(content, json_, ec);
         const auto message = ec ? std::nullopt : protocol::read_signal(document);
         if (!message || message->peer_id == self_id_) {
+            return;
+        }
+        if (cb_.claim && cb_.claim(message->peer_id)) {
             return;
         }
         auto it = peers_.find(message->peer_id);

@@ -467,6 +467,7 @@ public:
           root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
+          met_(memory_),
           actions_(memory_) {}
 
     room_impl(const room_impl&) = delete;
@@ -537,6 +538,10 @@ public:
             allocator(), factory_, sealer_, app_->app_id(), room_id_, app_->self_id(),
             app_->ice_servers(),
             signaling::callbacks{
+                .claim = bind<bool(std::string_view)>([weak](std::string_view peer) {
+                    const auto self = weak.lock();
+                    return self && self->claim(peer);
+                }),
                 .publish = bind<void(std::size_t, std::string_view, std::string_view)>(
                     [weak](std::size_t relay, std::string_view topic, std::string_view content) {
                         if (const auto self = weak.lock()) {
@@ -653,6 +658,9 @@ public:
 
     void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                           std::string_view reason) override {
+        if (const auto it = met_.find(peer); it != met_.end() && it->second.lock() == ended) {
+            met_.erase(it);
+        }
         // The peer may be bound to another connection by now: a late end of an older one is not
         // its end.
         if (const auto it = peers_.find(peer);
@@ -956,6 +964,17 @@ private:
      * rebinding time. */
     enum class bind_event { joined, presence, frame, reuse, rebinding };
 
+    /** A live app connection consumes signals; only the first meeting may bind by reuse. */
+    bool claim(std::string_view peer) {
+        if (!app_->find(peer)) {
+            return false;
+        }
+        if (!met_.contains(peer)) {
+            try_bind(peer, bind_event::reuse);
+        }
+        return true;
+    }
+
     /** Binds `peer` over the app's live connection to it when every condition holds: the peer has
      * itself advertised this room's token on that connection, this room is not leaving, no backoff
      * of this room runs for the peer, and the peer is not bound already. Whether it bound.
@@ -1037,6 +1056,7 @@ private:
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
         signaling_->bound(peer);
+        met_.insert_or_assign(std::pmr::string(peer, memory_), c);
         // This binding, held until the call returns: a kept frame may remove the peer's entry and
         // free it, and another made meanwhile must not be taken for it at the same address.
         std::shared_ptr<const binding> mine;
@@ -1303,6 +1323,7 @@ private:
     std::shared_ptr<signaling> signaling_;
     std::shared_ptr<nostr_strategy> strategy_;
     std::pmr::map<std::pmr::string, peer_state, std::less<>> peers_;
+    std::pmr::map<std::pmr::string, std::weak_ptr<connection>, std::less<>> met_;
     std::pmr::map<std::pmr::string, action_slot, std::less<>> actions_;
     std::shared_ptr<handler<void(std::string_view)>> on_join_;
     std::shared_ptr<handler<void(std::string_view)>> on_leave_;
