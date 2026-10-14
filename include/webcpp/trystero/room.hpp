@@ -22,6 +22,7 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/options.hpp>
+#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
@@ -588,6 +589,15 @@ public:
                             std::static_pointer_cast<room_endpoint>(shared_from_this()));
         app_->add_user();
         strategy_->start();
+        // As Trystero joins a room: bound over every live connection whose remote advertised it,
+        // then announced on every live connection, so that each remote binds in turn.
+        const auto connections = app_->live_connections();
+        for (const auto& c : connections) {
+            try_bind(c->peer(), bind_event::joined);
+        }
+        for (const auto& c : connections) {
+            c->send_presence(token_, true);
+        }
     }
 
     /** The room's executor. */
@@ -630,16 +640,16 @@ public:
     }
 
     void presence_changed(std::string_view peer, bool present) override {
-        if (!present && peers_.contains(peer)) {
+        if (present) {
+            try_bind(peer, bind_event::presence);
+        } else if (peers_.contains(peer)) {
             remove_peer(peer, "peer left the room", end_kind::withdrawn);
         }
-        // Does not bind the peer here: a peer is bound only when its negotiation connects
-        // (on_connected), never from presence alone.
     }
 
     [[nodiscard]] bool keeps_frames_from(std::string_view /*peer*/) const override { return true; }
 
-    void frame_kept(std::string_view /*peer*/) override {}
+    void frame_kept(std::string_view peer) override { try_bind(peer, bind_event::frame); }
 
     void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                           std::string_view reason) override {
@@ -941,6 +951,54 @@ private:
         }
     }
 
+    /** What makes a room bind a peer over a live connection: its own join, the peer's presence, a
+     * frame of the room the connection kept, the reuse of the connection by a signal, or the room's
+     * rebinding time. */
+    enum class bind_event { joined, presence, frame, reuse, rebinding };
+
+    /** Binds `peer` over the app's live connection to it when every condition holds: the peer has
+     * itself advertised this room's token on that connection, this room is not leaving, no backoff
+     * of this room runs for the peer, and the peer is not bound already. Whether it bound.
+     *
+     * Tip: the advertisement is the peer's own, on a connection only it can write to, so that an
+     * announcement or a signal anyone publishes in its name binds nothing. */
+    bool try_bind(std::string_view peer, bind_event event) {
+        if (left_ || peers_.contains(peer)) {
+            return false;
+        }
+        const auto c = app_->find(peer);
+        if (!c || !c->advertised(token_) || refusing(peer)) {
+            return false;
+        }
+        if (event == bind_event::reuse || event == bind_event::rebinding) {
+            c->send_presence(token_, true);
+        }
+        bind_peer(peer, c);
+        return true;
+    }
+
+    /** Whether a backoff of this room runs for `peer`, which keeps it from binding the peer. */
+    [[nodiscard]] bool refusing(std::string_view /*peer*/) const { return false; }
+
+    /** Delivers the frames `c` kept for this room, in their order, to the binding `mine` of `peer`.
+     * A frame may make the room kick the peer at once (an action-level violation, a malformed
+     * handshake message, a `\@_leave`), which removes the peer's entry: delivery stops as soon as
+     * the entry is gone or holds another binding. */
+    void deliver_kept(const std::pmr::string& peer, connection& c, const binding* mine) {
+        auto frames = c.take_kept(token_);
+        for (auto& frame : frames) {
+            if (const auto it = peers_.find(peer);
+                it == peers_.end() || it->second.link.get() != mine) {
+                return;
+            }
+            // The connection decoded the envelope when it kept the frame.
+            const auto envelope = protocol::decode_envelope(frame);
+            BOOST_ASSERT(envelope);
+            const auto action = envelope->payload;
+            wire_->handle(peer, std::move(frame), action);
+        }
+    }
+
     /** A negotiation of this room opened a channel to `peer`: the app adopts the connection, or
      * keeps the one it has to the peer, and the room binds the peer to it.
      *
@@ -964,13 +1022,13 @@ private:
     }
 
     /** Binds this room to `c` for `peer`, in the order the specification sets: the negotiation
-     * marked connected, the peer's state and handshake timer, then the handshake's first message.
-     * The frames the connection kept before that message are not delivered here.
+     * marked connected, the peer's state and handshake timer, the frames the connection kept for
+     * this room, then the handshake's first message, as Trystero adds a peer before it flushes.
      *
      * Tip: the peer's id is copied first, since every step may run code that removes the peer's
-     * entry (a kick); the entry is never held by reference across such a step. Each
-     * lambda keeps its own copy in the room's resource, named: a plain copy of a std::pmr::string
-     * takes the default resource. */
+     * entry (a kick); the entry is never held by reference across such a step, and each step
+     * looks it up again. Each lambda keeps its own copy in the room's resource, named: a plain copy
+     * of a std::pmr::string takes the default resource. */
     void bind_peer(std::string_view peer_view, const std::shared_ptr<connection>& c) {
         // A peer is bound once until its removal, as the connection's attach requires: the
         // signaling hands over no channel while its entry is connected, which `on_channel_open`
@@ -979,6 +1037,9 @@ private:
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
         signaling_->bound(peer);
+        // This binding, held until the call returns: a kept frame may remove the peer's entry and
+        // free it, and another made meanwhile must not be taken for it at the same address.
+        std::shared_ptr<const binding> mine;
         {
             auto& state = peers_.try_emplace(peer, allocator()).first->second;
             state.link = std::allocate_shared<binding>(
@@ -1003,8 +1064,11 @@ private:
                                  "handshake timed out");
                     self->kick(peer, "handshake timed out");
                 }));
+            mine = state.link;
         }
-        if (const auto it = peers_.find(peer); it != peers_.end()) {
+        deliver_kept(peer, *c, mine.get());
+        if (const auto it = peers_.find(peer);
+            it != peers_.end() && it->second.link.get() == mine.get()) {
             start_handshake(it->first, it->second);
         }
     }
