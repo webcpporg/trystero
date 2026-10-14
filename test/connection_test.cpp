@@ -304,9 +304,12 @@ void kept_frames_are_bounded_and_dropped_after_10_s() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
     auto* m = std::pmr::get_default_resource();
-    const std::array<std::uint8_t, 2> action{2, 0};
+    const std::string token(trystero::protocol::max_room_token_bytes, 'T');
+    const std::vector<std::uint8_t> action(trystero::protocol::max_action_frame_bytes, 0);
+    const auto frame = trystero::protocol::room_frame(token, action, m);
+    BOOST_TEST_EQ(frame.size(), 16'515U);
     for (int i = 0; i < 65; ++i) {
-        p.a.c->send(trystero::protocol::room_frame("T2", action, m));
+        p.a.c->send(trystero::protocol::room_frame(token, action, m));
     }
     BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 64; }));
     BOOST_TEST(p.net.advance(9'999ms));
@@ -314,7 +317,7 @@ void kept_frames_are_bounded_and_dropped_after_10_s() {
     BOOST_TEST_EQ(p.b.c->kept_count(), 64U);
     BOOST_TEST(p.net.advance(1ms));  // 10 s after the first was kept
     BOOST_TEST_EQ(p.b.c->kept_count(), 0U);
-    BOOST_TEST(p.b.c->take_kept("T2").empty());
+    BOOST_TEST(p.b.c->take_kept(token).empty());
 }
 
 // A connection whose channel is closing or closed is not live, so the app does not reuse it.
@@ -504,6 +507,34 @@ void an_end_inside_a_drain_fails_the_waiters_after_it() {
     settle(p.io);
     BOOST_TEST_EQ(p.a.ended, "ended in a turn");
     BOOST_TEST(turns == (std::vector<std::string>{"T1", "!T2"}));
+}
+
+// A waiter may end the connection or detach its own binding. Waiters already selected for
+// that same drain must fail before the ending call returns, not receive a stale success later.
+void an_end_inside_one_binding_fails_its_remaining_waiters() {
+    for (const bool detach : {false, true}) {
+        const std::array<std::string_view, 1> tokens{"T1"};
+        link_pair p(tokens, tokens);
+        std::vector<std::vector<std::uint8_t>> got;
+        const auto t1 = make_binding(p.a.c, "T1", got);
+        p.net.channel_capacity = 1;
+        fill(*t1);
+        std::vector<std::string> turns;
+        const std::pmr::polymorphic_allocator<> alloc(std::pmr::get_default_resource());
+        t1->wait_drained({std::allocator_arg, alloc, [&](bool open) {
+                              BOOST_TEST(open);
+                              turns.emplace_back("first");
+                              if (detach) {
+                                  t1->detach(false, 1000ms);
+                              } else {
+                                  p.a.c->end("ended in its own drain");
+                              }
+                              BOOST_TEST(turns == (std::vector<std::string>{"first", "!second"}));
+                          }});
+        t1->wait_drained(record(turns, "second"));
+        BOOST_TEST(run_until(p.io, [&] { return turns.size() == 2; }));
+        BOOST_TEST(turns == (std::vector<std::string>{"first", "!second"}));
+    }
 }
 
 /** A binding of T1 on `p`'s b side whose delivery kicks the peer (`destroy` false) or drops the
@@ -809,6 +840,7 @@ int main() {
     the_last_binding_ends_or_idles_the_connection();
     a_binding_made_during_a_drain_waits_for_the_next();
     an_end_inside_a_drain_fails_the_waiters_after_it();
+    an_end_inside_one_binding_fails_its_remaining_waiters();
     a_delivery_that_kicks_its_binding();
     a_delivery_that_drops_its_binding();
     a_waiter_that_releases_its_binding_during_detach();

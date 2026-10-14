@@ -81,12 +81,12 @@ struct app_config {
      *
      * What libdatachannel, OpenSSL and the browser's JavaScript allocate stays theirs. The app uses
      * the resource from its executor only, so it need not be thread-safe when that executor runs
-     * on one thread. It must outlive the app, its rooms and every operation they leave pending: on
-     * Asio, until the io_context their executor belongs to has run out of their work or has been
-     * destroyed, so a resource is declared before its io_context; in the browser, until the app's
-     * and its rooms' pending promises have settled. The app and its rooms allocate and free per
-     * event, so a resource that reuses what is freed (a pool) suits a long-lived app, and a
-     * monotonic one only a short-lived one.
+     * on one thread. It must outlive the app, its rooms, retained values allocated in it and every
+     * operation they leave pending: on Asio, until the io_context their executor belongs to has run
+     * out of their work or has been destroyed, so a resource is declared before its io_context; in
+     * the browser, until the app's and its rooms' pending promises have settled. The app and its
+     * rooms allocate and free per event, so a resource that reuses what is freed (a pool) suits a
+     * long-lived app, and a monotonic one only a short-lived one.
      *
      * @see "Allocation", in the guide.
      */
@@ -116,6 +116,18 @@ struct room_options {
      * Trystero's `maxReceiveBytes`.
      */
     std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
+    /**
+     * The resource every allocation of the room goes through: its state, bindings, negotiations,
+     * relays, actions, sent frames, transfers and JSON.
+     *
+     * Null means the app's resource.
+     *
+     * It must outlive the room, every value it hands out and every operation it leaves pending: on
+     * Asio, until its io_context has run out of the room's work or has been destroyed; in the
+     * browser, until its pending promises have settled. Received frames and shared connections use
+     * the app's resource.
+     */
+    std::pmr::memory_resource* memory = nullptr;
 };
 
 /**

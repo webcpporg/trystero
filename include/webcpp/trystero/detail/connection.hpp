@@ -100,7 +100,9 @@ public:
         BOOST_ASSERT(cb_.presence && cb_.keeps && cb_.kept && cb_.ended);
     }
 
+    /** A shared transport has one identity and cannot be copied. */
     connection(const connection&) = delete;
+    /** A shared transport cannot be replaced by copying. */
     connection& operator=(const connection&) = delete;
 
     /** Takes over the channel's and the connection's events, which replaces the handlers a room's
@@ -155,10 +157,12 @@ public:
                     },
                 },
         });
-        log_("webrtc", "connection with ", peer_, " adopted");
         for (const auto token : tokens) {
             send_presence(token, true);
         }
+        // The sink may destroy a room and invalidate its token in the app's registry. Finish
+        // reading the snapshot before calling it, so a withdrawal also follows its advertisement.
+        log_("webrtc", "connection with ", peer_, " adopted");
     }
 
     /** The remote peer's id. */
@@ -207,6 +211,10 @@ public:
     /** Removes a binding; with none left, ends the connection after a kick or a zero idle time,
      * else after `idle_timeout`. */
     void detach(binding& b, bool after_kick, std::chrono::milliseconds idle_timeout);
+
+    /** Starts the idle period after a departure when no binding remains, without extending an
+     * idle period already running. Also covers a room that left during connection adoption. */
+    void idle_if_unused(std::chrono::milliseconds idle_timeout);
 
     /** Gives the binding a place in the drain order, once. */
     void wait_drained(const binding& b);
@@ -278,7 +286,9 @@ public:
         id_ = c->attach(*this);
     }
 
+    /** A binding registers one identity and cannot be copied. */
     binding(const binding&) = delete;
+    /** A binding cannot be replaced by copying. */
     binding& operator=(const binding&) = delete;
 
     /** Leaves the connection quietly: its waiters freed uncalled, its place in the connection
@@ -312,16 +322,19 @@ public:
         return detached_ ? nullptr : connection_.lock();
     }
 
+    /** Sends through the live shared channel, or fails after detachment. */
     bool send(std::span<const std::uint8_t> room_frame) override {
         const auto c = shared_connection();
         return c && c->send(room_frame);
     }
 
+    /** The shared channel's unsent bytes, or zero after detachment. */
     [[nodiscard]] std::size_t buffered_amount() const override {
         const auto c = shared_connection();
         return c ? c->buffered_amount() : 0;
     }
 
+    /** Waits in this binding's order for channel drain, or fails after detachment. */
     void wait_drained(handler<void(bool)> done) override {
         const auto c = shared_connection();
         if (!c || !c->live()) {
@@ -350,8 +363,15 @@ public:
 
     /** This binding's turn at a drain: each of its waiters, in its order. */
     void drained(bool open) {
-        for (auto& w : std::exchange(waiters_, decltype(waiters_)(waiters_.get_allocator()))) {
-            w(open);
+        // Keep the binding alive if a waiter releases its last owner. Leave the rest of this
+        // turn in the queue so a nested end or detach fails them before returning. New waits
+        // belong to the next turn, even when a callback appends them to this queue.
+        const auto self = weak_from_this().lock();
+        const auto count = waiters_.size();
+        for (std::size_t i = 0; i < count && !waiters_.empty(); ++i) {
+            auto waiter = std::move(waiters_.front());
+            waiters_.pop_front();
+            waiter(open);
         }
     }
 
@@ -376,7 +396,7 @@ private:
     std::weak_ptr<connection> connection_;
     std::pmr::string token_;
     handler<void(backend::bytes&&, std::span<const std::uint8_t>)> deliver_;
-    std::pmr::vector<handler<void(bool)>> waiters_;
+    std::pmr::deque<handler<void(bool)>> waiters_;
     bool detached_ = false;
     std::uint64_t id_ = 0;
 };
@@ -411,8 +431,19 @@ inline void connection::detach(binding& b, bool after_kick,
     if (ended_ || !bound_.empty()) {
         return;
     }
-    if (after_kick || idle_timeout <= std::chrono::milliseconds::zero()) {
-        end(after_kick ? "its last room kicked the peer" : "no room left");
+    if (after_kick) {
+        end("its last room kicked the peer");
+        return;
+    }
+    idle_if_unused(idle_timeout);
+}
+
+inline void connection::idle_if_unused(std::chrono::milliseconds idle_timeout) {
+    if (ended_ || !bound_.empty() || idle_timer_) {
+        return;
+    }
+    if (idle_timeout <= std::chrono::milliseconds::zero()) {
+        end("no room left");
         return;
     }
     idle_timer_ = factory_.make_timer(memory_);
@@ -465,6 +496,7 @@ inline void connection::end(std::string_view reason_view) {
     ended(peer_, reason);
 }
 
+/** Routes a decoded envelope to presence handling, its binding or the bounded keep queue. */
 inline void connection::on_message(backend::bytes&& frame) {
     const auto envelope = protocol::decode_envelope(frame);
     if (!envelope) {
@@ -501,6 +533,7 @@ inline void connection::on_message(backend::bytes&& frame) {
     }
 }
 
+/** Keeps an unbound local room's frame within the connection's count and time bounds. */
 inline void connection::keep(std::string_view token, backend::bytes&& frame) {
     if (kept_.size() >= max_kept_frames) {
         return;
@@ -534,6 +567,7 @@ inline void connection::forget_kept_if_empty() {
     kept_ = decltype(kept_)(memory_);
 }
 
+/** Ends a failed transport and gives a transient disconnection five seconds to recover. */
 inline void connection::on_state(backend::connection_state state) {
     using backend::connection_state;
     if (state == connection_state::failed || state == connection_state::closed) {
@@ -555,6 +589,7 @@ inline void connection::on_state(backend::connection_state state) {
     }
 }
 
+/** Gives every waiting binding its turn, looking up each identity again after callbacks. */
 inline void connection::on_drained(bool open) {
     // Every binding waiting at this drain gets its turn, in the order it began to wait. A turn may
     // detach another binding of the snapshot, even destroy it: each is looked up by its id before

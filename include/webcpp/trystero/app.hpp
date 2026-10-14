@@ -150,7 +150,9 @@ public:
 
     /**
      * Sets what is called with each part of the configuration the app set aside, with an empty
-     * peer id and `error::invalid_configuration`. The reports are delivered once the caller has
+     * peer id and `error::invalid_configuration`.
+     *
+     * The reports are delivered once the caller has
      * returned, each once, to the handler set when they are delivered: one replaced before then
      * gets none.
      *
@@ -173,7 +175,7 @@ public:
      * the relays and announces this peer on the room's topic.
      *
      * @param room_id The room's id, Trystero's `roomId`, read during the call.
-     * @param options The password, the handshake's timeout and the receive bound of the room.
+     * @param options The password, handshake timeout, receive bound and resource of the room.
      * @return The room, or `error::already_joined` while a room of that id is joined in the app,
      * or `error::too_many_rooms` when `max_rooms` rooms count.
      */

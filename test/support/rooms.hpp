@@ -113,9 +113,14 @@ inline bool run_until(fixture& f, const std::function<bool()>& done,
             BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
             return false;
         }
-        f.io.restart();
-        f.io.poll();
+        if (!f.net.poll_ready()) {
+            BOOST_ERROR("the virtual clock exhausted its ready-handler budget");
+            return false;
+        }
         if (done() || !f.net.step(end)) {
+            if (f.net.handlers_exhausted) {
+                BOOST_ERROR("the virtual clock exhausted its ready-handler budget");
+            }
             break;
         }
     }

@@ -503,6 +503,24 @@ void a_buffering_channel_drains_and_says_so() {
     BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 1; }));
 }
 
+// A ready handler that reposts forever must stop the virtual harness as a zero-delay timer does.
+void ready_work_is_bounded() {
+    asio::io_context io;
+    memory_network net(io);
+    net.virtual_clock = true;
+    net.max_steps = 8;
+    std::size_t calls = 0;
+    std::function<void()> again;
+    again = [&] {
+        ++calls;
+        asio::post(io, again);
+    };
+    asio::post(io, again);
+    BOOST_TEST(!net.poll_ready());
+    BOOST_TEST(net.handlers_exhausted);
+    BOOST_TEST_EQ(calls, net.max_steps);
+}
+
 }  // namespace
 
 int main() {
@@ -524,5 +542,6 @@ int main() {
     a_virtual_timer_leaves_the_clock_at_once();
     a_timer_rearmed_without_delay_stops_the_clock();
     a_run_of_max_steps_timers_reaches_the_end();
+    ready_work_is_bounded();
     return boost::report_errors();
 }

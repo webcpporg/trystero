@@ -5,8 +5,9 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Rooms of one app sharing one connection per remote peer, over the memory backend, on its virtual
-// clock.
+// clock (doc: #trystero-design-sharing).
 
+#include <limits>
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
@@ -58,7 +59,7 @@ void every_room_has_the_apps_id() {
     });
     BOOST_TEST_EQ(b.self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST(run_until(f, [&] { return reports.size() == 2; }));
-    advance(f, 100ms);
+    webcpp::trystero::test::advance(f, 100ms);
     webcpp::test::require(BOOST_TEST_EQ(reports.size(), 2U));
     for (const auto& [ec, what] : reports) {
         BOOST_TEST(ec == trystero::error::invalid_configuration);
@@ -77,9 +78,9 @@ void each_setup_report_reaches_the_current_handler_once() {
     std::array<std::size_t, 3> calls{};
     b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[0]; });
     b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[1]; });
-    advance(f, 100ms);
+    webcpp::trystero::test::advance(f, 100ms);
     b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[2]; });
-    advance(f, 100ms);
+    webcpp::trystero::test::advance(f, 100ms);
     BOOST_TEST_EQ(calls[0], 0U);
     BOOST_TEST_EQ(calls[1], 2U);
     BOOST_TEST_EQ(calls[2], 0U);
@@ -107,7 +108,7 @@ void two_apps_with_one_id_never_meet() {
     trystero::app b(f.io.get_executor(), f.net, app_config("CCCCCCCCCCCCCCCCCCCC"));
     const auto ra = join(a, "same");
     const auto rb = join(b, "same");
-    advance(f, 2000ms);
+    webcpp::trystero::test::advance(f, 2000ms);
     BOOST_TEST(ra.peers().empty() && rb.peers().empty());
     BOOST_TEST_EQ(f.net.made_connections, 0U);
 }
@@ -223,7 +224,7 @@ void a_moved_from_app_releases_nothing() {
         a.reset();
         BOOST_TEST_EQ(moved.self_id(), "LLLLLLLLLLLLLLLLLLLL");
     }
-    advance(f, 1000ms);
+    webcpp::trystero::test::advance(f, 1000ms);
     BOOST_TEST_EQ(leaves, 0);
     BOOST_TEST_EQ(f.net.made_connections, made);
     BOOST_TEST_EQ(ra.peers().size(), 1U);
@@ -244,7 +245,7 @@ void an_app_destroyed_leaves_its_rooms_going() {
         run_until(f, [&] { return ra->peers().size() == 1 && rb.peers().size() == 1; })));
     const auto made = f.net.made_connections;
     a.reset();
-    advance(f, 1000ms);
+    webcpp::trystero::test::advance(f, 1000ms);
     BOOST_TEST_EQ(leaves, 0);
     BOOST_TEST_EQ(f.net.made_connections, made);
     BOOST_TEST_EQ(ra->peers().size(), 1U);
@@ -267,7 +268,7 @@ void an_app_assigned_over_releases_its_state() {
     const auto made = f.net.made_connections;
     a = trystero::app(f.io.get_executor(), f.net, app_config("PPPPPPPPPPPPPPPPPPPP"));
     BOOST_TEST_EQ(a.self_id(), "PPPPPPPPPPPPPPPPPPPP");
-    advance(f, 1000ms);
+    webcpp::trystero::test::advance(f, 1000ms);
     BOOST_TEST_EQ(leaves, 0);
     BOOST_TEST_EQ(f.net.made_connections, made);
     BOOST_TEST_EQ(ra->peers().size(), 1U);
@@ -289,7 +290,7 @@ void an_app_assigned_to_itself_keeps_its_state() {
     a = std::move(same);
     BOOST_TEST_EQ(a.self_id(), "QQQQQQQQQQQQQQQQQQQQ");
     ra.reset();
-    advance(f, 1000ms);
+    webcpp::trystero::test::advance(f, 1000ms);
     BOOST_TEST_EQ(f.net.live_connections(), 2U);
 }
 
@@ -306,7 +307,7 @@ struct ends {
     [[nodiscard]] std::size_t a() const { return made.at(0); }
 };
 
-/** The action an inline room frame of `room` carries (`@_hsdata`, `@_leave`, `chat`, ...), or
+/** The action an inline room frame of `room` carries (`\@_hsdata`, `\@_leave`, `chat`, ...), or
  * empty. */
 std::string internal_name(std::span<const std::uint8_t> frame, std::string_view room) {
     const auto env = trystero::protocol::decode_envelope(frame);
@@ -357,9 +358,9 @@ void frames_before_presence_are_kept() {
     const ends e(t);
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
-    advance(t.f, 200ms);
+    webcpp::trystero::test::advance(t.f, 200ms);
     t.f.net.inject(e.a(), internal_frame("r2", "@_hsready"));
-    advance(t.f, 50ms);
+    webcpp::trystero::test::advance(t.f, 50ms);
     BOOST_TEST(t.a_rooms[1].peers().empty());  // kept, not bound: B never advertised r2
     std::vector<std::string> b_sent;
     t.f.net.filter = [&](std::size_t, std::size_t to, std::span<const std::uint8_t> frame) {
@@ -387,7 +388,7 @@ void a_kept_frame_that_kicks_during_a_binding() {
     const ends e(t);
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
-    advance(t.f, 200ms);
+    webcpp::trystero::test::advance(t.f, 200ms);
     std::size_t leaves_sent = 0;
     std::vector<std::string> a_sent;
     t.f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
@@ -398,11 +399,11 @@ void a_kept_frame_that_kicks_during_a_binding() {
         return trystero::test::memory_network::verdict::deliver;
     };
     const auto token = trystero::protocol::room_token(app_id, "r2");
-    const std::uint8_t garbage[] = {9, 9, 9};
+    const std::array<std::uint8_t, 3> garbage{9, 9, 9};
     t.f.net.inject(e.a(), trystero::protocol::room_frame(token, garbage));
     t.f.net.inject(e.a(), trystero::protocol::presence_frame(token, true));
     BOOST_TEST(run_until(t.f, [&] { return leaves_sent == 1; }));
-    advance(t.f, 1000ms);
+    webcpp::trystero::test::advance(t.f, 1000ms);
     // The kick came before the handshake's first message, which the removed peer never got.
     BOOST_TEST((a_sent == std::vector<std::string>{"@_leave"}));
     BOOST_TEST(t.a_rooms[1].peers().empty());
@@ -422,7 +423,7 @@ void a_kept_frame_binds_its_room() {
     t.f.net.inject(e.a(), internal_frame("r2", "@_leave"));
     BOOST_TEST(run_until(t.f, [&] { return t.a_rooms[1].peers().empty(); }));
     t.f.net.inject(e.a(), internal_frame("r2", "@_hsready"));
-    BOOST_TEST(run_until(t.f, [&] { return t.a_rooms[1].peers().size() == 1; }));
+    BOOST_TEST(run_until(t.f, [&] { return t.a_rooms[1].peers().size() == 1; }, 12s));
     BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
     BOOST_TEST_EQ(t.f.net.live_connections(), 2U);
 }
@@ -434,14 +435,14 @@ void a_leaving_room_binds_no_one() {
     two_apps t("NNNNNNNNNNNNNNNNNNN1", "OOOOOOOOOOOOOOOOOOO2");
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
-    advance(t.f, 200ms);
+    webcpp::trystero::test::advance(t.f, 200ms);
     bool left = false;
     t.a_rooms[1].async_leave([&left](boost::system::error_code) { left = true; });
     t.b_rooms.push_back(join(t.b, "r2"));
     std::size_t joins = 0;
     t.b_rooms[1].on_peer_join([&joins](std::string_view) { ++joins; });
     BOOST_TEST(run_until(t.f, [&] { return left; }));
-    advance(t.f, 1000ms);
+    webcpp::trystero::test::advance(t.f, 1000ms);
     BOOST_TEST_EQ(joins, 0U);
     BOOST_TEST(t.b_rooms[1].peers().empty());
     BOOST_TEST_EQ(t.b_rooms[0].peers().size(), 1U);
@@ -461,7 +462,7 @@ void a_connections_end_is_every_rooms() {
         if (way == 0) {
             t.f.net.fail(e.a());
         } else if (way == 1) {
-            const std::uint8_t bad[] = {3, 0, 1, 'x'};
+            const std::array<std::uint8_t, 4> bad{3, 0, 1, 'x'};
             t.f.net.inject(e.a(), bad);
         } else {
             for (int i = 0; i < 65; ++i) {
@@ -479,7 +480,7 @@ void a_connections_end_is_every_rooms() {
 struct offers_on {
     std::vector<relayed> seen;
 
-    bool offer_or_answer() const {
+    [[nodiscard]] bool offer_or_answer() const {
         return std::ranges::any_of(
             seen, [](const relayed& r) { return !r.offer.empty() || !r.answer.empty(); });
     }
@@ -506,16 +507,17 @@ void a_late_join_binds_over_the_connection() {
         const auto made = t.f.net.made_connections;
         if (a_first) {
             t.a_rooms.push_back(join(t.a, "r2"));
-            advance(t.f, 500ms);
+            webcpp::trystero::test::advance(t.f, 500ms);
             t.b_rooms.push_back(join(t.b, "r2"));
         } else {
             t.b_rooms.push_back(join(t.b, "r2"));
-            advance(t.f, 500ms);
+            webcpp::trystero::test::advance(t.f, 500ms);
             t.a_rooms.push_back(join(t.a, "r2"));
         }
         BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }));
-        advance(t.f,
-                70s);  // past r2's regular announcements, at once, 233, 533, 1333, 5333 ms, 60 s
+        webcpp::trystero::test::advance(
+            t.f,
+            70s);  // past r2's regular announcements, at once, 233, 533, 1333, 5333 ms, 60 s
         BOOST_TEST_EQ(t.f.net.made_connections, made);
         BOOST_TEST(!r2.offer_or_answer());
     }
@@ -534,7 +536,7 @@ void a_forged_announcement_binds_nothing() {
     const auto made = t.f.net.made_connections;
     flooder forger(t.f, "r2");
     forger.announce_as(t.b.self_id(), 3);
-    advance(t.f, 15s);
+    webcpp::trystero::test::advance(t.f, 15s);
     BOOST_TEST(t.a_rooms[1].peers().empty());
     BOOST_TEST(errors.empty());
     BOOST_TEST_EQ(t.f.net.made_connections, made);
@@ -590,12 +592,13 @@ void one_room_leaves() {
             t.a_rooms[0] = join(t.a, "elsewhere");
         }
         BOOST_TEST(run_until(t.f, [&] { return b_r1_leaves == 1 && withdrawn; }));
-        advance(t.f, 1s);
+        webcpp::trystero::test::advance(t.f, 1s);
         BOOST_TEST_EQ(b_r2_leaves, 0);
         BOOST_TEST_EQ(t.f.net.live_connections(), 2U);
         std::vector<std::string> got;
         auto in_r2 = t.b_rooms[1].make_action<std::string>("chat");
-        in_r2.on_message([&](std::string s, const trystero::message_info&) { got.push_back(s); });
+        in_r2.on_message(
+            [&](const std::string& s, const trystero::message_info&) { got.push_back(s); });
         auto& a_r2 = way == 1 ? t.a_rooms[0] : t.a_rooms[1];  // the erase moved r2 to the front
         a_r2.make_action<std::string>("chat").async_send("still", [](boost::system::error_code) {});
         BOOST_TEST(run_until(t.f, [&] { return got.size() == 1; }));
@@ -630,7 +633,7 @@ void a_peer_leaving_every_room_idles_the_connection() {
             BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 0; }, 1ms));
             continue;
         }
-        advance(f, 100ms);
+        webcpp::trystero::test::advance(f, 100ms);
         BOOST_TEST_EQ(f.net.live_connections(), 2U);
         const auto made = f.net.made_connections;
         b1 = join(b, "r1");  // within the idle time: the connection is reused
@@ -638,16 +641,16 @@ void a_peer_leaving_every_room_idles_the_connection() {
         BOOST_TEST_EQ(f.net.made_connections, made);
         b1.reset();
         BOOST_TEST(run_until(f, [&] { return a1.peers().empty(); }, 1ms));
-        advance(f, 199ms);
+        webcpp::trystero::test::advance(f, 199ms);
         BOOST_TEST_EQ(f.net.live_connections(), 2U);  // not before
-        advance(f, 1ms);
+        webcpp::trystero::test::advance(f, 1ms);
         BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 0; }, 1ms));
     }
 }
 
-/** Drops the first @_hsdata of r2 on any end, B's challenge when B is the lower id. */
+/** Drops the first \@_hsdata of r2 on any end, B's challenge when B is the lower id. */
 void drop_first_challenge(two_apps& t) {
-    auto dropped = std::make_shared<bool>(false);
+    const auto dropped = std::make_shared<bool>(false);
     t.f.net.filter = [dropped](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
         if (*dropped || internal_name(frame, "r2") != "@_hsdata") {
             return trystero::test::memory_network::verdict::deliver;
@@ -665,13 +668,14 @@ void an_action_level_kick_is_per_room() {
     joined_in(t, {"r1", "r2"});
     int r2_leaves = 0;
     t.a_rooms[1].on_peer_leave([&](std::string_view) { ++r2_leaves; });
-    const std::uint8_t garbage[] = {9, 9, 9};
+    const std::array<std::uint8_t, 3> garbage{9, 9, 9};
     t.f.net.inject(e.a(), trystero::protocol::room_frame(
                               trystero::protocol::room_token(app_id, "r2"), garbage));
     BOOST_TEST(run_until(t.f, [&] { return r2_leaves == 1; }));
     std::vector<std::string> got;
     auto in_r1 = t.b_rooms[0].make_action<std::string>("chat");
-    in_r1.on_message([&](std::string s, const trystero::message_info&) { got.push_back(s); });
+    in_r1.on_message(
+        [&](const std::string& s, const trystero::message_info&) { got.push_back(s); });
     t.a_rooms[0].make_action<std::string>("chat").async_send("still",
                                                              [](boost::system::error_code) {});
     BOOST_TEST(run_until(t.f, [&] { return got.size() == 1; }));
@@ -688,7 +692,7 @@ void a_connection_failing_under_a_waiting_transfer() {
     const ends e(t);
     joined_in(t, {"r1", "r2"});
     auto receiver = t.b_rooms[1].make_action<trystero::bytes>("big");
-    receiver.on_message([](trystero::bytes, const trystero::message_info&) {});
+    receiver.on_message([](const trystero::bytes&, const trystero::message_info&) {});
     int completions = 0;
     std::optional<boost::system::error_code> sent;
     t.a_rooms[1].make_action<trystero::bytes>("big").async_send(
@@ -697,7 +701,7 @@ void a_connection_failing_under_a_waiting_transfer() {
             sent = ec;
         });
     webcpp::test::require(BOOST_TEST(poll_until(t.f, [&] {
-        return t.f.net.buffered(e.a()) > 64 * 1024;  // a chunk waits on the drain
+        return t.f.net.buffered(e.a()) > std::size_t{64} * 1024;  // a chunk waits on the drain
     })));
     int leaves = 0;
     for (auto& r : t.a_rooms) {
@@ -714,8 +718,8 @@ void a_connection_failing_under_a_waiting_transfer() {
 // A reports wrong_password in r2 only and r1 stays joined over the same connection. Then a
 // handshake that times out: B the lower id, its challenge dropped once by the filter; B reports
 // handshake_timed_out in r2 only, 10 s after binding, and r1 stays. (The rest of case 10, the kick
-// that closes the connection and the renegotiation after it, needs the rebinding times: Task 9.)
-[[maybe_unused]] void a_kick_is_per_room() {
+// that closes the connection and the renegotiation after it use the rebinding times.)
+void a_kick_is_per_room() {
     {
         two_apps t("AAAAAAAAAAAAAAAAAAA1", "BBBBBBBBBBBBBBBBBBB2");
         joined_in(t, {"r1"});
@@ -779,6 +783,7 @@ void join_and_leave_sequences_on_one_id() {
         return trystero::test::memory_network::verdict::deliver;
     };
     std::vector<trystero::room> others;
+    others.reserve(62);
     for (int i = 0; i < 62; ++i) {
         others.push_back(join(t.a, "x" + std::to_string(i)));  // with lobby and r: 64 rooms
     }
@@ -791,7 +796,7 @@ void join_and_leave_sequences_on_one_id() {
     r->async_leave([&](boost::system::error_code ec) { second += ec ? 100 : 1; });
     const auto refused = t.a.join("x62");
     BOOST_TEST(!refused && refused.error() == trystero::error::too_many_rooms);  // r still counts
-    advance(t.f, 50ms);
+    webcpp::trystero::test::advance(t.f, 50ms);
     BOOST_TEST_EQ(first + second, 0);  // the second leave waits for the farewell with the first
     BOOST_TEST((presences == std::vector<bool>{true}));
     auto again = t.a.join("r");  // finishes r's farewell at once
@@ -805,10 +810,10 @@ void join_and_leave_sequences_on_one_id() {
     r2->async_leave([&](boost::system::error_code ec) { third += ec ? 100 : 1; });
     r2.reset();  // destroyed during its farewell: the farewell ends at once
     BOOST_TEST((presences == std::vector<bool>{true, false, true, false}));
-    auto last_join = t.a.join("r");
+    const auto last_join = t.a.join("r");
     BOOST_TEST(last_join.has_value());
     BOOST_TEST((presences == std::vector<bool>{true, false, true, false, true}));
-    advance(t.f, 1s);
+    webcpp::trystero::test::advance(t.f, 1s);
     BOOST_TEST_EQ(first, 1);
     BOOST_TEST_EQ(second, 1);
     BOOST_TEST_EQ(third, 1);
@@ -828,7 +833,7 @@ void the_farewell_binds_nothing() {
         t.b_rooms.push_back(join(t.b, "r2"));  // B's presence, announcement and handshake now
         t.b_rooms[1].on_peer_join([&](std::string_view) { ++b_joins; });
         BOOST_TEST(run_until(t.f, [&] { return left; }));
-        advance(t.f, 1s);
+        webcpp::trystero::test::advance(t.f, 1s);
         BOOST_TEST(t.a_rooms[1].peers().empty());
         BOOST_TEST(t.b_rooms[1].peers().empty());
         BOOST_TEST_EQ(b_joins, 0);
@@ -849,7 +854,7 @@ void the_farewell_binds_nothing() {
         };
         f.net.defer_opens = true;
         auto a2 = join(a, "r2");
-        auto b2 = join(b, "r2");
+        const auto b2 = join(b, "r2");
         webcpp::test::require(BOOST_TEST(
             run_until(f, [&] { return made.size() == 2 && f.net.peer_of(made[0]) == made[1]; })));
         bool left = false;
@@ -857,7 +862,7 @@ void the_farewell_binds_nothing() {
         f.net.open(made[0]);
         f.net.open(made[1]);
         BOOST_TEST(run_until(f, [&] { return left; }));
-        advance(f, 1s);
+        webcpp::trystero::test::advance(f, 1s);
         BOOST_TEST(std::ranges::none_of(a_log, [](const std::string& line) {
             return line.find(" adopted") != std::string::npos;
         }));
@@ -877,8 +882,8 @@ void the_last_user_closes_every_connection() {
     trystero::app b(f.io.get_executor(), f.net, app_config("PPPPPPPPPPPPPPPPPPP2"));
     std::optional<trystero::room> a1(join(*a, "r1"));
     std::optional<trystero::room> a2(join(*a, "r2"));
-    auto b1 = join(b, "r1");
-    auto b2 = join(b, "r2");
+    const auto b1 = join(b, "r1");
+    const auto b2 = join(b, "r2");
     webcpp::test::require(BOOST_TEST(
         run_until(f, [&] { return a1->peers().size() == 1 && a2->peers().size() == 1; })));
     const auto ended = [&a_log] {
@@ -888,7 +893,7 @@ void the_last_user_closes_every_connection() {
     };
     a.reset();
     a1.reset();
-    advance(f, 1s);
+    webcpp::trystero::test::advance(f, 1s);
     BOOST_TEST_EQ(a2->peers().size(), 1U);
     BOOST_TEST_EQ(ended(), 0);
     a2.reset();                 // the last user
@@ -934,35 +939,766 @@ void the_io_context_destroyed_with_operations_pending() {
     BOOST_TEST_EQ(memory.in_use, 0U);
 }
 
+void the_rebinding_step() {
+    using trystero::detail::rebinding_step;
+    BOOST_TEST(rebinding_step(10s, 1) == 11s);
+    BOOST_TEST(rebinding_step(10s, 2) == 22s);
+    BOOST_TEST(rebinding_step(10s, 3) == 44s);
+    BOOST_TEST(rebinding_step(10s, 5) == 176s);
+    BOOST_TEST(rebinding_step(10s, 6) == 300s);
+    BOOST_TEST(rebinding_step(10s, 40) == 300s);
+    BOOST_TEST(rebinding_step(2s, 1) == 11s);  // never below Trystero's 10 s keep time
+    BOOST_TEST(rebinding_step(30s, 1) == 31s);
+    BOOST_TEST(rebinding_step(std::chrono::milliseconds::max(),
+                              std::numeric_limits<std::uint32_t>::max()) == 300s);
+}
+
+// the lower id reports wrong_password at 0, 11, 33 and 77 s after the first, exactly,
+// and the fifth at 165 s, not before; the higher id reports nothing; r2's topics carry the regular
+// announcements only, no offer and no answer.
+void check_wrong_password_rebinding(bool a_lower) {
+    two_apps t(a_lower ? "AAAAAAAAAAAAAAAAAAA1" : "ZZZZZZZZZZZZZZZZZZZ1",
+               a_lower ? "ZZZZZZZZZZZZZZZZZZZ2" : "AAAAAAAAAAAAAAAAAAA2");
+    joined_in(t, {"r1"});
+    flooder watcher(t.f, "r2");
+    std::size_t r2_announcements = 0;
+    bool offer_or_answer = false;
+    watcher.on_text = [&](std::string_view text) {
+        if (auto s = relayed_signal(text)) {
+            r2_announcements += s->announcement ? 1 : 0;
+            offer_or_answer = offer_or_answer || !s->offer.empty() || !s->answer.empty();
+        }
+    };
+    watcher.watch(trystero::protocol::root_topic(app_id, "r2"));
+    watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
+    watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
+    std::vector<double> a_reports;
+    std::vector<double> b_reports;
+    const auto recorder = [&t](std::vector<double>& to) {
+        return [&t, &to](std::string_view, boost::system::error_code ec, std::string_view) {
+            if (ec == trystero::error::wrong_password) {
+                to.push_back(t.f.net.now_ms());
+            }
+        };
+    };
+    t.a_rooms.push_back(join(t.a, "r2", {.password = "right"}));
+    t.b_rooms.push_back(join(t.b, "r2", {.password = "wrong"}));
+    t.a_rooms[1].on_error(recorder(a_reports));
+    t.b_rooms[1].on_error(recorder(b_reports));
+    const auto& lower = a_lower ? a_reports : b_reports;
+    const auto& higher = a_lower ? b_reports : a_reports;
+    webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !lower.empty(); }, 1s)));
+    const double first = lower.front();
+    webcpp::trystero::test::advance(
+        t.f,
+        std::chrono::milliseconds(static_cast<std::int64_t>(first + 100'000 - t.f.net.now_ms())));
+    const std::size_t announced_in_100_s = r2_announcements;
+    webcpp::trystero::test::advance(t.f, 64'999ms);  // to 164.999 s after the first
+    BOOST_TEST_EQ(lower.size(), 4U);
+    const std::array<double, 4> expected{0, 11'000, 33'000, 77'000};
+    for (std::size_t i = 0; i < std::min<std::size_t>(lower.size(), 4); ++i) {
+        BOOST_TEST_EQ(lower[i] - first, expected[i]);
+    }
+    BOOST_TEST(run_until(t.f, [&] { return lower.size() == 5; }, 1ms));
+    BOOST_TEST_EQ(lower.back() - first, 165'000.0);
+    BOOST_TEST(higher.empty());
+    BOOST_TEST(!offer_or_answer);
+    // Each room's regular cadence on the relay the watcher reads: at once, after 233, 533,
+    // 1333 and 5333 ms, then every 60 s: at most 6 each in 100 s, and no restart after a kick.
+    BOOST_TEST_LE(announced_in_100_s, 12U);
+}
+
+void a_wrong_password_rebinds_at_the_steps() {
+    for (const bool a_lower : {true, false}) {
+        check_wrong_password_rebinding(a_lower);
+    }
+}
+
+// A binds r2 again at its rebinding time, 11 s after its first kick, kicks B, and with
+// no room left in common that kick closes the connection at once; B, whose r2 signals do not open
+// with A's key, makes no new connection. (b) Only r2 in common, B the lower id, its challenge
+// dropped once: B's timeout kick closes the connection, the rebinding counts go with it, and B
+// renegotiates through r2's signaling: the new connection is adopted and bound with a count of
+// zero, so the rooms join within 5 s of the kick, before the 11 s a kept count would impose.
+void a_kick_that_closes_the_connection() {
+    {
+        std::optional<double> kicked_connection_at;
+        two_apps t("AAAAAAAAAAAAAAAAAAK1", "BBBBBBBBBBBBBBBBBBK2");
+        auto a_config = app_config("AAAAAAAAAAAAAAAAAAK1");
+        a_config.log = [&](std::string_view category, std::string_view text) {
+            if (category == "webrtc" && text.ends_with("ended: its last room kicked the peer")) {
+                kicked_connection_at = t.f.net.now_ms();
+            }
+        };
+        t.a = trystero::app(t.f.io.get_executor(), t.f.net, std::move(a_config));
+        // B's connections carry B's own ICE server, so the test can tell them apart.
+        auto b_config = app_config("BBBBBBBBBBBBBBBBBBK2");
+        b_config.ice_servers = {{.urls = {"stun:b.test"}, .username = {}, .credential = {}}};
+        t.b = trystero::app(t.f.io.get_executor(), t.f.net, std::move(b_config));
+        std::size_t b_made = 0;
+        t.f.net.on_made = [&](std::size_t, std::span<const trystero::backend::ice_server> servers) {
+            b_made += !servers.empty() && servers[0].urls.at(0) == "stun:b.test" ? 1 : 0;
+        };
+        joined_in(t, {"r1"});
+        std::vector<double> kicks;
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "one"}));
+        t.a_rooms[1].on_error(
+            [&](std::string_view, boost::system::error_code ec, std::string_view) {
+                if (ec == trystero::error::wrong_password) {
+                    kicks.push_back(t.f.net.now_ms());
+                }
+            });
+        t.b_rooms.push_back(join(t.b, "r2", {.password = "two"}));
+        webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return kicks.size() == 1; }, 1s)));
+        t.b_rooms.erase(t.b_rooms.begin());  // r1 left on both sides: r2 is all they share
+        t.a_rooms.erase(t.a_rooms.begin());
+        const auto b_made_before = b_made;
+        BOOST_TEST(run_until(t.f, [&] { return kicked_connection_at.has_value(); }, 12s));
+        BOOST_TEST_EQ(kicks.size(), 2U);
+        BOOST_TEST_EQ(kicked_connection_at.value_or(-1) - kicks.front(), 11'000.0);
+        webcpp::trystero::test::advance(t.f, 60s);
+        BOOST_TEST_EQ(b_made, b_made_before);
+        BOOST_TEST(t.a_rooms[0].peers().empty());
+    }
+    {
+        two_apps t("BBBBBBBBBBBBBBBBBBL1", "AAAAAAAAAAAAAAAAAAL2");  // B the lower id
+        drop_first_challenge(t);
+        std::vector<double> b_timeouts;
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "same", .handshake_timeout = 30s}));
+        t.b_rooms.push_back(join(t.b, "r2", {.password = "same"}));
+        t.b_rooms[0].on_error(
+            [&](std::string_view, boost::system::error_code ec, std::string_view) {
+                if (ec == trystero::error::handshake_timed_out) {
+                    b_timeouts.push_back(t.f.net.now_ms());
+                }
+            });
+        webcpp::test::require(
+            BOOST_TEST(run_until(t.f, [&] { return t.f.net.live_connections() == 2; }, 1s)));
+        const auto made = t.f.net.made_connections;
+        webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !b_timeouts.empty(); }, 30s)));
+        BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 5s));
+        BOOST_TEST_LT(t.f.net.now_ms() - b_timeouts.front(), 5'000.0);
+        BOOST_TEST_GE(t.f.net.made_connections, made + 2);  // a new pair, adopted
+        BOOST_TEST(run_until(t.f, [&] { return t.f.net.live_connections() == 2U; }, 1ms));
+        BOOST_TEST_EQ(b_timeouts.size(), 1U);
+    }
+}
+
+/** Holds, at the receiving end, the first frame from `from` that carries the internal action
+ * `message` of r2, and, as the channel delivers in order, every later frame of that end .
+ * Counts, in `challenges`, every \@_hsdata of r2 that `counted` sends. */
+void hold_first(two_apps& t, std::size_t from, std::string message, std::size_t counted = 0,
+                std::size_t* challenges = nullptr) {
+    const auto held = std::make_shared<bool>(false);
+    t.f.net.filter = [from, message = std::move(message), held, counted, challenges](
+                         std::size_t sender, std::size_t, std::span<const std::uint8_t> frame) {
+        const auto name = internal_name(frame, "r2");
+        if (challenges != nullptr && sender == counted && name == "@_hsdata") {
+            ++*challenges;
+        }
+        if (*held || sender != from || name != message) {
+            return trystero::test::memory_network::verdict::deliver;
+        }
+        *held = true;
+        return trystero::test::memory_network::verdict::hold;
+    };
+}
+
+// binding needs the peer's own presence. The filter drops B's presence(1, r2) while B
+// joins r2, A having joined it first: B binds at its join, on A's presence, and its handshake
+// frames reach A, which keeps them and does not bind; B's announcements in r2 bind nothing and
+// start no negotiation. B's handshake times out 10 s after its join and B, the higher id, kicks;
+// at its rebinding time, 21 s after its join, B binds again and sends its presence, which goes
+// through now: A binds at that instant.
+void binding_needs_the_peers_own_presence() {
+    two_apps t("NNNNNNNNNNNNNNNNNNNN", "OOOOOOOOOOOOOOOOOOOO");
+    const ends e(t);
+    joined_in(t, {"r1"});
+    t.a_rooms.push_back(join(t.a, "r2"));
+    webcpp::trystero::test::advance(t.f, 300ms);
+    bool drop = true;
+    t.f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        return drop && from != e.a() && is_presence(frame, "r2", true)
+                   ? trystero::test::memory_network::verdict::drop
+                   : trystero::test::memory_network::verdict::deliver;
+    };
+    flooder watcher(t.f, "r2");
+    bool offer_or_answer = false;
+    watcher.on_text = [&](std::string_view text) {
+        if (auto s = relayed_signal(text)) {
+            offer_or_answer = offer_or_answer || !s->offer.empty() || !s->answer.empty();
+        }
+    };
+    watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
+    watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
+    std::vector<boost::system::error_code> b_errors;
+    const double joined = t.f.net.now_ms();
+    t.b_rooms.push_back(join(t.b, "r2"));
+    t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+        b_errors.push_back(ec);
+    });
+    webcpp::trystero::test::advance(t.f, 10'999ms);
+    BOOST_TEST(t.a_rooms[1].peers().empty());
+    BOOST_TEST((b_errors == std::vector<boost::system::error_code>{
+                                make_error_code(trystero::error::handshake_timed_out)}));
+    drop = false;
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 11s));
+    BOOST_TEST_EQ(t.f.net.now_ms() - joined, 21'000.0);
+    BOOST_TEST(!offer_or_answer);
+}
+
+void check_transient_failure(bool password, bool lower_times_out, bool release_after_rebinding) {
+    two_apps t("AAAAAAAAAAAAAAAAAAD1", "ZZZZZZZZZZZZZZZZZZD2");  // A the lower id
+    const ends e(t);
+    joined_in(t, {"r1"});
+    const auto a_end = e.a();
+    const auto b_end = t.f.net.peer_of(a_end);
+    // A times out on B's answer (without a password, B's @_hsready); B on A's
+    // challenge (or A's @_hsready).
+    hold_first(t, lower_times_out ? b_end : a_end, password ? "@_hsdata" : "@_hsready");
+    const trystero::room_options patient{
+        .password = password ? "p" : "",
+        .handshake_timeout = 30s,
+    };
+    const trystero::room_options normal{.password = password ? "p" : ""};
+    std::vector<boost::system::error_code> a_errors;
+    std::vector<boost::system::error_code> b_errors;
+    t.a_rooms.push_back(join(t.a, "r2", lower_times_out ? normal : patient));
+    t.b_rooms.push_back(join(t.b, "r2", lower_times_out ? patient : normal));
+    t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+        a_errors.push_back(ec);
+    });
+    t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+        b_errors.push_back(ec);
+    });
+    const auto& timed_out = lower_times_out ? a_errors : b_errors;
+    webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !timed_out.empty(); }, 11s)));
+    const double kick = t.f.net.now_ms();
+    const std::chrono::milliseconds release_after = release_after_rebinding ? 13s : 2s;
+    webcpp::trystero::test::advance(t.f, release_after);
+    t.f.net.filter = {};
+    t.f.net.release(lower_times_out ? a_end : b_end);  // held at the receiving end
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 12s));
+    BOOST_TEST_EQ(t.f.net.now_ms() - kick,
+                  static_cast<double>(std::max<std::int64_t>(11'000, release_after.count())));
+    BOOST_TEST_EQ(timed_out.size(), 1U);
+    BOOST_TEST(timed_out.at(0) == trystero::error::handshake_timed_out);
+    BOOST_TEST_EQ(a_errors.size() + b_errors.size(), 1U);  // no other report
+}
+
+void a_transient_failure_converges() {
+    for (const bool password : {true, false}) {
+        for (const bool lower_times_out : {true, false}) {
+            for (const bool release_after_rebinding : {false, true}) {
+                check_transient_failure(password, lower_times_out, release_after_rebinding);
+            }
+        }
+    }
+}
+
+// an answer to a challenge two bindings old passes a bound
+// initiator; one to a challenge nine bindings old, no longer among the last 8, is wrong_password.
+void an_answer_to_an_old_challenge() {
+    for (const std::size_t binding : {3U, 9U}) {
+        two_apps t("AAAAAAAAAAAAAAAAAAJ1", "ZZZZZZZZZZZZZZZZZZJ2");
+        const ends e(t);
+        joined_in(t, {"r1"});
+        const auto a_end = e.a();
+        const auto b_end = t.f.net.peer_of(a_end);
+        std::size_t a_challenges = 0;
+        hold_first(t, b_end, "@_hsdata", a_end, &a_challenges);  // B's first answer and after
+        std::vector<boost::system::error_code> a_errors;
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "p"}));
+        t.b_rooms.push_back(join(t.b, "r2", {.password = "p", .handshake_timeout = 30s}));
+        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
+                                  std::string_view) { a_errors.push_back(ec); });
+        // A's bindings start at 0, 21, 53, 107, 205, 391, 701, 1011 and 1321 s.
+        webcpp::test::require(
+            BOOST_TEST(run_until(t.f, [&] { return a_challenges == binding; }, 1400s)));
+        BOOST_TEST_EQ(std::ranges::count(a_errors, trystero::error::handshake_timed_out),
+                      static_cast<std::ptrdiff_t>(binding - 1));
+        t.f.net.filter = {};
+        t.f.net.release(a_end);
+        const auto wrong = [&] {
+            return std::ranges::count(a_errors, trystero::error::wrong_password);
+        };
+        if (binding == 3) {
+            BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
+            BOOST_TEST_EQ(wrong(), 0);
+        } else {
+            BOOST_TEST(run_until(t.f, [&] { return wrong() == 1; }, 1ms));
+            BOOST_TEST(t.a_rooms[1].peers().empty());
+        }
+    }
+}
+
+// A the lower id, B's r2 password wrong: after A's third kick, at 33 s, B leaves r2 and
+// joins it with the right password at 35 s; B joins at 77 s, A's rebinding time, exactly, having
+// reported at most two handshake_timed_out. With B the lower id and its own password wrong, B's
+// new join joins at once: its rebinding count was its old room's.
+void a_corrected_password_rejoins() {
+    {
+        two_apps t("AAAAAAAAAAAAAAAAAAB1", "ZZZZZZZZZZZZZZZZZZB2");
+        joined_in(t, {"r1"});
+        std::vector<double> a_kicks;
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "right"}));
+        t.a_rooms[1].on_error(
+            [&](std::string_view, boost::system::error_code ec, std::string_view) {
+                if (ec == trystero::error::wrong_password) {
+                    a_kicks.push_back(t.f.net.now_ms());
+                }
+            });
+        std::optional<trystero::room> b2(join(t.b, "r2", {.password = "wrong"}));
+        webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return a_kicks.size() == 3; }, 40s)));
+        const double first = a_kicks.front();
+        BOOST_TEST_EQ(a_kicks.back() - first, 33'000.0);
+        webcpp::trystero::test::advance(t.f, 2s);
+        b2.reset();
+        b2.emplace(join(t.b, "r2", {.password = "right"}));
+        std::vector<boost::system::error_code> b_errors;
+        b2->on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+            b_errors.push_back(ec);
+        });
+        BOOST_TEST(run_until(t.f, [&] { return b2->peers().size() == 1; }, 45s));
+        BOOST_TEST_EQ(t.f.net.now_ms() - first, 77'000.0);
+        BOOST_TEST_LE(std::ranges::count(b_errors, trystero::error::handshake_timed_out), 2);
+        BOOST_TEST_EQ(a_kicks.size(), 3U);
+    }
+    {
+        two_apps t("ZZZZZZZZZZZZZZZZZZC1", "AAAAAAAAAAAAAAAAAAC2");  // B the lower id
+        joined_in(t, {"r1"});
+        std::vector<boost::system::error_code> b_errors;
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "right"}));
+        std::optional<trystero::room> b2(join(t.b, "r2", {.password = "wrong"}));
+        b2->on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+            b_errors.push_back(ec);
+        });
+        webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !b_errors.empty(); }, 1s)));
+        webcpp::trystero::test::advance(t.f, 3s);
+        b2.reset();
+        b2.emplace(join(t.b, "r2", {.password = "right"}));
+        BOOST_TEST(run_until(t.f, [&] { return b2->peers().size() == 1; }, 1ms));
+    }
+}
+
+// before A's r2 binds B, inject delivers on A's end B's @_hsready and @_leave of r2; then
+// B's presence is let through: A binds, discards both, and the handshake completes on B's next
+// frames, with no leave: A's log names no peer gone.
+void a_kept_leave_discards_what_came_before() {
+    std::vector<std::string> a_log;
+    auto a_config = app_config("AAAAAAAAAAAAAAAAAAE1");
+    a_config.log = [&a_log](std::string_view, std::string_view text) { a_log.emplace_back(text); };
+    two_apps t("AAAAAAAAAAAAAAAAAAE1", "ZZZZZZZZZZZZZZZZZZE2");
+    t.a = trystero::app(t.f.io.get_executor(), t.f.net, std::move(a_config));
+    const ends e(t);
+    joined_in(t, {"r1"});
+    bool hold_presence = true;
+    t.f.net.filter = [&](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+        return hold_presence && is_presence(frame, "r2", true)
+                   ? trystero::test::memory_network::verdict::hold
+                   : trystero::test::memory_network::verdict::deliver;
+    };
+    t.a_rooms.push_back(join(t.a, "r2"));
+    t.b_rooms.push_back(join(t.b, "r2"));
+    for (const auto* name : {"@_hsready", "@_leave"}) {
+        t.f.net.inject(e.a(), internal_frame("r2", name));
+    }
+    webcpp::trystero::test::advance(t.f, 200ms);
+    BOOST_TEST(t.a_rooms[1].peers().empty());
+    hold_presence = false;
+    t.f.net.release(e.a());
+    t.f.net.release(t.f.net.peer_of(e.a()));
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
+    BOOST_TEST(std::ranges::none_of(
+        a_log, [](const std::string& line) { return line.find(" gone: ") != std::string::npos; }));
+}
+
+// crossed connections recover: A's end of r1's pair and B's end of r2's open first; both
+// sides lose both, then both rooms join again within 15 s of virtual time, over one connection.
+void crossed_connections_recover() {
+    fixture f{true};
+    auto a_config = app_config("AAAAAAAAAAAAAAAAAAF1");
+    a_config.ice_servers = {{.urls = {"stun:a.test"}, .username = {}, .credential = {}}};
+    auto b_config = app_config("ZZZZZZZZZZZZZZZZZZF2");
+    b_config.ice_servers = {{.urls = {"stun:b.test"}, .username = {}, .credential = {}}};
+    trystero::app a(f.io.get_executor(), f.net, std::move(a_config));
+    trystero::app b(f.io.get_executor(), f.net, std::move(b_config));
+    std::vector<std::size_t> a_made;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server> servers) {
+        if (!servers.empty() && servers[0].urls.at(0) == "stun:a.test") {
+            a_made.push_back(pc);
+        }
+    };
+    f.net.defer_opens = true;
+    auto a1 = join(a, "r1");
+    auto b1 = join(b, "r1");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return !a_made.empty() && f.net.peer_of(a_made[0]) != a_made[0]; })));
+    const auto a_r1 = a_made[0];
+    const auto b_r1 = f.net.peer_of(a_r1);
+    auto a2 = join(a, "r2");
+    auto b2 = join(b, "r2");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return a_made.size() >= 2 && f.net.peer_of(a_made[1]) != a_made[1]; })));
+    const auto a_r2 = a_made[1];
+    const auto b_r2 = f.net.peer_of(a_r2);
+    f.net.open(a_r1);
+    f.net.open(b_r2);
+    webcpp::trystero::test::advance(f, 100ms);
+    f.net.open(b_r1);
+    f.net.open(a_r2);
+    f.net.defer_opens = false;
+    const double opened = f.net.now_ms();
+    BOOST_TEST(run_until(
+        f,
+        [&] {
+            return a1.peers().size() == 1 && a2.peers().size() == 1 && b1.peers().size() == 1 &&
+                   b2.peers().size() == 1;
+        },
+        15s));
+    BOOST_TEST_LE(f.net.now_ms() - opened, 15'000.0);
+    BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 2U; }));
+}
+
+// flood isolation. B floods r1 with 10,000 inline messages to an action without a handler
+// (A's queue keeps 1024) while r2 pings and chats: every r2 message arrives and every ping
+// completes without error while r1's flood is queued. The virtual clock stays fixed while posts
+// run; the interop test measures wall-clock latency.
+// Then, with a buffering channel, B sends a 5 MB transfer in r1 and, once
+// the channel holds more than 64 KiB, 20 chats in r2, which must wait for the drain :
+// none enters the channel at once, and every chat completes before the transfer does.
+void a_flood_in_one_room_does_not_starve_another() {
+    two_apps t("AAAAAAAAAAAAAAAAAAG1", "ZZZZZZZZZZZZZZZZZZG2");
+    const ends e(t);
+    joined_in(t, {"r1", "r2"});
+    const auto b_end = t.f.net.peer_of(e.a());
+    static_cast<void>(t.a_rooms[0].make_action<std::string>("unread"));  // made, no handler: queued
+    auto flood = t.b_rooms[0].make_action<std::string>("unread");
+    for (int i = 0; i < 10'000; ++i) {
+        flood.async_send("x", [](boost::system::error_code) {});
+    }
+    std::vector<std::string> r2_got;
+    auto r2_in = t.a_rooms[1].make_action<std::string>("chat");
+    r2_in.on_message(
+        [&](const std::string& s, const trystero::message_info&) { r2_got.push_back(s); });
+    auto r2_out = t.b_rooms[1].make_action<std::string>("chat");
+    for (int i = 0; i < 100; ++i) {
+        r2_out.async_send(std::to_string(i), [](boost::system::error_code) {});
+    }
+    std::vector<std::chrono::milliseconds> pings;
+    for (int i = 0; i < 5; ++i) {
+        t.b_rooms[1].async_ping(t.a.self_id(),
+                                [&](boost::system::error_code ec, std::chrono::milliseconds rtt) {
+                                    if (!ec) {
+                                        pings.push_back(rtt);
+                                    }
+                                });
+    }
+    // A ping is recorded only without an error: five of them, and every r2 message, arrive while
+    // r1's 10,000 are queued at A.
+    BOOST_TEST(run_until(t.f, [&] { return pings.size() == 5 && r2_got.size() == 100; }, 10s));
+    t.f.net.channel_capacity = 1;
+    bool transfer_done = false;
+    std::size_t chats_done = 0;
+    bool chats_first = false;
+    auto big_in = t.a_rooms[0].make_action<trystero::bytes>("big");
+    big_in.on_message([](const trystero::bytes&, const trystero::message_info&) {});
+    t.b_rooms[0].make_action<trystero::bytes>("big").async_send(
+        trystero::bytes(5'000'000, std::uint8_t{1}),
+        [&](boost::system::error_code) { transfer_done = true; });
+    webcpp::test::require(BOOST_TEST(
+        poll_until(t.f, [&] { return t.f.net.buffered(b_end) > std::size_t{64} * 1024; })));
+    r2_got.clear();
+    const auto full = t.f.net.buffered(b_end);
+    for (int i = 0; i < 20; ++i) {
+        r2_out.async_send("c", [&](boost::system::error_code) {
+            if (++chats_done == 20) {
+                chats_first = !transfer_done;
+            }
+        });
+    }
+    BOOST_TEST_EQ(t.f.net.buffered(b_end), full);  // the chats wait for the drain, not inline
+    BOOST_TEST(run_until(t.f, [&] { return transfer_done && chats_done == 20; }, 60s));
+    BOOST_TEST(chats_first);
+    BOOST_TEST_EQ(r2_got.size(), 20U);
+}
+
+// B, in lobby only, sends A presence(1, T) and an @_hsready for each token A advertised:
+// A's passwordless secret reports B joined and sends B its broadcasts; A's vault, with a password,
+// never does, and reports the handshake's failure: handshake_timed_out 10 s after binding, or
+// wrong_password when B's end sends a wrong response to A's challenge.
+void check_passwordless_room_admission(bool wrong_response) {
+    two_apps t("AAAAAAAAAAAAAAAAAAH1", "ZZZZZZZZZZZZZZZZZZH2");
+    const ends e(t);
+    t.a_rooms.push_back(join(t.a, "lobby"));
+    t.a_rooms.push_back(join(t.a, "secret"));
+    t.a_rooms.push_back(join(t.a, "vault", {.password = "pw"}));
+    t.b_rooms.push_back(join(t.b, "lobby"));
+    webcpp::test::require(BOOST_TEST(run_until(t.f, [&] {
+        return t.a_rooms[0].peers().size() == 1 && t.b_rooms[0].peers().size() == 1;
+    })));
+    std::size_t secret_broadcasts = 0;
+    t.f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        secret_broadcasts += from == e.a() && internal_name(frame, "secret") == "chat" ? 1 : 0;
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    int secret_joins = 0;
+    t.a_rooms[1].on_peer_join([&](std::string_view) { ++secret_joins; });
+    std::vector<boost::system::error_code> vault_errors;
+    t.a_rooms[2].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
+        vault_errors.push_back(ec);
+    });
+    const double injected = t.f.net.now_ms();
+    for (const auto* room : {"secret", "vault"}) {
+        t.f.net.inject(e.a(), trystero::protocol::presence_frame(
+                                  trystero::protocol::room_token(app_id, room), true));
+        t.f.net.inject(e.a(), internal_frame(room, "@_hsready"));
+    }
+    if (wrong_response) {
+        // After A's challenge, which A sent on binding vault at the presence above.
+        t.f.net.inject(
+            e.a(), internal_frame("vault", "@_hsdata", R"({"__trystero_pw":"response","h":"x"})"));
+    }
+    BOOST_TEST(run_until(t.f, [&] { return secret_joins == 1; }, 1ms));
+    t.a_rooms[1].make_action<std::string>("chat").async_send("to all",
+                                                             [](boost::system::error_code) {});
+    BOOST_TEST(run_until(t.f, [&] { return secret_broadcasts == 1; }, 1ms));
+    BOOST_TEST(run_until(t.f, [&] { return !vault_errors.empty(); }, 11s));
+    if (wrong_response) {
+        BOOST_TEST(vault_errors.at(0) == trystero::error::wrong_password);
+        BOOST_TEST_EQ(t.f.net.now_ms(), injected);
+    } else {
+        BOOST_TEST(vault_errors.at(0) == trystero::error::handshake_timed_out);
+        BOOST_TEST_EQ(t.f.net.now_ms() - injected, 10'000.0);
+    }
+    BOOST_TEST(t.a_rooms[2].peers().empty());
+}
+
+void a_passwordless_room_is_open_to_the_apps_other_rooms() {
+    for (const bool wrong_response : {false, true}) {
+        check_passwordless_room_admission(wrong_response);
+    }
+}
+
+// A's r2, in a resource of its own, sends 1 MB that waits on the full channel; A destroys
+// r2 while r1 goes on: once the posts have run, r2's resource has no bytes out, and r1 still
+// exchanges.
+void a_rooms_own_resource_returns_to_zero() {
+    counting_resource r2_memory;
+    two_apps t("AAAAAAAAAAAAAAAAAAI1", "ZZZZZZZZZZZZZZZZZZI2");
+    const ends e(t);
+    t.a_rooms.push_back(join(t.a, "r1"));
+    t.b_rooms.push_back(join(t.b, "r1"));
+    std::optional<trystero::room> r2(join(t.a, "r2", {.memory = &r2_memory}));
+    t.b_rooms.push_back(join(t.b, "r2"));
+    webcpp::test::require(
+        BOOST_TEST(run_until(t.f, [&] { return t.all_joined() && r2->peers().size() == 1; })));
+    auto big_in = t.b_rooms[1].make_action<trystero::bytes>("big");
+    big_in.on_message([](const trystero::bytes&, const trystero::message_info&) {});
+    t.f.net.channel_capacity = 1;
+    r2->make_action<trystero::bytes>("big").async_send(trystero::bytes(1'000'000, std::uint8_t{3}),
+                                                       [](boost::system::error_code) {});
+    webcpp::test::require(BOOST_TEST(
+        poll_until(t.f, [&] { return t.f.net.buffered(e.a()) > std::size_t{64} * 1024; })));
+    r2.reset();
+    webcpp::trystero::test::advance(t.f, 1s);
+    BOOST_TEST_EQ(r2_memory.in_use, 0U);
+    std::vector<std::string> got;
+    auto chat = t.b_rooms[0].make_action<std::string>("chat");
+    chat.on_message([&](const std::string& s, const trystero::message_info&) { got.push_back(s); });
+    t.a_rooms[0].make_action<std::string>("chat").async_send("after",
+                                                             [](boost::system::error_code) {});
+    BOOST_TEST(run_until(t.f, [&] { return got.size() == 1; }));
+}
+
+// A synchronous log sink may end the room whose connection is being adopted. Neither a
+// destroyed room nor one in its farewell may regain a binding after the sink returns.
+void a_log_sink_can_leave_during_adoption() {
+    for (const bool destroy : {false, true}) {
+        fixture f{true};
+        std::optional<trystero::room> leaving;
+        bool acted = false;
+        auto config = app_config("AAAAAAAAAAAAAAAAAAL1");
+        config.idle_timeout = 200ms;
+        config.log = [&](std::string_view category, std::string_view text) {
+            if (!acted && leaving && category == "webrtc" && text.ends_with(" adopted")) {
+                acted = true;
+                if (destroy) {
+                    leaving.reset();
+                } else {
+                    leaving->async_leave([](boost::system::error_code) {});
+                }
+            }
+        };
+        trystero::app a(f.io.get_executor(), f.net, std::move(config));
+        trystero::app b(f.io.get_executor(), f.net, app_config("ZZZZZZZZZZZZZZZZZZL2"));
+        const auto survivor = join(a, "survivor");
+        leaving = join(a, "departing");
+        auto remote = join(b, "departing");
+        int remote_joins = 0;
+        remote.on_peer_join([&](std::string_view) { ++remote_joins; });
+        webcpp::test::require(BOOST_TEST(run_until(f, [&] { return acted; }, 1s)));
+        webcpp::trystero::test::advance(f, 1ms);
+        if (leaving) {
+            BOOST_TEST(leaving->peers().empty());
+        }
+        BOOST_TEST_EQ(remote_joins, 0);
+        webcpp::trystero::test::advance(f, 200ms);
+        BOOST_TEST_EQ(remote_joins, 0);
+        webcpp::trystero::test::advance(f, 200ms);
+        BOOST_TEST_EQ(f.net.live_connections(), 0U);
+        auto other = join(b, "survivor");
+        BOOST_TEST(run_until(
+            f, [&] { return survivor.peers().size() == 1 && other.peers().size() == 1; }));
+    }
+}
+
+// Destroying another room from the adoption log must not leave a dangling token in the
+// advertised snapshot, or advertise that departed room after its withdrawal.
+void a_log_sink_can_destroy_another_room_during_adoption() {
+    fixture f{true};
+    std::optional<trystero::room> retired;
+    bool acted = false;
+    auto config = app_config("AAAAAAAAAAAAAAAAAAM1");
+    config.idle_timeout = 0ms;
+    config.log = [&](std::string_view category, std::string_view text) {
+        if (!acted && retired && category == "webrtc" && text.ends_with(" adopted")) {
+            acted = true;
+            retired.reset();
+        }
+    };
+    trystero::app a(f.io.get_executor(), f.net, std::move(config));
+    trystero::app b(f.io.get_executor(), f.net, app_config("ZZZZZZZZZZZZZZZZZZM2"));
+    retired = join(a, "retired");
+    auto lobby = join(a, "lobby");
+    auto remote = join(b, "lobby");
+    std::size_t invalid_frames = 0;
+    std::size_t retired_after_leave = 0;
+    const auto retired_token = trystero::protocol::room_token(app_id, "retired");
+    f.net.filter = [&](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+        const auto env = trystero::protocol::decode_envelope(frame);
+        invalid_frames += !env ? 1 : 0;
+        if (acted && env && env->type == trystero::protocol::envelope::kind::presence &&
+            env->token == retired_token && env->present) {
+            ++retired_after_leave;
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    BOOST_TEST(
+        run_until(f, [&] { return lobby.peers().size() == 1 && remote.peers().size() == 1; }));
+    BOOST_TEST(acted);
+    BOOST_TEST_EQ(invalid_frames, 0U);
+    BOOST_TEST_EQ(retired_after_leave, 0U);
+    f.net.filter = {};
+}
+
+// A password challenge has a string nonce, as Trystero's handshake requires. A number or
+// null must not be silently converted into an empty challenge by the responder.
+void a_password_challenge_requires_a_string() {
+    for (const auto* const malformed :
+         {R"({"__trystero_pw":"challenge","c":null})", R"({"__trystero_pw":"challenge","c":42})"}) {
+        two_apps t("ZZZZZZZZZZZZZZZZZZN1", "AAAAAAAAAAAAAAAAAAN2");
+        const ends e(t);
+        joined_in(t, {"r1"});
+        t.f.net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+            return internal_name(frame, "r2") == "@_hsdata"
+                       ? trystero::test::memory_network::verdict::drop
+                       : trystero::test::memory_network::verdict::deliver;
+        };
+        t.a_rooms.push_back(join(t.a, "r2", {.password = "pw"}));
+        std::vector<boost::system::error_code> errors;
+        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
+                                  std::string_view) { errors.push_back(ec); });
+        t.b_rooms.push_back(join(t.b, "r2", {.password = "pw"}));
+        webcpp::trystero::test::advance(t.f, 1ms);
+        t.f.net.filter = {};
+        t.f.net.inject(t.f.net.peer_of(e.a()), internal_frame("r2", "@_hsdata", malformed));
+        webcpp::trystero::test::advance(t.f, 1ms);
+        BOOST_TEST_EQ(errors.size(), 1U);
+        if (!errors.empty()) {
+            BOOST_TEST(errors.front() == trystero::error::wrong_password);
+        }
+        BOOST_TEST(t.a_rooms[1].peers().empty());
+        BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
+    }
+}
+
 }  // namespace
 
-int main() {
-    every_room_has_the_apps_id();
-    each_setup_report_reaches_the_current_handler_once();
-    joining_is_refused_twice_and_beyond_64();
-    two_apps_with_one_id_never_meet();
-    two_rooms_share_one_connection();
-    three_rooms_share_one_connection();
-    a_second_connection_is_dropped();
-    a_moved_from_app_releases_nothing();
-    an_app_destroyed_leaves_its_rooms_going();
-    an_app_assigned_over_releases_its_state();
-    an_app_assigned_to_itself_keeps_its_state();
-    frames_before_presence_are_kept();
-    a_kept_frame_that_kicks_during_a_binding();
-    a_kept_frame_binds_its_room();
-    a_leaving_room_binds_no_one();
-    a_connections_end_is_every_rooms();
-    a_late_join_binds_over_the_connection();
-    a_forged_announcement_binds_nothing();
-    one_room_leaves();
-    a_peer_leaving_every_room_idles_the_connection();
-    an_action_level_kick_is_per_room();
-    a_connection_failing_under_a_waiting_transfer();
-    a_room_left_can_be_joined_again();
-    join_and_leave_sequences_on_one_id();
-    the_farewell_binds_nothing();
-    the_last_user_closes_every_connection();
-    the_io_context_destroyed_with_operations_pending();
+int main(int argc, const char* const argv[]) {
+    const auto cases = std::to_array<std::pair<std::string_view, void (*)()>>({
+        {"a_password_challenge_requires_a_string", a_password_challenge_requires_a_string},
+        {"a_log_sink_can_leave_during_adoption", a_log_sink_can_leave_during_adoption},
+        {
+            "a_log_sink_can_destroy_another_room_during_adoption",
+            a_log_sink_can_destroy_another_room_during_adoption,
+        },
+        {"a_rooms_own_resource_returns_to_zero", a_rooms_own_resource_returns_to_zero},
+        {
+            "a_passwordless_room_is_open_to_the_apps_other_rooms",
+            a_passwordless_room_is_open_to_the_apps_other_rooms,
+        },
+        {"crossed_connections_recover", crossed_connections_recover},
+        {
+            "a_flood_in_one_room_does_not_starve_another",
+            a_flood_in_one_room_does_not_starve_another,
+        },
+        {"every_room_has_the_apps_id", every_room_has_the_apps_id},
+        {
+            "each_setup_report_reaches_the_current_handler_once",
+            each_setup_report_reaches_the_current_handler_once,
+        },
+        {"joining_is_refused_twice_and_beyond_64", joining_is_refused_twice_and_beyond_64},
+        {"two_apps_with_one_id_never_meet", two_apps_with_one_id_never_meet},
+        {"two_rooms_share_one_connection", two_rooms_share_one_connection},
+        {"three_rooms_share_one_connection", three_rooms_share_one_connection},
+        {"a_second_connection_is_dropped", a_second_connection_is_dropped},
+        {"a_moved_from_app_releases_nothing", a_moved_from_app_releases_nothing},
+        {"an_app_destroyed_leaves_its_rooms_going", an_app_destroyed_leaves_its_rooms_going},
+        {"an_app_assigned_over_releases_its_state", an_app_assigned_over_releases_its_state},
+        {"an_app_assigned_to_itself_keeps_its_state", an_app_assigned_to_itself_keeps_its_state},
+        {"frames_before_presence_are_kept", frames_before_presence_are_kept},
+        {"a_kept_frame_that_kicks_during_a_binding", a_kept_frame_that_kicks_during_a_binding},
+        {"a_kept_frame_binds_its_room", a_kept_frame_binds_its_room},
+        {"a_leaving_room_binds_no_one", a_leaving_room_binds_no_one},
+        {"a_connections_end_is_every_rooms", a_connections_end_is_every_rooms},
+        {"a_late_join_binds_over_the_connection", a_late_join_binds_over_the_connection},
+        {"a_forged_announcement_binds_nothing", a_forged_announcement_binds_nothing},
+        {"a_kick_is_per_room", a_kick_is_per_room},
+        {"one_room_leaves", one_room_leaves},
+        {
+            "a_peer_leaving_every_room_idles_the_connection",
+            a_peer_leaving_every_room_idles_the_connection,
+        },
+        {"an_action_level_kick_is_per_room", an_action_level_kick_is_per_room},
+        {
+            "a_connection_failing_under_a_waiting_transfer",
+            a_connection_failing_under_a_waiting_transfer,
+        },
+        {"a_room_left_can_be_joined_again", a_room_left_can_be_joined_again},
+        {"join_and_leave_sequences_on_one_id", join_and_leave_sequences_on_one_id},
+        {"the_farewell_binds_nothing", the_farewell_binds_nothing},
+        {"the_last_user_closes_every_connection", the_last_user_closes_every_connection},
+        {
+            "the_io_context_destroyed_with_operations_pending",
+            the_io_context_destroyed_with_operations_pending,
+        },
+        {"the_rebinding_step", the_rebinding_step},
+        {"a_wrong_password_rebinds_at_the_steps", a_wrong_password_rebinds_at_the_steps},
+        {"a_kick_that_closes_the_connection", a_kick_that_closes_the_connection},
+        {"binding_needs_the_peers_own_presence", binding_needs_the_peers_own_presence},
+        {"a_transient_failure_converges", a_transient_failure_converges},
+        {"an_answer_to_an_old_challenge", an_answer_to_an_old_challenge},
+        {"a_corrected_password_rejoins", a_corrected_password_rejoins},
+        {"a_kept_leave_discards_what_came_before", a_kept_leave_discards_what_came_before},
+    });
+    std::size_t ran = 0;
+    for (const auto& [name, run] : cases) {
+        if (argc == 1 || name == argv[1]) {
+            run();
+            ++ran;
+        }
+    }
+    BOOST_TEST(ran != 0);
     return boost::report_errors();
 }

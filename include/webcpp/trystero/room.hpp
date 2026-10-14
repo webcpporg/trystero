@@ -17,6 +17,7 @@
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
 #include <webcpp/trystero/detail/post.hpp>
+#include <webcpp/trystero/detail/rebinding.hpp>
 #include <webcpp/trystero/detail/signaling.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -77,10 +78,10 @@ using bytes = std::vector<std::uint8_t>;
 /**
  * Binary data in a memory resource, an action's binary payload in the room's resource.
  *
- * A message received as `pmr_bytes` is in the room's resource, its app's `app_config::memory`,
- * which must outlive the value:
- * the buffer its transfer assembled, moved out without a copy, or a copy of its bytes when it
- * arrived inline, in one frame.
+ * A message received as `pmr_bytes` uses the room's effective `room_options::memory`, which
+ * must outlive the value. A received buffer in the same resource is moved into the value;
+ * a buffer in the app's distinct resource is copied once into the room's. An inline payload
+ * is taken out of its frame before being moved or copied.
  *
  * @see "Allocation", in the guide.
  */
@@ -164,7 +165,7 @@ inline std::string_view as_text(std::span<const std::uint8_t> data) {
  * | std::string_view              | text            | a view of the frame, in a handler           |
  * | boost::json::value            | JSON            | parsed, in the room's JSON storage          |
  * | trystero::bytes               | binary          | a copy of the bytes                         |
- * | trystero::pmr_bytes           | binary          | the transfer's buffer, moved, in the room's |
+ * | trystero::pmr_bytes           | binary          | moved or copied once into the room's       |
  * |                               |                 | resource                                    |
  * | std::span<const std::uint8_t> | binary          | a view of the frame, in a handler           |
  * | trystero::payload             | any             | by format                                   |
@@ -324,6 +325,10 @@ struct payload_traits<pmr_bytes> {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
         }
+        if (m.buffer.get_allocator().resource() != memory) {
+            const auto payload = m.payload();
+            return pmr_bytes(payload.begin(), payload.end(), memory);
+        }
         return pmr_bytes(std::move(m).take_payload(), memory);
     }
 };
@@ -461,23 +466,27 @@ public:
               .password = std::pmr::string(std::move(options.password), memory_),
               .handshake_timeout = options.handshake_timeout,
               .max_receive_bytes = options.max_receive_bytes,
+              .memory = memory_,
           },
           room_id_(room_id, memory_),
           token_(protocol::room_token(app_->app_id(), room_id_, memory_)),
           root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
-          met_(memory_),
+          rebinds_(memory_),
           actions_(memory_),
           leave_completions_(memory_) {}
 
+    /** Room state represents one membership and cannot be copied. */
     room_impl(const room_impl&) = delete;
+    /** Room state cannot be replaced by copying. */
     room_impl& operator=(const room_impl&) = delete;
 
-    /** A room of `app`, in the app's resource, joined: `start` has run. */
+    /** A room of `app`, in its chosen resource, joined: `start` has run. */
     static std::shared_ptr<room_impl> make(std::shared_ptr<app_impl> app, room_options options,
                                            std::string_view room_id) {
-        std::pmr::memory_resource* const memory = app->memory();
+        std::pmr::memory_resource* const memory =
+            options.memory != nullptr ? options.memory : app->memory();
         auto impl =
             std::allocate_shared<room_impl>(std::pmr::polymorphic_allocator<>(memory),
                                             std::move(app), std::move(options), room_id, memory);
@@ -589,6 +598,11 @@ public:
             log_, memory_, json_);
         log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
              " over ", app_->relay_urls().size(), " relays");
+        register_and_advertise();
+    }
+
+    /** Registers the membership, starts discovery, and advertises it on live connections. */
+    void register_and_advertise() {
         // By a weak reference: the room leaves the registry before it ends, its destructor
         // included.
         app_->register_room(room_id_, token_,
@@ -645,22 +659,36 @@ public:
         on_error_ = keep_handler(std::move(f));
     }
 
+    /** Binds advertised peers when allowed, or detaches a withdrawn token. */
     void presence_changed(std::string_view peer, bool present) override {
         if (present) {
+            const auto it = rebinds_.find(peer);
+            if (it != rebinds_.end() && it->second.dropping) {
+                it->second.dropping = false;
+                try_bind(peer, bind_event::reuse);
+                return;
+            }
             try_bind(peer, bind_event::presence);
         } else if (peers_.contains(peer)) {
             remove_peer(peer, "peer left the room", end_kind::withdrawn);
         }
     }
 
-    [[nodiscard]] bool keeps_frames_from(std::string_view /*peer*/) const override { return true; }
+    /** Whether this peer's unbound frames survive the higher id's dropping window. */
+    [[nodiscard]] bool keeps_frames_from(std::string_view peer) const override {
+        const auto it = rebinds_.find(peer);
+        return it == rebinds_.end() || !it->second.dropping;
+    }
 
+    /** Tries to bind a peer after its frame for this room was kept. */
     void frame_kept(std::string_view peer) override { try_bind(peer, bind_event::frame); }
 
+    /** Forgets history and removes only the binding belonging to the ended connection. */
     void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                           std::string_view reason) override {
-        if (const auto it = met_.find(peer); it != met_.end() && it->second.lock() == ended) {
-            met_.erase(it);
+        if (const auto it = rebinds_.find(peer);
+            it != rebinds_.end() && it->second.on.lock() == ended) {
+            rebinds_.erase(it);
         }
         // The peer may be bound to another connection by now: a late end of an older one is not
         // its end.
@@ -781,6 +809,7 @@ public:
         finish_farewell();
     }
 
+    /** Whether this room is still in its farewell interval. */
     [[nodiscard]] bool leaving() const override { return left_ && !ended_; }
 
     /** Ends the room now: its presence(0) sent, the room unregistered and the app's user released
@@ -877,6 +906,7 @@ private:
         bool active = false;
         bool local_passed = false;
         bool remote_ready = false;
+        bool challenge_sent = false;
         std::pmr::string challenge;  // the initiator's, while it waits for the response
         std::shared_ptr<backend::timer> handshake_timer;
         std::pmr::deque<pending_ping> pings;
@@ -990,7 +1020,7 @@ private:
         if (!app_->find(peer)) {
             return false;
         }
-        if (!met_.contains(peer)) {
+        if (!met(peer)) {
             try_bind(peer, bind_event::reuse);
         }
         return true;
@@ -1017,25 +1047,46 @@ private:
         return true;
     }
 
-    /** Whether a backoff of this room runs for `peer`, which keeps it from binding the peer. */
-    [[nodiscard]] bool refusing(std::string_view /*peer*/) const { return false; }
+    /** Whether this room has already met `peer` over the current shared connection. */
+    [[nodiscard]] bool met(std::string_view peer) const {
+        const auto it = rebinds_.find(peer);
+        return it != rebinds_.end() && it->second.met;
+    }
 
-    /** Delivers the frames `c` kept for this room, in their order, to the binding `mine` of `peer`.
-     * A frame may make the room kick the peer at once (an action-level violation, a malformed
-     * handshake message, a `\@_leave`), which removes the peer's entry: delivery stops as soon as
-     * the entry is gone or holds another binding. */
-    void deliver_kept(const std::pmr::string& peer, connection& c, const binding* mine) {
+    /** Whether the lower id is refusing a binding during its backoff. */
+    [[nodiscard]] bool refusing(std::string_view peer) const {
+        const auto it = rebinds_.find(peer);
+        return it != rebinds_.end() && it->second.refusing;
+    }
+
+    /** Whether a kept frame is a `\@_leave`, which ends a binding of the other side. */
+    static bool is_leave(std::span<const std::uint8_t> frame) {
+        const auto e = protocol::decode_envelope(frame);
+        const auto d = e ? protocol::decode_action(e->payload) : protocol::decode_result{};
+        const auto* p = d.frame ? std::get_if<protocol::proposal>(&*d.frame) : nullptr;
+        return p != nullptr && p->name == "@_leave";
+    }
+
+    /** Delivers the frames `c` kept for this room, in order, but a kept \@_leave and everything
+     * kept before it, which belong to a binding of the other side that has ended. Stops once the
+     * peer's entry is gone or holds another binding. */
+    void deliver_kept(const std::pmr::string& peer, connection& c, const detail::binding* mine) {
         auto frames = c.take_kept(token_);
-        for (auto& frame : frames) {
+        std::size_t first = 0;
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            if (is_leave(frames[i])) {
+                first = i + 1;
+            }
+        }
+        for (std::size_t i = first; i < frames.size(); ++i) {
             if (const auto it = peers_.find(peer);
                 it == peers_.end() || it->second.link.get() != mine) {
                 return;
             }
-            // The connection decoded the envelope when it kept the frame.
-            const auto envelope = protocol::decode_envelope(frame);
+            const auto envelope = protocol::decode_envelope(frames[i]);
             BOOST_ASSERT(envelope);
             const auto action = envelope->payload;
-            wire_->handle(peer, std::move(frame), action);
+            wire_->handle(peer, std::move(frames[i]), action);
         }
     }
 
@@ -1058,7 +1109,17 @@ private:
         }
         const std::pmr::string peer(peer_view, memory_);
         const auto c = app_->adopt(peer, std::move(pc), std::move(channel));
-        bind_peer(peer, c);
+        // Adoption logs synchronously: the sink may leave or destroy this room, or end the
+        // connection. A farewell still counts as leaving and must not gain a new binding.
+        if (left_) {
+            if (ended_) {
+                c->idle_if_unused(app_->idle_timeout());
+            } else {
+                departing_connection_ = c;
+            }
+        } else if (c->live()) {
+            bind_peer(peer, c);
+        }
     }
 
     /** Binds this room to `c` for `peer`, in the order the specification sets: the negotiation
@@ -1077,7 +1138,10 @@ private:
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
         signaling_->bound(peer);
-        met_.insert_or_assign(std::pmr::string(peer, memory_), c);
+        auto& history =
+            rebinds_.try_emplace(std::pmr::string(peer, memory_), allocator()).first->second;
+        history.met = true;
+        history.on = c;
         // This binding, held until the call returns: a kept frame may remove the peer's entry and
         // free it, and another made meanwhile must not be taken for it at the same address.
         std::shared_ptr<const binding> mine;
@@ -1121,10 +1185,14 @@ private:
         }
         if (app_->self_id() < peer) {
             state.challenge = random_id(36);
+            if (const auto history = rebinds_.find(peer); history != rebinds_.end()) {
+                history->second.challenges.push(std::pmr::string(state.challenge, memory_));
+            }
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
             protocol::json::append_string(text, state.challenge);
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
+            state.challenge_sent = true;
         }
     }
 
@@ -1142,24 +1210,36 @@ private:
             return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
         };
         if (app_->self_id() < peer) {
-            if (field("__trystero_pw") != "response" ||
-                field("h") != protocol::handshake_proof(it->second.challenge, options_.password,
-                                                        app_->app_id(), room_id_, memory_)) {
-                fail_handshake(peer);
+            const auto h = field("h");
+            const auto r = rebinds_.find(peer);
+            const bool proves =
+                field("__trystero_pw") == "response" && r != rebinds_.end() &&
+                r->second.challenges.any_of([&](std::string_view c) {
+                    return h == protocol::handshake_proof(c, options_.password, app_->app_id(),
+                                                          room_id_, memory_);
+                });
+            if (proves) {
+                pass_local(peer);
                 return;
             }
-        } else {
-            if (field("__trystero_pw") != "challenge" || o->if_contains("c") == nullptr) {
-                fail_handshake(peer);
-                return;
+            if (!it->second.challenge_sent) {
+                return;  // a late answer of an ended binding, before this one's challenge
             }
-            std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
-            protocol::json::append_string(
-                text, protocol::handshake_proof(field("c"), options_.password, app_->app_id(),
-                                                room_id_, memory_));
-            text += '}';
-            send_internal("@_hsdata", peer, protocol::payload_format::json, text);
+            fail_handshake(peer);
+            return;
         }
+        const auto* challenge = o != nullptr ? o->if_contains("c") : nullptr;
+        if (field("__trystero_pw") != "challenge" || challenge == nullptr ||
+            !challenge->is_string()) {
+            fail_handshake(peer);
+            return;
+        }
+        std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
+        protocol::json::append_string(
+            text, protocol::handshake_proof(field("c"), options_.password, app_->app_id(), room_id_,
+                                            memory_));
+        text += '}';
+        send_internal("@_hsdata", peer, protocol::payload_format::json, text);
         pass_local(peer);
     }
 
@@ -1186,6 +1266,11 @@ private:
             return;
         }
         it->second.active = true;
+        if (const auto history = rebinds_.find(peer); history != rebinds_.end()) {
+            history->second.ends = 0;
+            history->second.challenges.clear();
+            history->second.timer.reset();
+        }
         it->second.handshake_timer.reset();
         log_("room", "peer joined: ", it->first);
         if (on_join_) {
@@ -1258,6 +1343,41 @@ private:
         state.link->detach(kind == end_kind::kick, app_->idle_timeout());
     }
 
+    /** After a binding with `peer` ended over a live connection, by a kick of either side: the
+     * next binding at one step (detail::rebinding_step); meanwhile the lower id refuses after its
+     * own kick, and the higher id drops the peer's frames after its own kick, until it sends
+     * presence. */
+    void schedule_rebinding(std::string_view peer, bool own_kick) {
+        auto& r = rebinds_.try_emplace(std::pmr::string(peer, memory_), allocator()).first->second;
+        ++r.ends;
+        const bool lower = app_->self_id() < peer;
+        r.refusing = own_kick && lower;
+        r.dropping = own_kick && !lower;
+        r.timer = factory_.make_timer(memory_);
+        r.timer->start(
+            rebinding_step(options_.handshake_timeout, r.ends),
+            bind<void()>([weak = weak_from_this(), peer = std::pmr::string(peer, memory_)] {
+                if (const auto self = weak.lock()) {
+                    self->on_rebinding_time(peer);
+                }
+            }));
+    }
+
+    void on_rebinding_time(std::string_view peer) {
+        const auto it = rebinds_.find(peer);
+        if (it == rebinds_.end()) {
+            return;
+        }
+        it->second.refusing = false;
+        if (peers_.contains(peer)) {
+            return;  // something bound it before its time
+        }
+        if (const auto c = app_->find(peer); c && c->advertised(token_)) {
+            it->second.dropping = false;
+            try_bind(peer, bind_event::rebinding);
+        }
+    }
+
     void remove_peer(std::string_view peer_view, std::string_view reason, end_kind kind) {
         const auto it = peers_.find(peer_view);
         if (it == peers_.end()) {
@@ -1277,6 +1397,9 @@ private:
         if (left_) {
             return;
         }
+        if ((kind == end_kind::kick || kind == end_kind::peer_left) && app_->find(peer)) {
+            schedule_rebinding(peer, kind == end_kind::kick);
+        }
         signaling_->forget(peer);
         // Announcements find peers without a connection; over a live one every rebinding goes
         // through it.
@@ -1295,7 +1418,9 @@ private:
      * when the app's idle time is 0. */
     void close_everything() {
         leave_timer_.reset();
-        for (const auto& c : app_->live_connections()) {
+        rebinds_.clear();
+        const auto connections = app_->live_connections();
+        for (const auto& c : connections) {
             c->send_presence(token_, false);
         }
         auto peers = std::move(peers_);
@@ -1310,6 +1435,12 @@ private:
                 wire_->clear_peer(id, make_error_code(error::room_left));
             }
         }
+        // A log callback may have left this room during adoption, before it had a binding
+        // to detach. Its connection still gets an idle deadline after the farewell withdrawal.
+        if (const auto c = departing_connection_.lock()) {
+            c->idle_if_unused(app_->idle_timeout());
+        }
+        departing_connection_.reset();
         for (auto& [name, slot] : actions_) {
             for (auto& receiver : slot.receivers) {
                 complete(std::move(receiver), make_error_code(error::room_left), incoming{});
@@ -1344,13 +1475,14 @@ private:
     std::shared_ptr<signaling> signaling_;
     std::shared_ptr<nostr_strategy> strategy_;
     std::pmr::map<std::pmr::string, peer_state, std::less<>> peers_;
-    std::pmr::map<std::pmr::string, std::weak_ptr<connection>, std::less<>> met_;
+    std::pmr::map<std::pmr::string, rebind_state, std::less<>> rebinds_;
     std::pmr::map<std::pmr::string, action_slot, std::less<>> actions_;
     std::shared_ptr<handler<void(std::string_view)>> on_join_;
     std::shared_ptr<handler<void(std::string_view)>> on_leave_;
     std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
         on_error_;
     std::shared_ptr<backend::timer> leave_timer_;
+    std::weak_ptr<connection> departing_connection_;
     std::pmr::vector<completion<void(boost::system::error_code)>> leave_completions_;
     bool ended_ = false;
     bool left_ = false;
@@ -1372,9 +1504,10 @@ class action;
  *
  * Tip: every handler the room calls, and every completion, runs on its app's executor. The views a
  * handler receives are valid for the duration of the call. Every allocation of the room goes
- * through its app's `app_config::memory`; a completion handler is allocated as its own associated
- * allocator says. Destroying the room leaves operations pending on its executor, which free into
- * that resource: it must outlive them (see `app_config::memory`).
+ * through its effective `room_options::memory`, the app's resource when null; shared connections
+ * and received frames use `app_config::memory`. A completion handler is allocated as its own
+ * associated allocator says. Destroying the room leaves operations pending on its executor, so
+ * both resources must outlive those operations and every retained value allocated in them.
  *
  * @see "Rooms and actions", in the guide.
  */

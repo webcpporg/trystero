@@ -782,6 +782,10 @@ public:
      * after `max_steps` timers without reaching its end, which only a timer re-armed without delay
      * does. */
     bool advance(std::chrono::milliseconds by);
+    /** Pumps at most max_steps ready handlers, bounding self-posting cycles as well as timers. */
+    bool poll_ready();
+    /** A ready-handler budget was exhausted; the caller must report a test failure. */
+    bool handlers_exhausted = false;
     /** Runs the io_context's ready work, then fires the earliest timer due at or before
      * `until_ms`, moving the clock to it; false, with the clock at `until_ms`, when none is due. */
     bool step(double until_ms);
@@ -1058,13 +1062,28 @@ inline bool memory_network::due_by(double until_ms) const {
     return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until_ms;
 }
 
+inline bool memory_network::poll_ready() {
+    if (handlers_exhausted) {
+        return false;
+    }
+    io_.restart();
+    for (std::size_t n = 0; n < max_steps; ++n) {
+        if (io_.poll_one() == 0) {
+            return true;
+        }
+    }
+    handlers_exhausted = true;
+    return false;
+}
+
 inline bool memory_network::step(double until_ms) {
     // The clock moves from the first step, before any timer is made.
     if (virtual_clock && !clock_) {
         clock_ = std::make_shared<virtual_clock_state>();
     }
-    io_.restart();
-    io_.poll();
+    if (!poll_ready()) {
+        return false;
+    }
     if (!due_by(until_ms)) {
         if (clock_) {
             clock_->now_ms = std::max(clock_->now_ms, until_ms);
@@ -1076,24 +1095,21 @@ inline bool memory_network::step(double until_ms) {
     memory_timer* const timer = it->second;
     clock_->due.erase(it);
     timer->expire();
-    io_.restart();
-    io_.poll();
-    return true;
+    return poll_ready();
 }
 
 inline bool memory_network::advance(std::chrono::milliseconds by) {
     const double until = now_ms() + static_cast<double>(by.count());
     // A run of exactly max_steps timers is finite: only one more due timer stops it.
     for (std::size_t fired = 0;; ++fired) {
-        io_.restart();
-        io_.poll();
+        if (!poll_ready()) {
+            return false;
+        }
         if (fired == max_steps && due_by(until)) {
             return false;
         }
         if (!step(until)) {
-            io_.restart();
-            io_.poll();
-            return true;
+            return poll_ready();
         }
     }
 }

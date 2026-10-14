@@ -80,6 +80,7 @@ protected:
  */
 class app_impl : public std::enable_shared_from_this<app_impl> {
 public:
+    /** The executor shared by the app and its rooms. */
     using executor_type = boost::asio::any_io_executor;
 
     /** Copies the configuration into its resource, draws the self id unless it names one, and sets
@@ -138,25 +139,36 @@ public:
         }
     }
 
+    /** The app state has one identity and cannot be copied. */
     app_impl(const app_impl&) = delete;
+    /** The app state cannot be replaced by copying. */
     app_impl& operator=(const app_impl&) = delete;
 
+    /** The executor every app and room event runs on. */
     [[nodiscard]] const executor_type& get_executor() const { return ex_; }
 
+    /** The backend that makes the app and room platform objects. */
     [[nodiscard]] backend::factory& factory() const { return factory_; }
 
+    /** The app resource, which outlives its rooms and pending operations. */
     [[nodiscard]] std::pmr::memory_resource* memory() const { return memory_; }
 
+    /** The shared logger, whose sentences use the app resource. */
     [[nodiscard]] const logger& log() const { return log_; }
 
+    /** The application id shared by every room. */
     [[nodiscard]] std::string_view app_id() const { return app_id_; }
 
+    /** The local peer id shared by every room. */
     [[nodiscard]] std::string_view self_id() const { return self_id_; }
 
+    /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
 
+    /** The validated ICE servers used for every negotiation. */
     [[nodiscard]] std::span<const backend::ice_server> ice_servers() const { return ice_servers_; }
 
+    /** The lifetime of a connection left with no bindings after a departure. */
     [[nodiscard]] std::chrono::milliseconds idle_timeout() const { return idle_timeout_; }
 
     /** What the constructor set aside, a sentence each, in its order. */
