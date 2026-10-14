@@ -66,6 +66,10 @@ void settle(asio::io_context& io) {
  * the connection each end names. */
 class fake_room final : public detail::room_endpoint {
 public:
+    [[nodiscard]] bool leaving() const override { return false; }
+
+    void finish_farewell() override {}
+
     void presence_changed(std::string_view peer, bool present) override {
         events.push_back((present ? "+" : "-") + std::string(peer));
     }

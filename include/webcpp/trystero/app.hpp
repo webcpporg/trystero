@@ -179,8 +179,13 @@ public:
      */
     boost::system::result<room> join(std::string_view room_id, room_options options = {}) {
         BOOST_ASSERT(impl_);
-        if (impl_->find_room(room_id)) {
-            return error::already_joined;
+        if (const auto existing = impl_->find_room(room_id)) {
+            if (!existing->leaving()) {
+                return error::already_joined;
+            }
+            // Trystero's rejoin (C/strategy.mjs:38): the old room's presence(0) goes before the
+            // new room's presence(1).
+            existing->finish_farewell();
         }
         if (impl_->counted_rooms() >= max_rooms) {
             return error::too_many_rooms;

@@ -468,7 +468,8 @@ public:
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
           met_(memory_),
-          actions_(memory_) {}
+          actions_(memory_),
+          leave_completions_(memory_) {}
 
     room_impl(const room_impl&) = delete;
     room_impl& operator=(const room_impl&) = delete;
@@ -744,36 +745,56 @@ public:
         send_internal("@_ping", it->first);
     }
 
-    /** Says `\@_leave` to every peer, then closes everything after Trystero's 99 ms. */
+    /** Says `\@_leave` to every peer, then ends the room after Trystero's 99 ms. A leave asked
+     * during the farewell completes with the first; one asked once the room ended, at once. */
     void leave(completion<void(boost::system::error_code)> handler) {
-        if (left_) {
+        if (ended_) {
             complete(std::move(handler), boost::system::error_code{});
             return;
         }
-        left_ = true;
+        leave_completions_.push_back(std::move(handler));
+        if (std::exchange(left_, true)) {
+            return;
+        }
         log_("room", "leaving room ", room_id_);
         for (const auto& [id, p] : peers_) {
             send_internal("@_leave", id);
         }
-        // Trystero gives the farewell 99 ms to leave before closing the connections.
+        // Trystero gives the farewell 99 ms to leave before closing the connections. The timer
+        // holds the room weakly: a handle destroyed meanwhile ends the farewell itself (abandon).
         leave_timer_ = factory_.make_timer(memory_);
-        leave_timer_->start(
-            std::chrono::milliseconds(99),
-            bind<void()>([self = shared_from_this(), handler = std::move(handler)]() mutable {
-                self->close_everything();
-                self->complete(std::move(handler), boost::system::error_code{});
-            }));
+        leave_timer_->start(std::chrono::milliseconds(99), bind<void()>([weak = weak_from_this()] {
+                                if (const auto self = weak.lock()) {
+                                    self->finish_farewell();
+                                }
+                            }));
     }
 
-    /** Leaves at once, without the farewell's grace period: the room handle was destroyed. */
+    /** The room handle was destroyed: leaves at once, without the farewell's grace, or ends the
+     * farewell that runs. */
     void abandon() {
-        if (std::exchange(left_, true)) {
+        if (!std::exchange(left_, true)) {
+            for (const auto& [id, p] : peers_) {
+                send_internal("@_leave", id);
+            }
+        }
+        finish_farewell();
+    }
+
+    [[nodiscard]] bool leaving() const override { return left_ && !ended_; }
+
+    /** Ends the room now: its presence(0) sent, the room unregistered and the app's user released
+     * (close_everything), then every pending leave completed, once. */
+    void finish_farewell() override {
+        if (std::exchange(ended_, true)) {
             return;
         }
-        for (const auto& [id, p] : peers_) {
-            send_internal("@_leave", id);
-        }
         close_everything();
+        auto completions = std::move(leave_completions_);
+        leave_completions_.clear();
+        for (auto& h : completions) {
+            complete(std::move(h), boost::system::error_code{});
+        }
     }
 
     /**
@@ -1330,6 +1351,8 @@ private:
     std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
         on_error_;
     std::shared_ptr<backend::timer> leave_timer_;
+    std::pmr::vector<completion<void(boost::system::error_code)>> leave_completions_;
+    bool ended_ = false;
     bool left_ = false;
     bool released_ = false;  // the app's user count no longer counts this room
 };

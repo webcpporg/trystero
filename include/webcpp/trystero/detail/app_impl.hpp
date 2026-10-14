@@ -47,6 +47,10 @@ namespace webcpp::trystero::detail {
  */
 class room_endpoint {
 public:
+    /** Whether the room is in its farewell grace period. */
+    [[nodiscard]] virtual bool leaving() const = 0;
+    /** Finishes its farewell and completes every pending leave. */
+    virtual void finish_farewell() = 0;
     /** The remote advertised this room's token (`present`) or withdrew it. */
     virtual void presence_changed(std::string_view peer, bool present) = 0;
     /** Whether the connection keeps this room's frames from `peer` while the room is not bound to
