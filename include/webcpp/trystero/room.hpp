@@ -482,8 +482,10 @@ public:
     room_impl& operator=(const room_impl&) = delete;
 
     /** A room of `app`, in its chosen resource, joined: `start` has run. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): a sink, moved on
     static std::shared_ptr<room_impl> make(std::shared_ptr<app_impl> app, room_options options,
                                            std::string_view room_id) {
+        // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory =
             options.memory != nullptr ? options.memory : app->memory();
         auto impl = std::allocate_shared<room_impl>(std::pmr::polymorphic_allocator<>(memory),

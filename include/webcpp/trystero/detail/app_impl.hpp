@@ -309,9 +309,11 @@ private:
     };
 
     /** Closes the new connection and returns the live one to `peer`, if any; else adopts it. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     std::shared_ptr<connection> share_or_adopt(std::string_view peer,
                                                std::shared_ptr<backend::peer_connection> pc,
                                                std::shared_ptr<backend::data_channel> channel) {
+        // NOLINTEND(performance-unnecessary-value-param)
         if (auto existing = find(peer)) {
             channel->set_handlers({});
             pc->set_handlers({});
