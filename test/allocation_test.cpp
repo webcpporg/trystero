@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -59,6 +60,10 @@ namespace {
 // nothing else.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t global_allocations = 0;
+// The sizes of the first global allocations counted, kept without allocating, so that a count
+// the test did not expect names what it saw.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::array<std::size_t, 32> global_sizes{};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t c_allocations = 0;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -307,6 +312,9 @@ void release(void* pointer) noexcept {
  */
 void* allocate(std::size_t size, std::size_t alignment) {
     if (on_counted_thread() && counting) {
+        if (global_allocations < global_sizes.size()) {
+            global_sizes.at(global_allocations) = size;
+        }
         ++global_allocations;
     }
     alignment = alignment < sizeof(void*) ? sizeof(void*) : alignment;
@@ -317,6 +325,26 @@ void* allocate(std::size_t size, std::size_t alignment) {
         boost::throw_exception(std::bad_alloc());
     }
     return pointer;
+}
+
+/**
+ * Writes the size of each global allocation counted to the standard error when they are not
+ * `expected` in number, and, under MSVC, the iterator debugging level, whose debug runtime gives
+ * a standard container a proxy it allocates even when empty: a failed count then says what it saw.
+ */
+void explain_global_allocations(std::size_t expected) {
+    if (global_allocations == expected) {
+        return;
+    }
+    std::cerr << "global allocations: " << global_allocations << ", where " << expected
+              << " were expected; their sizes:";
+    for (std::size_t i = 0; i < global_allocations && i < global_sizes.size(); ++i) {
+        std::cerr << ' ' << global_sizes.at(i);
+    }
+#ifdef _ITERATOR_DEBUG_LEVEL
+    std::cerr << " (_ITERATOR_DEBUG_LEVEL " << _ITERATOR_DEBUG_LEVEL << ')';
+#endif
+    std::cerr << '\n';
 }
 
 /**
@@ -399,6 +427,7 @@ void the_counts_see_an_allocation() {
     void* pointer = ::operator new(40);
     counting = false;
     ::operator delete(pointer);
+    explain_global_allocations(1U);
     BOOST_TEST_EQ(global_allocations, 1U);
 #ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
     // The C library's allocation, on purpose.
@@ -486,6 +515,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     const bool arrived = run_until(io, [&] { return received == 2; });
     counting = false;
     BOOST_TEST(arrived);
+    explain_global_allocations(0U);
     BOOST_TEST_EQ(global_allocations, 0U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
@@ -641,6 +671,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(farewell);
     BOOST_TEST_GT(a_lines, 0U);
     BOOST_TEST_GT(z_lines, 0U);
+    explain_global_allocations(2U);
     BOOST_TEST_EQ(global_allocations, 2U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
@@ -723,6 +754,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
     counting = false;
     trystero::pmr_bytes(&a_memory).swap(to_shared);
     trystero::pmr_bytes(&a_room_memory).swap(to_own);
+    explain_global_allocations(4U);
     BOOST_TEST_EQ(global_allocations, 4U);  // the four rooms' JSON storage counters
     BOOST_TEST_EQ(c_allocations, 0U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
