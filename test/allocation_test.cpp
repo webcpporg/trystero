@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -59,6 +60,10 @@ namespace {
 // nothing else.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t global_allocations = 0;
+// The sizes of the first global allocations counted, kept without allocating, so that a count
+// the test did not expect names what it saw.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::array<std::size_t, 32> global_sizes{};
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t c_allocations = 0;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -307,6 +312,9 @@ void release(void* pointer) noexcept {
  */
 void* allocate(std::size_t size, std::size_t alignment) {
     if (on_counted_thread() && counting) {
+        if (global_allocations < global_sizes.size()) {
+            global_sizes.at(global_allocations) = size;
+        }
         ++global_allocations;
     }
     alignment = alignment < sizeof(void*) ? sizeof(void*) : alignment;
@@ -317,6 +325,26 @@ void* allocate(std::size_t size, std::size_t alignment) {
         boost::throw_exception(std::bad_alloc());
     }
     return pointer;
+}
+
+/**
+ * Writes the size of each global allocation counted to the standard error when they are not
+ * `expected` in number, and, under MSVC, the iterator debugging level, whose debug runtime gives
+ * a standard container a proxy it allocates even when empty: a failed count then says what it saw.
+ */
+void explain_global_allocations(std::size_t expected) {
+    if (global_allocations == expected) {
+        return;
+    }
+    std::cerr << "global allocations: " << global_allocations << ", where " << expected
+              << " were expected; their sizes:";
+    for (std::size_t i = 0; i < global_allocations && i < global_sizes.size(); ++i) {
+        std::cerr << ' ' << global_sizes.at(i);
+    }
+#ifdef _ITERATOR_DEBUG_LEVEL
+    std::cerr << " (_ITERATOR_DEBUG_LEVEL " << _ITERATOR_DEBUG_LEVEL << ')';
+#endif
+    std::cerr << '\n';
 }
 
 /**
@@ -399,6 +427,7 @@ void the_counts_see_an_allocation() {
     void* pointer = ::operator new(40);
     counting = false;
     ::operator delete(pointer);
+    explain_global_allocations(1U);
     BOOST_TEST_EQ(global_allocations, 1U);
 #ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
     // The C library's allocation, on purpose.
@@ -486,6 +515,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     const bool arrived = run_until(io, [&] { return received == 2; });
     counting = false;
     BOOST_TEST(arrived);
+    explain_global_allocations(0U);
     BOOST_TEST_EQ(global_allocations, 0U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
@@ -641,6 +671,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(farewell);
     BOOST_TEST_GT(a_lines, 0U);
     BOOST_TEST_GT(z_lines, 0U);
+    explain_global_allocations(2U);
     BOOST_TEST_EQ(global_allocations, 2U);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
@@ -663,66 +694,71 @@ void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource z_memory;
     counting_resource z_room_memory;
     std::size_t lines = 0;
-    // Construct configurations in their resources before the counting window.
-    auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
-    auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
-    const auto a_own = options_in(a_room_memory);
-    const auto z_own = options_in(z_room_memory);
-    // An inline payload of a size no other allocation has: its frame is at most 256 bytes longer.
-    constexpr std::size_t payload_size = 12'345;
-    trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
-    trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
     {
-        boost::asio::io_context io;  // after the resources: destroyed before them
-        trystero::test::memory_network network{io, 1, &network_memory};
-        network.relay("wss://relay.test");
-        warm(io);
-        counting = true;
+        // Construct configurations in their resources before the counting window. They, and the
+        // payloads, are destroyed before the resources are checked: a moved-from object may still
+        // hold memory of its resource (MSVC's debug containers keep an iterator proxy).
+        auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
+        auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
+        const auto a_own = options_in(a_room_memory);
+        const auto z_own = options_in(z_room_memory);
+        // An inline payload of a size no other allocation has: its frame is at most 256 bytes
+        // longer.
+        constexpr std::size_t payload_size = 12'345;
+        const trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
+        const trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
         {
-            trystero::app a(io.get_executor(), network, std::move(a_config));
-            trystero::app z(io.get_executor(), network, std::move(z_config));
-            auto a1 = join(a, "shared", options_in(a_memory));
-            auto a2 = join(a, "own", a_own);
-            auto z1 = join(z, "shared", options_in(z_memory));
-            auto z2 = join(z, "own", z_own);
-            std::size_t got = 0;
-            auto in_shared = z1.make_action<trystero::pmr_bytes>("b");
-            auto in_own = z2.make_action<trystero::pmr_bytes>("b");
-            in_shared.on_message(
-                [&](const trystero::pmr_bytes& data, const trystero::message_info&) {
-                    got += data.get_allocator().resource() == &z_memory ? 1 : 0;
-                });
-            in_own.on_message([&](const trystero::pmr_bytes& data, const trystero::message_info&) {
-                got += data.get_allocator().resource() == &z_room_memory ? 1 : 0;
-            });
-            BOOST_TEST(run_until(io, [&] {
-                return a1.peers().size() == 1 && a2.peers().size() == 1 && z1.peers().size() == 1 &&
-                       z2.peers().size() == 1;
-            }));
-            for (auto* m : {&z_memory, &z_room_memory}) {
-                m->sized_from = payload_size;
-                m->sized_to = payload_size + 256;
+            boost::asio::io_context io;  // after the resources: destroyed before them
+            trystero::test::memory_network network{io, 1, &network_memory};
+            network.relay("wss://relay.test");
+            warm(io);
+            counting = true;
+            {
+                trystero::app a(io.get_executor(), network, std::move(a_config));
+                trystero::app z(io.get_executor(), network, std::move(z_config));
+                auto a1 = join(a, "shared", options_in(a_memory));
+                auto a2 = join(a, "own", a_own);
+                auto z1 = join(z, "shared", options_in(z_memory));
+                auto z2 = join(z, "own", z_own);
+                std::size_t got = 0;
+                auto in_shared = z1.make_action<trystero::pmr_bytes>("b");
+                auto in_own = z2.make_action<trystero::pmr_bytes>("b");
+                in_shared.on_message(
+                    [&](const trystero::pmr_bytes& data, const trystero::message_info&) {
+                        got += data.get_allocator().resource() == &z_memory ? 1 : 0;
+                    });
+                in_own.on_message(
+                    [&](const trystero::pmr_bytes& data, const trystero::message_info&) {
+                        got += data.get_allocator().resource() == &z_room_memory ? 1 : 0;
+                    });
+                BOOST_TEST(run_until(io, [&] {
+                    return a1.peers().size() == 1 && a2.peers().size() == 1 &&
+                           z1.peers().size() == 1 && z2.peers().size() == 1;
+                }));
+                for (auto* m : {&z_memory, &z_room_memory}) {
+                    m->sized_from = payload_size;
+                    m->sized_to = payload_size + 256;
+                }
+                a2.make_action<trystero::pmr_bytes>("b").async_send(
+                    trystero::pmr_bytes(to_own, &a_room_memory),
+                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
+                                                [](boost::system::error_code) {}));
+                BOOST_TEST(run_until(io, [&] { return got == 1; }));
+                BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
+                BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
+                z_memory.sized = 0;
+                a1.make_action<trystero::pmr_bytes>("b").async_send(
+                    trystero::pmr_bytes(to_shared, &a_memory),
+                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                                [](boost::system::error_code) {}));
+                BOOST_TEST(run_until(io, [&] { return got == 2; }));
+                BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
-            a2.make_action<trystero::pmr_bytes>("b").async_send(
-                trystero::pmr_bytes(to_own, &a_room_memory),
-                boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
-                                            [](boost::system::error_code) {}));
-            BOOST_TEST(run_until(io, [&] { return got == 1; }));
-            BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
-            BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
-            z_memory.sized = 0;
-            a1.make_action<trystero::pmr_bytes>("b").async_send(
-                trystero::pmr_bytes(to_shared, &a_memory),
-                boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
-                                            [](boost::system::error_code) {}));
-            BOOST_TEST(run_until(io, [&] { return got == 2; }));
-            BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
+            run_for(io, 300);  // the io_context runs out of the rooms' work
         }
-        run_for(io, 300);  // the io_context runs out of the rooms' work
+        counting = false;
     }
-    counting = false;
-    trystero::pmr_bytes(&a_memory).swap(to_shared);
-    trystero::pmr_bytes(&a_room_memory).swap(to_own);
+    explain_global_allocations(4U);
     BOOST_TEST_EQ(global_allocations, 4U);  // the four rooms' JSON storage counters
     BOOST_TEST_EQ(c_allocations, 0U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {

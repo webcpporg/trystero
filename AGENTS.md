@@ -1,6 +1,9 @@
 # Working on trystero
 
 webcpp's rules apply here: read the superproject's
+[CODING-GUIDELINES.md](../../CODING-GUIDELINES.md)
+(<https://github.com/webcpporg/webcpp/blob/main/CODING-GUIDELINES.md>), whose
+chapter 15 gives trystero's design decisions with their reasons, and its
 [AGENTS.md](../../AGENTS.md)
 (<https://github.com/webcpporg/webcpp/blob/main/AGENTS.md>) first. This file
 holds only what is specific to trystero.
