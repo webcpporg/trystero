@@ -381,11 +381,43 @@ class memory_peer_connection;
  */
 using connection_registry = std::pmr::map<std::size_t, memory_peer_connection*>;
 
+/**
+ * An allocator that takes a container's memory from a resource and constructs its elements as
+ * std::allocator does: an element keeps the allocator it was made with, where a pmr container would
+ * copy it into its own resource. MSVC's containers allocate even when empty (a list's sentinel
+ * node, and, in a debug build, every container's iterator proxy), which this keeps in the resource.
+ */
+template <class T>
+struct node_allocator {
+    using value_type = T;
+
+    explicit node_allocator(std::pmr::memory_resource* memory) noexcept : memory(memory) {}
+
+    // Converting, as std::allocator's is: a container rebinds it to its nodes.
+    template <class U>
+    node_allocator(const node_allocator<U>& other) noexcept  // NOLINT(misc-explicit-constructor)
+        : memory(other.memory) {}
+
+    T* allocate(std::size_t n) {
+        return static_cast<T*>(memory->allocate(n * sizeof(T), alignof(T)));
+    }
+
+    void deallocate(T* p, std::size_t n) noexcept {
+        memory->deallocate(p, n * sizeof(T), alignof(T));
+    }
+
+    friend bool operator==(const node_allocator& a, const node_allocator& b) noexcept {
+        return a.memory == b.memory;
+    }
+
+    std::pmr::memory_resource* memory;
+};
+
 class memory_data_channel : public backend::data_channel,
                             public std::enable_shared_from_this<memory_data_channel> {
 public:
     memory_data_channel(boost::asio::io_context& io, std::pmr::memory_resource* memory)
-        : io_(io), memory_(memory) {}
+        : io_(io), memory_(memory), queue_(node_allocator<backend::bytes>(memory)) {}
 
     void set_handlers(handlers h) override { h_ = std::move(h); }
 
@@ -459,8 +491,9 @@ private:
     // Alive exactly while the network is: a channel that outlives it sends nothing.
     std::weak_ptr<connection_registry> registry_;
     std::size_t pc_ = 0;
-    // The frames sent and not yet received, and how much of the first one has drained.
-    std::list<backend::bytes> queue_;
+    // The frames sent and not yet received, each in the resource it was made in, and how much of
+    // the first one has drained.
+    std::list<backend::bytes, node_allocator<backend::bytes>> queue_;
     std::size_t head_drained_ = 0;
     std::size_t buffered_ = 0;
     std::size_t drain_per_post_ = 1;
