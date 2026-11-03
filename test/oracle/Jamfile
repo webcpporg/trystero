@@ -32,7 +32,7 @@ webcpp.drive interop_browser : interop/peer.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>2400
   : interop/run.mjs : --browser : emscripten ;
 webcpp.drive interop_native : interop/native_peer.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on <webcpp-drive-timeout>2400
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on <webcpp-drive-timeout>2400
     <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
     <define>_GLIBCXX_ASSERTIONS
   : interop/run.mjs : --native : native ;

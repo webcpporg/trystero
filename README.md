@@ -64,16 +64,16 @@ send a wrong room proof, reported by the lower id only.
 ## Building inside the superproject
 
 trystero is developed inside the webcpp superproject, as a Boost library is
-developed inside Boost. Besides Boost, it needs three libraries that are not
-part of it, until webcpp builds them from `third_party/`:
+developed inside Boost. Its TLS and WebRTC dependencies are built from
+pinned sources; only libsecp256k1 needs an external installation:
 
 | Library | Needed by | Found where |
 | --- | --- | --- |
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `-sSECP256K1_ROOT=<dir>` natively, `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else `.local/secp256k1-native` and `.local/secp256k1-emscripten` |
-| libdatachannel 0.24.6 | the native backend | `-sLIBDATACHANNEL_ROOT=<dir>`, else `.local/libdatachannel` |
-| OpenSSL 3 | the native backend | `-sOPENSSL_ROOT=<dir>`, else `.local/openssl` |
+| libdatachannel 0.24.6 | the native backend | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
+| OpenSSL 3.5.9 | the native backend | `/webcpp/third_party//openssl`, also used by Asio and Beast |
 
-Each `-s`, on b2's command line, names a directory with the library's
+The libsecp256k1 `-s` option, on b2's command line, names a directory with the library's
 `include/` and `lib/`; the environment is never read. Without it, the library
 is looked for in the superproject's `.local/` directory the table names,
 where webcpp's CI installs it, and else, natively outside Windows, in
@@ -95,7 +95,7 @@ project uses the rooms and the browser backend through
 libsecp256k1 and Boost.JSON's definitions, compiled once per variant, and on
 emscripten embind and `BOOST_ASIO_DISABLE_THREADS`. A native program uses
 `/webcpp/trystero//native`, which adds libdatachannel and OpenSSL, and
-declares `<exception-handling>on` itself, as `example/Jamfile` does: b2 lets
+declares `<threading>multi` and `<exception-handling>on` itself, as `example/Jamfile` does: b2 lets
 no usage requirement override a build's `exception-handling=off`.
 
 ## The examples
@@ -189,7 +189,7 @@ struct application {
 <!-- include::example/Jamfile[tag=native] -->
 ```
 webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 ```
 
 <!-- include::example/Jamfile[tag=browser] -->
@@ -212,11 +212,11 @@ says otherwise.
 
 ### 1. Install the tools
 
-git, CMake, clang (the Xcode command line tools), Python 3, Node, OpenSSL 3,
-Boost 1.92 and b2:
+git, CMake 3.21 or newer, clang (the Xcode command line tools), Python 3,
+Node, Perl, Make, Boost 1.92 and b2:
 
 ```sh
-brew install cmake openssl@3 boost boost-build node
+brew install cmake boost boost-build node
 ```
 
 ### 2. Create a workspace
@@ -262,28 +262,22 @@ cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
 cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
 ```
 
-### 6. Build libdatachannel
+### 6. Initialize the native dependencies
 
-libdatachannel's CMake finds OpenSSL where `OPENSSL_ROOT_DIR` says, which
-Homebrew's OpenSSL needs, and the build where `webcpp/.local/openssl` links. It is built with the compiler that builds the
-programs, clang: a program built with GCC and libstdc++ does not link against
-a libdatachannel built with libc++.
+The recursive checkout already includes pinned OpenSSL, libdatachannel,
+libjuice, usrsctp, plog and libsrtp sources. For an existing checkout:
 
 ```sh
-openssl=$(brew --prefix openssl@3)
-ln -s "$openssl" webcpp/.local/openssl
-
-git clone --recurse-submodules --branch v0.24.6 \
-  https://github.com/paullouisageneau/libdatachannel.git
-cmake -S libdatachannel -B build-libdatachannel -DCMAKE_BUILD_TYPE=Release \
-  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$openssl \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/libdatachannel
-cmake --build build-libdatachannel && cmake --install build-libdatachannel
+git -C webcpp submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel
 ```
 
-The three libraries are now where the build looks for them, in
-`webcpp/.local/`, which git ignores: no variable is needed, in this terminal
-or another.
+B2 builds them with the selected compiler, runtime and C++ ABI when the
+native backend is first needed. Each upstream checkout remains unchanged.
+The generated headers and static archives are kept together by build
+configuration. Asio, Beast and Trystero share one OpenSSL provider in a
+combined application; no system OpenSSL or installed libdatachannel is used.
+Native Trystero targets declare `<threading>multi` because WebRTC runs
+worker threads. The supplied examples and tests declare it already.
 
 ### 7. Tell b2 its compilers and Boost
 

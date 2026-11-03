@@ -51,32 +51,30 @@ holds only what is specific to trystero.
   alone in a call of their own, without it, so the lint analyses the timer,
   the sealer and the WebSockets without exceptions too. trystero raises
   nothing of its own; a raise would go through `boost::throw_exception`.
-- **The external dependencies.** libsecp256k1 (every room), libdatachannel
-  and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
-  them with webcpp's `webcpp.external` and `webcpp.external-found`
-  (`tools/webcpp.jam`): where `-sSECP256K1_ROOT=<dir>`,
-  `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, `-sLIBDATACHANNEL_ROOT=<dir>` and
-  `-sOPENSSL_ROOT=<dir>` on b2's command line say, a relative one from b2's
-  working directory, never the environment,
-  else in the superproject's `.local/secp256k1-native`,
-  `.local/secp256k1-emscripten`, `.local/libdatachannel` and
-  `.local/openssl` when it holds the library's header, where webcpp's CI
-  actions install them, until webcpp builds them from `third_party/`; so the
-  reference and the lint need no `-s`. A library found in neither is looked
-  for, natively outside Windows, in `/usr/include` or `/usr/local/include`,
-  where a system install is legitimate. A `-s`
-  that names a directory without its library's header stops the build,
-  naming it. A library that no candidate holds leaves trystero out, its
-  targets skipped, with one message that names the library and every place
-  it looked, so that `b2 test` builds every other library; with
-  `webcpp-require-external=on`, as the CI builds, it stops the build
-  instead. With MSVC the names are CMake's and Shining
-  Light's: `libsecp256k1`, linked with `SECP256K1_STATIC` defined, which a
-  static libsecp256k1 needs on Windows, and `libssl` and `libcrypto`, also
-  searched in `lib/VC/x64/MD`. libdatachannel is a
-  C++ library: it must be built with the same standard library as the
-  program that links it (libc++ for clang on macOS, libstdc++ for GCC), or
-  the program does not link, though the native headers still compile alone.
+- **The dependencies.** libsecp256k1 (every room) remains an external
+  installation, found through `webcpp.external` and `webcpp.external-found`
+  at `-sSECP256K1_ROOT=<dir>` or `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, then
+  `.local/secp256k1-native` or `.local/secp256k1-emscripten`. Native system
+  fallback outside Windows is allowed only for this dependency. A missing
+  installation leaves trystero out unless `webcpp-require-external=on`.
+  MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
+  The native backend instead names `/webcpp/third_party//libdatachannel`,
+  which builds pinned libdatachannel 0.24.6, libjuice, usrsctp and libsrtp as
+  separate static archives against `/webcpp/third_party//openssl` and its
+  matching generated headers. These are the same OpenSSL target used by
+  Asio and Beast, so a combined application has one provider. No
+  `LIBDATACHANNEL_ROOT`, `OPENSSL_ROOT` or installed binary is consulted.
+  Initialize their sources with `git submodule update --init --recursive
+  third_party/libs/libdatachannel third_party/libs/openssl`. Native builds
+  need CMake 3.21 or newer in addition to OpenSSL's Perl and Make/nmake.
+  B2 forwards the configured compiler, C++ ABI, runtime and optimization
+  flags, and isolates artifacts by their effective configuration. The
+  upstream source trees stay unchanged; verified staged copies are built.
+- **Native threading.** libdatachannel always uses worker threads, so every
+  consumer of `/webcpp/trystero//native` must declare `<threading>multi`,
+  including native headers-alone and reference targets. An explicit
+  single-threaded native backend fails with an actionable B2 diagnostic.
+  Asio and Beast still support their own single-threaded OpenSSL builds.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/trystero//trystero` adds as a linker flag: `<embind>on`, b2's own
   feature, is not free, and b2 ignores it among usage requirements.

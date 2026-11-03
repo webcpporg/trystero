@@ -28,10 +28,10 @@ webcpp.headers-alone trystero : ../include
 webcpp.headers-alone trystero : ../include
   : trystero/native/backend.hpp trystero/native/sealer.hpp
     trystero/native/websocket.hpp
-  : <library>/webcpp/trystero//native : native ;
+  : <library>/webcpp/trystero//native <threading>multi : native ;
 webcpp.headers-alone trystero : ../include
   : trystero/native/data_channel.hpp trystero/native/peer_connection.hpp
-  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
 
 # config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when webcpp has no
@@ -73,21 +73,21 @@ webcpp.run connection : connection_test.cpp ;
 webcpp.run app_impl : app_impl_test.cpp ;
 # end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
-  : <library>/webcpp/trystero//native <testing.input-file>fixtures/expected/expected.json : native ;
+  : <library>/webcpp/trystero//native <threading>multi <testing.input-file>fixtures/expected/expected.json : native ;
 # The WebSocket test is built with the standard libraries' own checks, libc++'s
 # extensive hardening and libstdc++'s assertions, so that a completion that
 # touches a container its socket cleared fails at once, not one run in many.
 webcpp.run native_websocket : native_websocket_test.cpp
-  : <library>/webcpp/trystero//native
+  : <library>/webcpp/trystero//native <threading>multi
     <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
     <define>_GLIBCXX_ASSERTIONS
   : native ;
-webcpp.run native_timer : native_timer_test.cpp : <library>/webcpp/trystero//native : native ;
+webcpp.run native_timer : native_timer_test.cpp : <library>/webcpp/trystero//native <threading>multi : native ;
 # tag::native[]
 webcpp.run native_peer_connection : native_peer_connection_test.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 webcpp.run native_room : native_room_test.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 # end::native[]
 
 # Every allocation of two rooms that exchange a payload goes through the
@@ -128,3 +128,6 @@ webcpp.run browser_data_channel_no_exceptions : browser_data_channel_test.cpp
 webcpp.run browser_peer_connection_no_exceptions : browser_peer_connection_test.cpp
   : <exception-handling>off : emscripten ;
 # end::no-exceptions[]
+
+# The combined Asio/Beast/Trystero provider has its own recurring native lane.
+build-project provider ;

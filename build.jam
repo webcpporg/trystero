@@ -10,33 +10,16 @@
 
 project /webcpp/trystero ;
 
-# libsecp256k1, libdatachannel and OpenSSL, which webcpp does not build
-# until it builds them from third_party/, are found where
-# -sSECP256K1_ROOT=<dir>, -sSECP256K1_EMSCRIPTEN_ROOT=<dir>,
-# -sLIBDATACHANNEL_ROOT=<dir> and -sOPENSSL_ROOT=<dir> on b2's command line
-# say, a relative one from b2's working directory, else in the
-# superproject's .local/, where webcpp's CI installs them, else, natively
-# outside Windows, in /usr/include or /usr/local/include, where a system
-# install is legitimate (webcpp.external and webcpp.external-found). The
-# environment is never read. When none holds a library, trystero is left
-# out, with one message that names it, unless the build gives
-# webcpp-require-external=on, as the CI does, which stops it instead.
+# Only libsecp256k1 is externally installed. Native WebRTC and OpenSSL are
+# pinned source dependencies, built together for the consumer's B2 variant.
+import errors ;
 import webcpp ;
 
-# MSVC's names are CMake's there: libsecp256k1.lib, and OpenSSL's libssl.lib
-# and libcrypto.lib, which an installation of Shining Light Productions, as
-# GitHub's Windows images have, keeps in lib/VC/x64/MD. A static
-# libsecp256k1 on Windows needs SECP256K1_STATIC, or its header declares
-# every function imported from a DLL.
 # tag::dependencies[]
 local secp256k1-root = [ webcpp.external trystero : libsecp256k1
     : SECP256K1_ROOT : secp256k1-native : secp256k1.h : native ] ;
 local secp256k1-emscripten-root = [ webcpp.external trystero : libsecp256k1
     : SECP256K1_EMSCRIPTEN_ROOT : secp256k1-emscripten : secp256k1.h : emscripten ] ;
-local libdatachannel-root = [ webcpp.external trystero : libdatachannel
-    : LIBDATACHANNEL_ROOT : libdatachannel : rtc/rtc.hpp : native ] ;
-local openssl-root = [ webcpp.external trystero : OpenSSL : OPENSSL_ROOT : openssl
-    : openssl/ssl.h : native ] ;
 lib secp256k1 : : <name>secp256k1 <toolset>emscripten
     <search>$(secp256k1-emscripten-root)/lib
   : : <include>$(secp256k1-emscripten-root)/include ;
@@ -45,24 +28,8 @@ lib secp256k1 : : <name>libsecp256k1 <toolset>msvc
   : : <include>$(secp256k1-root)/include <define>SECP256K1_STATIC ;
 lib secp256k1 : : <name>secp256k1 <search>$(secp256k1-root)/lib
   : : <include>$(secp256k1-root)/include ;
-lib datachannel : : <name>datachannel <search>$(libdatachannel-root)/lib
-  : : <include>$(libdatachannel-root)/include
-    <dll-path>$(libdatachannel-root)/lib ;
-lib ssl : : <name>libssl <toolset>msvc <search>$(openssl-root)/lib
-    <search>$(openssl-root)/lib/VC/x64/MD
-  : : <include>$(openssl-root)/include ;
-lib ssl : : <name>ssl <search>$(openssl-root)/lib
-  : : <include>$(openssl-root)/include ;
-lib crypto : : <name>libcrypto <toolset>msvc <search>$(openssl-root)/lib
-    <search>$(openssl-root)/lib/VC/x64/MD
-  : : <include>$(openssl-root)/include ;
-lib crypto : : <name>crypto <search>$(openssl-root)/lib
-  : : <include>$(openssl-root)/include ;
-# Searched libraries, used only through <library>: built as dependencies, with
-# the properties of what uses them. Requested alone, by b2 at the
-# superproject's root or b2 libs/trystero, their alternatives would be matched
-# against a request without the <cxxstd>20 each inherits, and none chosen.
-explicit secp256k1 datachannel ssl crypto ;
+# Searched libraries are used only through usage requirements.
+explicit secp256k1 ;
 # end::dependencies[]
 
 # The dependencies of the rooms: libsecp256k1, the emscripten build of it on
@@ -76,8 +43,10 @@ rule trystero-dependencies ( properties * )
 # uses it is built.
 rule native-dependencies ( properties * )
 {
-    return [ webcpp.external-found trystero : libdatachannel OpenSSL
-        : $(properties) ] ;
+    if <threading>single in $(properties)
+    {
+        errors.user-error "Trystero's native backend uses worker threads. Add <threading>multi to the consuming target or pass threading=multi." ;
+    }
 }
 
 # On emscripten, the browser has no threads (the event loop drives Asio), and
@@ -100,5 +69,5 @@ alias trystero : : <conditional>@trystero-dependencies
 # a build's exception-handling=off.
 # tag::native[]
 alias native : : <conditional>@native-dependencies
-  : : <library>trystero <library>datachannel <library>ssl <library>crypto ;
+  : : <library>trystero <library>/webcpp/third_party//libdatachannel ;
 # end::native[]
