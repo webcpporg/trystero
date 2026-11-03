@@ -8,6 +8,7 @@
 // headless Chrome, over a local Nostr relay (relay.mjs) or, with --public, Trystero's public relays.
 //
 //   node interop/run.mjs [--public] [--browser <interop_browser.js>] [--native <native_peer>] [--chrome <path>] [--verbose]
+// Add --scenario <name fragment> to reproduce one scenario; no match fails the run.
 //
 // With --browser, the browser's C++ peer meets Trystero JS; with --native, the native C++ peer (a process) does.
 // b2's driven tests interop_browser and interop_native (../Jamfile) pass the program they linked, after their
@@ -39,6 +40,7 @@ const args = process.argv.slice(2)
 const option = name => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined)
 const usePublic = args.includes('--public')
 const verbose = args.includes('--verbose')
+const scenarioFilter = option('--scenario')
 const browserPeer = option('--browser')
 const nativePeer = option('--native')
 if (!browserPeer && !nativePeer) throw new Error('pass --browser <interop_browser.js> or --native <native_peer>')
@@ -302,6 +304,7 @@ const results = []
 const ice = 'stun:127.0.0.1:9'
 
 const scenario = async (name, body) => {
+    if (scenarioFilter && !name.includes(scenarioFilter)) return
     const started = Date.now()
     deathsBefore = deaths
     const pages = []
@@ -473,13 +476,29 @@ const floodScenario = (name, cppKind) =>
 // that relay's connection rather than read it, says so, reconnects, and goes on with the peer it joined. Then the relay
 // sends the text after every subscription: each reconnection is closed at once, and the C++ peer tries again within a
 // bound that doubles every time, rather than every few seconds forever.
-const oversizedRelayTextScenario = (name, cppKind) =>
+const oversizedRelayTextScenario = (name, cppKind, recoverFirst = false) =>
     scenario(name, async open => {
         const params = {room: room(), ...relayParams}
         const cpp = await open(cppKind, {...params, self: '00000000000000000000'})
         const js = await open('js', params)
         const ok = await until(async () => exchangeComplete(await cpp.events(), false) && exchangeComplete(await js.events(), true), 30_000)
         if (!ok) return 'the exchange did not complete in 30 s'
+        if (recoverFirst) {
+            const joins = (await js.events()).filter(e => e.kind === 'peer-join').length
+            await js.value('window.drop()')
+            if (!(await until(async () => (await js.events()).filter(e => e.kind === 'peer-join').length > joins, 30_000))) {
+                return 'the peer did not recover from the initial connection loss'
+            }
+            const text = `recovered before relay fault ${params.room}`
+            await js.value(`window.chat1(${JSON.stringify(text)})`)
+            if (!(await until(async () => (await js.events()).some(e => e.kind === 'chat' && e.text === `echo: ${text}`), 10_000))) {
+                return 'the recovered connection did not exchange a fresh message'
+            }
+        }
+        // Recovery before this fault belongs to setup. Only subsequent departures violate the
+        // guarantee that losing the signaling relay leaves the established data channel intact.
+        const cppStart = (await cpp.events()).length
+        const jsStart = (await js.events()).length
         left.relay.broadcast(JSON.stringify(['NOTICE', 'x'.repeat(1024 * 1024 + 1)]))
         const lost = await until(async () => (await cpp.log()).includes(`lost ${left.relay.url}`), 10_000)
         if (!lost) return 'the C++ peer did not close the relay that sent the long text'
@@ -496,7 +515,14 @@ const oversizedRelayTextScenario = (name, cppKind) =>
         console.log(`  the C++ peer lost the relay ${seen.length} times, each time to try again within ${seen.join(', ')} ms`)
         if (!lostAgain) return 'the C++ peer was not closed three times in 30 s'
         if (!seen.every((bound, i) => i === 0 || bound > seen[i - 1])) return `the bounds did not grow: ${seen.join(', ')}`
-        if ([...await cpp.events(), ...await js.events()].some(e => e.kind === 'peer-leave')) return 'a peer left'
+        const text = `still connected after relay faults ${params.room}`
+        await js.value(`window.chat1(${JSON.stringify(text)})`)
+        if (!(await until(async () => (await js.events()).slice(jsStart).some(e => e.kind === 'chat' && e.text === `echo: ${text}`), 10_000))) {
+            return 'the established data channel stopped exchanging after the relay faults'
+        }
+        if ([...(await cpp.events()).slice(cppStart), ...(await js.events()).slice(jsStart)].some(e => e.kind === 'peer-leave')) {
+            return 'a peer left after the relay fault'
+        }
         return null
     })
 
@@ -958,6 +984,7 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; C++ joins', 'cpp', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; C++ goes on', 'cpp')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; C++ reconnects', 'cpp')
+            await oversizedRelayTextScenario('A recovered browser peer survives oversized relay messages', 'cpp', true)
             await twoRoomsOneConnectionScenario('C++ and Trystero JS share one connection between two rooms', 'cpp')
             await threeRoomsScenario('Three rooms share one connection, the third joined later by presence', 'cpp')
             await pageFirstScenario('A room the page joined first binds over the connection within 5 s', 'cpp')
@@ -987,6 +1014,7 @@ const scenarios = async () => {
             await reflectScenario('Its own offer sent back as an offer is refused; native C++ joins', 'native', 'offer')
             await floodScenario('A flood of announcements from fresh ids is bounded; native C++ goes on', 'native')
             await oversizedRelayTextScenario('A relay text longer than 1 MiB is not read; native C++ reconnects', 'native')
+            await oversizedRelayTextScenario('A recovered native peer survives oversized relay messages', 'native', true)
             await twoRoomsOneConnectionScenario('Native C++ and Trystero JS share one connection between two rooms', 'native')
             await threeRoomsScenario('Native C++: three rooms share one connection, the third joined later by presence', 'native')
             await pageFirstScenario('Native C++: a room the page joined first binds over the connection within 5 s', 'native')
@@ -1083,6 +1111,7 @@ try {
     left.relay = await startRelay()
     relayParams = usePublic ? {} : {relays: left.relay.url}
     await scenarios()
+    if (!results.length) throw new Error(`no scenario matched ${JSON.stringify(scenarioFilter)}`)
     console.log(`relay: ${left.relay.stats.events} events forwarded, ${left.relay.stats.rejected} rejected`)
     const failed = results.filter(r => !r.ok).length
     console.log(failed ? `${failed} of ${results.length} scenarios failed` : `all ${results.length} scenarios passed`)
