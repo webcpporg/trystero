@@ -80,7 +80,7 @@ struct pair {
     }
 
     void connect(std::pmr::memory_resource* channel_memory = nullptr,
-                 std::optional<asio::any_io_executor> channel_executor = {}) {
+                 const std::optional<asio::any_io_executor>& channel_executor = {}) {
         offerer->set_handlers({
             .ice_candidate =
                 [this](std::string_view c) {
@@ -114,7 +114,7 @@ struct pair {
             offer_end = trystero::native::data_channel::create(
                 channel_executor.value_or(io.get_executor()),
                 native->native_handle()->createDataChannel("data"),
-                channel_memory ? channel_memory : std::pmr::get_default_resource());
+                channel_memory != nullptr ? channel_memory : std::pmr::get_default_resource());
         } else {
             offer_end = offerer->create_data_channel("data");
         }
@@ -170,7 +170,7 @@ struct queued_tasks {
     std::deque<std::function<void()>> ready;
 
     std::size_t size() {
-        const std::lock_guard lock(mutex);
+        const std::scoped_lock lock(mutex);
         return ready.size();
     }
 
@@ -178,7 +178,7 @@ struct queued_tasks {
         for (;;) {
             std::function<void()> f;
             {
-                const std::lock_guard lock(mutex);
+                const std::scoped_lock lock(mutex);
                 if (ready.empty()) {
                     return;
                 }
@@ -200,22 +200,22 @@ public:
 
     template <class F>
     void execute(F f) const {
-        auto operation = std::make_shared<F>(std::move(f));
-        const std::lock_guard lock(tasks_->mutex);
+        const auto operation = std::make_shared<F>(std::move(f));
+        const std::scoped_lock lock(tasks_->mutex);
         tasks_->ready.emplace_back([operation] { (*operation)(); });
     }
 
     template <class Property>
-    auto query(Property p) const -> decltype(asio::query(inner_, p)) {
+    [[nodiscard]] auto query(Property p) const -> decltype(asio::query(inner_, p)) {
         return asio::query(inner_, p);
     }
 
-    queued_executor require(asio::execution::blocking_t::never_t p) const {
+    [[nodiscard]] queued_executor require(asio::execution::blocking_t::never_t p) const {
         return {asio::require(inner_, p), tasks_};
     }
 
     template <class Property>
-    queued_executor prefer(Property p) const {
+    [[nodiscard]] queued_executor prefer(Property p) const {
         return {asio::prefer(inner_, p), tasks_};
     }
 
@@ -402,7 +402,7 @@ void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
     p.offer_end->set_handlers({
         .open = {},
         .message =
-            [&](backend::bytes) {
+            [&](const backend::bytes&) {
                 ++received;
                 p.offer_end->close();
                 p.offer_end.reset();

@@ -1944,8 +1944,10 @@ int main(int argc, const char* const argv[]) {
             a_passwordless_room_is_open_to_the_apps_other_rooms,
         },
         {"crossed_connections_recover", crossed_connections_recover},
-        {"a_connection_closed_during_adoption_can_reconnect",
-         a_connection_closed_during_adoption_can_reconnect},
+        {
+            "a_connection_closed_during_adoption_can_reconnect",
+            a_connection_closed_during_adoption_can_reconnect,
+        },
         {
             "a_flood_in_one_room_does_not_starve_another",
             a_flood_in_one_room_does_not_starve_another,

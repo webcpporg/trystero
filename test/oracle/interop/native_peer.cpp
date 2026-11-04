@@ -156,9 +156,9 @@ trystero::room join(trystero::app& app, const std::string& room_id,
 class delayed_channel : public trystero::backend::data_channel,
                         public std::enable_shared_from_this<delayed_channel> {
 public:
-    delayed_channel(boost::asio::any_io_executor ex,
+    delayed_channel(const boost::asio::any_io_executor& ex,
                     std::shared_ptr<trystero::backend::data_channel> channel)
-        : timer_(std::move(ex)), channel_(std::move(channel)) {}
+        : timer_(ex), channel_(std::move(channel)) {}
 
     void set_handlers(handlers h) override {
         timer_.cancel();
@@ -239,7 +239,9 @@ public:
         pc_->add_ice_candidate(candidate, std::move(done));
     }
 
-    bool has_remote_description() const override { return pc_->has_remote_description(); }
+    [[nodiscard]] bool has_remote_description() const override {
+        return pc_->has_remote_description();
+    }
 
     void close() override { pc_->close(); }
 
