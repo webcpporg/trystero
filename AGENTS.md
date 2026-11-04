@@ -75,6 +75,19 @@ holds only what is specific to trystero.
   including native headers-alone and reference targets. An explicit
   single-threaded native backend fails with an actionable B2 diagnostic.
   Asio and Beast still support their own single-threaded OpenSSL builds.
+- **Native channel handoff.** Valid frames received before a message handler
+  is installed wait in an app-resource FIFO, at most 64 frames for 10 s from
+  the first. Overflow or expiry closes the channel; close clears the queue.
+  `native/timer.hpp` holds the existing `native::timer`, still included by
+  `native/backend.hpp`, whose generation invalidates queued expiries.
+  Installing a receiver posts a resource-allocated flush, never an inline
+  call. Each frame checks the current handler and open channel, and a message
+  already posted ahead of the flush drains older frames when a receiver
+  exists. A transport closed during adoption, before binding, forgets its
+  negotiation and restarts announcements. `native_peer_connection` tests
+  real queued callbacks, FIFO, replacement, close, limits and resource release;
+  `shared` tests closure during adoption, and interop controls native open
+  delivery while a JS peer sends both rooms' presence first.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/trystero//trystero` adds as a linker flag: `<embind>on`, b2's own
   feature, is not free, and b2 ignores it among usage requirements.

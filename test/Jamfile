@@ -26,7 +26,7 @@ webcpp.targets native emscripten ;
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/native/backend.hpp trystero/native/sealer.hpp
+  : trystero/native/backend.hpp trystero/native/sealer.hpp trystero/native/timer.hpp
     trystero/native/websocket.hpp
   : <library>/webcpp/trystero//native <threading>multi : native ;
 webcpp.headers-alone trystero : ../include

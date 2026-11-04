@@ -1127,6 +1127,11 @@ private:
             }
         } else if (c->live()) {
             bind_peer(peer, c);
+        } else {
+            // A native transport can close while adoption calls the log sink. No binding
+            // exists yet, so its queued end cannot remove_peer and forget this negotiation.
+            signaling_->forget(peer);
+            strategy_->restart_announcements();
         }
     }
 

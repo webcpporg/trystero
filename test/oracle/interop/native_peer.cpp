@@ -24,6 +24,7 @@
 // | --room3Delay    | the ms before joining room3, optional (0)                          |
 // | --idle          | the app's idle_timeout in ms, optional (123,333)                   |
 // | --handshake     | every room's handshake_timeout in ms, optional (10,000)            |
+// | --delayOpen     | defer native open delivery while transport messages arrive, optional |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/native/backend.hpp>
@@ -32,6 +33,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
 #include <boost/asio/read_until.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/streambuf.hpp>
 #include <boost/json.hpp>
 
@@ -48,6 +50,7 @@
 #include <span>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace trystero = webcpp::trystero;
 
@@ -148,11 +151,110 @@ trystero::room join(trystero::app& app, const std::string& room_id,
     return std::move(*joined);
 }
 
+// A controlled native handoff: the transport is open, but signaling receives its open event
+// 100 ms later. Real messages still use the native wrapper, including its pre-handoff queue.
+class delayed_channel : public trystero::backend::data_channel,
+                        public std::enable_shared_from_this<delayed_channel> {
+public:
+    delayed_channel(boost::asio::any_io_executor ex,
+                    std::shared_ptr<trystero::backend::data_channel> channel)
+        : timer_(std::move(ex)), channel_(std::move(channel)) {}
+
+    void set_handlers(handlers h) override {
+        timer_.cancel();
+        opening_ =
+            h.open ? std::make_shared<trystero::handler<void()>>(std::move(h.open)) : nullptr;
+        if (opening_) {
+            const auto weak = weak_from_this();
+            h.open = [weak] {
+                if (const auto self = weak.lock()) {
+                    record("delayed-open");
+                    self->timer_.expires_after(std::chrono::milliseconds(100));
+                    self->timer_.async_wait([weak](boost::system::error_code ec) {
+                        if (const auto channel = weak.lock(); channel && !ec && channel->opening_) {
+                            channel->released_ = true;
+                            const auto callback = channel->opening_;
+                            (*callback)();
+                        }
+                    });
+                }
+            };
+        }
+        channel_->set_handlers(std::move(h));
+    }
+
+    bool is_open() const override { return released_ && channel_->is_open(); }
+
+    void send(std::span<const std::uint8_t> frame) override { channel_->send(frame); }
+
+    std::size_t buffered_amount() const override { return channel_->buffered_amount(); }
+
+    void close() override {
+        timer_.cancel();
+        channel_->close();
+    }
+
+private:
+    boost::asio::steady_timer timer_;
+    std::shared_ptr<trystero::backend::data_channel> channel_;
+    std::shared_ptr<trystero::handler<void()>> opening_;
+    bool released_ = false;
+};
+
+// Keeps the fixture's channel observer at both ends without changing SDP or ICE handling.
+class observed_connection : public trystero::backend::peer_connection {
+    using channel = std::shared_ptr<trystero::backend::data_channel>;
+    using observer = std::function<channel(channel)>;
+
+public:
+    observed_connection(std::shared_ptr<trystero::backend::peer_connection> pc, observer observe)
+        : pc_(std::move(pc)), observe_(std::move(observe)) {}
+
+    void set_handlers(handlers h) override {
+        if (h.data_channel) {
+            h.data_channel = [observe = observe_, deliver = std::move(h.data_channel)](
+                                 channel c) mutable { deliver(observe(std::move(c))); };
+        }
+        pc_->set_handlers(std::move(h));
+    }
+
+    channel create_data_channel(std::string_view label) override {
+        auto c = pc_->create_data_channel(label);
+        return c ? observe_(std::move(c)) : nullptr;
+    }
+
+    void set_local_description(
+        trystero::handler<void(boost::system::error_code, std::string_view, std::string_view)> done)
+        override {
+        pc_->set_local_description(std::move(done));
+    }
+
+    void set_remote_description(std::string_view type, std::string_view sdp,
+                                trystero::handler<void(boost::system::error_code)> done) override {
+        pc_->set_remote_description(type, sdp, std::move(done));
+    }
+
+    void add_ice_candidate(std::string_view candidate,
+                           trystero::handler<void(boost::system::error_code)> done) override {
+        pc_->add_ice_candidate(candidate, std::move(done));
+    }
+
+    bool has_remote_description() const override { return pc_->has_remote_description(); }
+
+    void close() override { pc_->close(); }
+
+private:
+    std::shared_ptr<trystero::backend::peer_connection> pc_;
+    observer observe_;
+};
+
 /** The native backend, which records each peer connection it makes, for the scenarios that count
  * them. */
 class counting_backend : public trystero::native::backend {
 public:
-    using trystero::native::backend::backend;
+    explicit counting_backend(boost::asio::any_io_executor ex,
+                              trystero::native::backend_config config)
+        : trystero::native::backend(ex, std::move(config)), ex_(std::move(ex)) {}
 
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
@@ -160,9 +262,19 @@ public:
         auto pc = trystero::native::backend::make_peer_connection(servers, memory);
         if (pc) {
             record("made-connection");
+            if (delay_open) {
+                return std::make_shared<observed_connection>(pc, [this](auto channel) {
+                    return std::make_shared<delayed_channel>(ex_, std::move(channel));
+                });
+            }
         }
         return pc;
     }
+
+    bool delay_open = false;
+
+private:
+    boost::asio::any_io_executor ex_;
 };
 
 /**
@@ -341,6 +453,7 @@ int main(int argc, char* argv[]) {
     auto args = arguments(argc, argv);
     boost::asio::io_context io;
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+    backend.delay_open = !args["delayOpen"].empty();
     trystero::app app(io.get_executor(), backend, app_config_of(args));
     app.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});

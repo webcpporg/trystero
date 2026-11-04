@@ -14,13 +14,17 @@
 #include <webcpp/trystero/native/peer_connection.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 
+#include <boost/asio/execution.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
 
+#include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -75,7 +79,8 @@ struct pair {
         }
     }
 
-    void connect() {
+    void connect(std::pmr::memory_resource* channel_memory = nullptr,
+                 std::optional<asio::any_io_executor> channel_executor = {}) {
         offerer->set_handlers({
             .ice_candidate =
                 [this](std::string_view c) {
@@ -103,7 +108,16 @@ struct pair {
                     answerer_states.push_back(s);
                 },
         });
-        offer_end = offerer->create_data_channel("data");
+        if (channel_memory != nullptr || channel_executor) {
+            const auto native =
+                std::static_pointer_cast<trystero::native::peer_connection>(offerer);
+            offer_end = trystero::native::data_channel::create(
+                channel_executor.value_or(io.get_executor()),
+                native->native_handle()->createDataChannel("data"),
+                channel_memory ? channel_memory : std::pmr::get_default_resource());
+        } else {
+            offer_end = offerer->create_data_channel("data");
+        }
         watch(offer_end, offer_open, at_offerer, nullptr);
         offerer->set_local_description([this](backend::error_code ec, std::string_view type,
                                               std::string_view sdp) {
@@ -149,6 +163,91 @@ struct pair {
     }
 };
 
+// Observes the native channel's posted callbacks without running them. This lets a test
+// install a receiver after a real message is queued and before that message is dispatched.
+struct queued_tasks {
+    std::mutex mutex;
+    std::deque<std::function<void()>> ready;
+
+    std::size_t size() {
+        const std::lock_guard lock(mutex);
+        return ready.size();
+    }
+
+    void run() {
+        for (;;) {
+            std::function<void()> f;
+            {
+                const std::lock_guard lock(mutex);
+                if (ready.empty()) {
+                    return;
+                }
+                f = std::move(ready.front());
+                ready.pop_front();
+            }
+            f();
+        }
+    }
+};
+
+class queued_executor {
+    asio::any_io_executor inner_;
+    std::shared_ptr<queued_tasks> tasks_;
+
+public:
+    queued_executor(asio::any_io_executor inner, std::shared_ptr<queued_tasks> tasks)
+        : inner_(std::move(inner)), tasks_(std::move(tasks)) {}
+
+    template <class F>
+    void execute(F f) const {
+        auto operation = std::make_shared<F>(std::move(f));
+        const std::lock_guard lock(tasks_->mutex);
+        tasks_->ready.emplace_back([operation] { (*operation)(); });
+    }
+
+    template <class Property>
+    auto query(Property p) const -> decltype(asio::query(inner_, p)) {
+        return asio::query(inner_, p);
+    }
+
+    queued_executor require(asio::execution::blocking_t::never_t p) const {
+        return {asio::require(inner_, p), tasks_};
+    }
+
+    template <class Property>
+    queued_executor prefer(Property p) const {
+        return {asio::prefer(inner_, p), tasks_};
+    }
+
+    friend bool operator==(const queued_executor& a, const queued_executor& b) noexcept {
+        return a.inner_ == b.inner_ && a.tasks_ == b.tasks_;
+    }
+};
+
+struct queued_pair : pair {
+    std::shared_ptr<queued_tasks> tasks = std::make_shared<queued_tasks>();
+
+    void connect(std::pmr::memory_resource* memory = nullptr) {
+        pair::connect(memory, asio::any_io_executor(queued_executor(io.get_executor(), tasks)));
+        require(BOOST_TEST(until([&] { return offer_open && answer_open; })));
+    }
+
+    bool until(const std::function<bool()>& done, std::chrono::milliseconds limit = 10s) {
+        return run_until(
+            io,
+            [&] {
+                tasks->run();
+                return done();
+            },
+            limit);
+    }
+
+    void receive(std::size_t count) {
+        require(BOOST_TEST(run_until(io, [&] { return tasks->size() >= count; })));
+        tasks->run();
+    }
+};
+
 void two_connections_open_a_data_channel_and_exchange_bytes() {
     pair p;
     p.connect();
@@ -184,6 +283,191 @@ void closing_one_end_is_seen_by_the_other() {
     p.offerer->close();
     BOOST_TEST(run_until(p.io, [&] { return p.answer_closes == 1; }));
     BOOST_TEST(!p.off_thread);
+}
+
+// Presence can reach the native executor before the posted open event hands a channel over
+// from signaling. Installing the receiver afterwards must deliver those frames in order.
+void messages_wait_for_the_receiver_during_handoff() {
+    queued_pair p;
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    p.offer_end->set_handlers({});
+    const backend::bytes first{2, 1, 0, 1, 'a'};
+    const backend::bytes second{2, 1, 0, 1, 'b'};
+    p.answer_end->send(first);
+    p.answer_end->send(second);
+    p.receive(2);
+    p.watch(p.offer_end, p.offer_open, p.at_offerer, nullptr);
+    require(BOOST_TEST(p.until([&] { return p.at_offerer.size() == 2; })));
+    BOOST_TEST(p.at_offerer[0] == first);
+    BOOST_TEST(p.at_offerer[1] == second);
+}
+
+void a_full_pending_queue_drains_in_order_and_uses_replacement_handlers() {
+    queued_pair p;
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    p.offer_end->set_handlers({});
+    for (std::uint8_t i = 0; i < 64; ++i) {
+        p.answer_end->send(backend::bytes{i});
+    }
+    p.receive(64);
+    std::vector<int> received;
+    // The 65th callback is already queued before set_handlers posts its flush.
+    p.answer_end->send(backend::bytes{64});
+    require(BOOST_TEST(run_until(p.io, [&] { return p.tasks->size() >= 1; })));
+    bool first = true;
+    bool registering = true;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message =
+            [&](backend::bytes frame) {
+                BOOST_TEST(!registering);
+                received.push_back(frame[0]);
+                BOOST_TEST(first);
+                first = false;
+                p.offer_end->set_handlers({
+                    .open = {},
+                    .message = [&](backend::bytes later) { received.push_back(later[0]); },
+                    .close = {},
+                    .buffered_amount_low = {},
+                });
+            },
+        .close = {},
+        .buffered_amount_low = {},
+    });
+    registering = false;
+    require(BOOST_TEST(p.until([&] { return received.size() == 65; })));
+    for (std::size_t i = 0; i < received.size(); ++i) {
+        BOOST_TEST_EQ(received[i], static_cast<int>(i));
+    }
+    // A later handoff must post a new flush after the first one has finished.
+    p.offer_end->set_handlers({});
+    p.answer_end->send(backend::bytes{65});
+    p.receive(1);
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = [&](backend::bytes later) { received.push_back(later[0]); },
+        .close = {},
+        .buffered_amount_low = {},
+    });
+    require(BOOST_TEST(p.until([&] { return received.size() == 66; })));
+    BOOST_TEST_EQ(received.back(), 65);
+}
+
+void a_pending_queue_overflow_closes_the_channel() {
+    queued_pair p;
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    bool closed = false;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = {},
+        .close = [&] { closed = true; },
+        .buffered_amount_low = {},
+    });
+    for (std::uint8_t i = 0; i < 65; ++i) {
+        p.answer_end->send(backend::bytes{i});
+    }
+    require(BOOST_TEST(p.until([&] { return closed; }, 5s)));
+    BOOST_TEST(!p.offer_end->is_open());
+}
+
+void pending_messages_expire_without_a_receiver() {
+    queued_pair p;
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    bool closed = false;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = {},
+        .close = [&] { closed = true; },
+        .buffered_amount_low = {},
+    });
+    const auto started = std::chrono::steady_clock::now();
+    p.answer_end->send(backend::bytes{1});
+    require(BOOST_TEST(p.until([&] { return closed; }, 12s)));
+    BOOST_TEST(std::chrono::steady_clock::now() - started >= 10s);
+}
+
+void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
+    queued_pair p;
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    p.offer_end->set_handlers({});
+    p.answer_end->send(backend::bytes{1});
+    p.answer_end->send(backend::bytes{2});
+    p.receive(2);
+    int received = 0;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message =
+            [&](backend::bytes) {
+                ++received;
+                p.offer_end->close();
+                p.offer_end.reset();
+            },
+        .close = {},
+        .buffered_amount_low = {},
+    });
+    require(BOOST_TEST(p.until([&] { return p.answer_closes == 1; })));
+    BOOST_TEST_EQ(received, 1);
+}
+
+class pending_memory : public std::pmr::memory_resource {
+public:
+    std::atomic<std::size_t> outstanding{0};
+    std::atomic<std::size_t> frame_allocations{0};
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        void* p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
+        outstanding += bytes;
+        if (bytes == 1024) {
+            ++frame_allocations;
+        }
+        return p;
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        outstanding -= bytes;
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+
+void pending_frames_and_delivery_use_the_channels_resource() {
+    pending_memory memory;
+    {
+        queued_pair p;
+        p.connect(&memory);
+        require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+        p.offer_end->set_handlers({});
+        const auto before = memory.frame_allocations.load();
+        for (int i = 0; i < 64; ++i) {
+            p.answer_end->send(backend::bytes(1024, static_cast<std::uint8_t>(i)));
+        }
+        p.receive(64);
+        BOOST_TEST_EQ(memory.frame_allocations.load(), before + 64);
+        bool registering = true;
+        p.offer_end->set_handlers({
+            .open = {},
+            .message =
+                [&](backend::bytes frame) {
+                    BOOST_TEST(!registering);
+                    BOOST_TEST(frame.get_allocator().resource() == &memory);
+                    p.at_offerer.push_back(std::move(frame));
+                },
+            .close = {},
+            .buffered_amount_low = {},
+        });
+        registering = false;
+        require(BOOST_TEST(p.until([&] { return p.at_offerer.size() == 64; })));
+    }
+    BOOST_TEST_EQ(memory.outstanding.load(), 0U);
 }
 
 void a_malformed_candidate_fails_without_throwing() {
@@ -222,7 +506,13 @@ void the_backend_makes_at_most_its_budget_in_a_minute() {
 int main() {
     two_connections_open_a_data_channel_and_exchange_bytes();
     closing_one_end_is_seen_by_the_other();
+    messages_wait_for_the_receiver_during_handoff();
+    a_full_pending_queue_drains_in_order_and_uses_replacement_handlers();
+    a_pending_queue_overflow_closes_the_channel();
+    pending_messages_expire_without_a_receiver();
+    a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
     the_backend_makes_at_most_its_budget_in_a_minute();
+    pending_frames_and_delivery_use_the_channels_resource();
     return boost::report_errors();
 }

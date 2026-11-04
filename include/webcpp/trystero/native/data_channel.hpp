@@ -15,13 +15,18 @@
 #ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/native/timer.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 
 #include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/bind_allocator.hpp>   // lint-world: allocates the pending-frame flush
 #include <boost/asio/post.hpp>             // lint-world: posts handlers only
 #include <rtc/datachannel.hpp>
 
+#include <chrono>
+#include <cstdint>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <memory_resource>
 #include <utility>
@@ -38,7 +43,9 @@ namespace webcpp::trystero::native {
  *
  * A text message, as a peer can send, or a binary one larger than any room frame
  * (`protocol::max_room_frame_bytes`), is dropped on libdatachannel's thread: neither can be a
- * frame.
+ * frame. Binary frames received before the message handler is installed wait in the app's
+ * resource, in order, up to 64 frames for 10 seconds. Exceeding either bound closes the channel.
+ * Installing a receiver posts their delivery, so handler registration never calls it inline.
  *
  * Tip: a received message is copied once, out of libdatachannel's `std::vector<std::byte>` into the
  * backend's bytes, in the room's resource, on the executor: what runs on libdatachannel's threads
@@ -80,7 +87,11 @@ public:
      */
     data_channel(private_tag /*tag*/, boost::asio::any_io_executor ex,
                  std::shared_ptr<rtc::DataChannel> channel, std::pmr::memory_resource* memory)
-        : ex_(std::move(ex)), channel_(std::move(channel)), memory_(memory) {}
+        : ex_(std::move(ex)),
+          channel_(std::move(channel)),
+          memory_(memory),
+          pending_(memory),
+          pending_timer_(ex_, memory) {}
 
     /** Destroys the wrapper, which closes the channel without reporting the close. */
     ~data_channel() override {
@@ -101,14 +112,25 @@ public:
     void set_handlers(handlers h) override {
         h_ = std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory_),
                                             std::move(h));
+        if (!pending_.empty() && h_->message && !flush_posted_) {
+            flush_posted_ = true;
+            boost::asio::post(
+                ex_, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
+                                                 [weak = weak_from_this()] {
+                                                     if (const auto self = weak.lock()) {
+                                                         self->flush_posted_ = false;
+                                                         self->flush_pending();
+                                                     }
+                                                 }));
+        }
     }
 
     /**
      * Whether the channel is open.
      *
-     * @return libdatachannel's `isOpen()`.
+     * @return Whether this wrapper has not closed and libdatachannel's channel is open.
      */
-    bool is_open() const override { return channel_->isOpen(); }
+    bool is_open() const override { return !closed_ && channel_->isOpen(); }
 
     /**
      * Sends a binary message; one the channel refuses, closed in between, is dropped, and its close
@@ -119,7 +141,7 @@ public:
     void send(std::span<const std::uint8_t> frame) override {
         // A channel closed in between refuses the frame, and its close event reports it.
         try {
-            if (channel_->isOpen()) {
+            if (is_open()) {
                 channel_->send(reinterpret_cast<const std::byte*>(frame.data()), frame.size());
             }
         } catch (...) {  // NOLINT(bugprone-empty-catch)
@@ -135,6 +157,8 @@ public:
 
     /** Closes the channel, which the handler `close` reports; a refusal is ignored. */
     void close() override {
+        closed_ = true;
+        clear_pending();
         // A channel whose connection is gone may refuse to close, which leaves nothing to do.
         try {
             channel_->close();
@@ -179,22 +203,74 @@ private:
     // The handlers run from a copy of the shared object, which a handler may replace.
 
     void on_open() {
-        if (const auto h = h_; h && h->open) {
+        if (const auto h = h_; !closed_ && h && h->open) {
             h->open();
         }
     }
 
     void on_message(const rtc::binary& binary) {
+        if (!is_open()) {
+            return;
+        }
+        // An already posted message may be ahead of set_handlers' flush. A receiver now
+        // exists, so drain old frames before admitting the new one against the queue bound.
+        if (!pending_.empty() && h_ && h_->message) {
+            flush_pending();
+            if (!is_open()) {
+                return;
+            }
+        }
         const auto h = h_;
-        if (!h || !h->message) {
+        if ((!h || !h->message || !pending_.empty()) && pending_.size() >= max_pending_frames) {
+            close();
             return;
         }
         backend::bytes frame(binary.size(), memory_);
         std::memcpy(frame.data(), binary.data(), binary.size());
-        h->message(std::move(frame));
+        if (h && h->message && pending_.empty()) {
+            h->message(std::move(frame));
+            return;
+        }
+        if (pending_.empty()) {
+            pending_timer_.start(std::chrono::seconds(10),
+                                 {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_),
+                                  [weak = weak_from_this()] {
+                                      if (const auto self = weak.lock();
+                                          self && !self->pending_.empty()) {
+                                          self->close();
+                                      }
+                                  }});
+        }
+        pending_.push_back(std::move(frame));
+    }
+
+    void clear_pending() {
+        pending_.clear();
+        pending_timer_.cancel();
+    }
+
+    void flush_pending() {
+        while (!pending_.empty()) {
+            if (!is_open()) {
+                clear_pending();
+                return;
+            }
+            const auto h = h_;
+            if (!h || !h->message) {
+                return;
+            }
+            auto frame = std::move(pending_.front());
+            pending_.pop_front();
+            if (pending_.empty()) {
+                clear_pending();
+            }
+            h->message(std::move(frame));
+        }
     }
 
     void on_closed() {
+        closed_ = true;
+        clear_pending();
         if (const auto h = h_) {
             if (auto f = std::exchange(h->close, {})) {
                 f();
@@ -212,6 +288,11 @@ private:
     std::shared_ptr<rtc::DataChannel> channel_;
     std::pmr::memory_resource* memory_;
     std::shared_ptr<handlers> h_;
+    static constexpr std::size_t max_pending_frames = 64;
+    std::pmr::deque<backend::bytes> pending_;
+    timer pending_timer_;
+    bool flush_posted_ = false;
+    bool closed_ = false;
 };
 
 }  // namespace webcpp::trystero::native

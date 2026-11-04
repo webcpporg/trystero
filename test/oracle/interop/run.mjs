@@ -1001,6 +1001,21 @@ const scenarios = async () => {
         await pairScenario('Native C++ offers (lower id), Trystero JS answers; native leaves', {cppKind: 'native', cppSelf: '00000000000000000000', leaver: 'cpp'})
         await pairScenario('Trystero JS offers, native C++ answers (higher id), with a password; JS leaves', {cppKind: 'native', cppSelf: 'zzzzzzzzzzzzzzzzzzzz', password: 'secret', leaver: 'js'})
         if (!usePublic) {
+            await scenario('Native C++ preserves both rooms when presence precedes native open delivery', async open => {
+                const params = {room: room(), room2: room(), ...relayParams}
+                const cpp = await open('native', {...params, self: '00000000000000000000', delayOpen: 1})
+                const js = await open('js', {...params, holdActionsUntilPresence: 1})
+                if (!(await until(() => twoRoomsComplete(cpp, js), 60_000))) {
+                    return 'the two rooms did not complete in 60 s after delayed native open delivery'
+                }
+                if (!(await cpp.events()).some(e => e.kind === 'delayed-open')) return 'no native open was delayed'
+                if (!(await js.events()).some(e => e.kind === 'actions-released-after-presence')) {
+                    return 'no JS actions waited for native presence'
+                }
+                const counts = await connectionCounts(cpp, 'native', js)
+                return overBound(counts) || counts.jsConnected !== 1
+                    ? `connections ${JSON.stringify(counts)}` : null
+            })
             await malformedCandidateScenario('A malformed ICE candidate from a peer does not stop native C++', 'native')
             await refusedRelayScenario('A relay URL of another scheme reports a close; native C++ goes on', 'native')
             await textMessagesScenario('Text messages on the data channel do not reach or stop native C++', 'native')

@@ -58,6 +58,21 @@ transfers assemble their buffer in the room's resource. A text message, as a pee
 send, or a binary one larger than any room frame, is dropped on
 libdatachannel's thread: neither can be a frame.
 
+Valid binary frames that arrive before the message handler is installed wait
+in a FIFO in the app's resource. The queue holds at most 64 frames for at most
+10 seconds from its first frame. Overflow or expiry closes the channel;
+closing or destroying it discards the pending frames. The existing native
+timer invalidates an expiry already queued when the queue drains or closes.
+Installing a receiver posts delivery on the executor with the app's
+allocator. It never calls the receiver inline, and delivery checks the current
+handler and channel before each frame, so a handler may replace itself or
+close the channel. A message already queued ahead of that delivery drains
+older frames first when a receiver is available.
+
+If a transport closes during adoption, before the room obtains a binding,
+the room forgets that negotiation and restarts announcements. Its later close
+event cannot leave signaling marked connected with no binding.
+
 [#trystero-native-libdatachannel]
 === What the backend asks of libdatachannel
 

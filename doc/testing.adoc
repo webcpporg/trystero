@@ -124,7 +124,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `native_peer_connection`, `native_room`
 | Two libdatachannel connections wired to each other, each handler on the
   executor, and whole native rooms over real libdatachannel connections,
-  bound to 127.0.0.1.
+  bound to 127.0.0.1. A controlled executor holds real channel callbacks to
+  prove pre-handler FIFO delivery, a 65th message ahead of the posted flush,
+  handler replacement and destruction, the 64-frame and 10-second bounds,
+  and allocation and release through the channel's resource.
 
 | `browser_event_loop`, `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`
 | The browser backend, on emscripten under node, which has the page's

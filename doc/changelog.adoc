@@ -16,6 +16,8 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* Fixed native multiroom handoffs losing early presence frames, and
+  negotiations stalled by a channel closing before room binding.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]
