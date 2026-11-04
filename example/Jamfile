@@ -18,7 +18,7 @@ webcpp.targets native emscripten ;
 # reports errors by throwing.
 # tag::native[]
 webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//native <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 # end::native[]
 # tag::browser[]
 webcpp.link quick_start : quick_start.cpp

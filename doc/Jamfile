@@ -15,5 +15,5 @@ webcpp.doc trystero : trystero.adoc ;
 # brings libdatachannel and OpenSSL, and the browser build's define of
 # build.jam, which a requirement conditioned on the emscripten toolset does
 # not give it.
-webcpp.reference trystero : <library>/webcpp/trystero//native
+webcpp.reference trystero : <library>/webcpp/trystero//native <threading>multi
   <library>/webcpp//emscripten-reference <define>BOOST_ASIO_DISABLE_THREADS ;

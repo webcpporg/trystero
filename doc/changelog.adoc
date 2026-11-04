@@ -22,6 +22,12 @@ of every version are on webcpp's index page.
 === webcpp 0.1.0
 
 // tag::0.1.0[]
+* Fixed native multiroom handoffs losing early presence frames, and
+  negotiations stalled by a channel closing before room binding.
+* Changed the native backend to build pinned libdatachannel sources and their
+dependencies through B2, sharing source-built OpenSSL with Asio and Beast.
+* Changed native builds to require `threading=multi`; the backend uses workers.
+* Fixed GCC compilation of native WebSocket coroutine callbacks.
 * Changed room construction to `app::join`, sharing connections between rooms.
 * *Breaking change:* Removed `room_config`; construct `app` and use `join`
 with `app_config` and `room_options`.
