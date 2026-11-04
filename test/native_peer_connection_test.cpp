@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -417,19 +418,31 @@ void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
 class pending_memory : public std::pmr::memory_resource {
 public:
     std::atomic<std::size_t> outstanding{0};
-    std::atomic<std::size_t> frame_allocations{0};
+
+    [[nodiscard]] std::unordered_set<const void*> allocations() {
+        const std::scoped_lock lock(mutex_);
+        return allocations_;
+    }
 
 private:
+    std::mutex mutex_;
+    std::unordered_set<const void*> allocations_;
+
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         void* p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
         outstanding += bytes;
-        if (bytes == 1024) {
-            ++frame_allocations;
+        {
+            const std::scoped_lock lock(mutex_);
+            allocations_.insert(p);
         }
         return p;
     }
 
     void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        {
+            const std::scoped_lock lock(mutex_);
+            allocations_.erase(p);
+        }
         outstanding -= bytes;
         std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
     }
@@ -446,12 +459,13 @@ void pending_frames_and_delivery_use_the_channels_resource() {
         p.connect(&memory);
         require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
         p.offer_end->set_handlers({});
-        const auto before = memory.frame_allocations.load();
         for (int i = 0; i < 64; ++i) {
             p.answer_end->send(backend::bytes(1024, static_cast<std::uint8_t>(i)));
         }
         p.receive(64);
-        BOOST_TEST_EQ(memory.frame_allocations.load(), before + 64);
+        // Deque bookkeeping can allocate the same byte count as a payload. Each
+        // delivered buffer must already belong to this resource before registration.
+        auto queued = memory.allocations();
         bool registering = true;
         p.offer_end->set_handlers({
             .open = {},
@@ -459,6 +473,8 @@ void pending_frames_and_delivery_use_the_channels_resource() {
                 [&](backend::bytes frame) {
                     BOOST_TEST(!registering);
                     BOOST_TEST(frame.get_allocator().resource() == &memory);
+                    BOOST_TEST_EQ(frame.size(), 1024U);
+                    BOOST_TEST_EQ(queued.erase(frame.data()), 1U);
                     p.at_offerer.push_back(std::move(frame));
                 },
             .close = {},
