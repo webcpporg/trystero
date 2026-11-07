@@ -1,0 +1,17 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+import webcpp ;
+webcpp.targets native ;
+webcpp.original python3 ;
+
+# Keep ownership with Trystero so CI provisions its external secp256k1.
+# The common executable names all three public dependency aliases.
+webcpp.drive combined : ../../../../tools/openssl/test//combined_provider
+  : <variant>release <threading>multi <exception-handling>on
+    <webcpp-drive-timeout>60
+  : driver.py : : native ;
+webcpp.lane provider-integration : combined : native ;

@@ -8,10 +8,9 @@
 == Building
 
 trystero is header-only, and is developed inside the webcpp superproject, as
-a Boost library is developed inside Boost. Besides Boost, it needs three
-libraries that are not part of it, which the build finds where b2's command
-line says, else in the superproject's `.local/`, until webcpp builds them
-from `third_party/`:
+a Boost library is developed inside Boost. Its native TLS and WebRTC
+dependencies are built from pinned sources. Only libsecp256k1 needs an
+external installation:
 
 [cols="2,2,3",options="header"]
 |===
@@ -25,14 +24,14 @@ from `third_party/`:
 
 | libdatachannel 0.24.6
 | the native backend
-| `-sLIBDATACHANNEL_ROOT=<dir>`, else `.local/libdatachannel`
+| `/webcpp/third_party//libdatachannel`, built from `third_party/libs/libdatachannel`
 
-| OpenSSL 3
+| OpenSSL 3.5.9
 | the native backend
-| `-sOPENSSL_ROOT=<dir>`, else `.local/openssl`
+| `/webcpp/third_party//openssl`, shared by the Asio, Beast and Trystero build graphs
 |===
 
-Each `-s` names a directory with the library's `include/` and `lib/`, on b2's
+The libsecp256k1 `-s` option names a directory with the library's `include/` and `lib/`, on b2's
 command line; the environment is never read, so that a variable a shell keeps
 from another day never replaces `.local/` without a word. Without it, the
 library is looked for in the directory of `.local/` that the table names,
@@ -44,11 +43,9 @@ header stops the build, naming it. A library found nowhere leaves trystero
 out: its tests and examples are skipped, the build says so once, naming the
 library and where it looked, and every other library builds; with
 `webcpp-require-external=on`, as the continuous integration builds, it stops
-the build instead. With MSVC, the libraries are CMake's
-`libsecp256k1.lib`, which a program links statically with `SECP256K1_STATIC`
-defined, and OpenSSL's `libssl.lib` and `libcrypto.lib`, also looked for in
-`lib/VC/x64/MD`, where the installer of Shining Light Productions puts them.
-trystero's `build.jam` declares them so:
+the build instead. With MSVC, libsecp256k1 uses CMake's
+`libsecp256k1.lib`, linked statically with `SECP256K1_STATIC` defined.
+trystero's `build.jam` declares that external dependency so:
 
 [listing]
 ----
@@ -74,14 +71,18 @@ embind is linked as a flag, `-lembind`, rather than with b2's own
 free among usage requirements, so a program that used it would not link.
 
 A native program uses `/webcpp/trystero//native`, which adds libdatachannel
-and OpenSSL:
+and the same source-built OpenSSL used by Asio and Beast:
 
 [listing]
 ----
 include::{library-root}/build.jam[tag=native]
 ----
 
-The native backend's WebRTC needs exceptions (<<trystero-native-exceptions>>),
+The native backend uses worker threads, so each consumer declares
+`<threading>multi`. Its OpenSSL dependency is the matching threaded variant;
+a single-threaded native backend is rejected before compilation.
+
+The native backend's WebRTC also needs exceptions (<<trystero-native-exceptions>>),
 and b2 lets no usage requirement override a build's
 `exception-handling=off`, so each program and test that uses it declares
 `<exception-handling>on` itself, as the examples do:
@@ -119,7 +120,7 @@ include::{webcpp-root}/tools/ci/emsdk.jam[tag=emsdk]
 include::{webcpp-root}/tools/ci/emsdk.jam[tag=emscripten]
 ----
 
-With it and the three libraries found, from the root of a webcpp checkout,
+With it, libsecp256k1 installed and the pinned source submodules initialized, from the root of a webcpp checkout,
 these build the tests and the examples, natively and on emscripten:
 
 [source,bash]
@@ -129,7 +130,7 @@ b2 toolset=emscripten libs/trystero/test libs/trystero/example
 ----
 
 [#trystero-building-dependencies]
-=== The three libraries
+=== Preparing the dependencies
 
 libsecp256k1 is built twice: natively, and with Emscripten for the browser.
 Its small tables keep the browser's download small:
@@ -155,26 +156,26 @@ cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emsc
 where `webcpp` is the checkout of the superproject: each is installed in the
 directory of `.local/` where the build looks for it.
 
-libdatachannel is built with the compiler and the standard library that
-build the programs: a program built with GCC and `libstdc{plus}{plus}` does
-not link against a libdatachannel built with `libc{plus}{plus}`, though the
-native headers still compile alone. Its own WebSocket is not used, so it is
-built without it, and its CMake finds OpenSSL where `OPENSSL_ROOT_DIR` says,
-which Homebrew's OpenSSL needs, and which `.local/openssl` links for the build
-too:
+Initialize the native dependencies from the superproject root:
 
 [source,bash]
 ----
-openssl=$(brew --prefix openssl@3)  # or wherever OpenSSL 3 is
-ln -s "$openssl" webcpp/.local/openssl
-
-git clone --recurse-submodules --branch v0.24.6 \
-  https://github.com/paullouisageneau/libdatachannel.git
-cmake -S libdatachannel -B build-libdatachannel -DCMAKE_BUILD_TYPE=Release \
-  -DNO_WEBSOCKET=ON -DNO_EXAMPLES=ON -DNO_TESTS=ON -DOPENSSL_ROOT_DIR=$openssl \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/libdatachannel
-cmake --build build-libdatachannel && cmake --install build-libdatachannel
+git submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel
 ----
+
+Install CMake 3.21 or newer, Perl and Make (native Windows Perl and nmake
+with MSVC). B2 builds OpenSSL, libdatachannel and its pinned nested
+libjuice, usrsctp and libsrtp sources for the configured compiler, standard
+library, runtime and build variant. Upstream sources are verified and
+copied to a disposable build directory; the checkout is never patched.
+The resulting headers and separate static archives stay in B2's variant
+directory, and the final link contains exactly one OpenSSL archive pair.
+
+libdatachannel's own WebSocket, examples and tests are disabled; media
+transport remains enabled. System OpenSSL and installed libdatachannel
+binaries are never fallback providers. A combined Asio/Beast/Trystero
+application uses the same native `<threading>multi` configuration for all
+three libraries.
 
 [#trystero-building-examples]
 === Running the examples

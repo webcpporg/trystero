@@ -31,6 +31,16 @@ import {joinRoom, selfId} from 'trystero'
 
 window.events = []
 const record = (kind, fields = {}) => window.events.push({kind, ...fields})
+// CDP may display an RTCError only as "OperationError". Keep its useful fields
+// beside the peer events without suppressing the original console failure.
+const consoleError = console.error.bind(console)
+console.error = (...args) => {
+    record('console-error', {arguments: args.map(value => value && typeof value === 'object'
+        ? {name: value.name, message: value.message, detail: value.errorDetail,
+            cause: value.sctpCauseCode, stack: value.stack}
+        : String(value))})
+    consoleError(...args)
+}
 const log = (category, text) => {
     const line = `[${(performance.now() / 1000).toFixed(2)}s] ${category}: ${text}`
     console.log(line)
@@ -71,8 +81,33 @@ const receivedRoomFrames = new Map()
 const receivedRoomActions = new Map()
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
+// In the delayed-native-open regression, send presence immediately, but keep room actions
+// until the native peer advertises its first token. This makes the first room's direct
+// handshake work while the second still requires the native side to keep its early presence.
+const holdActionsUntilPresence = params.get('holdActionsUntilPresence')
+const heldActions = new Map()
+const seenNativePresence = new WeakSet()
+const sendChannel = RTCDataChannel.prototype.send
+if (holdActionsUntilPresence) {
+    RTCDataChannel.prototype.send = function (data) {
+        const bytes = data instanceof ArrayBuffer ? new Uint8Array(data)
+            : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null
+        if (bytes?.[0] === 1 && !seenNativePresence.has(this)) {
+            const queue = heldActions.get(this) ?? []
+            queue.push(data)
+            heldActions.set(this, queue)
+            return
+        }
+        return sendChannel.call(this, data)
+    }
+}
 const watchChannel = channel => {
     channels.push(channel)
+    channel.addEventListener('error', ({error}) => record('channel-error', {
+        channel: channels.indexOf(channel), state: channel.readyState,
+        name: error?.name, message: error?.message,
+        detail: error?.errorDetail, cause: error?.sctpCauseCode,
+    }))
     channel.addEventListener('message', ({data}) => {
         if (!(data instanceof ArrayBuffer)) return
         const b = new Uint8Array(data)
@@ -91,6 +126,13 @@ const watchChannel = channel => {
             return
         }
         if (b.length < 4 || b[0] !== 2) return
+        if (holdActionsUntilPresence && !seenNativePresence.has(channel)) {
+            seenNativePresence.add(channel)
+            const frames = heldActions.get(channel) ?? []
+            if (frames.length) record('actions-released-after-presence', {count: frames.length})
+            for (const frame of frames) sendChannel.call(channel, frame)
+            heldActions.delete(channel)
+        }
         const token = decoder.decode(b.subarray(4, 4 + ((b[2] << 8) | b[3])))
         if (b[1] === 1) advertised.add(token)
         else advertised.delete(token)
@@ -299,6 +341,36 @@ window.echoPresence = async (roomIds = []) => {
 window.drop = () => {
     for (const connection of connections.splice(0)) connection.close()
     record('dropped')
+}
+
+// Delay one outbound direction of the next connection past the C++ handshake deadline.
+// The page can announce its own join while C++ is still pending. A later connection
+// exchanges normally, so a recovery check must observe both sides before testing the relay.
+window.delayNextRecovery = () => {
+    const existing = new Set(channels)
+    const send = RTCDataChannel.prototype.send
+    let delayed = null
+    let finished = false
+    const queue = []
+    RTCDataChannel.prototype.send = function (data) {
+        if (finished || existing.has(this) || (delayed && delayed !== this)) return send.call(this, data)
+        if (!delayed) {
+            delayed = this
+            record('recovery-delayed')
+            const timer = setTimeout(() => {
+                finished = true
+                if (this.readyState === 'open') for (const frame of queue) send.call(this, frame)
+                queue.length = 0
+            }, 12_000)
+            this.addEventListener('close', () => {
+                clearTimeout(timer)
+                finished = true
+                queue.length = 0
+                record('delayed-recovery-closed')
+            }, {once: true})
+        }
+        queue.push(data)
+    }
 }
 
 // Publishes `count` signals, each from a fresh peer id that starts with `prefix`, on the topic of the room's peer

@@ -219,8 +219,9 @@ private:
     boost::asio::awaitable<void> run() {
         using boost::asio::as_tuple;
         using boost::asio::use_awaitable;
-        auto [resolve_error, endpoints] =
+        auto resolve_result =
             co_await resolver_.async_resolve(url_.host, url_.port, as_tuple(use_awaitable));
+        auto& [resolve_error, endpoints] = resolve_result;
         if (resolve_error || closing_) {
             co_return end();
         }

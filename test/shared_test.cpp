@@ -1385,6 +1385,35 @@ void crossed_connections_recover() {
     BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 2U; }));
 }
 
+// A native channel can close on its transport thread during the adoption log, before the
+// room gets a binding. The queued close must not leave signaling permanently connected.
+void a_connection_closed_during_adoption_can_reconnect() {
+    fixture f{true};
+    auto config = app_config("AAAAAAAAAAAAAAAAAAF3");
+    std::vector<std::size_t> made;
+    bool closed = false;
+    f.net.on_made = [&](std::size_t pc, std::span<const trystero::backend::ice_server>) {
+        made.push_back(pc);
+    };
+    config.log = [&](std::string_view category, std::string_view text) {
+        if (!closed && category == "webrtc" && text.ends_with(" adopted")) {
+            closed = true;
+            for (const auto pc : made) {
+                if (const auto connection = f.net.find(pc)) {
+                    connection->close();
+                }
+            }
+        }
+    };
+    trystero::app a(f.io.get_executor(), f.net, std::move(config));
+    trystero::app b(f.io.get_executor(), f.net, app_config("ZZZZZZZZZZZZZZZZZZF4"));
+    const auto a1 = join(a, "r1");
+    const auto b1 = join(b, "r1");
+    BOOST_TEST(run_until(f, [&] { return a1.peers().size() == 1 && b1.peers().size() == 1; }, 15s));
+    BOOST_TEST(closed);
+    BOOST_TEST_EQ(f.net.live_connections(), 2U);
+}
+
 // flood isolation. B floods r1 with 10,000 inline messages to an action without a handler
 // (A's queue keeps 1024) while r2 pings and chats: every r2 message arrives and every ping
 // completes without error while r1's flood is queued. The virtual clock stays fixed while posts
@@ -1915,6 +1944,10 @@ int main(int argc, const char* const argv[]) {
             a_passwordless_room_is_open_to_the_apps_other_rooms,
         },
         {"crossed_connections_recover", crossed_connections_recover},
+        {
+            "a_connection_closed_during_adoption_can_reconnect",
+            a_connection_closed_during_adoption_can_reconnect,
+        },
         {
             "a_flood_in_one_room_does_not_starve_another",
             a_flood_in_one_room_does_not_starve_another,

@@ -124,7 +124,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `native_peer_connection`, `native_room`
 | Two libdatachannel connections wired to each other, each handler on the
   executor, and whole native rooms over real libdatachannel connections,
-  bound to 127.0.0.1.
+  bound to 127.0.0.1. A controlled executor holds real channel callbacks to
+  prove pre-handler FIFO delivery, a 65th message ahead of the posted flush,
+  handler replacement and destruction, the 64-frame and 10-second bounds,
+  and allocation and release through the channel's resource.
 
 | `browser_event_loop`, `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`
 | The browser backend, on emscripten under node, which has the page's
@@ -259,18 +262,30 @@ and run the unit tests with GCC 14 and with clang 18 against
 `libstdc{plus}{plus}` in a Linux container, Ubuntu 24.04, with `docker run`
 and the network `none`, which leaves the loopback alone: every test passes,
 which shows that none reaches beyond the machine
-(<<trystero-invariant-6,guarantee 6>>). libsecp256k1 and libdatachannel are
-built before, on the runner, Ubuntu 24.04 too, with the lane's compiler
-against the runner's OpenSSL 3, and the container, which holds the same
-compilers and OpenSSL's development files, sees them where the runner put
-them.
+(<<trystero-invariant-6,guarantee 6>>). libsecp256k1 is installed before
+running the container. B2 builds the pinned OpenSSL, libdatachannel and
+nested source dependencies inside the container with the lane's compiler,
+runtime and static link configuration. These builds need no network access.
+
+[#trystero-testing-provider]
+=== The common OpenSSL provider
+
+The native `provider-integration` lane builds and runs one application that
+uses Asio TLS, Beast and Trystero's native backend together. It compares the
+compiled OpenSSL version with the loaded implementation and constructs TLS
+and WebRTC state. The run is bounded to 45 seconds and uses the threaded
+release profile. The superproject's source dependency tests also check that
+the final Unix executable has no dynamic OpenSSL or libdatachannel provider,
+that each static archive occurs once and that dependent archives precede
+OpenSSL in the link order.
 
 [#trystero-testing-report]
 === The test matrix
 
 The continuous integration runs trystero's tests in lanes, one toolset each,
 and its own lanes, the oracle once and the interop natively and on
-emscripten, as `native.trystero.interop` and `emscripten.trystero.interop`.
+emscripten, as `native.trystero.interop` and `emscripten.trystero.interop`, plus the
+native `provider-integration` lane for the common TLS provider.
 Each lane builds from scratch and records what b2 built and ran; webcpp's
 `tools/report/report.py` merges the files of every lane into a matrix, where
 each cell says whether that program passed in that lane, or how it failed.

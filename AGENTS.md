@@ -51,32 +51,43 @@ holds only what is specific to trystero.
   alone in a call of their own, without it, so the lint analyses the timer,
   the sealer and the WebSockets without exceptions too. trystero raises
   nothing of its own; a raise would go through `boost::throw_exception`.
-- **The external dependencies.** libsecp256k1 (every room), libdatachannel
-  and OpenSSL (the native backend) are not part of Boost. `build.jam` finds
-  them with webcpp's `webcpp.external` and `webcpp.external-found`
-  (`tools/webcpp.jam`): where `-sSECP256K1_ROOT=<dir>`,
-  `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, `-sLIBDATACHANNEL_ROOT=<dir>` and
-  `-sOPENSSL_ROOT=<dir>` on b2's command line say, a relative one from b2's
-  working directory, never the environment,
-  else in the superproject's `.local/secp256k1-native`,
-  `.local/secp256k1-emscripten`, `.local/libdatachannel` and
-  `.local/openssl` when it holds the library's header, where webcpp's CI
-  actions install them, until webcpp builds them from `third_party/`; so the
-  reference and the lint need no `-s`. A library found in neither is looked
-  for, natively outside Windows, in `/usr/include` or `/usr/local/include`,
-  where a system install is legitimate. A `-s`
-  that names a directory without its library's header stops the build,
-  naming it. A library that no candidate holds leaves trystero out, its
-  targets skipped, with one message that names the library and every place
-  it looked, so that `b2 test` builds every other library; with
-  `webcpp-require-external=on`, as the CI builds, it stops the build
-  instead. With MSVC the names are CMake's and Shining
-  Light's: `libsecp256k1`, linked with `SECP256K1_STATIC` defined, which a
-  static libsecp256k1 needs on Windows, and `libssl` and `libcrypto`, also
-  searched in `lib/VC/x64/MD`. libdatachannel is a
-  C++ library: it must be built with the same standard library as the
-  program that links it (libc++ for clang on macOS, libstdc++ for GCC), or
-  the program does not link, though the native headers still compile alone.
+- **The dependencies.** libsecp256k1 (every room) remains an external
+  installation, found through `webcpp.external` and `webcpp.external-found`
+  at `-sSECP256K1_ROOT=<dir>` or `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, then
+  `.local/secp256k1-native` or `.local/secp256k1-emscripten`. Native system
+  fallback outside Windows is allowed only for this dependency. A missing
+  installation leaves trystero out unless `webcpp-require-external=on`.
+  MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
+  The native backend instead names `/webcpp/third_party//libdatachannel`,
+  which builds pinned libdatachannel 0.24.6, libjuice, usrsctp and libsrtp as
+  separate static archives against `/webcpp/third_party//openssl` and its
+  matching generated headers. These are the same OpenSSL target used by
+  Asio and Beast, so a combined application has one provider. No
+  `LIBDATACHANNEL_ROOT`, `OPENSSL_ROOT` or installed binary is consulted.
+  Initialize their sources with `git submodule update --init --recursive
+  third_party/libs/libdatachannel third_party/libs/openssl`. Native builds
+  need CMake 3.21 or newer in addition to OpenSSL's Perl and Make/nmake.
+  B2 forwards the configured compiler, C++ ABI, runtime and optimization
+  flags, and isolates artifacts by their effective configuration. The
+  upstream source trees stay unchanged; verified staged copies are built.
+- **Native threading.** libdatachannel always uses worker threads, so every
+  consumer of `/webcpp/trystero//native` must declare `<threading>multi`,
+  including native headers-alone and reference targets. An explicit
+  single-threaded native backend fails with an actionable B2 diagnostic.
+  Asio and Beast still support their own single-threaded OpenSSL builds.
+- **Native channel handoff.** Valid frames received before a message handler
+  is installed wait in an app-resource FIFO, at most 64 frames for 10 s from
+  the first. Overflow or expiry closes the channel; close clears the queue.
+  `native/timer.hpp` holds the existing `native::timer`, still included by
+  `native/backend.hpp`, whose generation invalidates queued expiries.
+  Installing a receiver posts a resource-allocated flush, never an inline
+  call. Each frame checks the current handler and open channel, and a message
+  already posted ahead of the flush drains older frames when a receiver
+  exists. A transport closed during adoption, before binding, forgets its
+  negotiation and restarts announcements. `native_peer_connection` tests
+  real queued callbacks, FIFO, replacement, close, limits and resource release;
+  `shared` tests closure during adoption, and interop controls native open
+  delivery while a JS peer sends both rooms' presence first.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/trystero//trystero` adds as a linker flag: `<embind>on`, b2's own
   feature, is not free, and b2 ignores it among usage requirements.
@@ -278,6 +289,15 @@ holds only what is specific to trystero.
     while another room pings; (9) a held handshake frame recovering in both
     id orders with no false password report. Crossed adoption races allow
     retries but fail by connection count above four constructions per side.
+  - Recovered-peer relay scenarios wait for fresh, currently joined peers on
+    both sides within the existing 30 s setup bound, then require a fresh
+    round-trip message before injecting a relay fault. A join reported by one
+    side alone does not prove the other's handshake completed. The controlled
+    `delayNextRecovery` fixture delays one outbound direction of the first
+    recovered channel for 12 s, beyond the C++ handshake deadline; a subsequent
+    connection must complete the setup. A departure after the relay fault
+    still fails. Console errors remain fatal, with RTCError fields recorded
+    alongside peer events so a failure is not reduced to `OperationError`.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to
