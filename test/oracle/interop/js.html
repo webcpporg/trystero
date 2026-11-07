@@ -31,6 +31,16 @@ import {joinRoom, selfId} from 'trystero'
 
 window.events = []
 const record = (kind, fields = {}) => window.events.push({kind, ...fields})
+// CDP may display an RTCError only as "OperationError". Keep its useful fields
+// beside the peer events without suppressing the original console failure.
+const consoleError = console.error.bind(console)
+console.error = (...args) => {
+    record('console-error', {arguments: args.map(value => value && typeof value === 'object'
+        ? {name: value.name, message: value.message, detail: value.errorDetail,
+            cause: value.sctpCauseCode, stack: value.stack}
+        : String(value))})
+    consoleError(...args)
+}
 const log = (category, text) => {
     const line = `[${(performance.now() / 1000).toFixed(2)}s] ${category}: ${text}`
     console.log(line)
@@ -93,6 +103,11 @@ if (holdActionsUntilPresence) {
 }
 const watchChannel = channel => {
     channels.push(channel)
+    channel.addEventListener('error', ({error}) => record('channel-error', {
+        channel: channels.indexOf(channel), state: channel.readyState,
+        name: error?.name, message: error?.message,
+        detail: error?.errorDetail, cause: error?.sctpCauseCode,
+    }))
     channel.addEventListener('message', ({data}) => {
         if (!(data instanceof ArrayBuffer)) return
         const b = new Uint8Array(data)
@@ -326,6 +341,36 @@ window.echoPresence = async (roomIds = []) => {
 window.drop = () => {
     for (const connection of connections.splice(0)) connection.close()
     record('dropped')
+}
+
+// Delay one outbound direction of the next connection past the C++ handshake deadline.
+// The page can announce its own join while C++ is still pending. A later connection
+// exchanges normally, so a recovery check must observe both sides before testing the relay.
+window.delayNextRecovery = () => {
+    const existing = new Set(channels)
+    const send = RTCDataChannel.prototype.send
+    let delayed = null
+    let finished = false
+    const queue = []
+    RTCDataChannel.prototype.send = function (data) {
+        if (finished || existing.has(this) || (delayed && delayed !== this)) return send.call(this, data)
+        if (!delayed) {
+            delayed = this
+            record('recovery-delayed')
+            const timer = setTimeout(() => {
+                finished = true
+                if (this.readyState === 'open') for (const frame of queue) send.call(this, frame)
+                queue.length = 0
+            }, 12_000)
+            this.addEventListener('close', () => {
+                clearTimeout(timer)
+                finished = true
+                queue.length = 0
+                record('delayed-recovery-closed')
+            }, {once: true})
+        }
+        queue.push(data)
+    }
 }
 
 // Publishes `count` signals, each from a fresh peer id that starts with `prefix`, on the topic of the room's peer

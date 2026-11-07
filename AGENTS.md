@@ -289,6 +289,15 @@ holds only what is specific to trystero.
     while another room pings; (9) a held handshake frame recovering in both
     id orders with no false password report. Crossed adoption races allow
     retries but fail by connection count above four constructions per side.
+  - Recovered-peer relay scenarios wait for fresh, currently joined peers on
+    both sides within the existing 30 s setup bound, then require a fresh
+    round-trip message before injecting a relay fault. A join reported by one
+    side alone does not prove the other's handshake completed. The controlled
+    `delayNextRecovery` fixture delays one outbound direction of the first
+    recovered channel for 12 s, beyond the C++ handshake deadline; a subsequent
+    connection must complete the setup. A departure after the relay fault
+    still fails. Console errors remain fatal, with RTCError fields recorded
+    alongside peer events so a failure is not reduced to `OperationError`.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to
