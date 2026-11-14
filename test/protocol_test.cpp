@@ -319,13 +319,15 @@ void random_ids() {
 // bytes 43 3f ff ff ff ff ff ff, and refuses from 2^53, 43 40 00 00 00 00 00 00, as any size that
 // is not a positive integer: the largest is read whole on every target, a 32-bit one too.
 void offer_sizes_at_two_to_the_53() {
-    const auto offer_of_size = [](const std::array<std::uint8_t, 8>& size) {
+    using size_bytes = std::array<std::uint8_t, 8>;
+    const auto offer_of_size = [](const size_bytes& size) {
         auto frame = tp::encode_offer("file", tp::payload_format::binary, "", 7, 1);
         std::ranges::copy(size, frame.begin() + 40);
         return frame;
     };
-    const auto largest =
-        tp::decode_action(offer_of_size({0x43, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}));
+    // The decoded frame's views point into the frame, which is kept while they are read.
+    const auto frame = offer_of_size({0x43, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff});
+    const auto largest = tp::decode_action(frame);
     if (!BOOST_TEST(largest.frame.has_value())) {
         return;
     }
@@ -333,16 +335,17 @@ void offer_sizes_at_two_to_the_53() {
     BOOST_TEST_EQ(p.size, std::uint64_t{9007199254740991});
     BOOST_TEST_EQ(p.size, tp::max_offer_size);
     BOOST_TEST_EQ(p.id, 7U);
-    const std::array<std::array<std::uint8_t, 8>, 6> refused{{
-        {0x43, 0x40, 0, 0, 0, 0, 0, 0},  // 2^53
-        {0x43, 0x40, 0, 0, 0, 0, 0, 1},  // 2^53 + 2
-        {0x3f, 0xf8, 0, 0, 0, 0, 0, 0},  // 1.5
-        {0, 0, 0, 0, 0, 0, 0, 0},        // 0
-        {0xbf, 0xf0, 0, 0, 0, 0, 0, 0},  // -1
-        {0x7f, 0xf8, 0, 0, 0, 0, 0, 0},  // NaN
-    }};
+    const std::array refused{
+        size_bytes{0x43, 0x40, 0, 0, 0, 0, 0, 0},  // 2^53
+        size_bytes{0x43, 0x40, 0, 0, 0, 0, 0, 1},  // 2^53 + 2
+        size_bytes{0x3f, 0xf8, 0, 0, 0, 0, 0, 0},  // 1.5
+        size_bytes{0, 0, 0, 0, 0, 0, 0, 0},        // 0
+        size_bytes{0xbf, 0xf0, 0, 0, 0, 0, 0, 0},  // -1
+        size_bytes{0x7f, 0xf8, 0, 0, 0, 0, 0, 0},  // NaN
+    };
     for (const auto& size : refused) {
-        const auto decoded = tp::decode_action(offer_of_size(size));
+        const auto refused_frame = offer_of_size(size);
+        const auto decoded = tp::decode_action(refused_frame);
         BOOST_TEST(!decoded.frame.has_value());
         BOOST_TEST(decoded.error == tp::wire_error::invalid_proposal);
     }
@@ -354,8 +357,10 @@ void wide_fields_are_big_endian() {
     const std::string metadata(0x0102, 'm');
     const auto offer =
         tp::encode_offer("file", tp::payload_format::binary, metadata, 0x01020304, 0x12345678);
-    const std::array<std::uint8_t, 14> offer_fields{0x01, 0x02, 0x01, 0x02, 0x03, 0x04, 0x41,
-                                                    0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00};
+    // The metadata's length, the transfer's id, and the size as a float64.
+    const tp::bytes offer_fields{
+        0x01, 0x02, 0x01, 0x02, 0x03, 0x04, 0x41, 0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00,
+    };
     BOOST_TEST_ALL_EQ(offer.begin() + 34, offer.begin() + 48, offer_fields.begin(),
                       offer_fields.end());
     const auto decoded = std::get<tp::proposal>(*tp::decode_action(offer).frame);
@@ -365,8 +370,9 @@ void wide_fields_are_big_endian() {
 
     const tp::bytes data{9};
     const auto chunk = tp::encode_chunk(0x0a0b0c0d, 0x12345678, data);
-    const tp::bytes expected_chunk{2,    2,    0x0a, 0x0b, 0x0c, 0x0d, 0x41, 0xb2,
-                                   0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 9};
+    const tp::bytes expected_chunk{
+        2, 2, 0x0a, 0x0b, 0x0c, 0x0d, 0x41, 0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 9,
+    };
     BOOST_TEST_ALL_EQ(chunk.begin(), chunk.end(), expected_chunk.begin(), expected_chunk.end());
     const auto c = std::get<tp::chunk>(*tp::decode_action(chunk).frame);
     BOOST_TEST_EQ(c.id, 0x0a0b0c0dU);
@@ -386,7 +392,8 @@ void wide_fields_are_big_endian() {
     BOOST_TEST_EQ(room[1], 0x01);
     BOOST_TEST_EQ(room[2], 0x2c);
     const std::string longest(tp::max_room_token_bytes, 't');
-    const auto envelope = tp::decode_envelope(tp::room_frame(longest, data));
+    const auto longest_frame = tp::room_frame(longest, data);
+    const auto envelope = tp::decode_envelope(longest_frame);
     if (BOOST_TEST(envelope.has_value())) {
         BOOST_TEST_EQ(envelope->token.size(), tp::max_room_token_bytes);
     }
