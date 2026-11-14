@@ -31,6 +31,8 @@
 #include <boost/system/errc.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
+#include <boost/url/grammar/digit_chars.hpp>
+#include <boost/url/grammar/hexdig_chars.hpp>
 #include <boost/url/ipv4_address.hpp>
 #include <boost/url/parse.hpp>
 #include <boost/url/scheme.hpp>
@@ -104,11 +106,14 @@ inline boost::system::error_code openssl_error() {
  * verifies each relay against the system's certificate authorities.
  *
  * Natively the authorities are those OpenSSL's default verify paths name, the system's own; a
- * relay whose certificate does not verify is unreachable. A program that trusts other authorities,
- * as webcpp's embedded Mozilla roots (`webcpp::asio::make_tls_client_context()`) or a private one,
- * makes its context itself and gives it to the backend. In the browser the page's `WebSocket`
- * verifies the relay against the browser's authorities, and the context records only the policy
- * its stream asks for: a client that verifies its peer.
+ * relay whose certificate does not verify is unreachable. On Windows those paths are in OpenSSL's
+ * build-time directory, which neither Windows nor webcpp fills, and OpenSSL reads no Windows
+ * certificate store by default, so there are none there unless `SSL_CERT_FILE` or `SSL_CERT_DIR`
+ * names some: a Windows program gives the backend its own context. A program that trusts other
+ * authorities, as webcpp's embedded Mozilla roots (`webcpp::asio::make_tls_client_context()`) or a
+ * private one, makes its context itself and gives it to the backend. In the browser the page's
+ * `WebSocket` verifies the relay against the browser's authorities, and the context records only
+ * the policy its stream asks for: a client that verifies its peer.
  *
  * @return The context, or the error that kept OpenSSL from making it or from finding the system's
  * authorities.
@@ -171,19 +176,41 @@ struct url_parts {  // NOLINT(bugprone-exception-escape)
     std::pmr::string target;
 };
 
-/** Whether a decoded host name holds a byte that a page's URL parser refuses in a host. */
+/**
+ * Whether a decoded host name holds a byte that a page's URL parser refuses in a host, or a byte
+ * beyond ASCII, of an international name that a page turns into its A-label and this parser does
+ * not.
+ */
 inline bool forbidden_in_host(std::string_view name) {
     constexpr std::string_view forbidden = "#%/:<>?@[\\]^|";
     return std::ranges::any_of(name, [forbidden](char c) {
         const auto byte = static_cast<unsigned char>(c);
-        return byte <= 0x20U || byte == 0x7FU || forbidden.find(c) != std::string_view::npos;
+        return byte <= 0x20U || byte >= 0x7FU || forbidden.find(c) != std::string_view::npos;
     });
+}
+
+/**
+ * Whether a decoded host name in lower case ends in a number, as a page's URL parser asks before it
+ * reads the host as an IPv4 address: its last label, a final empty one left out, is decimal digits,
+ * or `0x` and hexadecimal digits.
+ */
+inline bool ends_in_a_number(std::string_view name) {
+    if (name.ends_with('.')) {
+        name.remove_suffix(1);
+    }
+    const auto dot = name.rfind('.');
+    const auto last = dot == std::string_view::npos ? name : name.substr(dot + 1);
+    if (last.starts_with("0x")) {
+        return std::ranges::all_of(last.substr(2), boost::urls::grammar::hexdig_chars);
+    }
+    return !last.empty() && std::ranges::all_of(last, boost::urls::grammar::digit_chars);
 }
 
 /**
  * The parts of a `ws://` or `wss://` URL, in `memory`, read with Boost.URL; nothing for another
  * scheme, for a URL without a host, with userinfo or a fragment, which a page's `WebSocket` refuses
- * too, or with a port beyond 65535.
+ * too, with a port beyond 65535, or with a host that a page's URL parser refuses or reads
+ * otherwise.
  */
 inline std::optional<url_parts> parse_url(
     std::string_view url, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -231,6 +258,12 @@ inline std::optional<url_parts> parse_url(
             // as a page reads it, and TLS names no address to the server. A decoded name holds no
             // ':', refused above, so it is never an IPv6 address.
             out.named = !boost::urls::parse_ipv4_address(out.host).has_value();
+            // A page reads a host that ends in a number as an IPv4 address in any of its forms
+            // (127.1, octal and hexadecimal parts, a single number), or refuses it: a form other
+            // than a dotted quad is refused here, never resolved as a name.
+            if (out.named && ends_in_a_number(out.host)) {
+                return std::nullopt;
+            }
             out.handshake_host = out.host;
             break;
         }
@@ -650,12 +683,14 @@ private:
  * page's before it is copied into WebAssembly. A relay that stops reading is dropped once the
  * queue, or a page's `bufferedAmount`, would pass `limits.max_queued_bytes`, and, natively, one
  * that stops answering once `limits.idle_timeout` passes with its keep-alive ping unanswered; each
- * reports one close. The URL is read with Boost.URL: an IPv6 address in brackets, a scheme in any
- * case. A URL it cannot parse, one with userinfo or a fragment, and a `wss://` URL without `tls`,
- * report a close, as an unreachable relay does. Natively a `wss://` connection names the host to
- * the server (SNI) when it is a name, verifies the relay's certificate whatever the verify mode of
- * `tls`, and checks it against the URL's host, a name or an address; in a page the browser does
- * all three. It needs no exceptions.
+ * reports one close. The URL is read with Boost.URL: `ws://` or `wss://` in any case, a host name
+ * with its escapes decoded, an IPv4 address as a dotted quad or an IPv6 address in brackets, and a
+ * port up to 65535. A URL it refuses, which includes what a page's URL parser reads otherwise (an
+ * IPv4 shorthand such as `127.1`, an international name, a tab or a backslash), and a `wss://` URL
+ * without `tls`, report a close, as an unreachable relay does. Natively a `wss://` connection names
+ * the host to the server (SNI) when it is a name, verifies the relay's certificate whatever the
+ * verify mode of `tls`, and checks it against the URL's host, a name or an address; in a page the
+ * browser does all three. It needs no exceptions.
  *
  * The connection, its handlers, its queued texts, its read buffer and its operations are in
  * `memory`, and a message allocates nothing in the default allocator. Natively what Boost.Beast,

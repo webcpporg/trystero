@@ -118,28 +118,44 @@ session: natively over Boost.Beast's own WebSocket, in a page over its
 `WebSocket`; `ws://` in the clear, `wss://` over TLS. Each connection is a
 chain of Asio operations on the room's executor (resolve, connect, TLS, the
 handshake, then one read after another, and one write at a time), whose
-handlers carry the room's allocator, so that what Asio and Beast allocate for
-them, the read buffer among it, is in the room's resource
+handlers carry the room's allocator, so that what Asio and Beast allocate
+for them, the read buffer among it, is in the room's resource
 (<<trystero-allocation>>), and a message allocates nothing outside it; in a
 page the stream's own state is there too. Natively what Beast, Asio and
 OpenSSL allocate of their own, which takes no allocator, stays outside it,
 for each connection: their streams' state, the resolver's, the handshake's
 request and response, the verify callback, their timers' waits and each
-keep-alive ping's frame (<<trystero-allocation-outside>>). A
-write that fails ends the connection, which reports its close at once. The
-WebSockets are Beast's rather than libdatachannel's own, so the relays run on
-the room's executor like everything else.
+keep-alive ping's frame (<<trystero-allocation-outside>>). A write that
+fails ends the connection, which reports its close at once. The WebSockets
+are Beast's rather than libdatachannel's own, so the relays run on the
+room's executor like everything else.
 
-A relay's URL is read with Boost.URL, on both targets, as a page's
-`WebSocket` reads it: the scheme in any case, a host name in lower case and
-with its escapes decoded, an IPv6 address in brackets
+A relay's URL is read with Boost.URL, on both targets, by the same rules.
+It accepts `ws://` and `wss://`, the scheme in any case; a host name, with
+its escapes decoded, in lower case; an IPv4 address as a dotted quad
+(`ws://127.0.0.1:7447/`), also with escaped digits, which is then an
+address and not a name; an IPv6 address in brackets
 (`ws://[2001:db8::1]:7447/`), whose address without them is what the
-resolver looks up, and the scheme's port when the URL names none. A URL of
+resolver looks up, and which the handshake names as it is written; and a
+port up to 65535, the scheme's when the URL names none. It refuses a URL of
 another scheme, `http://` and `https://` among them, which a page's
-`WebSocket` alone would take as `ws://` and `wss://`, without a host, with a
-user name or a fragment, or with a port beyond 65535, is refused; the relay
-reports a close, as an unreachable one does, and the room retries it later
-as it would any other.
+`WebSocket` alone would take as `ws://` and `wss://`; one without a host,
+with userinfo or with a fragment; an IPvFuture address (`ws://[v1.x]/`);
+and a host with a byte that a page's URL parser refuses in a host, escaped
+or not: a space or a control character, or one of `#`, `%`, `/`, `:`,
+`<`, `>`, `?`, `@`, `[`, `+\+`, `]`, `^` and `|`.
+
+It fails closed on what a page's URL parser accepts but reads otherwise: an
+IPv4 address in another form than a dotted quad, which a page reads as the
+address and the system's resolver might reach under another name, as the
+shorthand `127.1`, octal or hexadecimal parts (`0x7f.0.0.1`), a final dot or
+a single number, and so any host whose last label is a number, which a page
+reads as an address or refuses; an international domain name, which a page
+turns into its A-label (`+xn--bcher-kva.example+` for `bücher.example`) and
+this parser does not, with its bytes beyond ASCII escaped or not; and a tab,
+a newline or a backslash anywhere in the URL, which a page drops or reads as
+a slash. A refused URL makes the relay report a close, as an unreachable one
+does, and the room retries it later as it would any other.
 
 Over TLS, natively, the connection names the relay's host to the server
 (SNI) when it is a name, never when it is an address, verifies the relay's
@@ -149,16 +165,26 @@ against its own authorities. A program's context made as Asio makes a
 client's, `ssl::context(ssl::context::tls_client)`, whose verify mode is
 `verify_none`, still has every relay verified against the authorities it
 trusts, as a page's `WebSocket` always verifies; the context itself is left
-as it is. By default the backend makes
-its TLS context with `platform::make_tls_context()`: natively TLS 1.2 or
-newer, and the system's certificate authorities, those OpenSSL's default
-verify paths name; in a page a context that records only the policy the
-page's stream asks for, a client that verifies its peer. A relay whose
-certificate does not verify is unreachable, and the room retries it later.
+as it is. By default the backend makes its TLS context with
+`platform::make_tls_context()`: natively TLS 1.2 or newer, and the system's
+certificate authorities, those OpenSSL's default verify paths name; in a
+page a context that records only the policy the page's stream asks for, a
+client that verifies its peer. A relay whose certificate does not verify is
+unreachable, and the room retries it later.
+
+On Windows OpenSSL's default verify paths are a `cert.pem` file and a
+`certs` directory in its build-time directory, `SSL` under the common
+program files (`C:\Program Files\Common Files\SSL` on a usual machine),
+which neither Windows nor webcpp fills, and OpenSSL reads no Windows
+certificate store by default: there the system's authorities are none
+unless `SSL_CERT_FILE` or `SSL_CERT_DIR` names some. `make_tls_context()`
+succeeds there all the same, and no `wss://` relay verifies, so a Windows
+program gives the backend its own context, webcpp's embedded roots as below.
+
 A native application that trusts other authorities makes its context and
-gives it to the backend: webcpp's embedded Mozilla roots, which read no file
-of the system, with `webcpp::asio::make_tls_client_context()`, or a private
-authority with `webcpp::asio::make_tls_client_context(pem)`:
+gives it to the backend: webcpp's embedded Mozilla roots, which read no
+file of the system, with `webcpp::asio::make_tls_client_context()`, or a
+private authority with `webcpp::asio::make_tls_client_context(pem)`:
 
 [source]
 ----

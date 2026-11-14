@@ -436,6 +436,47 @@ void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
     BOOST_TEST(!trystero::platform::detail::parse_url("ws://relay%00.example.org/").has_value());
 }
 
+// The URL, or "refused" when parse_url refuses it, so that a failed check names the URL.
+std::string read_or_refused(std::string_view url) {
+    return trystero::platform::detail::parse_url(url).has_value() ? std::string(url) : "refused";
+}
+
+// What a page's URL parser reads otherwise than this one is refused, never read another way: a
+// host a page reads as an IPv4 address in another form than a dotted quad (a shorthand, octal or
+// hexadecimal parts, a final dot, a single number), or refuses (a last label of digits); a byte
+// beyond ASCII, escaped or not, of an international name, which a page turns into its A-label; and
+// a tab, a newline or a backslash, which a page drops or reads as a slash.
+void urls_refuse_what_a_page_reads_otherwise() {
+    for (const std::string_view url : {
+             "ws://127.1/",
+             "ws://0x7f.0.0.1/",
+             "ws://127.000.0.1/",
+             "ws://0177.0.0.1/",
+             "ws://127.0.0.1./",
+             "ws://2130706433/",
+             "ws://relay.123/",
+             "ws://relay.0x/",
+             "ws://relay.0x1f./",
+             "wss://b%C3%BCcher.example/",
+             "wss://b\303\274cher.example/",  // a u with diaeresis, its UTF-8 bytes not escaped
+             "ws://rel\tay.example.org/",
+             "ws://relay.example.org\n/",
+             R"(ws:\\relay.example.org\)",
+             R"(ws://relay.example.org\nostr)",
+         }) {
+        BOOST_TEST_EQ(read_or_refused(url), "refused");
+    }
+    // A last label that is not a number is a name's, a final dot included.
+    for (const std::string_view url : {
+             "ws://relay.example.org./",
+             "ws://relay.example.1a/",
+             "ws://relay.0xg/",
+             "ws://1.2.3.example/",
+         }) {
+        BOOST_TEST_EQ(read_or_refused(url), url);
+    }
+}
+
 // A relay at an IPv6 literal, here 127.0.0.1 written as an IPv4-mapped IPv6 address so that the
 // test stays on the loopback where IPv6 has no address: its brackets must not reach the resolver.
 // The connection is a socket of IPv6's family, which a kernel without IPv6 cannot open (one with
@@ -778,6 +819,22 @@ void an_unreachable_relay_closes_without_opening() {
     BOOST_TEST(!opened);
 }
 
+// A relay at 127.1, which a page reads as 127.0.0.1 and the system's resolver may too: the socket
+// refuses the URL and closes without opening, rather than reach the address under another name.
+void a_relay_at_an_ipv4_shorthand_closes_without_opening() {
+    asio::io_context io;
+    const echo_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    reports seen;
+    const auto socket = trystero::platform::connect_websocket(
+        io.get_executor(), &tls,
+        "ws://127.1:" + std::to_string(server.acceptor.local_endpoint().port()) + "/relay",
+        seen.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return seen.opened || seen.closes != 0; }));
+    BOOST_TEST(!seen.opened);
+    BOOST_TEST_EQ(seen.closes, 1);
+}
+
 void a_dropped_socket_reports_nothing() {
     asio::io_context io;
     const echo_server server(io);
@@ -950,6 +1007,7 @@ int main() {
     urls_name_a_scheme_host_port_and_path();
     urls_read_an_escaped_address_as_an_address();
     urls_name_ipv6_hosts_and_refuse_what_a_page_refuses();
+    urls_refuse_what_a_page_reads_otherwise();
     a_relay_at_an_ipv6_address_opens();
     the_tls_context_verifies_peers_from_tls_1_2();
     the_openssl_error_reported_is_the_one_queued_last();
@@ -964,6 +1022,7 @@ int main() {
     opens_sends_in_order_receives_and_closes_once();
     a_message_longer_than_a_relay_sends_closes_the_socket();
     an_unreachable_relay_closes_without_opening();
+    a_relay_at_an_ipv4_shorthand_closes_without_opening();
     a_dropped_socket_reports_nothing();
     closing_right_after_a_send_lets_the_write_finish_first();
     a_connection_that_ends_during_a_write_closes_once(misbehaviour::too_long_text);
