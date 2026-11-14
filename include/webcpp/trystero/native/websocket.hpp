@@ -24,7 +24,7 @@
 #include <webcpp/beast/tcp_stream.hpp>        // lint-world: the relays' WebSockets
 #include <webcpp/beast/websocket.hpp>         // lint-world: the relays' WebSockets
 
-#ifdef WEBCPP_TARGET_NATIVE
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #endif
@@ -80,7 +80,7 @@ namespace detail {
 
 /** The error OpenSSL queued last, or `not_enough_memory` when it queued none. */
 inline boost::system::error_code openssl_error() {
-#ifdef WEBCPP_TARGET_NATIVE
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
     // Asio's own TLS errors are OpenSSL's codes, in its category, as an int.
     if (const auto code = ERR_get_error(); code != 0) {
         return {static_cast<int>(code), webcpp::asio::error::get_ssl_category()};
@@ -108,7 +108,7 @@ inline boost::system::error_code openssl_error() {
  * @see "The relays", in the guide.
  */
 inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
-#ifdef WEBCPP_TARGET_NATIVE
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> raw(SSL_CTX_new(TLS_client_method()),
                                                           &SSL_CTX_free);
     if (!raw) {
@@ -405,7 +405,7 @@ private:
             return;
         }
         if constexpr (Secure) {
-#ifdef WEBCPP_TARGET_NATIVE
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
             auto& tls = ws_.next_layer();
             // SNI names a host name only, never an address (RFC 6066).
             if (url_.named && !webcpp::beast::set_server_name(tls, url_.host)) {
@@ -439,7 +439,7 @@ private:
         webcpp::beast::get_lowest_layer(ws_).expires_never();
         auto timeouts = webcpp::beast::websocket::stream_base::timeout::suggested(
             webcpp::beast::role_type::client);
-#ifdef WEBCPP_TARGET_NATIVE
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
         timeouts.idle_timeout = limits_.idle_timeout;
         timeouts.keep_alive_pings = true;  // a relay that reads nothing answers no ping
 #endif
