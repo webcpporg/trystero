@@ -22,10 +22,10 @@
 #include <webcpp/webrtc/runtime.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <webcpp/asio/ssl.hpp>              // lint-world: the relays' TLS
 
 #include <openssl/rand.h>
-#include <boost/asio/any_io_executor.hpp>  // lint-world: the relays' Boost.Beast WebSockets
-#include <boost/asio/ssl/context.hpp>      // lint-world: the relays' TLS
+#include <boost/system/result.hpp>
 
 #include <array>
 #include <chrono>
@@ -41,9 +41,9 @@
 
 /**
  * The native target: the backend interface over webcpp::webrtc for WebRTC, natively
- * libdatachannel's, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM, and Asio
- * for timers. Everything it reports runs on the executor it is given; the application runs that
- * executor's context, blocking on it or polling it.
+ * libdatachannel's, webcpp::beast for the relays' WebSockets, natively Boost.Beast's, OpenSSL for
+ * TLS and AES-GCM, and Asio for timers. Everything it reports runs on the executor it is given;
+ * the application runs that executor's context, blocking on it or polling it.
  */
 namespace webcpp::trystero::native {
 
@@ -105,41 +105,77 @@ class backend : public trystero::backend::factory {
 public:
     /**
      * A backend with a runtime of its own, made with `backend_config::runtime`, whose TLS verifies
-     * relays against the system's certificate authorities.
+     * relays against the system's certificate authorities, as @ref make_tls_context makes it.
+     *
+     * It throws nothing: when OpenSSL cannot make the TLS context, `tls_context()` holds the error,
+     * and every `wss://` relay reports a close, as an unreachable relay does.
      *
      * @param ex The executor everything the backend reports runs on.
      * @param config What its peer connections are made with; the default binds them to no address.
-     * @throws std::exception A `boost::system::system_error` when OpenSSL cannot make the TLS
-     * context or load the system's certificate authorities; without exceptions, Boost's
-     * `throw_exception`, which the program defines, is called instead.
      */
     explicit backend(webcpp::asio::any_io_executor ex, backend_config config = {})
-        : backend(std::move(ex), nullptr, std::move(config)) {}
+        : backend(std::move(ex), make_tls_context(), nullptr, std::move(config)) {}
 
     /**
-     * A backend whose peer connections the program's runtime counts.
+     * A backend with a runtime of its own whose relays' TLS is the program's: another set of
+     * certificate authorities, as webcpp's embedded Mozilla roots, which
+     * `webcpp::asio::make_tls_client_context()` trusts, or a private one.
+     *
+     * @param ex The executor everything the backend reports runs on.
+     * @param tls The TLS context of every `wss://` connection, which should verify peers; or the
+     * error that kept the program from making it, which `tls_context()` then holds, every `wss://`
+     * relay reporting a close.
+     * @param config What its peer connections are made with.
+     */
+    backend(webcpp::asio::any_io_executor ex, boost::system::result<webcpp::asio::ssl::context> tls,
+            backend_config config = {})
+        : backend(std::move(ex), std::move(tls), nullptr, std::move(config)) {}
+
+    /**
+     * A backend whose peer connections the program's runtime counts, and whose TLS verifies relays
+     * against the system's certificate authorities, as the first constructor's does.
      *
      * @param ex The executor everything the backend reports runs on.
      * @param runtime The program's runtime, which must outlive every connection of the backend,
      * and so the io_context that may hold one in a handler.
      * @param config What its peer connections are made with; its `runtime` is not used.
-     * @throws std::exception As the other constructor.
      */
     backend(webcpp::asio::any_io_executor ex, ::webcpp::webrtc::runtime& runtime,
             backend_config config = {})
+        : backend(std::move(ex), make_tls_context(), runtime, std::move(config)) {}
+
+    /**
+     * A backend whose peer connections the program's runtime counts, and whose relays' TLS is the
+     * program's.
+     *
+     * @param ex The executor everything the backend reports runs on.
+     * @param tls The TLS context of every `wss://` connection, or the error that kept the program
+     * from making it, as the second constructor takes it.
+     * @param runtime The program's runtime, which must outlive every connection of the backend,
+     * and so the io_context that may hold one in a handler.
+     * @param config What its peer connections are made with; its `runtime` is not used.
+     */
+    backend(webcpp::asio::any_io_executor ex, boost::system::result<webcpp::asio::ssl::context> tls,
+            ::webcpp::webrtc::runtime& runtime, backend_config config = {})
         // An empty owner: the pointer does not own the program's runtime.
-        : backend(std::move(ex),
+        : backend(std::move(ex), std::move(tls),
                   std::shared_ptr<::webcpp::webrtc::runtime>(
                       std::shared_ptr<::webcpp::webrtc::runtime>(), &runtime),
                   std::move(config)) {}
 
     /**
-     * The TLS configuration of the relays' connections, for an application with authorities of its
-     * own.
+     * The TLS context of the relays' connections, which an application may still configure before
+     * the backend connects to a relay.
      *
-     * @return The context every `wss://` connection of the backend is made with.
+     * @return The context every `wss://` connection of the backend is made with, or the error that
+     * kept it from being made.
      */
-    boost::asio::ssl::context& tls_context() { return tls_; }
+    boost::system::result<webcpp::asio::ssl::context&> tls_context() {
+        if (!tls_) {
+            return tls_.error();
+        }
+        return *tls_;
+    }
 
     /**
      * The runtime that counts the backend's peer connections.
@@ -149,18 +185,19 @@ public:
     [[nodiscard]] ::webcpp::webrtc::runtime& runtime() const { return *runtime_; }
 
     /**
-     * Opens a WebSocket to a relay over Boost.Beast, with @ref connect_websocket.
+     * Opens a WebSocket to a relay over webcpp::beast, with @ref connect_websocket.
      *
      * @param url The relay's `ws://` or `wss://` URL, read during the call.
      * @param h What the WebSocket reports.
-     * @param memory The room's resource, which the WebSocket, its handlers and its queued texts are
-     * allocated in.
-     * @return The WebSocket.
+     * @param memory The room's resource, which the WebSocket, its handlers, its queued texts and
+     * its operations are allocated in.
+     * @return The WebSocket; one of a `wss://` URL reports a close when the backend has no TLS
+     * context.
      */
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
-        return connect_websocket(relay_executor(), tls_, url, std::move(h), memory,
+        return connect_websocket(ex_, tls_ ? &*tls_ : nullptr, url, std::move(h), memory,
                                  config_.relay_limits);
     }
 
@@ -253,33 +290,15 @@ public:
 
 private:
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    backend(webcpp::asio::any_io_executor ex, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
-            backend_config config)
+    backend(webcpp::asio::any_io_executor ex, boost::system::result<webcpp::asio::ssl::context> tls,
+            std::shared_ptr<::webcpp::webrtc::runtime> runtime, backend_config config)
         // NOLINTEND(performance-unnecessary-value-param)
         : ex_(std::move(ex)),
           config_(std::move(config)),
           runtime_(runtime ? std::move(runtime) : own_runtime(config_.runtime)),
           constructions_(config_.max_peer_connections_per_minute, std::chrono::minutes(1),
                          std::pmr::get_default_resource()),
-          tls_(boost::asio::ssl::context::tls_client) {
-        tls_.set_default_verify_paths();
-        tls_.set_verify_mode(boost::asio::ssl::verify_peer);
-    }
-
-    /**
-     * The executor of the relays' WebSockets, which are Boost.Beast's and take Boost.Asio's.
-     *
-     * Natively webcpp::asio is Boost.Asio, and the two executors are one: the backend builds
-     * natively alone. The reference of the guide reads every header for Emscripten's target,
-     * where webcpp::asio is its own and the backend is never built: it names no executor there.
-     */
-    [[nodiscard]] boost::asio::any_io_executor relay_executor() const {
-#ifdef WEBCPP_TARGET_NATIVE
-        return ex_;
-#else
-        return {};
-#endif
-    }
+          tls_(std::move(tls)) {}
 
     /** A runtime of the backend's own, which its connections share with it. */
     static std::shared_ptr<::webcpp::webrtc::runtime> own_runtime(
@@ -325,7 +344,7 @@ private:
     backend_config config_;
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
     trystero::detail::construction_window constructions_;
-    boost::asio::ssl::context tls_;
+    boost::system::result<webcpp::asio::ssl::context> tls_;
 };
 
 }  // namespace webcpp::trystero::native

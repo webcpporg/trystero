@@ -10,8 +10,9 @@
 Natively, `native::backend` implements the backend interface over
 webcpp::webrtc for WebRTC, which natively is
 https://github.com/paullouisageneau/libdatachannel[libdatachannel]'s
-(<<trystero-design-backend-webrtc>>), Boost.Beast for the relays' WebSockets, OpenSSL
-for TLS and AES-GCM, and Asio's timers. A native room is the same room as a browser's or Trystero
+(<<trystero-design-backend-webrtc>>), webcpp::beast for the relays' WebSockets,
+natively Boost.Beast's, OpenSSL for TLS and AES-GCM, and Asio's timers. A native room is the
+same room as a browser's or Trystero
 JS's: they meet over the same relays and exchange the same frames. One
 backend serves every app and room of the program, with separate app
 objects and distinct self ids for different passwords, beside the executor it runs
@@ -33,10 +34,10 @@ refuses is not made, and no exception crosses into trystero.
 (`WEBCPP_HAS_EXCEPTIONS` is not defined: the compiler has none, or the
 program defined `WEBCPP_NO_EXCEPTIONS`); a developer may define it for
 trystero alone in a build that has them. It changes nothing in trystero's
-behaviour. One function of the backend throws: its constructor, a
-`boost::system::system_error` when OpenSSL cannot make the TLS context or
-load the system's certificate authorities; without exceptions Boost calls
-the program's `boost::throw_exception` instead.
+behaviour. No function of the backend throws, its constructors included: when
+OpenSSL cannot make the relays' TLS context, the backend keeps the error as a
+value, which `tls_context()` returns, and every `wss://` relay reports a
+close, as an unreachable one does (<<trystero-native-relays>>).
 
 [#trystero-native-threads]
 === Threads
@@ -78,7 +79,8 @@ webcpp::webrtc's `runtime` holds what libdatachannel keeps for the whole
 process, its threads and its global state, and caps the peer connections
 alive at once. A native backend makes one of its own, with
 `backend_config::runtime`, or takes the program's: `native::backend(ex,
-runtime, config)`. Each of its connections and channels keeps that runtime
+runtime, config)`, or `native::backend(ex, tls, runtime, config)` with the
+program's TLS context too (<<trystero-native-relays>>). Each of its connections and channels keeps that runtime
 alive, so that one which outlives the backend, in a handler the
 `io_context` still holds, never outlives the runtime. A process holds one
 runtime at a time, since libdatachannel's state is the process's: a program
@@ -127,14 +129,48 @@ with, beside the app's `ice_servers`:
 [#trystero-native-relays]
 === The relays
 
-The relays are reached over Boost.Beast: `ws://` in the clear, `wss://` over
-TLS with SNI and host name verification. The backend verifies relays against
-the system's certificate authorities; `tls_context()` gives the
-`boost::asio::ssl::context` to an application with authorities of its own. A
-relay whose certificate does not verify is unreachable, and the room retries
-it later as it would any other. The WebSockets are Beast's rather than
+The relays are reached over webcpp::beast, natively Boost.Beast's own
+WebSocket: `ws://` in the clear, `wss://` over TLS. Each connection is a
+chain of Asio operations on the room's executor (resolve, connect, TLS, the
+handshake, then one read after another, and one write at a time), whose
+handlers carry the room's allocator, so that what Asio and Beast allocate for
+them, the read buffer among it, is in the room's resource
+(<<trystero-allocation>>). The WebSockets are Beast's rather than
 libdatachannel's own, so the relays run on the room's executor like
 everything else.
+
+A relay's URL is read with Boost.URL, as a page's `WebSocket` reads it: the
+scheme in any case, a host name in lower case and with its escapes decoded,
+an IPv6 address in brackets (`ws://[2001:db8::1]:7447/`), whose address
+without them is what the resolver looks up, and the scheme's port when the URL
+names none. A URL of another scheme, without a host, with a user name or a
+fragment, or with a port beyond 65535, is refused; the relay reports a close,
+as an unreachable one does, and the room retries it later as it would any
+other.
+
+Over TLS the connection names the relay's host to the server (SNI) when it is
+a name, never when it is an address, and checks the relay's certificate
+against the URL's host, a name or an address. By default the backend makes
+its TLS context with `native::make_tls_context()`: TLS 1.2 or newer, and the
+system's certificate authorities, those OpenSSL's default verify paths name.
+A relay whose certificate does not verify is unreachable, and the room
+retries it later. An application that trusts other authorities makes its
+context and gives it to the backend: webcpp's embedded Mozilla roots, which
+read no file of the system, with `webcpp::asio::make_tls_client_context()`,
+or a private authority with `webcpp::asio::make_tls_client_context(pem)`:
+
+[source,cpp]
+----
+trystero::native::backend backend(io.get_executor(),
+                                  webcpp::asio::make_tls_client_context());
+----
+
+The backend takes the context as `make_tls_client_context` returns it, a
+`boost::system::result`: one that holds an error, as when OpenSSL cannot
+make the backend's own, is kept, `tls_context()` returns it, and every
+`wss://` relay reports a close while the `ws://` ones are still reached. No
+constructor throws. `tls_context()` also gives the context itself, which an
+application may configure further before the backend connects to a relay.
 
 A relay is a third party, and the backend bounds what one can make the room
 hold:
