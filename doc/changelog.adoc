@@ -16,26 +16,28 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* *Breaking change:* Changed `native::backend` and `browser::backend` to one
+`platform::backend`; include `<webcpp/trystero/platform/backend.hpp>` and
+link `/webcpp/trystero//platform` on both targets.
 * *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
-runs its `webcpp::asio::io_context` under a work guard.
-* *Breaking change:* Removed `browser::event_loop` and `browser/src.hpp`;
-`browser::backend` takes an executor, pages call `browser::page_call`.
+runs its `io_context` under a work guard, and calls in through
+`platform::page_call` of `platform/page.hpp`.
 * *Breaking change:* Removed the backends' own connection and channel classes
-for webcpp::webrtc's; use `native::backend` or `browser::backend`.
-* *Breaking change:* Changed the native backend to work without exceptions and
-throw nothing; `tls_context()` returns a `boost::system::result`.
+for webcpp::webrtc's, and `browser::event_loop`.
+* *Breaking change:* Changed the backend to throw nothing; `tls_context()`
+returns a `boost::system::result`.
 * *Breaking change:* Changed `protocol::make_id` to `protocol::random_id`, and
 `protocol::proposal::size` to `std::uint64_t`.
-* Fixed native relays at an IPv6 address being unreachable; relays now use
-webcpp::beast and Boost.URL.
-* Added `native::backend_config::runtime`, at most 256 connections at once, and
-constructors taking a runtime or TLS context.
+* Changed a page's relays to the native ones' webcpp::beast session, which
+refuses `http://` relay URLs and bounds what the page holds unsent.
+* Added `backend_config::memory` for the backend's own state, and
+`backend_config::runtime`, at most 256 connections at once, on both targets.
+* Fixed relays at an IPv6 address being unreachable, and pages ignoring a
+failed `getentropy`.
 * Fixed 32-bit receivers, pages among them, misreading transfer offers of 4 GiB
 or more.
-* Changed browser data channels to keep frames that arrive before a handler,
-64 for 10 s.
-* Fixed rooms slowed by relays' event ids chosen to collide, and pages ignoring
-a failed `getentropy`.
+* Fixed rooms slowed by relays' event ids chosen to collide; channels keep
+frames that arrive before a handler, 64 for 10 s.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]

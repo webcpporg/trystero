@@ -8,11 +8,12 @@
 == Allocation
 
 A webcpp library lets its user choose where its allocations come from.
-trystero does it through `std::pmr`, header-only, with an app resource and
-an optional resource for each room.
+trystero does it through `std::pmr`, header-only, with an app resource, an
+optional resource for each room, and a resource for the platform backend's
+own state.
 
 [#trystero-allocation-resource]
-=== The app's resource and the room's
+=== The app's resource, the room's and the backend's
 
 * `app_config::memory`, `std::pmr::get_default_resource()` by default,
   receives the app's state, configuration copy including its password, self id,
@@ -27,6 +28,12 @@ an optional resource for each room.
   counts and backoffs, sealed texts, relays, actions, queues, outgoing
   frames, transfers, JSON storage and handlers. The signing context is
   made there with `secp256k1_context_preallocated_create`.
+* `platform::backend_config::memory`, `std::pmr::get_default_resource()` by
+  default, receives the platform backend's own state: its copy of
+  `bind_address`, its window of constructions and its own webcpp::webrtc
+  runtime. It must be non-null, and outlive the backend and every connection
+  of its runtime. What the backend makes for an app or a room is in the
+  resource given with that call instead (<<trystero-allocation-asio>>).
 * Adoption replaces negotiation handlers with the app's; ending a
   negotiation clears the room's handlers. Detachment fails and frees a
   binding's drain waiters and removes its registrations before returning.
@@ -58,10 +65,13 @@ The app's resource must outlive its state: the app handle, every room of
 it, retained values allocated there and every pending operation. A room's
 own resource must outlive that room, its retained `std::pmr::string`,
 `pmr_bytes` and `boost::json::value` values, and its pending operations.
+The backend's resource must outlive the backend and every connection of its
+own runtime, which a handler the `io_context` still holds may keep alive.
 Destroying a handle closes its work but queued completions can still free
-memory. Declare both `app_config::memory` and `room_options::memory`
-resources before the `io_context`, then construct the backend, app and
-rooms. Drain or destroy the `io_context` before destroying either resource.
+memory. Declare the `backend_config::memory`, `app_config::memory` and
+`room_options::memory` resources before the `io_context`, then construct the
+backend, app and rooms. Drain or destroy the `io_context` before destroying
+any of these resources.
 In the browser, keep them until all pending promises settle: a pending
 `async_await` holds its handler, so in practice resources live for the page's
 life.
@@ -136,6 +146,15 @@ Shared objects are made with `std::allocate_shared` over
 `std::pmr::polymorphic_allocator<>`, never with `std::make_shared`,
 `std::make_unique` or `new`; a timer is a `std::shared_ptr` for that reason.
 
+No type of trystero is a data structure meant for a shared segment, one that
+a process builds there and another maps and uses in place: every type is a
+run-time object, an app, a room, an action, a socket, a handler or the
+backend, routed through the `std::pmr` resources above, or a value one takes
+or gives. A `std::pmr` container holds its resource and its storage at
+absolute addresses of its process, as a handler holds a callable, so none is
+shareable in the sense of Boost.Interprocess, and none takes an `Allocator`
+template parameter for it.
+
 [#trystero-allocation-handlers]
 === Handlers
 
@@ -174,7 +193,20 @@ through that supplied resource. The backend's WebRTC
 (<<trystero-design-backend-webrtc>>) gives webcpp::webrtc's connections and
 channels a `std::pmr::polymorphic_allocator` on the app's resource, which
 their state, their queues, their texts and their operations use: each
-operation's handler is bound to it.
+operation's handler is bound to it. The platform backend's relays are one
+session of webcpp::beast's on both targets, made in the room's resource with
+its handlers, its queued texts and its read buffer, and each of its
+operations' handlers carries the room's allocator, so that what Asio and
+Beast allocate for them is there too. Natively Boost.Beast's stream state
+stays Beast's (<<trystero-allocation-outside>>); in a page the WebSocket
+stream's own state is in the room's resource too, since the stream is made
+with `std::allocator_arg` and the room's allocator. The
+platform backend's own state, its copy of `bind_address`, its window of
+constructions and its own runtime, is in `backend_config::memory`
+(<<trystero-allocation-resource>>): the test `platform_backend`, on both
+targets, makes a backend while a counting resource is the default one, which
+sees none of it, and sees `backend_config::memory` given all of it back once
+the backend is destroyed.
 
 *Boost.JSON* allocates through `json_resource`, a
 `boost::container::pmr::memory_resource` that forwards to a
@@ -212,8 +244,9 @@ nothing.
   which it posts through `webcpp::asio::any_io_executor`;
 * natively, Boost.Beast's state inside a relay's WebSocket, its stream's,
   and the resolver's results; the WebSocket's operations, its read buffer
-  and its queued texts are in the room's resource, since each of its
-  handlers carries the room's allocator;
+  and its queued texts are in the room's resource on both targets, since
+  each of its handlers carries the room's allocator, and in a page the
+  stream's own state is there too;
 * the payload types `std::string`, `bytes` and `payload`, with
   `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on

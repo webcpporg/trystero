@@ -37,57 +37,61 @@ The library provides:
   connection per remote peer shared by its rooms;
 * a resource for the app and an optional resource for each room, which
   receive their allocations (<<trystero-allocation>>);
-* a backend interface that separates the room from the platform, and its
-  two implementations, for the browser and for native programs, whose WebRTC
-  is webcpp::webrtc's on both.
+* a backend interface that separates the room from the platform, and the
+  platform backend, one implementation of it for native programs and for
+  pages, whose WebRTC is webcpp::webrtc's on both.
 
 [#trystero-overview-targets]
-=== Two backends
+=== Two targets, one backend
 
 `<webcpp/trystero.hpp>` is the rooms themselves, which build on both of
-trystero's targets, native and emscripten, and include neither backend.
-Each backend is a header of its own:
+trystero's targets, native and emscripten, and leave the platform backend
+out. The backend is a header of its own, beside a page's:
 
 [cols="1,1,3",options="header"]
 |===
-| Backend | Target | Built on
+| Header | Target | What it holds
 
-| `<webcpp/trystero/browser/backend.hpp>`
+| `<webcpp/trystero/platform/backend.hpp>`
+| native and emscripten
+| `platform::backend`: webcpp::webrtc for WebRTC, natively over
+  libdatachannel and in a page over its `RTCPeerConnection` and
+  `RTCDataChannel`; webcpp::beast for the relays' WebSockets, natively
+  Boost.Beast's and in a page its `WebSocket`, their URLs read with
+  Boost.URL; webcpp::asio's timers; and per target the sealer and the
+  randomness, natively OpenSSL's AES-GCM and `RAND_bytes`, in a page
+  `crypto.subtle` and `getentropy` (<<trystero-platform>>)
+
+| `<webcpp/trystero/platform/page.hpp>`
 | emscripten
-| the page's `WebSocket` and `crypto.subtle`, through webcpp::asio's bridge,
-  webcpp::asio's timers, and webcpp::webrtc over the page's
-  `RTCPeerConnection` and `RTCDataChannel` (<<trystero-browser>>)
-
-| `<webcpp/trystero/native/backend.hpp>`
-| native
-| webcpp::webrtc over libdatachannel for WebRTC, webcpp::beast for the
-  relays' WebSockets, natively Boost.Beast's, their URLs read with Boost.URL,
-  OpenSSL for TLS and AES-GCM, and Asio's timers (<<trystero-native>>)
+| `platform::page_call` and `platform::js_string`, what a page's program
+  uses beside the backend (<<trystero-platform-page>>)
 |===
 
-Both run the same room, and both meet Trystero JS peers. Every name is in the
-namespace `webcpp::trystero`.
+The backend runs the same room on both targets, and meets Trystero JS peers
+on both. Every name is in the namespace `webcpp::trystero`.
 
 [#trystero-overview-requirements]
 === Requirements
 
 * A {cpp}20 compiler.
-* Boost 1.92: Asio, Circular Buffer, Container (its `pmr` base class), Core,
-  Endian, Hash2, JSON, System and Unordered; and Beast and URL for the native
-  backend.
-* webcpp::asio, webcpp::webrtc for both backends' WebRTC, and webcpp::beast
-  for the native backend's relays (<<trystero-building>>).
+* Boost 1.92: Asio, Assert, Circular Buffer, Container (its `pmr` base
+  class), Endian, Hash2, JSON, System and Unordered for the rooms; URL for the
+  platform backend's relays, and Beast for them natively.
+* webcpp::asio, and webcpp::webrtc and webcpp::beast for the platform
+  backend's WebRTC and relays (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
   events: every room needs it.
 * In the browser: Emscripten 6.0.11, the version webcpp pins, a page
   served from a secure context (https, or http on `localhost`), where
   `crypto.subtle` exists, and a program whose `main` runs its `io_context`
-  (<<trystero-browser-run>>).
+  (<<trystero-platform-run>>).
 * Natively:
   https://github.com/paullouisageneau/libdatachannel[libdatachannel] 0.24.6,
   through webcpp::webrtc, and OpenSSL 3.
 
 trystero raises no exception of its own: an operation that can fail
-completes with an error code. Every part of it, both backends included,
-compiles and works without exceptions (<<trystero-native-exceptions>>).
+completes with an error code. Every part of it, the platform backend
+included, compiles and works without exceptions
+(<<trystero-platform-exceptions>>).
