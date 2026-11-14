@@ -14,6 +14,7 @@
 
 #include <webcpp/asio/tls_client_context.hpp>
 
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -472,6 +473,19 @@ void the_tls_context_verifies_peers_from_tls_1_2() {
     BOOST_TEST_EQ(SSL_CTX_get_min_proto_version(tls->native_handle()), TLS1_2_VERSION);
 }
 
+// OpenSSL's queue holds what earlier calls left in it: the error reported is the one queued last,
+// the failure's own, and the queue is emptied, so that a later failure is not reported with it.
+void the_openssl_error_reported_is_the_one_queued_last() {
+    ERR_clear_error();
+    ERR_raise(ERR_LIB_SSL, SSL_R_BAD_LENGTH);            // what an earlier call left behind
+    ERR_raise(ERR_LIB_SSL, SSL_R_NO_CIPHERS_AVAILABLE);  // the failure's own
+    const auto last = ERR_peek_last_error();
+    const auto error = trystero::platform::detail::openssl_error();
+    BOOST_TEST_EQ(error.value(), static_cast<int>(last));
+    BOOST_TEST(error.category() == asio::error::get_ssl_category());
+    BOOST_TEST_EQ(ERR_peek_error(), 0U);
+}
+
 // A relay over TLS whose certificate an authority the context trusts signed for the URL's name:
 // the socket names the host to the server (SNI), opens, and exchanges texts.
 void a_relay_over_tls_opens_and_is_sent_its_name() {
@@ -889,6 +903,7 @@ int main() {
     urls_name_ipv6_hosts_and_refuse_what_a_page_refuses();
     a_relay_at_an_ipv6_address_opens();
     the_tls_context_verifies_peers_from_tls_1_2();
+    the_openssl_error_reported_is_the_one_queued_last();
     a_relay_over_tls_opens_and_is_sent_its_name();
     a_relay_whose_certificate_names_another_host_closes_without_opening();
     a_relay_of_an_authority_not_trusted_closes_without_opening();

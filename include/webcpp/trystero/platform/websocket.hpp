@@ -81,11 +81,14 @@ struct websocket_limits {
 
 namespace detail {
 
-/** The error OpenSSL queued last, or `not_enough_memory` when it queued none. */
+/** The error OpenSSL queued last, or `not_enough_memory` when none; the queue is emptied. */
 inline boost::system::error_code openssl_error() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // The queue's first error may be one an earlier call left behind; the last is the failure's.
+    const auto code = ERR_peek_last_error();
+    ERR_clear_error();
     // Asio's own TLS errors are OpenSSL's codes, in its category, as an int.
-    if (const auto code = ERR_get_error(); code != 0) {
+    if (code != 0) {
         return {static_cast<int>(code), webcpp::asio::error::get_ssl_category()};
     }
 #endif
@@ -112,6 +115,8 @@ inline boost::system::error_code openssl_error() {
  */
 inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // What an earlier call left in OpenSSL's queue is not this one's error.
+    ERR_clear_error();
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> raw(SSL_CTX_new(TLS_client_method()),
                                                           &SSL_CTX_free);
     if (!raw) {
