@@ -357,6 +357,24 @@ void urls_name_a_scheme_host_port_and_path() {
     BOOST_TEST(!trystero::platform::detail::parse_url("wss://").has_value());
 }
 
+// A host is a name or an address once its escapes are decoded, as a page reads it: 127.0.0.1 with
+// escaped digits, a name to Boost.URL, is an address, which TLS never names to the server (SNI).
+void urls_read_an_escaped_address_as_an_address() {
+    const auto escaped = trystero::platform::detail::parse_url("wss://%31%32%37.0.0.1:7447/");
+    if (!BOOST_TEST(escaped.has_value())) {
+        return;
+    }
+    BOOST_TEST(!escaped->named);
+    BOOST_TEST_EQ(escaped->host, "127.0.0.1");
+    BOOST_TEST_EQ(escaped->handshake_host, "127.0.0.1:7447");
+    const auto name = trystero::platform::detail::parse_url("wss://%72elay.example.org/");
+    if (!BOOST_TEST(name.has_value())) {
+        return;
+    }
+    BOOST_TEST(name->named);
+    BOOST_TEST_EQ(name->host, "relay.example.org");
+}
+
 // An IPv6 address reaches the resolver without its brackets; a scheme in capitals is still a
 // WebSocket's; userinfo and a fragment, which a page's WebSocket refuses, are refused.
 void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
@@ -525,6 +543,26 @@ void a_relay_whose_certificate_names_another_host_closes_without_opening() {
     const auto socket =
         trystero::platform::connect_websocket(io.get_executor(), &*tls, server.url("127.0.0.1"),
                                               seen.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
+    BOOST_TEST(!seen.opened);
+    const std::vector<std::string> names{""};
+    BOOST_TEST_ALL_EQ(server.server_names.begin(), server.server_names.end(), names.begin(),
+                      names.end());
+}
+
+// The same relay at its address written with escaped digits, which a page reads as the address:
+// the socket sends no name either, and refuses the certificate, which names localhost alone.
+void a_relay_at_an_escaped_address_is_sent_no_name() {
+    asio::io_context io;
+    tls_echo_server server(io);
+    auto tls = webcpp::asio::make_tls_client_context(test_authority);
+    if (!BOOST_TEST(tls.has_value())) {
+        return;
+    }
+    reports seen;
+    const auto socket = trystero::platform::connect_websocket(
+        io.get_executor(), &*tls, server.url("%31%32%37.0.0.1"), seen.record(),
+        std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
     BOOST_TEST(!seen.opened);
     const std::vector<std::string> names{""};
@@ -900,12 +938,14 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
 
 int main() {
     urls_name_a_scheme_host_port_and_path();
+    urls_read_an_escaped_address_as_an_address();
     urls_name_ipv6_hosts_and_refuse_what_a_page_refuses();
     a_relay_at_an_ipv6_address_opens();
     the_tls_context_verifies_peers_from_tls_1_2();
     the_openssl_error_reported_is_the_one_queued_last();
     a_relay_over_tls_opens_and_is_sent_its_name();
     a_relay_whose_certificate_names_another_host_closes_without_opening();
+    a_relay_at_an_escaped_address_is_sent_no_name();
     a_relay_of_an_authority_not_trusted_closes_without_opening();
     a_programs_context_that_verifies_nothing_still_refuses_a_relay();
     a_backend_reaches_relays_with_the_tls_context_it_is_given();

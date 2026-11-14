@@ -31,6 +31,7 @@
 #include <boost/system/errc.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
+#include <boost/url/ipv4_address.hpp>
 #include <boost/url/parse.hpp>
 #include <boost/url/scheme.hpp>
 #include <boost/url/url_view.hpp>
@@ -208,7 +209,7 @@ inline std::optional<url_parts> parse_url(
     }
     url_parts out{
         .secure = secure,
-        .named = view.host_type() == boost::urls::host_type::name,
+        .named = false,
         .host = std::pmr::string(memory),
         .port = std::pmr::string(memory),
         .handshake_host = std::pmr::string(memory),
@@ -226,6 +227,10 @@ inline std::optional<url_parts> parse_url(
             if (out.host.empty() || forbidden_in_host(out.host)) {
                 return std::nullopt;
             }
+            // Escaped digits make Boost.URL read an address as a name; decoded, it is an address,
+            // as a page reads it, and TLS names no address to the server. A decoded name holds no
+            // ':', refused above, so it is never an IPv6 address.
+            out.named = !boost::urls::parse_ipv4_address(out.host).has_value();
             out.handshake_host = out.host;
             break;
         }
