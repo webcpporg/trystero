@@ -386,8 +386,9 @@ private:
     // a time, a call each in a debug build, and under Asyncify, built with Emscripten's exceptions
     // in JavaScript, each call inside a try crosses into JavaScript and back: 96 s of the test's
     // 118 (measured with node's profiler).
-    std::unique_ptr<std::byte[]> storage_ = std::make_unique_for_overwrite<std::byte[]>(capacity);
-    std::pmr::monotonic_buffer_resource buffer_{storage_.get(), capacity,
+    using arena = std::array<std::byte, capacity>;
+    std::unique_ptr<arena> storage_ = std::make_unique_for_overwrite<arena>();
+    std::pmr::monotonic_buffer_resource buffer_{storage_->data(), storage_->size(),
                                                 std::pmr::null_memory_resource()};
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
@@ -399,7 +400,7 @@ private:
 
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t /*alignment*/) override {
         const auto* at = static_cast<const std::byte*>(pointer);
-        if (at < storage_.get() || at >= storage_.get() + capacity) {
+        if (at < storage_->data() || at >= storage_->data() + storage_->size()) {
             ++foreign;
             return;
         }
