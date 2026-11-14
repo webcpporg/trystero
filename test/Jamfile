@@ -63,6 +63,9 @@ webcpp.run memory_backend : memory_backend_test.cpp ;
 webcpp.run connection : connection_test.cpp ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
+# The timer over webcpp::asio's steady_timer, which the browser backend
+# makes: a wait cancelled, restarted or destroyed never fires.
+webcpp.run timer : timer_test.cpp ;
 # end::both-targets[]
 webcpp.run native_sealer : native_sealer_test.cpp
   : <library>/webcpp/trystero//native <threading>multi <testing.input-file>fixtures/expected/expected.json : native ;
@@ -99,22 +102,23 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # end::allocation[]
 
 # The browser backend's own tests, under node, which has the page's
-# WebSocket, Web Crypto and microtasks but no WebRTC.
+# WebSocket and Web Crypto but no WebRTC; each main runs its io_context, as
+# a page's program does, and suspends in it in either variant.
 # tag::browser[]
-webcpp.run browser_event_loop : browser_event_loop_test.cpp : : emscripten ;
 webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
 webcpp.run browser_websocket_bound : browser_websocket_bound_test.cpp : : emscripten ;
 webcpp.run browser_websocket_late_events : browser_websocket_late_events_test.cpp : : emscripten ;
 webcpp.run browser_sealer : browser_sealer_test.cpp : : emscripten ;
 webcpp.run browser_data_channel : browser_data_channel_test.cpp : : emscripten ;
 webcpp.run browser_peer_connection : browser_peer_connection_test.cpp : : emscripten ;
+# A page's program: main runs the io_context under a work guard, and the
+# page's calls into C++ only post to it.
+webcpp.run browser_page : browser_page_test.cpp : : emscripten ;
 # end::browser[]
 
 # The same, built without exceptions, as a program that uses the browser
 # backend may be: no exception may enter WebAssembly there either.
 # tag::no-exceptions[]
-webcpp.run browser_event_loop_no_exceptions : browser_event_loop_test.cpp
-  : <exception-handling>off : emscripten ;
 webcpp.run browser_websocket_no_exceptions : browser_websocket_test.cpp
   : <exception-handling>off : emscripten ;
 webcpp.run browser_websocket_bound_no_exceptions : browser_websocket_bound_test.cpp
@@ -126,6 +130,8 @@ webcpp.run browser_sealer_no_exceptions : browser_sealer_test.cpp
 webcpp.run browser_data_channel_no_exceptions : browser_data_channel_test.cpp
   : <exception-handling>off : emscripten ;
 webcpp.run browser_peer_connection_no_exceptions : browser_peer_connection_test.cpp
+  : <exception-handling>off : emscripten ;
+webcpp.run browser_page_no_exceptions : browser_page_test.cpp
   : <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 

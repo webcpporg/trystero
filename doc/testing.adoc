@@ -115,6 +115,12 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | Every allocation of two apps and their rooms goes through their resources
   (<<trystero-allocation-proof>>).
 
+| `timer`
+| The timer over webcpp::asio's `steady_timer`, which the browser backend
+  makes: a wait fires once, in the timer's resource, and one cancelled,
+  restarted or destroyed never fires, even when its expiry was already
+  queued.
+
 | `native_sealer`, `native_websocket`, `native_timer`
 | The native backend, part by part, natively: the sealer opens what Trystero
   JS sealed with Web Crypto; the WebSocket, against a Beast server in the
@@ -137,15 +143,19 @@ include::{library-root}/test/Jamfile[tag=allocation]
   once, and leaves out a URL libdatachannel cannot parse. Both run once more
   without exceptions.
 
-| `browser_event_loop`, `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`
+| `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`, `browser_page`
 | The browser backend, on emscripten under node, which has the page's
-  WebSocket, Web Crypto and microtasks but no WebRTC: the loop and its
-  recovery from exceptions that escape a callback, the WebSocket's URLs, its
-  bound on what a relay holds unsent and its silence once dropped, the
-  sealer's completions, and, over webcpp::webrtc's browser objects and a
-  page's `RTCPeerConnection` of the test's, a data channel's refusal of what
-  is no frame, and the page's peer connections, made or refused, and
-  webcpp::webrtc's census of them.
+  WebSocket and Web Crypto but no WebRTC, each test's `main` running its
+  `io_context` as a page's program does: the WebSocket's URLs, its bound on
+  what a relay holds unsent and its silence once dropped, the sealer's
+  completions, and, over webcpp::webrtc's browser objects and a page's
+  `RTCPeerConnection` of the test's, a data channel's refusal of what is no
+  frame, and the page's peer connections, made or refused, and
+  webcpp::webrtc's census of them; and the shape of a page's program, whose
+  work guard keeps a page with no room yet running, and whose
+  `browser::page_call` functions, called from JavaScript while `run` is
+  suspended, return at once, only post, and reach the room, twice in a row
+  under Asyncify too.
 |===
 
 The native backend's tests run once more without exceptions

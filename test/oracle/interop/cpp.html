@@ -43,8 +43,8 @@ window.RTCPeerConnection = class extends PeerConnection {
         return super.close()
     }
 }
-var Module = {onRuntimeInitialized: () => Module.start()}
-window.leave = () => Module.leave()
+// The program's main starts the peer, runs it for the page's life, and defines window.leave, which
+// posts the leave to it.
 // The program run.mjs serves under /build/, as b2 linked it: interop_browser.js, beside its wasm.
 const program = document.createElement('script')
 program.src = '/build/' + new URLSearchParams(location.search).get('program')

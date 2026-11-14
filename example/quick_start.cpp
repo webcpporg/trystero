@@ -11,11 +11,11 @@
 // tag::includes[]
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program
 
 #include <webcpp/asio/as_tuple.hpp>
 #include <webcpp/asio/co_spawn.hpp>
 #include <webcpp/asio/detached.hpp>
+#include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
 #include <webcpp/asio/use_awaitable.hpp>
 
@@ -38,12 +38,11 @@ struct lobby {
     trystero::action<std::string> echo = room.make_action<std::string>("echo");
 };
 
-/** What the page keeps alive: event loop, backend, app, and the room it joined. */
+/** What the page keeps alive: its io_context, the backend, the app, and the room it joined. */
 struct application {
     asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
-    trystero::app app{loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
+    trystero::browser::backend backend{io.get_executor()};
+    trystero::app app{io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
     std::optional<lobby> joined;
 
     /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses
@@ -81,8 +80,8 @@ asio::awaitable<void> echo_back(trystero::action<std::string>& echo) {
 
 // tag::main[]
 int main() {
-    auto* app = new application;  // a page's program lives as long as the tab
-    auto* lobby = app->join();
+    application app;  // lives in main, whose run lasts as long as the tab
+    auto* lobby = app.join();
     if (lobby == nullptr) {
         return 1;
     }
@@ -98,7 +97,11 @@ int main() {
     lobby->chat.on_message([](const std::string& text, const trystero::message_info& info) {
         std::cout << info.from << ": " << text << '\n';
     });
-    asio::co_spawn(app->loop.get_executor(), echo_back(lobby->echo), asio::detached);
+    asio::co_spawn(app.io, echo_back(lobby->echo), asio::detached);
+
+    // The page waits for its peers with no work of its own at times: the guard keeps the run going.
+    const auto guard = asio::make_work_guard(app.io);
+    app.io.run();  // lint-run: the page's program, suspended into the browser's event loop
 }
 
 // end::main[]

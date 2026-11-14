@@ -10,11 +10,10 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
-#include <webcpp/trystero/browser/event_loop.hpp>
-#include <webcpp/trystero/browser/js.hpp>
+#include <webcpp/trystero/detail/post.hpp>
+#include <webcpp/trystero/detail/timer.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
@@ -22,30 +21,44 @@
 #include <webcpp/webrtc/options.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
-#include <webcpp/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
-#include <webcpp/asio/post.hpp>            // lint-world: posts handlers only
+#include <webcpp/asio/any_io_executor.hpp>      // lint-world: names the executor only
+#include <webcpp/asio/bind_allocator.hpp>       // lint-world: binds an allocator only
+#include <webcpp/asio/browser/async_await.hpp>  // lint-world: awaits the page's promises
+#include <webcpp/asio/browser/bridge.hpp>       // lint-world: the page's events
+#include <webcpp/asio/execution/context.hpp>    // lint-world: the bridge of the executor's context
+#include <webcpp/asio/query.hpp>                // lint-world: the bridge of the executor's context
 
+#include <emscripten/em_asm.h>
 #include <emscripten/val.h>
 #include <sys/random.h>  // lint-world: getentropy, the page's entropy
 
+#include <boost/system/error_code.hpp>
+
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
-#include <vector>
 
 /**
- * The browser target: the backend interface over the page's own `WebSocket`, `setTimeout` and
- * `crypto.subtle`, through `emscripten::val`, and over its `RTCPeerConnection` and
- * `RTCDataChannel` through webcpp::webrtc. It needs a secure context (https, or http on
- * localhost), where `crypto.subtle` exists.
+ * The browser target: the backend interface over the page's own `WebSocket` and `crypto.subtle`,
+ * over webcpp::asio's timers, and over its `RTCPeerConnection` and `RTCDataChannel` through
+ * webcpp::webrtc. It needs a secure context (https, or http on localhost), where `crypto.subtle`
+ * exists.
  *
- * Tip: its objects, their handlers and the frames and texts they hand to the room are in the room's
- * resource; what `emscripten::val` holds is in the JavaScript heap, and the page's `event_loop`
- * keeps its registrations in its own resource.
+ * Tip: the page's events reach C++ through webcpp::asio's bridge, a service of the program's
+ * io_context, which only posts to it: they run while the program runs that io_context, from
+ * `main`. Its objects, their handlers and the frames and texts they hand to the room are in the
+ * room's resource; what `emscripten::val` holds is in the JavaScript heap.
  */
 namespace webcpp::trystero::browser {
 
@@ -54,140 +67,287 @@ using emscripten::val;
 
 namespace detail {
 
-/** A copy of bytes as a new `Uint8Array`, independent of the wasm memory. */
-inline val to_js(std::span<const std::uint8_t> data) {
-    return val::global("Uint8Array")
-        .new_(val(emscripten::typed_memory_view(data.size(), data.data())));
+// The page's WebSocket and Web Crypto, called from C++. Each function is an EM_ASM block in an
+// inline function, which Emscripten allows in several translation units, as webcpp::webrtc's and
+// webcpp::beast's browser imports are. JavaScript stays in JavaScript: what can throw is caught
+// there, before it can reach a WebAssembly frame, and a Web Crypto call is made inside an async
+// function, so that what it throws becomes the rejection of the promise it returns. The functions
+// use Emval, HEAPU8 and UTF8ToString, which webcpp::asio's browser runtime has Emscripten link, in
+// every program on /webcpp/asio//asio.
+
+// clang-format off
+/** The JavaScript string of `size` bytes of UTF-8 at `data`, its NUL characters included. */
+inline emscripten::EM_VAL js_text(const char* data, std::size_t size) {
+    return reinterpret_cast<emscripten::EM_VAL>(EM_ASM_PTR(({
+    const data = $0 >>> 0;
+    const size = $1 >>> 0;
+
+    return Emval.toHandle(UTF8ToString(data, size, true));
+    }), data, size));
 }
 
-/** A copy of an `ArrayBuffer` or typed array's bytes, in `memory`. */
-inline backend::bytes from_js(const val& buffer, std::pmr::memory_resource* memory) {
-    const val view = val::global("Uint8Array").new_(buffer);
-    backend::bytes out(view["length"].as<std::size_t>(), memory);
-    val(emscripten::typed_memory_view(out.size(), out.data())).call<void>("set", view);
+/**
+ * The UTF-8 bytes of `text` as a `Uint8Array`, or null for a value that is no string or for a
+ * text longer than `max` bytes, whose length is checked first in UTF-16 units.
+ */
+inline emscripten::EM_VAL js_encode(emscripten::EM_VAL text, double max) {
+    return reinterpret_cast<emscripten::EM_VAL>(EM_ASM_PTR(({
+    const text = Emval.toValue($0);
+    const max = $1;
+
+    if (typeof text !== 'string' || text.length > max) return Emval.toHandle(null);
+    const bytes = new TextEncoder().encode(text);
+    return Emval.toHandle(bytes.length > max ? null : bytes);
+    }), text, max));
+}
+
+/** Copies the first `size` bytes of `bytes`, a `Uint8Array`, to `data`. */
+// NOLINTNEXTLINE(misc-const-correctness): JavaScript writes to the pointed WebAssembly storage
+inline void js_copy(emscripten::EM_VAL bytes, void* data, std::size_t size) {
+    EM_ASM(({
+    const bytes = Emval.toValue($0);
+    const data = $1 >>> 0;
+    const size = $2 >>> 0;
+
+    HEAPU8.set(bytes.subarray(0, size), data);
+    }), bytes, data, size);
+}
+
+/**
+ * A `WebSocket` to `url` whose events call `deliver` with `{kind: 0}`, `{kind: 1, data}` and
+ * `{kind: 2}`, its open, a message and its close, or null when the constructor throws.
+ */
+inline emscripten::EM_VAL js_websocket(emscripten::EM_VAL url, emscripten::EM_VAL deliver) {
+    return reinterpret_cast<emscripten::EM_VAL>(EM_ASM_PTR(({
+    const url = Emval.toValue($0);
+    const deliver = Emval.toValue($1);
+
+    try {
+        const socket = new WebSocket(url);
+        socket.onopen = () => deliver({kind: 0});
+        socket.onmessage = event => deliver({kind: 1, data: event.data});
+        socket.onclose = () => deliver({kind: 2});
+        return Emval.toHandle(socket);
+    } catch (_) {
+        return Emval.toHandle(null);
+    }
+    }), url, deliver));
+}
+
+/**
+ * Sends `size` bytes of UTF-8 at `data` as a text when the socket is open, returning 1, with
+ * nothing sent, when its `bufferedAmount` would pass `bound` with them, else 0.
+ */
+inline int js_send(emscripten::EM_VAL socket, const char* data, std::size_t size, double bound) {
+    return EM_ASM_INT(({
+    const socket = Emval.toValue($0);
+    const data = $1 >>> 0;
+    const size = $2 >>> 0;
+    const bound = $3;
+
+    try {
+        if (socket.readyState !== 1) return 0;
+        if (Number(socket.bufferedAmount) + size > bound) return 1;
+        socket.send(UTF8ToString(data, size, true));
+    } catch (_) {
+    }
+    return 0;
+    }), socket, data, size, bound);
+}
+
+/** Closes a socket, its handlers set to null first with `detach`, so that it reports nothing. */
+inline void js_close(emscripten::EM_VAL socket, bool detach) {
+    EM_ASM(({
+    const socket = Emval.toValue($0);
+    const detach = $1;
+
+    try {
+        if (detach) {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onclose = null;
+        }
+        socket.close();
+    } catch (_) {
+    }
+    }), socket, detach);
+}
+
+/**
+ * A promise of the AES-GCM key of the `size` raw bytes at `key`, from `crypto.subtle.importKey`,
+ * rejected where there is no `crypto.subtle`.
+ */
+inline emscripten::EM_VAL js_import_key(const std::uint8_t* key, std::size_t size) {
+    return reinterpret_cast<emscripten::EM_VAL>(EM_ASM_PTR(({
+    const key = $0 >>> 0;
+    const size = $1 >>> 0;
+
+    const raw = HEAPU8.slice(key, key + size);
+    return Emval.toHandle((async () => crypto.subtle.importKey('raw', raw, 'AES-GCM', false,
+        ['encrypt', 'decrypt']))());
+    }), key, size));
+}
+
+/**
+ * A promise of `crypto.subtle.encrypt`, or `decrypt`, of the `size` bytes at `data` under `key`
+ * and the IV at `iv`, rejected for what the call throws as for what it rejects.
+ */
+inline emscripten::EM_VAL js_crypt(bool decrypt, emscripten::EM_VAL key, const std::uint8_t* iv,
+                                   std::size_t iv_size, const void* data, std::size_t size) {
+    return reinterpret_cast<emscripten::EM_VAL>(EM_ASM_PTR(({
+    const decrypt = $0;
+    const key = Emval.toValue($1);
+    const iv = HEAPU8.slice($2 >>> 0, ($2 >>> 0) + ($3 >>> 0));
+    const data = HEAPU8.slice($4 >>> 0, ($4 >>> 0) + ($5 >>> 0));
+
+    const algorithm = {name: 'AES-GCM', iv};
+    return Emval.toHandle((async () => decrypt ? crypto.subtle.decrypt(algorithm, key, data)
+        : crypto.subtle.encrypt(algorithm, key, data))());
+    }), decrypt, key, iv, iv_size, data, size));
+}
+// clang-format on
+
+/** Takes ownership of a handle an import returned. */
+inline val take(emscripten::EM_VAL handle) {
+    return val::take_ownership(handle);
+}
+
+/**
+ * The UTF-8 bytes of a JavaScript string, copied straight into a string of `memory` when they are
+ * at most `max_bytes`, and nothing otherwise, nor for a value that is no string.
+ */
+inline std::optional<std::pmr::string> utf8(const val& text, std::pmr::memory_resource* memory,
+                                            std::size_t max_bytes) {
+    const val encoded = take(js_encode(text.as_handle(), static_cast<double>(max_bytes)));
+    if (encoded.isNull()) {
+        return std::nullopt;
+    }
+    std::pmr::string out(encoded["length"].as<std::size_t>(), '\0', memory);
+    js_copy(encoded.as_handle(), out.data(), out.size());
     return out;
 }
 
-/**
- * Runs `f` on the loop's io_context after the current call, allocated in `memory`: how a
- * completion that is known at once still reaches its handler later, never inside the call that
- * started the operation.
- */
-template <class F>
-void defer(event_loop& loop, std::pmr::memory_resource* memory, F&& f) {
-    webcpp::asio::post(loop.io(),
-                       webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
-                                                    std::forward<F>(f)));
-    loop.schedule_poll();
+/** A copy of an `ArrayBuffer`'s bytes, in `memory`. */
+inline backend::bytes from_js(const val& buffer, std::pmr::memory_resource* memory) {
+    const val view = val::global("Uint8Array").new_(buffer);
+    backend::bytes out(view["length"].as<std::size_t>(), memory);
+    js_copy(view.as_handle(), out.data(), out.size());
+    return out;
 }
 
-/**
- * Calls `done(true, value)` or `done(false, reason)` once a promise an operation returned
- * settles, or `done(false, exception)` after the call when the operation threw instead.
- */
-inline void then(event_loop& loop, const js_outcome& operation, handler<void(bool, val)> done,
-                 std::pmr::memory_resource* memory);
-
-/** Calls `done(true, value)` or `done(false, reason)` once a promise settles. */
-inline void then(event_loop& loop, const val& promise, handler<void(bool, val)> done,
-                 std::pmr::memory_resource* memory) {
-    const std::pmr::polymorphic_allocator<> allocator(memory);
-    const auto id = std::allocate_shared<int>(allocator, 0);
-    *id = loop.add({std::allocator_arg, allocator,
-                    [&loop, id, done = std::move(done)](int slot, val value) mutable {
-                        loop.remove(*id);
-                        done(slot == 0, std::move(value));
-                    }});
-    promise.call<void>("then", loop.handler(*id, 0), loop.handler(*id, 1));
-}
-
-inline void then(event_loop& loop, const js_outcome& operation, handler<void(bool, val)> done,
-                 std::pmr::memory_resource* memory) {
-    if (operation.ok) {
-        then(loop, operation.value, std::move(done), memory);
-        return;
-    }
-    defer(loop, memory, [done = std::move(done), reason = operation.value]() mutable {
-        done(false, std::move(reason));
-    });
+/** The bridge of the io_context an executor runs on, which delivers the page's events to it. */
+inline webcpp::asio::browser::bridge& bridge_of(const webcpp::asio::any_io_executor& ex) {
+    return webcpp::asio::use_service<webcpp::asio::browser::bridge>(
+        webcpp::asio::query(ex, webcpp::asio::execution::context));
 }
 
 }  // namespace detail
 
 /**
- * A timer over the page's `setTimeout`.
+ * A JavaScript string of UTF-8 text, decoded straight from the WebAssembly memory the view points
+ * into.
  *
- * @see "The browser backend", in the guide.
+ * No `std::string` is made to carry it across, as `emscripten::val(std::string)` would; a NUL
+ * character is kept, and a byte that is not UTF-8 becomes U+FFFD, as `TextDecoder` makes it.
+ *
+ * @param utf8 The text, read during the call.
+ * @return The JavaScript string.
  */
-class timer : public backend::timer {
+inline val js_string(std::string_view utf8) {
+    return detail::take(detail::js_text(utf8.data(), utf8.size()));
+}
+
+/**
+ * A function the page calls into C++ with, made by webcpp::asio's bridge, each call of which posts
+ * `f` with the value the page passed to the executor's io_context.
+ *
+ * It is how a page reaches a program whose `main` runs its io_context: the call returns at once,
+ * having run nothing, and `f` runs when the run family does, never inside the page's event, in
+ * either suspension variant. An embind function would run its work inside the event, and under
+ * Asyncify, while `main` is suspended in its run, returns a promise that never settles, and aborts
+ * a debug build at its second call (measured with Emscripten 6.0.11). A call made once the
+ * page_call is destroyed, or once its work is posted and the page_call destroyed before it runs,
+ * reaches nothing.
+ *
+ * @tparam F A callable of one `const emscripten::val&`, the value the page passed.
+ * @see "The program runs its io_context", in the guide.
+ */
+template <class F>
+// The bridge indexes the call by its registration, a private base: its one owner is the call.
+class page_call final : private webcpp::asio::browser::intrusive_registration {
 public:
     /**
-     * Constructs a timer, not started, registered with the loop.
+     * Makes the function, registered with the bridge of the io_context of `ex`.
      *
-     * @param loop The page's loop, which must outlive the timer.
-     * @param memory The room's resource, which the timer's registration and handler are allocated
-     * in.
+     * @param ex The executor `f` is posted to, an io_context's of webcpp::asio, which must outlive
+     * the page_call or be destroyed first, which ends it.
+     * @param f What each call runs, on the executor.
+     * @param memory The resource `f` and each posted call are allocated in.
      */
-    timer(event_loop& loop, std::pmr::memory_resource* memory)
-        : loop_(loop),
-          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int /*slot*/, const val& /*value*/) { on_fire(); }})) {}
+    page_call(webcpp::asio::any_io_executor ex, F f,
+              std::pmr::memory_resource* memory = std::pmr::get_default_resource())
+        : ex_(std::move(ex)),
+          memory_(memory),
+          f_(std::allocate_shared<F>(std::pmr::polymorphic_allocator<>(memory), std::move(f))),
+          bridge_(&detail::bridge_of(ex_)),
+          key_(bridge_->add(*this)) {}
 
-    /** Destroys the timer, which clears a pending `setTimeout`. */
-    ~timer() override {
-        cancel();
-        loop_.remove(id_);
+    /** Not copyable: the bridge delivers to it by its address. */
+    page_call(const page_call&) = delete;
+
+    /** Not copy-assignable: the bridge delivers to it by its address. */
+    page_call& operator=(const page_call&) = delete;
+
+    /** Destroys the function: a call from now on, or one posted and not yet run, reaches nothing.
+     */
+    ~page_call() {
+        if (bridge_ != nullptr) {
+            bridge_->remove(key_);
+        }
     }
 
     /**
-     * Calls `fire` once `delay` has passed, through `setTimeout`, in place of a pending expiry.
+     * The JavaScript function, of one argument, which the program hands to the page.
      *
-     * @param delay How long to wait.
-     * @param fire What to call when the timer expires; never called once it is cancelled.
+     * @return The function; undefined once the io_context is destroyed.
      */
-    void start(std::chrono::milliseconds delay, handler<void()> fire) override {
-        cancel();
-        fire_ = std::move(fire);
-        handle_ = val::global("setTimeout")(
-            loop_.handler(id_, 0), val(static_cast<double>(delay.count())), val::undefined());
-    }
-
-    /** Clears the pending `setTimeout`, if any, whose handler is then never called. */
-    void cancel() override {
-        if (handle_.isUndefined()) {
-            return;
-        }
-        val::global("clearTimeout")(handle_);
-        handle_ = val::undefined();
-        fire_ = nullptr;
+    [[nodiscard]] val function() const {
+        return bridge_ != nullptr ? bridge_->function(key_) : val::undefined();
     }
 
 private:
-    void on_fire() {
-        handle_ = val::undefined();
-        auto fire = std::exchange(fire_, nullptr);
-        if (fire) {
-            fire();  // may destroy this timer
-        }
+    bool deliver(const val& argument) override {
+        trystero::detail::post(ex_, memory_, [weak = std::weak_ptr<F>(f_), argument] {
+            if (const auto f = weak.lock()) {
+                (*f)(argument);
+            }
+        });
+        return false;
     }
 
-    event_loop& loop_;
-    int id_;
-    val handle_ = val::undefined();
-    handler<void()> fire_;
+    void shutdown() noexcept override { bridge_ = nullptr; }
+
+    webcpp::asio::any_io_executor ex_;
+    std::pmr::memory_resource* memory_;
+    std::shared_ptr<F> f_;
+    webcpp::asio::browser::bridge* bridge_;
+    std::uint64_t key_;
 };
 
 /**
- * A WebSocket over the page's `WebSocket`.
+ * A WebSocket over the page's `WebSocket`, whose events reach the executor through webcpp::asio's
+ * bridge.
  *
- * A text longer than `protocol::max_relay_message_bytes` is not copied into WebAssembly: the
- * socket closes, and reports the close. A text that would take the socket's `bufferedAmount`
- * beyond `protocol::max_queued_relay_bytes`, as when a relay stops reading, drops the socket,
- * which reports one close at once. A page has no idle timeout: its `WebSocket` cannot ping.
+ * Each event of the page's socket, its open, a message or its close, is posted to the executor in
+ * the order the page delivers them, and reaches the handlers when it runs there. A text longer
+ * than `protocol::max_relay_message_bytes` is not copied into WebAssembly: the socket closes, and
+ * reports the close. A text that would take the socket's `bufferedAmount` beyond
+ * `protocol::max_queued_relay_bytes`, as when a relay stops reading, drops the socket, which
+ * reports one close after the call. A page has no idle timeout: its `WebSocket` cannot ping.
  *
  * @see "The browser backend", in the guide.
  */
-class websocket : public backend::websocket {
+class websocket : public backend::websocket, public std::enable_shared_from_this<websocket> {
 public:
     /**
      * Opens a WebSocket to `url`.
@@ -196,46 +356,43 @@ public:
      * scheme, a fragment, mixed content, a policy of the page's) makes no socket: the handler
      * `close` reports it after the call, as it reports a relay that cannot be reached.
      *
-     * @param loop The page's loop, which must outlive the WebSocket.
+     * @param ex The executor its events are posted to, an io_context's of webcpp::asio, which must
+     * outlive the WebSocket.
      * @param url The relay's URL, read during the call.
      * @param h What the WebSocket reports.
-     * @param memory The room's resource, which the WebSocket's handlers, registration and received
-     * texts are allocated in.
+     * @param memory The room's resource, which the WebSocket's handlers, its events and the texts
+     * it receives are allocated in.
      */
-    websocket(event_loop& loop, std::string_view url, handlers h, std::pmr::memory_resource* memory)
-        : loop_(loop),
+    websocket(webcpp::asio::any_io_executor ex, std::string_view url, handlers h,
+              std::pmr::memory_resource* memory)
+        : ex_(std::move(ex)),
           memory_(memory),
           h_(std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory),
                                             std::move(h))),
-          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, const val& event) { on_event(slot, event); }})) {
-        const auto made = detail::js_new(val::global("WebSocket"), loop_.text(url));
-        if (!made.ok) {
-            detail::defer(loop_, memory_, [weak = std::weak_ptr<handlers>(h_)] {
-                if (const auto h = weak.lock()) {
-                    if (auto f = std::exchange(h->close, {})) {
-                        f();
-                    }
-                }
-            });
-            return;
+          events_(*this),
+          bridge_(&detail::bridge_of(ex_)),
+          key_(bridge_->add(events_)) {
+        socket_ = detail::take(
+            detail::js_websocket(js_string(url).as_handle(), bridge_->function(key_).as_handle()));
+        if (socket_.isNull()) {
+            socket_ = val::undefined();
+            leave_bridge();
+            report(close_event, std::pmr::string(memory_));
         }
-        socket_ = made.value;
-        socket_.set("onopen", loop_.handler(id_, 0));
-        socket_.set("onmessage", loop_.handler(id_, 1));
-        socket_.set("onclose", loop_.handler(id_, 2));
     }
+
+    /** Not copyable: the bridge delivers to it by its address. */
+    websocket(const websocket&) = delete;
+
+    /** Not copy-assignable: the bridge delivers to it by its address. */
+    websocket& operator=(const websocket&) = delete;
 
     /** Destroys the WebSocket, which closes it without reporting the close. */
     ~websocket() override {
-        loop_.remove(id_);
-        if (socket_.isUndefined()) {
-            return;
+        leave_bridge();
+        if (!socket_.isUndefined()) {
+            detail::js_close(socket_.as_handle(), true);
         }
-        for (const char* name : {"onopen", "onmessage", "onclose"}) {
-            socket_.set(name, val::null());
-        }
-        socket_.call<void>("close");
     }
 
     /**
@@ -243,78 +400,131 @@ public:
      * socket refuses it, drops it.
      *
      * A text that would take the bytes the socket holds unsent beyond
-     * `protocol::max_queued_relay_bytes` drops the socket instead, which reports its close.
+     * `protocol::max_queued_relay_bytes` drops the socket instead, which reports its close after
+     * the call.
      *
      * @param text The message, read during the call.
      */
     void send(std::string_view text) override {
-        if (socket_.isUndefined() || socket_["readyState"].as<int>() != 1) {
+        if (socket_.isUndefined()) {
             return;
         }
-        const auto held = static_cast<std::size_t>(socket_["bufferedAmount"].as<double>());
-        if (held + text.size() > protocol::max_queued_relay_bytes) {
+        if (detail::js_send(socket_.as_handle(), text.data(), text.size(),
+                            static_cast<double>(protocol::max_queued_relay_bytes)) != 0) {
             drop();
-            return;
         }
-        detail::js_call(socket_, "send", loop_.text(text));
     }
 
     /** Closes the socket, which the handler `close` reports; one never made has reported it. */
     void close() override {
         if (!socket_.isUndefined()) {
-            socket_.call<void>("close");
+            detail::js_close(socket_.as_handle(), false);
         }
     }
 
 private:
+    /** What the bridge delivers the page's events of the socket to. */
+    class events final : public webcpp::asio::browser::intrusive_registration {
+    public:
+        explicit events(websocket& owner) noexcept : owner_(owner) {}
+
+        bool deliver(const val& event) override { return owner_.deliver(event); }
+
+        void shutdown() noexcept override { owner_.shutdown(); }
+
+    private:
+        websocket& owner_;
+    };
+
+    static constexpr int open_event = 0;
+    static constexpr int message_event = 1;
+    static constexpr int close_event = 2;
+
+    /**
+     * Posts an event of the page to the executor, a message copied into the room's resource first,
+     * or closes the socket for a text too long for a relay; it runs no handler.
+     */
+    bool deliver(const val& event) {
+        const int kind = event["kind"].as<int>();
+        if (kind != message_event) {
+            report(kind, std::pmr::string(memory_));
+            return false;
+        }
+        const val data = event["data"];
+        if (!data.isString()) {
+            return false;
+        }
+        // The one copy, out of the JavaScript heap, of at most a relay's longest text: a longer
+        // one closes the socket, which reports the close, as the native one does.
+        auto text = detail::utf8(data, memory_, protocol::max_relay_message_bytes);
+        if (!text) {
+            close();
+            return false;
+        }
+        report(message_event, std::move(*text));
+        return false;
+    }
+
+    /** The io_context's shutdown: the socket is closed, and reports nothing more. */
+    void shutdown() noexcept {
+        bridge_ = nullptr;
+        key_ = 0;
+        if (!socket_.isUndefined()) {
+            detail::js_close(socket_.as_handle(), true);
+            socket_ = val::undefined();
+        }
+    }
+
+    /**
+     * Posts the report of an event to the executor, through the shared handlers: a socket destroyed
+     * before it runs reports nothing, and a handler may destroy the socket during its own call.
+     */
+    void report(int kind, std::pmr::string text) {
+        trystero::detail::post(
+            ex_, memory_,
+            [weak = std::weak_ptr<handlers>(h_), kind, text = std::move(text)]() mutable {
+                const auto h = weak.lock();
+                if (!h) {
+                    return;
+                }
+                if (kind == open_event) {
+                    if (h->open) {
+                        h->open();
+                    }
+                } else if (kind == message_event) {
+                    if (h->message) {
+                        h->message(text);
+                    }
+                } else if (auto f = std::exchange(h->close, {})) {
+                    f();
+                }
+            });
+    }
+
     /**
      * Drops a socket whose relay stopped reading: its close handshake could never complete, so the
      * socket is detached and closed, and its close reported after the call, once.
      */
     void drop() {
-        for (const char* name : {"onopen", "onmessage", "onclose"}) {
-            socket_.set(name, val::null());
-        }
-        socket_.call<void>("close");
+        leave_bridge();
+        detail::js_close(socket_.as_handle(), true);
         socket_ = val::undefined();
-        detail::defer(loop_, memory_, [weak = std::weak_ptr<handlers>(h_)] {
-            if (const auto h = weak.lock()) {
-                if (auto f = std::exchange(h->close, {})) {
-                    f();
-                }
-            }
-        });
+        report(close_event, std::pmr::string(memory_));
     }
 
-    /** Calls through a copy of the shared handlers: a handler may destroy this socket during its
-     * own call. */
-    void on_event(int slot, const val& event) {
-        const auto h = h_;
-        if (slot == 0) {
-            if (h->open) {
-                h->open();
-            }
-        } else if (slot == 1) {
-            const val data = event["data"];
-            if (data.isString() && h->message) {
-                // The one copy, out of the JavaScript heap, of at most a relay's longest text: a
-                // longer one closes the socket, which reports the close, as the native one does.
-                const auto text = loop_.utf8(data, memory_, protocol::max_relay_message_bytes);
-                if (!text) {
-                    socket_.call<void>("close");
-                    return;
-                }
-                h->message(*text);
-            }
-        } else if (auto f = std::exchange(h->close, {})) {
-            f();
+    /** Removes the registration: an event of the page from now on finds nothing. */
+    void leave_bridge() noexcept {
+        if (bridge_ != nullptr && key_ != 0) {
+            bridge_->remove(std::exchange(key_, 0));
         }
     }
 
-    event_loop& loop_;
+    webcpp::asio::any_io_executor ex_;
     std::pmr::memory_resource* memory_;
     std::shared_ptr<handlers> h_;
-    int id_;
+    events events_;
+    webcpp::asio::browser::bridge* bridge_;
+    std::uint64_t key_;
     val socket_ = val::undefined();
 };
 
@@ -322,9 +532,10 @@ private:
  * AES-GCM through `crypto.subtle`, under a key imported once, as Trystero's `encrypt` and `decrypt`
  * do.
  *
- * The text is copied into JavaScript during the call; an operation that arrives while the key is
- * still being imported waits with a copy of its text, in the room's resource. Without
- * `crypto.subtle`, outside a secure context, every operation fails.
+ * Each Web Crypto promise is awaited with webcpp::asio's `browser::async_await`, which posts its
+ * settlement to the executor. The text is copied into JavaScript during the call; an operation that
+ * arrives while the key is still being imported waits with a copy of its text, in the room's
+ * resource. Without `crypto.subtle`, outside a secure context, every operation fails.
  *
  * @see "The browser backend", in the guide.
  */
@@ -336,20 +547,22 @@ public:
     /**
      * Constructs a sealer under a room's key, which it imports on its first operation.
      *
-     * @param loop The page's loop, which must outlive the sealer's pending promises.
+     * @param ex The executor its completions run on, an io_context's of webcpp::asio, which must
+     * outlive the sealer's pending promises.
      * @param key The raw AES-256 key, `protocol::seal_key`'s.
      * @param memory The room's resource, which its texts, its waiting operations and its
      * completions are allocated in.
      */
-    sealer(event_loop& loop, std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory)
-        : loop_(loop), raw_key_(key), memory_(memory), waiting_(memory) {}
+    sealer(webcpp::asio::any_io_executor ex, std::array<std::uint8_t, 32> key,
+           std::pmr::memory_resource* memory)
+        : ex_(std::move(ex)), raw_key_(key), memory_(memory), waiting_(memory) {}
 
     /**
      * Seals a text under a fresh random IV, with `crypto.subtle.encrypt`.
      *
      * @param plaintext The text, read during the call.
      * @param done Called with the sealed text, or with `error::backend_failure` when the key
-     * cannot be imported or the encryption fails.
+     * cannot be imported, the page has no entropy for the IV, or the encryption fails.
      */
     void seal(std::string_view plaintext, done_handler done) override {
         if (state_ == key_state::ready) {
@@ -392,73 +605,71 @@ public:
     }
 
 private:
-    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
+    using waiting_operation = handler<void(sealer&, bool)>;
 
-    /** The page's `crypto.subtle`; undefined outside a secure context, or without `crypto`. */
-    static val subtle() {
-        const val crypto = val::global("crypto");
-        return crypto.isUndefined() || crypto.isNull() ? val::undefined() : crypto["subtle"];
-    }
+    [[nodiscard]] std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
-    static val algorithm(std::span<const std::uint8_t> iv) {
-        val a = val::object();
-        a.set("name", val("AES-GCM"));
-        a.set("iv", detail::to_js(iv));
-        return a;
+    /** Calls `done` with `failure` after the call, on the executor. */
+    void fail(done_handler done, trystero::error failure) {
+        trystero::detail::post(ex_, memory_, [done = std::move(done), failure]() mutable {
+            done(make_error_code(failure), {});
+        });
     }
 
     void encrypt(std::string_view plaintext, done_handler done) {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
-        getentropy(iv.data(), iv.size());  // lint-world: a seal's IV
-        const auto bytes =
-            std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size());
-        detail::then(
-            loop_, detail::js_call(subtle(), "encrypt", algorithm(iv), key_, detail::to_js(bytes)),
-            {std::allocator_arg, allocator(),
-             [iv, done = std::move(done), memory = memory_](bool ok, const val& cipher) mutable {
-                 if (!ok) {
-                     done(make_error_code(error::backend_failure), {});
-                     return;
-                 }
-                 const auto sealed =
-                     protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
-                 done({}, sealed);
-             }},
-            memory_);
+        if (getentropy(iv.data(), iv.size()) != 0) {  // lint-world: a seal's IV
+            fail(std::move(done), error::backend_failure);
+            return;
+        }
+        webcpp::asio::browser::async_await(
+            ex_,
+            detail::take(detail::js_crypt(false, key_.as_handle(), iv.data(), iv.size(),
+                                          plaintext.data(), plaintext.size())),
+            webcpp::asio::bind_allocator(
+                allocator(), [iv, done = std::move(done), memory = memory_](
+                                 boost::system::error_code ec, const val& cipher) mutable {
+                    if (ec) {
+                        done(make_error_code(error::backend_failure), {});
+                        return;
+                    }
+                    const auto sealed =
+                        protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
+                    done({}, sealed);
+                }));
     }
 
     void decrypt(std::string_view sealed, done_handler done) {
         const auto parts = protocol::parse_sealed(sealed, memory_);
         if (!parts || parts->iv.empty()) {
-            detail::defer(loop_, memory_, [done = std::move(done)]() mutable {
-                done(make_error_code(error::wrong_password), {});
-            });
+            fail(std::move(done), error::wrong_password);
             return;
         }
-        detail::then(
-            loop_,
-            detail::js_call(subtle(), "decrypt", algorithm(parts->iv), key_,
-                            detail::to_js(parts->ciphertext)),
-            {std::allocator_arg, allocator(),
-             [done = std::move(done), memory = memory_](bool ok, const val& plain) mutable {
-                 if (!ok) {
-                     done(make_error_code(error::wrong_password), {});
-                     return;
-                 }
-                 const auto b = detail::from_js(plain, memory);
-                 done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
-             }},
-            memory_);
+        webcpp::asio::browser::async_await(
+            ex_,
+            detail::take(detail::js_crypt(true, key_.as_handle(), parts->iv.data(),
+                                          parts->iv.size(), parts->ciphertext.data(),
+                                          parts->ciphertext.size())),
+            webcpp::asio::bind_allocator(
+                allocator(), [done = std::move(done), memory = memory_](
+                                 boost::system::error_code ec, const val& plain) mutable {
+                    if (ec) {
+                        done(make_error_code(error::wrong_password), {});
+                        return;
+                    }
+                    const auto b = detail::from_js(plain, memory);
+                    done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+                }));
     }
 
     /**
      * Runs `op` once the key is imported, or has failed to be: after the call in every case, so
      * that no completion runs inside the operation that started it.
      */
-    void wait_for_key(handler<void(sealer&, bool)> op) {
-        const std::weak_ptr<sealer> weak = shared_from_this();
+    void wait_for_key(waiting_operation op) {
+        const std::weak_ptr<sealer> weak = weak_from_this();
         if (state_ == key_state::failed) {
-            detail::defer(loop_, memory_, [weak, op = std::move(op)]() mutable {
+            trystero::detail::post(ex_, memory_, [weak, op = std::move(op)]() mutable {
                 if (const auto self = weak.lock()) {
                     op(*self, false);
                 }
@@ -470,55 +681,49 @@ private:
             return;
         }
         state_ = key_state::importing;
-        if (subtle().isUndefined()) {  // not a secure context
-            detail::defer(loop_, memory_, [weak] {
-                if (const auto self = weak.lock()) {
-                    self->key_imported(false, val::undefined());
-                }
-            });
-            return;
-        }
-        val usages = val::array();
-        usages.call<void>("push", val("encrypt"));
-        usages.call<void>("push", val("decrypt"));
-        detail::then(loop_,
-                     detail::js_call(subtle(), "importKey", "raw", detail::to_js(raw_key_),
-                                     "AES-GCM", false, usages),
-                     {std::allocator_arg, allocator(),
-                      [weak](bool ok, val key) {
-                          if (const auto self = weak.lock()) {
-                              self->key_imported(ok, std::move(key));
-                          }
-                      }},
-                     memory_);
+        webcpp::asio::browser::async_await(
+            ex_, detail::take(detail::js_import_key(raw_key_.data(), raw_key_.size())),
+            webcpp::asio::bind_allocator(allocator(),
+                                         [weak](boost::system::error_code ec, const val& key) {
+                                             if (const auto self = weak.lock()) {
+                                                 self->key_imported(!ec, key);
+                                             }
+                                         }));
     }
 
-    void key_imported(bool ok, val key) {
+    void key_imported(bool ok, const val& key) {
         state_ = ok ? key_state::ready : key_state::failed;
-        key_ = std::move(key);
-        for (auto& op : std::exchange(waiting_, {})) {
+        key_ = key;
+        std::pmr::deque<waiting_operation> ready(allocator());
+        ready.swap(waiting_);
+        for (auto& op : ready) {
             op(*this, ok);
         }
     }
 
-    enum class key_state { none, importing, ready, failed };
+    enum class key_state : std::uint8_t { none, importing, ready, failed };
 
-    event_loop& loop_;
+    webcpp::asio::any_io_executor ex_;
     std::array<std::uint8_t, 32> raw_key_;
     std::pmr::memory_resource* memory_;
     key_state state_ = key_state::none;
     val key_ = val::undefined();
-    std::pmr::deque<handler<void(sealer&, bool)>> waiting_;
+    std::pmr::deque<waiting_operation> waiting_;
 };
 
 /**
- * The browser's factory: one per page, beside the page's `event_loop`.
+ * The browser's factory: one per page, over the executor of the io_context the program runs.
  *
  * It makes peer connections, data channels and received frames in `app_config::memory`, and
  * WebSockets, sealers and room timers in the room's effective `room_options::memory`. Objects,
- * handlers and registrations use the resource supplied to their factory method. What
+ * handlers and their events use the resource supplied to their factory method. What
  * `emscripten::val` holds is in the JavaScript heap. It needs a secure context, where
  * `crypto.subtle` exists.
+ *
+ * Tip: every object it makes runs on its executor, whose io_context the program runs from `main`,
+ * under a work guard, for as long as the page lives: the page's events, the timers and the
+ * promises it awaits post to that io_context, and run only while it runs. The app is given an
+ * executor of the same io_context.
  *
  * @see "The browser backend", in the guide.
  */
@@ -542,19 +747,27 @@ public:
     static constexpr std::size_t max_peer_connections = 256;
 
     /**
-     * Constructs the page's backend, with a webcpp::webrtc runtime of its own: in the browser the
-     * page's census counts the connections of every runtime alike.
+     * Constructs the page's backend over `ex`, with a webcpp::webrtc runtime of its own: in the
+     * browser the page's census counts the connections of every runtime alike.
      *
-     * @param loop The page's loop, which must outlive the backend and every object it makes.
+     * @param ex The executor every object of the backend runs on, an io_context's of
+     * webcpp::asio, which must outlive the backend and every object it makes.
      */
-    explicit backend(event_loop& loop)
-        : loop_(loop),
+    explicit backend(webcpp::asio::any_io_executor ex)
+        : ex_(std::move(ex)),
           runtime_(std::allocate_shared<::webcpp::webrtc::runtime>(
               std::pmr::polymorphic_allocator<>(std::pmr::get_default_resource()),
               ::webcpp::webrtc::runtime_options{
                   .max_peer_connections = max_peer_connections,
                   .thread_pool_size = 0,
               })) {}
+
+    /**
+     * The executor every object of the backend runs on.
+     *
+     * @return The executor it was constructed with.
+     */
+    [[nodiscard]] const webcpp::asio::any_io_executor& get_executor() const noexcept { return ex_; }
 
     /**
      * Opens a WebSocket to a relay, with the page's `WebSocket`.
@@ -568,8 +781,8 @@ public:
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<websocket>(std::pmr::polymorphic_allocator<>(memory), loop_,
-                                               url, std::move(h), memory);
+        return std::allocate_shared<websocket>(std::pmr::polymorphic_allocator<>(memory), ex_, url,
+                                               std::move(h), memory);
     }
 
     /**
@@ -585,21 +798,20 @@ public:
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        auto made = webrtc::peer_connection::make(runtime_, loop_.get_executor(), servers, {},
-                                                  *this, memory);
+        auto made = webrtc::peer_connection::make(runtime_, ex_, servers, {}, *this, memory);
         return made ? *made : nullptr;
     }
 
     /**
-     * Makes a timer, over `setTimeout`.
+     * Makes a timer, over the steady timer of webcpp::asio.
      *
-     * @param memory The room's resource, which the timer and its handler are allocated in.
+     * @param memory The room's resource, which the timer and its waits are allocated in.
      * @return The timer, not started.
      */
     std::shared_ptr<trystero::backend::timer> make_timer(
         std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<timer>(std::pmr::polymorphic_allocator<>(memory), loop_,
-                                           memory);
+        return std::allocate_shared<trystero::detail::timer>(
+            std::pmr::polymorphic_allocator<>(memory), ex_, memory);
     }
 
     /**
@@ -612,12 +824,13 @@ public:
      */
     std::shared_ptr<trystero::backend::sealer> make_sealer(
         std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), loop_, key,
+        return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), ex_, key,
                                             memory);
     }
 
     /**
-     * Fills `out` with the page's entropy, which Emscripten draws from `crypto.getRandomValues`.
+     * Fills `out` with the page's entropy, which Emscripten draws from `crypto.getRandomValues`,
+     * and ends the program when the page has none, as the native backend does.
      *
      * @param out The bytes to fill.
      */
@@ -625,7 +838,9 @@ public:
         for (std::size_t at = 0; at < out.size(); at += 256) {
             // Each call fills at most 256 bytes.
             const auto piece = std::min<std::size_t>(256, out.size() - at);
-            getentropy(out.data() + at, piece);  // lint-world: Trystero's randomness
+            if (getentropy(out.data() + at, piece) != 0) {  // lint-world: Trystero's randomness
+                std::abort();                               // no secure randomness: nothing is safe
+            }
         }
     }
 
@@ -647,7 +862,7 @@ public:
     double now_ms() override { return val::global("performance").call<double>("now"); }
 
 private:
-    event_loop& loop_;
+    webcpp::asio::any_io_executor ex_;
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
 };
 
