@@ -14,15 +14,16 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 
-#include <webcpp/asio/any_io_executor.hpp>    // lint-world: the relays' WebSockets
-#include <webcpp/asio/bind_allocator.hpp>     // lint-world: binds an allocator only
-#include <webcpp/asio/buffer.hpp>             // lint-world: a text's buffer only
-#include <webcpp/asio/ip/tcp.hpp>             // lint-world: the relays' WebSockets
-#include <webcpp/asio/ssl.hpp>                // lint-world: the relays' TLS
-#include <webcpp/beast/core/flat_buffer.hpp>  // lint-world: the relays' WebSockets
-#include <webcpp/beast/ssl.hpp>               // lint-world: the relays' TLS
-#include <webcpp/beast/tcp_stream.hpp>        // lint-world: the relays' WebSockets
-#include <webcpp/beast/websocket.hpp>         // lint-world: the relays' WebSockets
+#include <webcpp/asio/any_completion_handler.hpp>  // lint-world: erases a handler's type only
+#include <webcpp/asio/any_io_executor.hpp>         // lint-world: the relays' WebSockets
+#include <webcpp/asio/bind_allocator.hpp>          // lint-world: binds an allocator only
+#include <webcpp/asio/buffer.hpp>                  // lint-world: a text's buffer only
+#include <webcpp/asio/ip/tcp.hpp>                  // lint-world: the relays' WebSockets
+#include <webcpp/asio/ssl.hpp>                     // lint-world: the relays' TLS
+#include <webcpp/beast/core/flat_buffer.hpp>       // lint-world: the relays' WebSockets
+#include <webcpp/beast/ssl.hpp>                    // lint-world: the relays' TLS
+#include <webcpp/beast/tcp_stream.hpp>             // lint-world: the relays' WebSockets
+#include <webcpp/beast/websocket.hpp>              // lint-world: the relays' WebSockets
 
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
 #include <openssl/err.h>
@@ -441,6 +442,7 @@ private:
 
     void handshake() {
         webcpp::beast::get_lowest_layer(ws_).expires_never();
+        // NOLINTNEXTLINE(misc-const-correctness): changed natively only
         auto timeouts = webcpp::beast::websocket::stream_base::timeout::suggested(
             webcpp::beast::role_type::client);
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
@@ -471,19 +473,27 @@ private:
         read();
     }
 
-    // A loop of asynchronous operations, not a recursion: each handler runs from the executor once
-    // the call that started its operation has returned, so the stack never grows. Hence the
-    // exemptions from misc-no-recursion of read, its handler and on_read, and of write_next and
-    // its handler, the cycles of the read loop and of the writes.
-    void read() {                                          // NOLINT(misc-no-recursion)
-        auto handler = [self = this->shared_from_this()](  // NOLINT(misc-no-recursion)
-                           const boost::system::error_code& ec, std::size_t size) {
+    /**
+     * A read's or a write's completion, its type erased.
+     *
+     * Tip: the reads, and the writes, are a loop of asynchronous operations, not a recursion: each
+     * handler runs from the executor once the call that started its operation has returned, so the
+     * stack never grows. Its type is erased, the call made through a pointer, so that the analysis
+     * of calls (misc-no-recursion) sees no cycle through Asio's post on either target, natively in
+     * Boost's headers and on Emscripten in webcpp::asio's and webcpp::beast's own, where the
+     * reports would land. It is allocated with the handler's allocator, in the room's resource.
+     */
+    using transfer_handler =
+        webcpp::asio::any_completion_handler<void(boost::system::error_code, std::size_t)>;
+
+    void read() {
+        auto handler = [self = this->shared_from_this()](const boost::system::error_code& ec,
+                                                         std::size_t size) {
             self->on_read(ec, size);
         };
-        ws_.async_read(buffer_, bound(std::move(handler)));
+        ws_.async_read(buffer_, transfer_handler(bound(std::move(handler))));
     }
 
-    // NOLINTNEXTLINE(misc-no-recursion)
     void on_read(const boost::system::error_code& ec, std::size_t size) {
         if (ec) {
             end();
@@ -508,9 +518,9 @@ private:
      * Tip: the connection can end while a write is in flight, and `end` then clears the queue; the
      * text being written is no longer in it, so the write reads a text the session owns, and its
      * completion touches only that text. Its handler calls it again from the executor, a loop and
-     * not a recursion, as the reads' (`read`), hence its exemption from misc-no-recursion.
+     * not a recursion, as the reads' (`transfer_handler`).
      */
-    void write_next() {  // NOLINT(misc-no-recursion)
+    void write_next() {
         if (queue_.empty() || !open_ || ended_) {
             writing_ = false;
             return;
@@ -518,15 +528,16 @@ private:
         writing_text_ = std::move(queue_.front());
         queue_.pop_front();
         queued_bytes_ -= writing_text_.size();
-        auto handler = [self = this->shared_from_this()](  // NOLINT(misc-no-recursion)
-                           const boost::system::error_code& ec, std::size_t) {
+        auto handler = [self = this->shared_from_this()](const boost::system::error_code& ec,
+                                                         std::size_t) {
             if (ec) {
                 self->writing_ = false;
                 return;
             }
             self->write_next();
         };
-        ws_.async_write(webcpp::asio::buffer(writing_text_), bound(std::move(handler)));
+        ws_.async_write(webcpp::asio::buffer(writing_text_),
+                        transfer_handler(bound(std::move(handler))));
     }
 
     void end() {
