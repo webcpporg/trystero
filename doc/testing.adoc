@@ -124,10 +124,13 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `native_sealer`, `native_websocket`, `native_timer`
 | The native backend, part by part, natively: the sealer opens what Trystero
   JS sealed with Web Crypto; the WebSocket, against a Beast server in the
-  same process, opens, sends in order, closes once, and drops a relay that
-  sends too much, stops reading or stops answering, while one that answers
-  its pings stays; the timer never fires once cancelled, restarted or
-  destroyed.
+  same process, opens, sends in order, closes once, reaches a relay at an
+  IPv6 address, reads URLs as a page does, opens over TLS with the relay's
+  name sent (SNI) against a test authority, refuses a certificate for
+  another name or of an authority not trusted, keeps a TLS context's error
+  in the backend, and drops a relay that sends too much, stops reading or
+  stops answering, while one that answers its pings stays; the timer never
+  fires once cancelled, restarted or destroyed.
 
 | `native_peer_connection`, `native_room`, and each `_no_exceptions`
 | Two connections of the backend's WebRTC, over webcpp::webrtc's
@@ -168,8 +171,8 @@ include::{library-root}/test/Jamfile[tag=browser]
 include::{library-root}/test/Jamfile[tag=no-exceptions]
 ----
 
-From the root of a webcpp checkout, with the three libraries of
-<<trystero-building>> found, each of these builds and runs the tests,
+From the root of a webcpp checkout, with libsecp256k1 found
+(<<trystero-building>>), each of these builds and runs the tests,
 natively, under AddressSanitizer and UndefinedBehaviorSanitizer, and on
 emscripten:
 
@@ -292,12 +295,14 @@ runtime and static link configuration. These builds need no network access.
 
 The native `provider-integration` lane builds and runs one application that
 uses Asio TLS, Beast and Trystero's native backend together. It compares the
-compiled OpenSSL version with the loaded implementation and constructs TLS
-and WebRTC state. The run is bounded to 45 seconds and uses the threaded
-release profile. The superproject's source dependency tests also check that
-the final Unix executable has no dynamic OpenSSL or libdatachannel provider,
-that each static archive occurs once and that dependent archives precede
-OpenSSL in the link order.
+compiled OpenSSL version with the loaded implementation, makes its WebRTC
+state through trystero's backend, a peer connection and a data channel, and
+checks the backend's relay TLS context, all over the one provider. The run
+is bounded to 45 seconds and uses the threaded release profile, with
+exceptions as the build asks. The superproject's source dependency tests
+also check that the final Unix executable has no dynamic OpenSSL or
+libdatachannel provider, that each static archive occurs once and that
+dependent archives precede OpenSSL in the link order.
 
 [#trystero-testing-report]
 === The test matrix

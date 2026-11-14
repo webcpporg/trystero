@@ -8,8 +8,9 @@
 == Building
 
 trystero is header-only, and is developed inside the webcpp superproject, as
-a Boost library is developed inside Boost. It builds on two libraries of
-webcpp's: webcpp::asio, and webcpp::webrtc, the WebRTC of both its backends.
+a Boost library is developed inside Boost. It builds on three libraries of
+webcpp's: webcpp::asio; webcpp::webrtc, the WebRTC of both its backends; and
+webcpp::beast, the native backend's relays.
 Its native TLS and WebRTC dependencies are built from pinned sources. Only
 libsecp256k1 needs an external installation:
 
