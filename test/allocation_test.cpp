@@ -75,6 +75,7 @@ bool counting = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+#ifdef __EMSCRIPTEN__
 // Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
 // emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
 // platform's (webcpp::asio's page "Allocation"), counted apart. A char, which JavaScript writes
@@ -84,6 +85,7 @@ unsigned char inside_runtime = 0;
 // The C library's allocations made while inside_runtime is set.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t runtime_allocations = 0;
+#endif
 
 #ifdef _MSC_VER
 /** Whether the calling thread is the one the test counts on: MSVC counts every thread. */
@@ -156,7 +158,11 @@ namespace {
 
 void* counted(void* pointer) {
     if (on_counted_thread() && counting && !inside_operator_new) {
+#ifdef __EMSCRIPTEN__
         ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
+#else
+        ++c_allocations;
+#endif
     }
     return pointer;
 }
@@ -817,6 +823,8 @@ void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*ali
     release(pointer);
 }
 
+namespace {
+
 /**
  * Marks Asyncify's allocation of a suspension's unwind data, on emscripten under Asyncify, as
  * webcpp::asio's own allocation test does: the C library's allocations made during it are counted
@@ -844,6 +852,8 @@ void mark_the_runtime_allocations() {
     // clang-format on
 #endif
 }
+
+}  // namespace
 
 int main() {
     count_this_thread();

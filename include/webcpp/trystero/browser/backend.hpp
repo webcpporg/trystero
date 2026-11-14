@@ -549,8 +549,10 @@ public:
         : loop_(loop),
           runtime_(std::allocate_shared<::webcpp::webrtc::runtime>(
               std::pmr::polymorphic_allocator<>(std::pmr::get_default_resource()),
-              ::webcpp::webrtc::runtime_options{.max_peer_connections = max_peer_connections,
-                                                .thread_pool_size = 0})) {}
+              ::webcpp::webrtc::runtime_options{
+                  .max_peer_connections = max_peer_connections,
+                  .thread_pool_size = 0,
+              })) {}
 
     /**
      * Opens a WebSocket to a relay, with the page's `WebSocket`.

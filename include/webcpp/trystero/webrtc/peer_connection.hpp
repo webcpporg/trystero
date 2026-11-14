@@ -170,8 +170,8 @@ public:
             .policy = ::webcpp::webrtc::ice_transport_policy::all,
             .bind_address = bind_address,
         };
-        return connection_type::make(runtime, ex, config, ::webcpp::webrtc::options{},
-                                     allocator_type(memory));
+        const ::webcpp::webrtc::options bounds;
+        return connection_type::make(runtime, ex, config, bounds, allocator_type(memory));
     }
 
     /**
@@ -263,7 +263,8 @@ public:
             return;
         }
         pc_.async_set_remote_description(
-            {*kind, sdp}, bound([done = std::move(done)](boost::system::error_code ec) mutable {
+            {.type = *kind, .sdp = sdp},
+            bound([done = std::move(done)](boost::system::error_code ec) mutable {
                 done(ec ? make_error_code(error::backend_failure) : backend::error_code{});
             }));
     }

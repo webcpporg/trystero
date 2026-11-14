@@ -90,8 +90,7 @@ public:
      * @param runtime The runtime of the channel's connection, which the channel keeps alive.
      * @param channel The channel, made or accepted by a connection of the same executor and
      * allocator.
-     * @param factory The backend, which makes the timer of the pending frames, and which outlives
-     * every operation of the channel.
+     * @param factory The backend, which makes the timer of the pending frames, in `memory`.
      * @param memory The app's resource, the channel's: the wrapper, its handlers and its frames
      * are allocated in it.
      * @return The channel.
@@ -176,8 +175,11 @@ public:
         if (!is_open()) {
             return;
         }
-        // A channel closed in between refuses the frame, and its close event reports it.
-        static_cast<void>(channel_.send(webcpp::asio::buffer(frame.data(), frame.size())));
+        // A channel closed in between refuses the frame, and its close event reports it; a frame
+        // refused leaves nothing to drain.
+        if (channel_.send(webcpp::asio::buffer(frame.data(), frame.size()))) {
+            return;
+        }
         watch_drain();
     }
 
