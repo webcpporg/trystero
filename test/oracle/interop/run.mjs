@@ -810,30 +810,56 @@ const leavingEveryRoomScenario = (name, cppKind) =>
         return seconds >= 1.5 ? null : `the connection closed ${seconds} s after the leaves, before the idle time of 2 s`
     })
 
+// The negotiations a C++ peer opened with `peer`, by its log: the offers it sent that peer, each once however often it
+// resent it, and the offers of that peer it answered. Each made a connection for that peer, where the counts of
+// connections made (cpp.html's madePeerConnections, the native peer's made-connection events) count every peer's.
+const negotiationsWith = async (cpp, peer) => {
+    const log = await cpp.log()
+    const offers = new Set([...log.matchAll(new RegExp(`sending offer (\\w+) to ${peer}\\b`, 'g'))].map(m => m[1]))
+    return offers.size + [...log.matchAll(new RegExp(`signal: offer \\w+ from ${peer}\\b`, 'g'))].length
+}
+
 // 4. A public app exposes its other rooms to a peer on its connection. A separate password-protected app has
 // another peer id, so public-channel presence and readiness injections cannot reach its rooms or broadcasts.
+// The protected app joins the public app's first room once the public connection is up, so that the two apps meet
+// within the window observed: whatever the passwords, the lower id offers to a higher one it sees announced, as
+// Trystero does, and the other cannot open the offer. The public app, when it has the lower id, so makes a connection
+// for the protected app when they meet, and another each time its unanswered offer expires (57 s): its connection with
+// the page is judged by the negotiations it opened with the page, not by every connection it made.
 const openToOtherRoomsScenario = (name, cppKind) =>
     scenario(name, async open => {
         for (const protectedSelf of ['00000000000000000000', 'zzzzzzzzzzzzzzzzzzzz']) {
             const publicSelf = protectedSelf.startsWith('0') ? 'zzzzzzzzzzzzzzzzzzzz' : '00000000000000000000'
             const rooms = {room: room(), room2: room(), secret: room()}
             const cpp = await open(cppKind, {room: rooms.room, room2: rooms.room2, self: publicSelf, ...relayParams})
-            const protectedCpp = await open(cppKind, {
-                room: rooms.room, room2: rooms.secret, self: protectedSelf, password: 'vault', ...relayParams,
-            })
             // The page knows the protected room id but has no password. It also injects that token over its public
             // connection, alongside the public app's actual advertisements.
             const js = await open('js', {room: rooms.room, room3: rooms.secret, ...relayParams})
             const ok = await until(async () => exchangeComplete(inRoom(await cpp.events(), 'first'), false) &&
                 exchangeComplete(inRoom(await js.events(), 'first'), true), 30_000)
             if (!ok) return `${protectedSelf}: the public room did not complete in 30 s`
-            const refused = async () => inRoom(await protectedCpp.events(), 'second').some(e => e.kind === 'error') ||
-                inRoom(await js.events(), 'third').some(e => e.kind === 'error' && e.peer === protectedSelf)
-            if (!(await until(refused, 15_000))) return `${protectedSelf}: the protected room saw no attempted negotiation`
             if (!(await until(async () => (await js.value('window.advertisedCount()')) >= 2, 10_000))) {
                 return `${protectedSelf}: the public app did not advertise both rooms`
             }
-            const before = await connectionCounts(cpp, cppKind, js)
+            const pageSelf = (await js.events()).find(e => e.kind === 'joined')?.self
+            const publicConnection = async () =>
+                ({withPage: await negotiationsWith(cpp, pageSelf), ...await connectionCounts(cpp, cppKind, js)})
+            const before = await publicConnection()
+            if (before.withPage < 1) return `${protectedSelf}: the public app's log names no negotiation with the page`
+            const protectedCpp = await open(cppKind, {
+                room: rooms.room, room2: rooms.secret, self: protectedSelf, password: 'vault', ...relayParams,
+            })
+            const refused = async () => inRoom(await protectedCpp.events(), 'second').some(e => e.kind === 'error') ||
+                inRoom(await js.events(), 'third').some(e => e.kind === 'error' && e.peer === protectedSelf)
+            if (!(await until(refused, 15_000))) return `${protectedSelf}: the protected room saw no attempted negotiation`
+            // The two apps met: the higher id could not open the lower id's offer, or a candidate of it, whichever came
+            // first (it says so once per negotiation).
+            const higher = protectedSelf > publicSelf ? protectedCpp : cpp
+            const lowerSelf = protectedSelf > publicSelf ? publicSelf : protectedSelf
+            const met = async () => new RegExp(`could not open the \\w+ from ${lowerSelf}`).test(await higher.log())
+            if (!(await until(met, 15_000))) {
+                return `${protectedSelf}: the public and the protected apps did not meet in 15 s`
+            }
             const echoed = await js.value(`window.echoPresence([${JSON.stringify(rooms.secret)}])`)
             if (echoed < 3) return `${protectedSelf}: the injection omitted a public or protected token`
             const joined2 = async () => inRoom(await cpp.events(), 'second').some(e => e.kind === 'peer-join')
@@ -853,8 +879,8 @@ const openToOtherRoomsScenario = (name, cppKind) =>
                 (await js.value(`window.roomFrames(${JSON.stringify(rooms.secret)}, 'file')`)) !== 0) {
                 return `${protectedSelf}: protected broadcasts reached the public page`
             }
-            const after = await connectionCounts(cpp, cppKind, js)
-            if (after.cppMade !== before.cppMade || after.jsConnected !== 1) {
+            const after = await publicConnection()
+            if (after.withPage !== before.withPage || after.jsConnected !== 1) {
                 return `${protectedSelf}: the public connection changed: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`
             }
         }
