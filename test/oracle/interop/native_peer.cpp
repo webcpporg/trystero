@@ -30,25 +30,33 @@
 #include <webcpp/trystero/native/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/quote.hpp>
+#include <webcpp/document/stringify.hpp>
+
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
 #include <boost/asio/read_until.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/streambuf.hpp>
-#include <boost/json.hpp>
 
 #include <unistd.h>
+#include <array>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <memory_resource>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -56,11 +64,65 @@ namespace trystero = webcpp::trystero;
 
 namespace {
 
-/** An event for the driver: a kind and fields, one JSON object per line. */
-void record(std::string_view kind, boost::json::object fields = {}) {
-    fields["kind"] = kind;
+/** Appends `text` as `JSON.stringify` writes a string; a text that is not UTF-8, which no
+ * JavaScript string is, as `null`. */
+void append_string(std::string& out, std::string_view text) {
+    if (!webcpp::document::quote(text, out).has_value()) {
+        out += "null";
+    }
+}
+
+/** A field of an event for the driver: its key, and its value as JSON text. */
+struct field {
+    /** A string. */
+    field(std::string_view name, std::string_view text) : key(name) { append_string(json, text); }
+
+    /** An integer, in decimal. */
+    template <std::integral I>
+        requires(!std::same_as<I, bool>)
+    field(std::string_view name, I number) : key(name) {
+        std::array<char, 24> digits{};
+        const auto written = std::to_chars(digits.data(), digits.data() + digits.size(), number);
+        json.assign(digits.data(), written.ptr);
+    }
+
+    /** Strings, as an array of them. */
+    field(std::string_view name, std::span<const std::pmr::string> texts) : key(name) {
+        json += '[';
+        for (const auto& text : texts) {
+            if (json.size() > 1) {
+                json += ',';
+            }
+            append_string(json, text);
+        }
+        json += ']';
+    }
+
+    /** A JSON value, as `JSON.stringify` writes it. */
+    field(std::string_view name, const webcpp::document::document& value)
+        : key(name), json(value.stringify()) {}
+
+    /** The key. */
+    std::string_view key;
+    /** The value, as JSON text. */
+    std::string json;
+};
+
+/** An event for the driver: a kind and fields, one JSON object per line, the kind last. */
+void record(std::string_view kind, std::initializer_list<field> fields = {}) {
+    std::string line = "{";
+    for (const field& f : fields) {
+        append_string(line, f.key);
+        line += ':';
+        line += f.json;
+        line += ',';
+    }
+    append_string(line, "kind");
+    line += ':';
+    append_string(line, kind);
+    line += '}';
     // flushed: the driver reads each event from a pipe as it comes
-    std::cout << boost::json::serialize(fields) << '\n' << std::flush;
+    std::cout << line << '\n' << std::flush;
 }
 
 /** Milliseconds from a parameter's digits, or `fallback` when it has none. */
@@ -461,14 +523,10 @@ int main(int argc, char* argv[]) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
     });
     trystero::room room = join(app, args["room"], options_of(args));
-    boost::json::array relays;
-    for (const auto& url : room.relay_urls()) {
-        relays.emplace_back(url);
-    }
-    record("joined", {{"self", room.self_id()}, {"relays", relays}});
+    record("joined", {{"self", room.self_id()}, {"relays", room.relay_urls()}});
 
     auto chat = room.make_action<std::string>("chat");
-    auto drink = room.make_action<boost::json::value>("drink");
+    auto drink = room.make_action<webcpp::document::document>("drink");
     auto file = room.make_action<trystero::bytes>("file");
 
     room.on_peer_join([&](std::string_view peer_view) {
@@ -482,9 +540,15 @@ int main(int argc, char* argv[]) {
         };
         chat.async_send("hello from C++", trystero::send_options{.targets = {peer}, .metadata = {}},
                         done("chat"));
-        drink.async_send(
-            boost::json::object{{"drink", "cafezinho"}, {"withIce", false}, {"from", "c++"}},
-            trystero::send_options{.targets = {peer}, .metadata = {}}, done("drink"));
+        auto cafezinho =
+            webcpp::document::parse(R"({"drink":"cafezinho","withIce":false,"from":"c++"})");
+        if (cafezinho.has_value()) {
+            drink.async_send(std::move(*cafezinho),
+                             trystero::send_options{.targets = {peer}, .metadata = {}},
+                             done("drink"));
+        } else {
+            done("drink")(cafezinho.error());
+        }
         trystero::bytes big(100'000);
         for (std::size_t i = 0; i < big.size(); ++i) {
             big[i] = static_cast<std::uint8_t>((i * 13) % 256);
@@ -514,7 +578,7 @@ int main(int argc, char* argv[]) {
                             [](boost::system::error_code) {});
         }
     });
-    drink.on_message([](boost::json::value v, const trystero::message_info& info) {
+    drink.on_message([](const webcpp::document::document& v, const trystero::message_info& info) {
         record("drink", {{"from", info.from}, {"value", v}});
     });
     file.on_message([](const trystero::bytes& data, const trystero::message_info& info) {

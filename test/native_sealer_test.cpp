@@ -11,9 +11,12 @@
 #include <webcpp/trystero/native/sealer.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/value.hpp>
+
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json.hpp>
 
 #include <fstream>
 #include <memory_resource>
@@ -24,7 +27,6 @@
 
 #include "require.hpp"
 
-namespace json = boost::json;
 namespace tp = webcpp::trystero::protocol;
 namespace trystero = webcpp::trystero;
 
@@ -32,11 +34,19 @@ using webcpp::test::require;
 
 namespace {
 
-json::value load(const char* path) {
+/** The fixture at `path`, which must parse: a failure ends the test. */
+webcpp::document::document load(const char* path) {
     const std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
-    return json::parse(text.str());
+    auto parsed = webcpp::document::parse(text.str());
+    require(BOOST_TEST(parsed.has_value()));
+    return std::move(*parsed);
+}
+
+/** The text a fixture's string holds; empty for any other value. */
+std::string_view text_of(const webcpp::document::const_value& v) {
+    return v.value_or(std::string_view());
 }
 
 struct outcome {
@@ -57,14 +67,13 @@ outcome run(boost::asio::io_context& io, Operation operation) {
     return *result;
 }
 
-void opens_what_trystero_js_sealed(const json::object& sealed) {
+void opens_what_trystero_js_sealed(const webcpp::document::const_value& sealed) {
     boost::asio::io_context io;
     trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"),
                                     std::pmr::get_default_resource());
-    const auto opened =
-        run(io, [&](auto done) { sealer.open(sealed.at("text").as_string(), done); });
+    const auto opened = run(io, [&](auto done) { sealer.open(text_of(sealed["text"]), done); });
     BOOST_TEST(!opened.ec);
-    BOOST_TEST_EQ(opened.text, std::string_view(sealed.at("plaintext").as_string()));
+    BOOST_TEST_EQ(opened.text, text_of(sealed["plaintext"]));
 }
 
 void seals_in_trystero_form_and_opens_it_back() {
@@ -87,14 +96,13 @@ void seals_in_trystero_form_and_opens_it_back() {
     BOOST_TEST_EQ(opened.text, plaintext);
 }
 
-void another_key_is_a_wrong_password(const json::object& sealed) {
+void another_key_is_a_wrong_password(const webcpp::document::const_value& sealed) {
     boost::asio::io_context io;
     trystero::native::sealer sealer(io.get_executor(), tp::seal_key("secret", "my-app", "room-1"),
                                     std::pmr::get_default_resource());
     trystero::native::sealer intruder(io.get_executor(), tp::seal_key("guess", "my-app", "room-1"),
                                       std::pmr::get_default_resource());
-    const auto opened =
-        run(io, [&](auto done) { intruder.open(sealed.at("text").as_string(), done); });
+    const auto opened = run(io, [&](auto done) { intruder.open(text_of(sealed["text"]), done); });
     BOOST_TEST(opened.ec == trystero::error::wrong_password);
     const auto garbage = run(io, [&](auto done) { sealer.open("not sealed text", done); });
     BOOST_TEST(garbage.ec == trystero::error::wrong_password);
@@ -109,7 +117,10 @@ int main(int argc, char* argv[]) {
         return boost::report_errors();
     }
     const auto loaded = load(argv[1]);
-    const auto& sealed = loaded.at("sealed").as_object();
+    const webcpp::document::const_value sealed = loaded["sealed"];
+    if (!BOOST_TEST(sealed.is_object())) {
+        return boost::report_errors();
+    }
     opens_what_trystero_js_sealed(sealed);
     seals_in_trystero_form_and_opens_it_back();
     another_key_is_a_wrong_password(sealed);

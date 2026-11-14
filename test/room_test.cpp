@@ -13,6 +13,7 @@
 #define BOOST_UNORDERED_ENABLE_STATS
 
 #include <webcpp/trystero/app.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/asio/as_tuple.hpp>
@@ -21,9 +22,10 @@
 #include <webcpp/asio/io_context.hpp>
 #include <webcpp/asio/use_awaitable.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/stringify.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json/parse.hpp>
-#include <boost/json/serialize.hpp>
 #include <webcpp/test/exit_status.hpp>
 
 #include <algorithm>
@@ -57,6 +59,7 @@ using trystero::test::advance;
 using trystero::test::app_config;
 using trystero::test::app_id;
 using trystero::test::counting_resource;
+using trystero::test::document_of;
 using trystero::test::fixture;
 using trystero::test::flooder;
 using trystero::test::join;
@@ -108,16 +111,16 @@ void two_peers_join_and_exchange_every_payload_format() {
 
     auto chat_a = a.make_action<std::string>("chat");
     auto chat_z = z.make_action<std::string>("chat");
-    auto drink_z = z.make_action<boost::json::value>("drink");
+    auto drink_z = z.make_action<webcpp::document::document>("drink");
     auto pic_z = z.make_action<trystero::bytes>("pic");
     std::vector<std::pair<std::string, trystero::message_info>> chats_z;
-    boost::json::value drink;
+    std::optional<webcpp::document::document> drink;
     trystero::bytes pic;
     chat_z.on_message([&](std::string text, const trystero::message_info& info) {
         chats_z.emplace_back(std::move(text), info);
     });
     drink_z.on_message(
-        [&](boost::json::value v, const trystero::message_info&) { drink = std::move(v); });
+        [&](webcpp::document::document v, const trystero::message_info&) { drink = std::move(v); });
     pic_z.on_message([&](trystero::bytes b, const trystero::message_info&) { pic = std::move(b); });
 
     BOOST_TEST(run_until(f.io, [&] { return joined_a.size() == 1 && joined_z.size() == 1; }));
@@ -130,14 +133,14 @@ void two_peers_join_and_exchange_every_payload_format() {
     std::vector<boost::system::error_code> sent;
     chat_a.async_send("hello", trystero::send_options{.targets = {}, .metadata = R"({"n":1})"},
                       [&](boost::system::error_code ec) { sent.push_back(ec); });
-    a.make_action<boost::json::value>("drink").async_send(
-        boost::json::object{{"drink", "negroni"}},
+    a.make_action<webcpp::document::document>("drink").async_send(
+        document_of(R"({"drink":"negroni"})"),
         [&](boost::system::error_code ec) { sent.push_back(ec); });
     a.make_action<trystero::bytes>("pic").async_send(
         trystero::bytes{0, 1, 255}, [&](boost::system::error_code ec) { sent.push_back(ec); });
 
     BOOST_TEST(run_until(
-        f.io, [&] { return chats_z.size() == 1 && !drink.is_null() && pic.size() == 3; }));
+        f.io, [&] { return chats_z.size() == 1 && drink.has_value() && pic.size() == 3; }));
     BOOST_TEST_EQ(sent.size(), 3U);
     for (const auto& ec : sent) {
         BOOST_TEST(!ec);
@@ -145,9 +148,12 @@ void two_peers_join_and_exchange_every_payload_format() {
     BOOST_TEST_EQ(chats_z.at(0).first, "hello");
     BOOST_TEST_EQ(chats_z.at(0).second.from, "AAAAAAAAAAAAAAAAAAAA");
     BOOST_TEST_EQ(chats_z.at(0).second.metadata, R"({"n":1})");
-    BOOST_TEST_EQ(drink.at("drink").as_string(), "negroni");
     const trystero::bytes sent_pic{0, 1, 255};
     BOOST_TEST_ALL_EQ(pic.begin(), pic.end(), sent_pic.begin(), sent_pic.end());
+    if (!BOOST_TEST(drink.has_value())) {
+        return;
+    }
+    BOOST_TEST_EQ((*drink)["drink"].value_or(std::string_view()), "negroni");
 }
 
 void large_payloads_travel_in_chunks_both_ways() {
@@ -486,18 +492,8 @@ void a_forged_answer_changes_nothing() {
     const auto a_topic = trystero::protocol::peer_topic(app_id, "forged", a_id);
     int forged = 0;
     attacker.on_text = [&](std::string_view text) {
-        boost::system::error_code ec;
-        const auto document = boost::json::parse(text, ec);
-        const auto message =
-            ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
-        const auto* event =
-            message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
-        if (event == nullptr) {
-            return;
-        }
-        const auto content = boost::json::parse(event->content, ec);
-        const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
-        if (signal && signal->peer_id == a_id && !signal->offer.empty()) {
+        const auto signal = relayed_signal(text);
+        if (signal && signal->peer == a_id && !signal->offer.empty()) {
             attacker.publish(
                 a_topic,
                 {.peer_id = b_id, .offer_id = signal->offer_id, .answer = "not a sealed answer"});
@@ -640,20 +636,12 @@ void announcements_with_forged_answers_are_bounded() {
     std::map<std::string, std::string, std::less<>> owners;  // peer topic -> its peer id
     std::size_t forged = 0;
     attacker.on_text = [&](std::string_view text) {
-        boost::system::error_code ec;
-        const auto document = boost::json::parse(text, ec);
-        const auto message =
-            ec ? std::nullopt : trystero::protocol::nostr::read_relay_message(document);
-        const auto* event =
-            message ? std::get_if<trystero::protocol::nostr::event>(&*message) : nullptr;
-        const auto topic = event == nullptr ? std::string_view() : event->topic;
-        const auto owner = owners.find(topic);
+        const auto signal = relayed_signal(text);
+        const auto owner = signal ? owners.find(signal->topic) : owners.end();
         if (owner == owners.end()) {
             return;
         }
-        const auto content = boost::json::parse(event->content, ec);
-        const auto signal = ec ? std::nullopt : trystero::protocol::read_signal(content);
-        if (signal && signal->peer_id == a_id && !signal->offer.empty()) {
+        if (signal->peer == a_id && !signal->offer.empty()) {
             attacker.publish(a_topic, {
                                           .peer_id = owner->second,
                                           .offer_id = signal->offer_id,
@@ -1106,11 +1094,23 @@ void a_refused_peer_is_logged_once() {
 void long_peer_ids_are_bounded() {
     const std::string longest(trystero::protocol::max_peer_id_bytes, 'x');
     const std::string too_long(trystero::protocol::max_peer_id_bytes + 1, 'x');
+    // {"peerId":<id>}, read as a room reads a signal.
     const auto signal = [](std::string_view id) {
-        return boost::json::value(boost::json::object{{"peerId", id}});
+        std::pmr::string text("{");
+        trystero::protocol::json::append_key(text, "peerId");
+        trystero::protocol::json::append_string(text, id);
+        text += '}';
+        auto parsed = trystero::protocol::json::parse(
+            text,
+            trystero::protocol::json::protocol_limits(trystero::protocol::max_parsed_signal_bytes),
+            std::pmr::get_default_resource());
+        webcpp::test::require(BOOST_TEST(parsed.has_value()));
+        return std::move(*parsed);
     };
-    BOOST_TEST(trystero::protocol::read_signal(signal(longest)).has_value());
-    BOOST_TEST(!trystero::protocol::read_signal(signal(too_long)).has_value());
+    const auto longest_signal = signal(longest);
+    const auto too_long_signal = signal(too_long);
+    BOOST_TEST(trystero::protocol::read_signal(longest_signal.root()).has_value());
+    BOOST_TEST(!trystero::protocol::read_signal(too_long_signal.root()).has_value());
 
     fixture f;
     trystero::app a_app(f.io.get_executor(), f.net, app_config(too_long));
@@ -1170,13 +1170,14 @@ void async_receive_works_in_a_coroutine() {
                 }
                 seen.push_back(std::holds_alternative<std::string>(value)
                                    ? std::get<std::string>(value)
-                                   : boost::json::serialize(std::get<boost::json::value>(value)));
+                                   : std::get<webcpp::document::document>(value).stringify());
             }
         },
         asio::detached);
     BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
     a.make_action<std::string>("any").async_send("text", asio::detached);
-    a.make_action<boost::json::value>("any").async_send(boost::json::array{1, 2}, asio::detached);
+    a.make_action<webcpp::document::document>("any").async_send(document_of("[1,2]"),
+                                                                asio::detached);
     BOOST_TEST(run_until(f.io, [&] { return seen.size() == 2; }));
     const std::vector<std::string> both{"text", "[1,2]"};
     BOOST_TEST_ALL_EQ(seen.begin(), seen.end(), both.begin(), both.end());

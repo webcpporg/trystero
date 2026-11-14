@@ -13,15 +13,18 @@
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/asio/io_context.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json/parse.hpp>
-#include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <array>
@@ -40,9 +43,9 @@
 #include <utility>
 
 // The rooms' shared test helpers: a memory network with two relays, an app over them and a join
-// that must succeed, a watcher of a room's relay traffic, a flood of announcements, and the virtual
-// clock's own waits. A case of room_test.cpp, connection_test.cpp or shared_test.cpp includes this
-// header for them.
+// that must succeed, a watcher of a room's relay traffic, a flood of announcements, the virtual
+// clock's own waits, and a JSON document to send. A case of room_test.cpp, connection_test.cpp or
+// shared_test.cpp includes this header for them.
 namespace webcpp::trystero::test {
 
 using namespace std::chrono_literals;
@@ -65,6 +68,14 @@ inline trystero::app_config app_config(std::string_view self_id, std::string_vie
         };
     }
     return c;
+}
+
+/** The owned document of a JSON text, as an action of JSON sends it; a text that does not parse
+ * ends the test. */
+inline webcpp::document::document document_of(std::string_view text) {
+    auto parsed = webcpp::document::parse(text);
+    webcpp::test::require(BOOST_TEST(parsed.has_value()));
+    return std::move(*parsed);
 }
 
 /** Joins `room_id`, which must succeed: a failure ends the test. */
@@ -251,17 +262,21 @@ struct relayed {
     bool announcement = false;
 };
 
-/** The topic and the signal of a relay's text, when it is an event that carries one. */
+/** The topic and the signal of a relay's text, when it is an event that carries one. Both texts
+ * are read within the relay's bound, wider than a room's, so that the watcher sees whatever a room
+ * could be sent. */
 inline std::optional<relayed> relayed_signal(std::string_view text) {
-    boost::system::error_code ec;
-    const auto document = boost::json::parse(text, ec);
-    const auto message = ec ? std::nullopt : protocol::nostr::read_relay_message(document);
+    const auto limits = protocol::json::protocol_limits(protocol::max_relay_message_bytes);
+    const auto parsed = protocol::json::parse(text, limits, std::pmr::get_default_resource());
+    const auto message =
+        parsed.has_value() ? protocol::nostr::read_relay_message(parsed->root()) : std::nullopt;
     const auto* event = message ? std::get_if<protocol::nostr::event>(&*message) : nullptr;
     if (event == nullptr) {
         return std::nullopt;
     }
-    const auto content = boost::json::parse(event->content, ec);
-    const auto signal = ec ? std::nullopt : protocol::read_signal(content);
+    const auto content =
+        protocol::json::parse(event->content, limits, std::pmr::get_default_resource());
+    const auto signal = content.has_value() ? protocol::read_signal(content->root()) : std::nullopt;
     if (!signal) {
         return std::nullopt;
     }
