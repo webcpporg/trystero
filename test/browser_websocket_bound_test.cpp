@@ -17,9 +17,10 @@
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 #include <webcpp/trystero/protocol/relays.hpp>
 
+#include <webcpp/asio/io_context.hpp>
+
 #include <emscripten/em_js.h>
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
 
 #include <cstddef>
@@ -64,7 +65,7 @@ namespace {
 constexpr int texts = 100;
 
 struct state {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
     std::shared_ptr<trystero::backend::websocket> socket;

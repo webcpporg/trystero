@@ -11,9 +11,10 @@
 #include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
 
+#include <webcpp/asio/io_context.hpp>
+
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
 
 #include <memory>
 #include <string>
@@ -25,7 +26,7 @@ namespace {
 
 // tag::state[]
 struct chat {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
     std::unique_ptr<trystero::app> app;  // made at the first join, with that join's app id

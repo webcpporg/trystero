@@ -16,8 +16,10 @@
 #include "support/memory_backend.hpp"
 #include "support/rooms.hpp"
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <algorithm>
 #include <array>
@@ -2009,5 +2011,6 @@ int main(int argc, const char* const argv[]) {
         }
     }
     BOOST_TEST(ran != 0);
-    return boost::report_errors();
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

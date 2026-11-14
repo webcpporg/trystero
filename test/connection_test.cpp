@@ -13,8 +13,10 @@
 
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <chrono>
@@ -31,7 +33,7 @@
 
 #include "require.hpp"
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 namespace detail = webcpp::trystero::detail;
 using namespace std::chrono_literals;
@@ -855,5 +857,6 @@ int main() {
     kept_may_take_its_frame();
     the_end_closes_the_connection_and_frees_the_kept_frames();
     a_disconnection_ends_after_5_s_unless_it_reconnects();
-    return boost::report_errors();
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

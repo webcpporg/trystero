@@ -14,11 +14,9 @@ import webcpp ;
 webcpp.targets native emscripten ;
 
 # Each needs the public relays or a browser, so it is linked and never run.
-# The native backend needs exceptions whatever the build asks: libdatachannel
-# reports errors by throwing.
 # tag::native[]
 webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi : native ;
 # end::native[]
 # tag::browser[]
 webcpp.link quick_start : quick_start.cpp

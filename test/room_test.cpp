@@ -11,14 +11,16 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/room.hpp>
 
-#include <boost/asio/as_tuple.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include <webcpp/asio/as_tuple.hpp>
+#include <webcpp/asio/co_spawn.hpp>
+#include <webcpp/asio/detached.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/use_awaitable.hpp>
+
 #include <boost/core/lightweight_test.hpp>
 #include <boost/json/parse.hpp>
 #include <boost/json/serialize.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <algorithm>
 #include <array>
@@ -40,7 +42,7 @@
 #include "support/memory_backend.hpp"
 #include "support/rooms.hpp"
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using namespace std::chrono_literals;
 
@@ -1426,5 +1428,6 @@ int main() {
     a_kick_by_the_last_room_ends_the_connection();
     a_room_left_with_no_idle_time_sends_its_presence();
     the_errors_have_their_values();
-    return boost::report_errors();
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

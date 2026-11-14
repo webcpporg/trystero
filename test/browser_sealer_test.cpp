@@ -17,8 +17,9 @@
 #include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 
+#include <webcpp/asio/io_context.hpp>
+
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
 
 #include <array>
@@ -42,7 +43,7 @@ struct outcome {
 };
 
 struct state {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::browser::event_loop loop{io};
     trystero::browser::backend backend{loop};
     std::shared_ptr<trystero::backend::sealer> sealer;

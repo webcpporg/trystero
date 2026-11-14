@@ -21,7 +21,8 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/asio/any_io_executor.hpp>  // lint-world: names the executor only
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
+
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
 
@@ -81,7 +82,7 @@ protected:
 class app_impl : public std::enable_shared_from_this<app_impl> {
 public:
     /** The executor shared by the app and its rooms. */
-    using executor_type = boost::asio::any_io_executor;
+    using executor_type = webcpp::asio::any_io_executor;
 
     /** Copies the configuration into its resource, draws the self id unless it names one, and sets
      * aside what no peer could use, each kept as a report. */

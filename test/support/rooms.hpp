@@ -17,7 +17,8 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
 #include <boost/json/parse.hpp>
 #include <boost/system/error_code.hpp>
@@ -75,7 +76,7 @@ inline trystero::room join(trystero::app& a, std::string_view room_id,
 }
 
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
-inline bool run_until(boost::asio::io_context& io, const std::function<bool()>& done,
+inline bool run_until(webcpp::asio::io_context& io, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = 10s) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
@@ -88,7 +89,7 @@ inline bool run_until(boost::asio::io_context& io, const std::function<bool()>& 
 }
 
 struct fixture {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     memory_network net{io};
 
     /** A memory network with two relays; with `virtual_time`, on the virtual clock. */

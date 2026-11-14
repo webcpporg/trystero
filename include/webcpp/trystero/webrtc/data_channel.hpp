@@ -59,7 +59,9 @@ using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
  * then dropped: neither can be a frame. Frames received while no message handler is installed wait
  * in the app's resource, in order, up to `max_pending_frames` for `pending_frames_ttl` from the
  * first, Trystero's pending-data bounds; exceeding either closes the channel. Installing a receiver
- * posts their delivery, so that `set_handlers` never calls it inline.
+ * posts their delivery, so that `set_handlers` never calls it inline. In the browser, a message
+ * larger than webcpp::webrtc's `options::max_message_size`, or past its receive budget, closes the
+ * channel too.
  *
  * Tip: a received frame is read once, by webcpp::webrtc, into a vector of the app's resource,
  * which the message handler then owns; what the platform holds before is the platform's.
@@ -233,8 +235,9 @@ private:
 
     /** Reads the next message into a fresh frame of the channel's resource. */
     void receive() {
-        // A frame no larger than the largest message webcpp::webrtc accepts: natively
-        // libdatachannel cuts a longer one to it, so that no message is left in the queue.
+        // A frame no larger than the largest message webcpp::webrtc accepts, so that none stays
+        // queued: natively libdatachannel cuts a longer one to it, and in the browser a longer one
+        // closes the channel.
         frame_.clear();
         buffer_.emplace(frame_, ::webcpp::webrtc::options{}.max_message_size);
         channel_.async_receive(*buffer_,
@@ -248,13 +251,12 @@ private:
 
     void on_received(boost::system::error_code ec, bool text) {
         buffer_.reset();
-        if (ec == ::webcpp::webrtc::error::message_too_large) {
-            // The platform dropped a message larger than it accepts: none can be a frame.
-            receive();
+        // Closed or destroyed, or closing: in the browser a message past max_message_size, or
+        // past the receive budget, closes the channel. Its close event reports it.
+        if (ec == webcpp::asio::error::operation_aborted || ec == ::webcpp::webrtc::error::closed ||
+            ec == ::webcpp::webrtc::error::message_too_large ||
+            ec == ::webcpp::webrtc::error::receive_overflow) {
             return;
-        }
-        if (ec == webcpp::asio::error::operation_aborted || ec == ::webcpp::webrtc::error::closed) {
-            return;  // closed or destroyed: its close event reports it
         }
         if (ec) {
             // A message no buffer can take stays queued, and the platform's failure stays too: the

@@ -18,9 +18,9 @@ webcpp.targets native emscripten ;
 
 # The headers that build on both targets, the native backend's and the
 # backend's WebRTC over webcpp::webrtc, against libdatachannel and OpenSSL,
-# and the browser backend's, on emscripten. Every one compiles with
-# exceptions and without them, as the build asks, so the lint analyses them
-# so too.
+# and the browser backend's, on emscripten, which includes that WebRTC there.
+# Every one compiles with exceptions and without them, as the build asks, so
+# the lint analyses them so too.
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include

@@ -16,10 +16,11 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
-#include <boost/asio/bind_allocator.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include <webcpp/asio/bind_allocator.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
+#include <webcpp/asio/steady_timer.hpp>
+
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 
@@ -62,9 +63,9 @@ class memory_network;
 
 /** Posts `f` to `io`, allocated in `memory`. */
 template <class F>
-void post_in(boost::asio::io_context& io, std::pmr::memory_resource* memory, F&& f) {
-    boost::asio::post(io, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
-                                                      std::forward<F>(f)));
+void post_in(webcpp::asio::io_context& io, std::pmr::memory_resource* memory, F&& f) {
+    webcpp::asio::post(io, webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
+                                                        std::forward<F>(f)));
 }
 
 class memory_timer;
@@ -86,8 +87,8 @@ struct virtual_clock_state {
 class memory_timer : public backend::timer {
 public:
     /** A timer on the virtual clock `clock`, or on Asio's when `clock` is empty. */
-    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1,
-                 std::weak_ptr<virtual_clock_state> clock = {})
+    memory_timer(webcpp::asio::io_context& io, std::pmr::memory_resource* memory,
+                 int time_scale = 1, std::weak_ptr<virtual_clock_state> clock = {})
         : io_(io),
           timer_(io),
           memory_(memory),
@@ -116,7 +117,7 @@ public:
         }
         const std::uint64_t wait = ++*waits_;
         timer_.expires_after(delay / time_scale_);
-        timer_.async_wait(boost::asio::bind_allocator(
+        timer_.async_wait(webcpp::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [waits = std::weak_ptr<std::uint64_t>(waits_), wait,
              fire = std::move(fire)](boost::system::error_code ec) mutable {
@@ -156,8 +157,8 @@ private:
         key_.reset();
     }
 
-    boost::asio::io_context& io_;
-    boost::asio::steady_timer timer_;
+    webcpp::asio::io_context& io_;
+    webcpp::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
     int time_scale_;
     bool on_clock_;
@@ -214,7 +215,7 @@ private:
 class memory_websocket : public backend::websocket,
                          public std::enable_shared_from_this<memory_websocket> {
 public:
-    memory_websocket(boost::asio::io_context& io, memory_relay* relay, handlers h,
+    memory_websocket(webcpp::asio::io_context& io, memory_relay* relay, handlers h,
                      std::pmr::memory_resource* memory)
         : io_(io), relay_(relay), h_(std::move(h)), memory_(memory), json_(memory) {}
 
@@ -279,7 +280,7 @@ private:
         }
     }
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     memory_relay* relay_;
     handlers h_;
     std::pmr::memory_resource* memory_;
@@ -416,7 +417,7 @@ struct node_allocator {
 class memory_data_channel : public backend::data_channel,
                             public std::enable_shared_from_this<memory_data_channel> {
 public:
-    memory_data_channel(boost::asio::io_context& io, std::pmr::memory_resource* memory)
+    memory_data_channel(webcpp::asio::io_context& io, std::pmr::memory_resource* memory)
         : io_(io), memory_(memory), queue_(node_allocator<backend::bytes>(memory)) {}
 
     void set_handlers(handlers h) override { h_ = std::move(h); }
@@ -482,7 +483,7 @@ private:
      * receives each frame whose last byte it moved. */
     void drain();
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     std::pmr::memory_resource* memory_;
     std::weak_ptr<memory_data_channel> remote_;
     handlers h_;
@@ -505,7 +506,7 @@ private:
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
-    memory_peer_connection(boost::asio::io_context& io, memory_network& net,
+    memory_peer_connection(webcpp::asio::io_context& io, memory_network& net,
                            std::weak_ptr<connection_registry> registry, std::size_t id,
                            std::pmr::memory_resource* memory)
         : io_(io),
@@ -629,7 +630,7 @@ public:
 private:
     void try_connect();
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     memory_network& net_;
     std::weak_ptr<connection_registry> registry_;
     std::size_t id_;
@@ -655,7 +656,7 @@ public:
  */
 class memory_network : public backend::factory {
 public:
-    explicit memory_network(boost::asio::io_context& io, std::uint64_t seed = 1,
+    explicit memory_network(webcpp::asio::io_context& io, std::uint64_t seed = 1,
                             std::pmr::memory_resource* memory = std::pmr::get_default_resource())
         : io_(io),
           random_(seed),
@@ -751,7 +752,7 @@ public:
         return it == connections_->end() ? nullptr : it->second->shared_from_this();
     }
 
-    boost::asio::io_context& io() { return io_; }
+    webcpp::asio::io_context& io() { return io_; }
 
     /** How many peer connections are open now. */
     [[nodiscard]] std::size_t live_connections() const { return connections_->size(); }
@@ -843,7 +844,7 @@ private:
     /** Whether a timer of the virtual clock is due at or before `until_ms`. */
     [[nodiscard]] bool due_by(double until_ms) const;
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     std::mt19937_64 random_;
     std::chrono::steady_clock::time_point start_;
     std::pmr::memory_resource* memory_;
@@ -981,9 +982,9 @@ inline void memory_data_channel::drain() {
     }
     draining_ = !queue_.empty();
     if (draining_) {
-        boost::asio::post(
-            io_, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
-                                             [self = shared_from_this()] { self->drain(); }));
+        webcpp::asio::post(
+            io_, webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
+                                              [self = shared_from_this()] { self->drain(); }));
     }
     // Last, since the handler may send again, which queues behind what is left.
     if (above && buffered_ <= low_threshold && h_.buffered_amount_low) {
@@ -1155,7 +1156,7 @@ inline std::size_t memory_network::scheduled() const {
  * opens it. */
 class memory_sealer : public backend::sealer {
 public:
-    memory_sealer(boost::asio::io_context& io, std::array<std::uint8_t, 32> key,
+    memory_sealer(webcpp::asio::io_context& io, std::array<std::uint8_t, 32> key,
                   std::pmr::memory_resource* memory)
         : io_(io), key_(key), memory_(memory) {}
 
@@ -1185,7 +1186,7 @@ public:
     }
 
 private:
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     std::array<std::uint8_t, 32> key_;
     std::pmr::memory_resource* memory_;
 };

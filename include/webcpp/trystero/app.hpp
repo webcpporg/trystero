@@ -15,7 +15,8 @@
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/room.hpp>
 
-#include <boost/asio/any_io_executor.hpp>  // lint-world: names the executor only
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
+
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
@@ -47,7 +48,7 @@ namespace webcpp::trystero {
 class app {
 public:
     /** The executor every handler and completion of the app and its rooms runs on. */
-    using executor_type = boost::asio::any_io_executor;
+    using executor_type = webcpp::asio::any_io_executor;
 
     /** The most rooms an app holds at once: a Trystero JS peer drops a connection that advertises
      * more, its limit of 64 room tokens per connection. */

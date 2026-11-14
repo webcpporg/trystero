@@ -15,14 +15,16 @@
 #include "require.hpp"
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/bind_allocator.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include <webcpp/asio/bind_allocator.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
+#include <webcpp/asio/steady_timer.hpp>
+
 #include <boost/core/lightweight_test.hpp>
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
 #include <boost/throw_exception.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <atomic>
@@ -44,6 +46,7 @@
 #include <pthread.h>
 #endif
 #ifdef __EMSCRIPTEN__
+#include <emscripten/em_asm.h>
 #include <emscripten/heap.h>
 #include <poll.h>
 #include <sys/select.h>
@@ -72,6 +75,15 @@ bool counting = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+// Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
+// emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
+// platform's (webcpp::asio's page "Allocation"), counted apart. A char, which JavaScript writes
+// through HEAPU8.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+unsigned char inside_runtime = 0;
+// The C library's allocations made while inside_runtime is set.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t runtime_allocations = 0;
 
 #ifdef _MSC_VER
 /** Whether the calling thread is the one the test counts on: MSVC counts every thread. */
@@ -144,7 +156,7 @@ namespace {
 
 void* counted(void* pointer) {
     if (on_counted_thread() && counting && !inside_operator_new) {
-        ++c_allocations;
+        ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
     }
     return pointer;
 }
@@ -389,7 +401,7 @@ private:
 
 /** Runs io in slices of 10 ms until done holds, for 5 s at most. */
 template <class Predicate>
-bool run_until(boost::asio::io_context& io, Predicate done) {
+bool run_until(webcpp::asio::io_context& io, Predicate done) {
     for (int slice = 0; slice < 500 && !done(); ++slice) {
         io.restart();
         io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
@@ -466,7 +478,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     // The resources outlive the io_context, whose pending operations they hold.
     counting_resource a_memory;
     counting_resource z_memory;
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::test::memory_network network{io};
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
@@ -496,8 +508,8 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
         [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) { ++received; });
     const auto send = [&] {
         from_a.async_send(make(&a_memory, json_storage),
-                          boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
-                                                      [](boost::system::error_code /*ec*/) {}));
+                          webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                                       [](boost::system::error_code /*ec*/) {}));
     };
     // Joined, connected and one payload through, before the window opens: a
     // payload sent before the peers meet reaches nobody.
@@ -525,7 +537,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
 }
 
 /** Runs io for about `milliseconds`, whatever happens. */
-void run_for(boost::asio::io_context& io, int milliseconds) {
+void run_for(webcpp::asio::io_context& io, int milliseconds) {
     for (int slice = 0; slice < milliseconds / 10; ++slice) {
         io.restart();
         io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
@@ -537,16 +549,16 @@ void run_for(boost::asio::io_context& io, int milliseconds) {
  * the timer service and the reactor, the scheduler's first operation, and room
  * in the timer queue for more waits at once than two rooms keep.
  */
-void warm(boost::asio::io_context& io) {
-    std::vector<std::unique_ptr<boost::asio::steady_timer>> timers;
+void warm(webcpp::asio::io_context& io) {
+    std::vector<std::unique_ptr<webcpp::asio::steady_timer>> timers;
     for (int i = 0; i < 256; ++i) {
-        timers.push_back(std::make_unique<boost::asio::steady_timer>(io, std::chrono::hours(1)));
+        timers.push_back(std::make_unique<webcpp::asio::steady_timer>(io, std::chrono::hours(1)));
         timers.back()->async_wait([](boost::system::error_code /*ec*/) {});
     }
     for (auto& timer : timers) {
         timer->cancel();
     }
-    boost::asio::post(io, [] {});
+    webcpp::asio::post(io, [] {});
     run_for(io, 20);
 }
 
@@ -590,7 +602,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     counting_resource network_memory;
     counting_resource a_memory;
     counting_resource z_memory;
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::test::memory_network network{io, 1, &network_memory};
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
@@ -633,16 +645,17 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
             // tag::bind-allocator[]
             a.make_action<trystero::pmr_bytes>("file").async_send(
                 trystero::pmr_bytes(100'000, 7, &a_memory),
-                boost::asio::bind_allocator(in(a_memory), [](boost::system::error_code /*ec*/) {}));
+                webcpp::asio::bind_allocator(in(a_memory),
+                                             [](boost::system::error_code /*ec*/) {}));
             a.async_ping(z.self_id(),
-                         boost::asio::bind_allocator(
+                         webcpp::asio::bind_allocator(
                              in(a_memory),
                              [&pings](boost::system::error_code ec,
                                       std::chrono::milliseconds /*rtt*/) { pings += ec ? 0 : 1; }));
             // end::bind-allocator[]
             exchanged = run_until(io, [&] { return files == 1 && pings == 1; });
             bool gone = false;
-            z.async_leave(boost::asio::bind_allocator(
+            z.async_leave(webcpp::asio::bind_allocator(
                 in(z_memory), [&gone](boost::system::error_code /*ec*/) { gone = true; }));
             farewell = run_until(io, [&] { return gone && left == 1; });
         }
@@ -652,7 +665,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     // #trystero-allocation). The order that holds:
     //
     //     std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
-    //     boost::asio::io_context io;                     // destroyed before the resource
+    //     webcpp::asio::io_context io;                     // destroyed before the resource
     //     {
     //         trystero::app app(io.get_executor(), factory, {.memory = &memory});
     //         auto room = app.join("id");
@@ -708,7 +721,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
         const trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
         const trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
         {
-            boost::asio::io_context io;  // after the resources: destroyed before them
+            webcpp::asio::io_context io;  // after the resources: destroyed before them
             trystero::test::memory_network network{io, 1, &network_memory};
             network.relay("wss://relay.test");
             warm(io);
@@ -741,16 +754,16 @@ void rooms_of_one_app_allocate_through_their_resources() {
                 }
                 a2.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_own, &a_room_memory),
-                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
-                                                [](boost::system::error_code) {}));
+                    webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
+                                                 [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 1; }));
                 BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
                 BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
                 z_memory.sized = 0;
                 a1.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_shared, &a_memory),
-                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
-                                                [](boost::system::error_code) {}));
+                    webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                                 [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 2; }));
                 BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
@@ -804,8 +817,37 @@ void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*ali
     release(pointer);
 }
 
+/**
+ * Marks Asyncify's allocation of a suspension's unwind data, on emscripten under Asyncify, as
+ * webcpp::asio's own allocation test does: the C library's allocations made during it are counted
+ * apart, since a suspension of webcpp::asio's run family makes one, which is no room's.
+ */
+void mark_the_runtime_allocations() {
+#ifdef __EMSCRIPTEN__
+    // clang-format off
+    EM_ASM({
+        if (typeof Asyncify !== 'object' || typeof Asyncify.allocateData !== 'function') {
+            return;
+        }
+        const flag = $0;
+        const allocate = Asyncify.allocateData;
+        Asyncify.allocateData = function(...values) {
+            const previous = HEAPU8[flag];
+            HEAPU8[flag] = 1;
+            try {
+                return allocate.apply(this, values);
+            } finally {
+                HEAPU8[flag] = previous;
+            }
+        };
+    }, &inside_runtime);
+    // clang-format on
+#endif
+}
+
 int main() {
     count_this_thread();
+    mark_the_runtime_allocations();
 #if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
     !defined(__EMSCRIPTEN__)
     malloc_logger = &count_c_allocation;
@@ -827,5 +869,5 @@ int main() {
         });
     a_room_allocates_through_its_resource_from_join_to_destruction();
     rooms_of_one_app_allocate_through_their_resources();
-    return boost::report_errors();
+    return webcpp::test::exit_status(boost::report_errors());
 }

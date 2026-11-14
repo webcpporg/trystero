@@ -29,13 +29,14 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
-#include <boost/asio/any_io_executor.hpp>         // lint-world: posts handlers only
-#include <boost/asio/append.hpp>                  // lint-world: posts handlers only
-#include <boost/asio/associated_allocator.hpp>    // lint-world: posts handlers only
-#include <boost/asio/associated_executor.hpp>     // lint-world: posts handlers only
-#include <boost/asio/async_result.hpp>            // lint-world: posts handlers only
-#include <boost/asio/bind_allocator.hpp>          // lint-world: posts handlers only
+#include <webcpp/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
+#include <webcpp/asio/any_io_executor.hpp>         // lint-world: posts handlers only
+#include <webcpp/asio/append.hpp>                  // lint-world: posts handlers only
+#include <webcpp/asio/associated_allocator.hpp>    // lint-world: posts handlers only
+#include <webcpp/asio/associated_executor.hpp>     // lint-world: posts handlers only
+#include <webcpp/asio/async_result.hpp>            // lint-world: posts handlers only
+#include <webcpp/asio/bind_allocator.hpp>          // lint-world: posts handlers only
+
 #include <boost/assert.hpp>
 #include <boost/json/storage_ptr.hpp>
 #include <boost/json/value.hpp>
@@ -408,17 +409,17 @@ struct payload_traits<payload> {
 template <class Signature>
 struct completion {
     /** The user's handler. */
-    boost::asio::any_completion_handler<Signature> handler;
+    webcpp::asio::any_completion_handler<Signature> handler;
     /** Whether the handler's associated executor is the room's. */
     bool on_room_executor = false;
 
     /** The handler's associated allocator type. */
     using allocator_type =
-        boost::asio::associated_allocator_t<boost::asio::any_completion_handler<Signature>>;
+        webcpp::asio::associated_allocator_t<webcpp::asio::any_completion_handler<Signature>>;
 
     /** The handler's associated allocator, which Asio allocates what carries it with. */
     [[nodiscard]] allocator_type get_allocator() const noexcept {
-        return boost::asio::get_associated_allocator(handler);
+        return webcpp::asio::get_associated_allocator(handler);
     }
 
     /** Calls the handler once, with the completion's arguments. */
@@ -443,7 +444,7 @@ struct completion {
 class room_impl final : public std::enable_shared_from_this<room_impl>, public room_endpoint {
 public:
     /** The executor every handler and completion of the room runs on. */
-    using executor_type = boost::asio::any_io_executor;
+    using executor_type = webcpp::asio::any_io_executor;
     /** What an action's `on_message` becomes: a handler of each received message. */
     using message_handler = handler<void(incoming&)>;
 
@@ -841,8 +842,8 @@ public:
     template <class Handler, class... Args>
     void complete(Handler&& handler, Args&&... args) {
         if (on_room_executor(handler)) {
-            const auto allocator = boost::asio::get_associated_allocator(handler);
-            post_handler(ex_, boost::asio::bind_allocator(
+            const auto allocator = webcpp::asio::get_associated_allocator(handler);
+            post_handler(ex_, webcpp::asio::bind_allocator(
                                   allocator, [handler = std::forward<Handler>(handler),
                                               ... args = std::forward<Args>(args)]() mutable {
                                       std::move(handler)(std::move(args)...);
@@ -850,11 +851,11 @@ public:
             return;
         }
         if constexpr (is_completion<std::decay_t<Handler>>) {
-            boost::asio::post(
-                ex_, boost::asio::append(std::move(handler.handler), std::forward<Args>(args)...));
+            webcpp::asio::post(
+                ex_, webcpp::asio::append(std::move(handler.handler), std::forward<Args>(args)...));
         } else {
-            boost::asio::post(ex_, boost::asio::append(std::forward<Handler>(handler),
-                                                       std::forward<Args>(args)...));
+            webcpp::asio::post(ex_, webcpp::asio::append(std::forward<Handler>(handler),
+                                                         std::forward<Args>(args)...));
         }
     }
 
@@ -863,7 +864,7 @@ public:
     completion<Signature> erase(Handler&& handler) const {
         const bool here = on_room_executor(handler);
         return {
-            boost::asio::any_completion_handler<Signature>(std::forward<Handler>(handler)),
+            webcpp::asio::any_completion_handler<Signature>(std::forward<Handler>(handler)),
             here,
         };
     }
@@ -886,9 +887,9 @@ private:
         if constexpr (is_completion<Handler>) {
             return handler.on_room_executor;
         } else if constexpr (std::is_same_v<
-                                 boost::asio::associated_executor_t<Handler, executor_type>,
+                                 webcpp::asio::associated_executor_t<Handler, executor_type>,
                                  executor_type>) {
-            return boost::asio::get_associated_executor(handler, ex_) == ex_;
+            return webcpp::asio::get_associated_executor(handler, ex_) == ex_;
         } else {
             return false;
         }
@@ -1546,7 +1547,7 @@ class action;
 class room {
 public:
     /** The executor every handler and completion of the room runs on. */
-    using executor_type = boost::asio::any_io_executor;
+    using executor_type = webcpp::asio::any_io_executor;
 
     /** Not copyable: a room is one membership. */
     room(const room&) = delete;
@@ -1705,8 +1706,8 @@ public:
      */
     template <class CompletionToken>
     auto async_ping(std::string_view peer, CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code,
-                                                                 std::chrono::milliseconds)>(
+        return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code,
+                                                                  std::chrono::milliseconds)>(
             [impl = impl_](auto handler, const peer_id& peer) {
                 impl->ping(peer, impl->template erase<void(boost::system::error_code,
                                                            std::chrono::milliseconds)>(
@@ -1729,7 +1730,7 @@ public:
      */
     template <class CompletionToken>
     auto async_leave(CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
+        return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
             [impl = impl_](auto handler) {
                 impl->leave(
                     impl->template erase<void(boost::system::error_code)>(std::move(handler)));
@@ -1820,7 +1821,7 @@ public:
     template <class CompletionToken>
     auto async_send(T value, send_options options,  // NOLINT(performance-unnecessary-value-param)
                     CompletionToken&& token) {
-        return boost::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
+        return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
             [impl = impl_, name = std::pmr::string(name_, impl_->memory())](
                 auto handler, detail::encoded_payload payload, const send_options& options) {
                 impl->send(
@@ -1859,30 +1860,31 @@ public:
     auto async_receive(CompletionToken&& token) {
         static_assert(detail::payload_traits<T>::owning,
                       "a received view would outlive the message: await an owning type");
-        return boost::asio::async_initiate<CompletionToken,
-                                           void(boost::system::error_code, T, message_info)>(
+        return webcpp::asio::async_initiate<CompletionToken,
+                                            void(boost::system::error_code, T, message_info)>(
             [impl = impl_, name = std::pmr::string(name_, impl_->memory())](auto handler) {
                 // The decoding step is allocated as the user's handler is, which it carries.
-                const auto allocator = boost::asio::get_associated_allocator(handler);
+                const auto allocator = webcpp::asio::get_associated_allocator(handler);
                 impl->receive(
                     name,
                     impl->template erase<void(boost::system::error_code, detail::incoming)>(
-                        boost::asio::bind_allocator(allocator, [impl, handler = std::move(handler)](
-                                                                   boost::system::error_code ec,
-                                                                   detail::incoming m) mutable {
-                            auto* const memory = impl->memory();
-                            message_info info{
-                                .from = std::move(m.peer),
-                                .metadata = std::pmr::string(m.metadata(), memory),
-                            };
-                            auto value =
-                                ec ? std::nullopt : detail::payload_traits<T>::decode(m, memory);
-                            if (!ec && !value) {
-                                ec = make_error_code(error::transfer_rejected);
-                            }
-                            impl->complete(std::move(handler), ec, value ? std::move(*value) : T{},
-                                           std::move(info));
-                        })));
+                        webcpp::asio::bind_allocator(
+                            allocator,
+                            [impl, handler = std::move(handler)](boost::system::error_code ec,
+                                                                 detail::incoming m) mutable {
+                                auto* const memory = impl->memory();
+                                message_info info{
+                                    .from = std::move(m.peer),
+                                    .metadata = std::pmr::string(m.metadata(), memory),
+                                };
+                                auto value = ec ? std::nullopt
+                                                : detail::payload_traits<T>::decode(m, memory);
+                                if (!ec && !value) {
+                                    ec = make_error_code(error::transfer_rejected);
+                                }
+                                impl->complete(std::move(handler), ec,
+                                               value ? std::move(*value) : T{}, std::move(info));
+                            })));
             },
             token);
     }

@@ -9,10 +9,10 @@
 
 #include <webcpp/trystero/config.hpp>
 
-#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
-#include <boost/asio/bind_allocator.hpp>   // lint-world: binds an allocator only
-#include <boost/asio/io_context.hpp>       // lint-world: posts handlers only
-#include <boost/asio/post.hpp>             // lint-world: posts handlers only
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <webcpp/asio/bind_allocator.hpp>   // lint-world: binds an allocator only
+#include <webcpp/asio/io_context.hpp>       // lint-world: posts handlers only
+#include <webcpp/asio/post.hpp>             // lint-world: posts handlers only
 
 #include <memory_resource>
 #include <utility>
@@ -28,19 +28,19 @@ namespace webcpp::trystero::detail {
  * allocator says. So an executor that is an io_context's is posted to directly.
  */
 template <class Handler>
-void post_handler(const boost::asio::any_io_executor& ex, Handler&& handler) {
-    if (const auto* io = ex.target<boost::asio::io_context::executor_type>()) {
-        boost::asio::post(*io, std::forward<Handler>(handler));
+void post_handler(const webcpp::asio::any_io_executor& ex, Handler&& handler) {
+    if (const auto* io = ex.target<webcpp::asio::io_context::executor_type>()) {
+        webcpp::asio::post(*io, std::forward<Handler>(handler));
         return;
     }
-    boost::asio::post(ex, std::forward<Handler>(handler));
+    webcpp::asio::post(ex, std::forward<Handler>(handler));
 }
 
 /** Posts `f` to `ex`, allocated in `memory`. */
 template <class F>
-void post(const boost::asio::any_io_executor& ex, std::pmr::memory_resource* memory, F&& f) {
-    post_handler(ex, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
-                                                 std::forward<F>(f)));
+void post(const webcpp::asio::any_io_executor& ex, std::pmr::memory_resource* memory, F&& f) {
+    post_handler(ex, webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
+                                                  std::forward<F>(f)));
 }
 
 }  // namespace webcpp::trystero::detail

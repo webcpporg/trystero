@@ -17,11 +17,16 @@
 #include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
+#include <webcpp/trystero/webrtc/peer_connection.hpp>
+
+#include <webcpp/webrtc/options.hpp>
+#include <webcpp/webrtc/runtime.hpp>
+
+#include <webcpp/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
+#include <webcpp/asio/post.hpp>            // lint-world: posts handlers only
 
 #include <emscripten/val.h>
-#include <sys/random.h>                   // lint-world: getentropy, the page's entropy
-#include <boost/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
-#include <boost/asio/post.hpp>            // lint-world: posts handlers only
+#include <sys/random.h>  // lint-world: getentropy, the page's entropy
 
 #include <cmath>
 #include <deque>
@@ -33,9 +38,10 @@
 #include <vector>
 
 /**
- * The browser target: the backend interface over the page's own `WebSocket`, `RTCPeerConnection`,
- * `RTCDataChannel`, `setTimeout` and `crypto.subtle`, through `emscripten::val`. It needs a secure
- * context (https, or http on localhost), where `crypto.subtle` exists.
+ * The browser target: the backend interface over the page's own `WebSocket`, `setTimeout` and
+ * `crypto.subtle`, through `emscripten::val`, and over its `RTCPeerConnection` and
+ * `RTCDataChannel` through webcpp::webrtc. It needs a secure context (https, or http on
+ * localhost), where `crypto.subtle` exists.
  *
  * Tip: its objects, their handlers and the frames and texts they hand to the room are in the room's
  * resource; what `emscripten::val` holds is in the JavaScript heap, and the page's `event_loop`
@@ -69,9 +75,9 @@ inline backend::bytes from_js(const val& buffer, std::pmr::memory_resource* memo
  */
 template <class F>
 void defer(event_loop& loop, std::pmr::memory_resource* memory, F&& f) {
-    boost::asio::post(
-        loop.io(),
-        boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory), std::forward<F>(f)));
+    webcpp::asio::post(loop.io(),
+                       webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
+                                                    std::forward<F>(f)));
     loop.schedule_poll();
 }
 
@@ -313,394 +319,6 @@ private:
 };
 
 /**
- * A data channel over the page's `RTCDataChannel`, its messages received as `ArrayBuffer` objects.
- *
- * A message that is not an `ArrayBuffer`, as a text one a peer sends, or that is larger than any
- * room frame (`protocol::max_room_frame_bytes`), is dropped before it is read: neither can be a
- * frame, and reading a text as bytes would make a typed array of the length its text says.
- *
- * @see "The browser backend", in the guide.
- */
-class data_channel : public backend::data_channel {
-public:
-    /**
-     * Wraps a channel of the page, and takes over its events.
-     *
-     * @param loop The page's loop, which must outlive the channel.
-     * @param channel The `RTCDataChannel`.
-     * @param memory The app's resource, which the channel's handlers, registration and received
-     * frames are allocated in.
-     */
-    data_channel(event_loop& loop, val channel, std::pmr::memory_resource* memory)
-        : loop_(loop),
-          memory_(memory),
-          channel_(std::move(channel)),
-          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, const val& event) { on_event(slot, event); }})) {
-        channel_.set("binaryType", val("arraybuffer"));
-        channel_.set("bufferedAmountLowThreshold", val(static_cast<double>(low_threshold)));
-        channel_.set("onopen", loop_.handler(id_, 0));
-        channel_.set("onmessage", loop_.handler(id_, 1));
-        channel_.set("onclose", loop_.handler(id_, 2));
-        channel_.set("onbufferedamountlow", loop_.handler(id_, 3));
-    }
-
-    /** Destroys the wrapper, which closes the channel without reporting the close. */
-    ~data_channel() override {
-        loop_.remove(id_);
-        for (const char* name : {"onopen", "onmessage", "onclose", "onbufferedamountlow"}) {
-            channel_.set(name, val::null());
-        }
-        channel_.call<void>("close");
-    }
-
-    /**
-     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call.
-     *
-     * @param h The new handlers, kept in the channel's resource.
-     */
-    void set_handlers(handlers h) override {
-        h_ = std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory_),
-                                            std::move(h));
-    }
-
-    /**
-     * Whether the channel is open.
-     *
-     * @return Whether its `readyState` is "open".
-     */
-    [[nodiscard]] bool is_open() const override {
-        return channel_["readyState"].strictlyEquals(val("open"));
-    }
-
-    /**
-     * Sends a binary message, copied into a new `Uint8Array`, when the channel is open; one the
-     * channel refuses, as one larger than its peer accepts, is dropped.
-     *
-     * @param frame The message, read during the call.
-     */
-    void send(std::span<const std::uint8_t> frame) override {
-        if (is_open()) {
-            detail::js_call(channel_, "send", detail::to_js(frame));
-        }
-    }
-
-    /**
-     * The bytes queued to send.
-     *
-     * @return Its `bufferedAmount`.
-     */
-    [[nodiscard]] std::size_t buffered_amount() const override {
-        return static_cast<std::size_t>(channel_["bufferedAmount"].as<double>());
-    }
-
-    /** Closes the channel, which the handler `close` reports. */
-    void close() override { channel_.call<void>("close"); }
-
-private:
-    /** Whether a message can be a room frame: an `ArrayBuffer` no larger than the largest one. */
-    static bool is_frame(const val& data) {
-        return data.instanceof(val::global("ArrayBuffer")) &&
-               data["byteLength"].as<double>() <=
-                   static_cast<double>(protocol::max_room_frame_bytes);
-    }
-
-    void on_event(int slot, const val& event) {
-        const auto h = h_;
-        if (!h) {
-            return;
-        }
-        switch (slot) {
-            case 0:
-                if (h->open) {
-                    h->open();
-                }
-                break;
-            case 1:
-                if (h->message && is_frame(event["data"])) {
-                    h->message(detail::from_js(event["data"], memory_));
-                }
-                break;
-            case 2:
-                if (auto f = std::exchange(h->close, {})) {
-                    f();
-                }
-                break;
-            default:
-                if (h->buffered_amount_low) {
-                    h->buffered_amount_low();
-                }
-        }
-    }
-
-    event_loop& loop_;
-    std::pmr::memory_resource* memory_;
-    val channel_;
-    int id_;
-    std::shared_ptr<handlers> h_;
-};
-
-/**
- * A peer connection over the page's `RTCPeerConnection`.
- *
- * The state it reports merges its `connectionState` and its `iceConnectionState`.
- *
- * @see "The browser backend", in the guide.
- */
-class peer_connection : public backend::peer_connection,
-                        public std::enable_shared_from_this<peer_connection> {
-public:
-    /**
-     * Makes an `RTCPeerConnection` with `servers` as its `iceServers`.
-     *
-     * @param loop The page's loop, which must outlive the connection.
-     * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The app's resource, which the connection, its handlers, registration,
-     * channels and texts are allocated in.
-     * @return The connection, or null when the browser refuses to make one: it throws for a
-     * server it cannot use, and when the page holds as many connections as it allows. The page's
-     * census counts the connection made, until the garbage collector frees it.
-     */
-    static std::shared_ptr<peer_connection> create(event_loop& loop,
-                                                   std::span<const backend::ice_server> servers,
-                                                   std::pmr::memory_resource* memory) {
-        val list = val::array();
-        for (const auto& s : servers) {
-            val server = val::object();
-            val urls = val::array();
-            for (const auto& url : s.urls) {
-                urls.call<void>("push", loop.text(url));
-            }
-            server.set("urls", urls);
-            if (!s.username.empty()) {
-                server.set("username", loop.text(s.username));
-            }
-            if (!s.credential.empty()) {
-                server.set("credential", loop.text(s.credential));
-            }
-            list.call<void>("push", server);
-        }
-        val config = val::object();
-        config.set("iceServers", list);
-        const auto made = detail::js_new(val::global("RTCPeerConnection"), config);
-        if (!made.ok) {
-            return nullptr;
-        }
-        val::take_ownership(webcpp_trystero_js_census()).call<void>("add", made.value);
-        return std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
-                                                     loop, made.value, memory);
-    }
-
-    /**
-     * Wraps a connection of the page, and takes over its events; `create` makes one.
-     *
-     * @param loop The page's loop, which must outlive the connection.
-     * @param connection The `RTCPeerConnection`.
-     * @param memory The app's resource, which the connection's handlers, registration, channels
-     * and texts are allocated in.
-     */
-    peer_connection(event_loop& loop, val connection, std::pmr::memory_resource* memory)
-        : loop_(loop),
-          memory_(memory),
-          id_(loop.add({std::allocator_arg, std::pmr::polymorphic_allocator<>(memory),
-                        [this](int slot, const val& event) { on_event(slot, event); }})),
-          pc_(std::move(connection)) {
-        pc_.set("onicecandidate", loop_.handler(id_, 0));
-        pc_.set("ondatachannel", loop_.handler(id_, 1));
-        pc_.set("onconnectionstatechange", loop_.handler(id_, 2));
-        pc_.set("oniceconnectionstatechange", loop_.handler(id_, 2));
-    }
-
-    /** Destroys the wrapper, which closes the connection without reporting the close. */
-    ~peer_connection() override {
-        loop_.remove(id_);
-        for (const char* name : {
-                 "onicecandidate",
-                 "ondatachannel",
-                 "onconnectionstatechange",
-                 "oniceconnectionstatechange",
-             }) {
-            pc_.set(name, val::null());
-        }
-        pc_.call<void>("close");
-    }
-
-    /**
-     * Replaces the handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call.
-     *
-     * @param h The new handlers, kept in the connection's resource.
-     */
-    void set_handlers(handlers h) override {
-        h_ = std::allocate_shared<handlers>(allocator(), std::move(h));
-    }
-
-    /**
-     * Opens a data channel with `createDataChannel()`.
-     *
-     * @param label The channel's label, read during the call.
-     * @return The channel, made in the connection's resource, or null when the browser refuses
-     * to open one, as on a closed connection.
-     */
-    std::shared_ptr<backend::data_channel> create_data_channel(std::string_view label) override {
-        const auto made = detail::js_call(pc_, "createDataChannel", loop_.text(label));
-        if (!made.ok) {
-            return nullptr;
-        }
-        return std::allocate_shared<data_channel>(allocator(), loop_, made.value, memory_);
-    }
-
-    /**
-     * Creates and applies the offer or the answer the signaling state calls for, with
-     * `setLocalDescription()`.
-     *
-     * @param done Called once the promise settles, with the `localDescription`'s type and SDP, or
-     * with `error::backend_failure` when it is rejected or the connection is gone.
-     */
-    void set_local_description(
-        handler<void(backend::error_code, std::string_view, std::string_view)> done) override {
-        const std::weak_ptr<peer_connection> weak = shared_from_this();
-        detail::then(loop_, detail::js_call(pc_, "setLocalDescription"),
-                     {std::allocator_arg, allocator(),
-                      [weak, done = std::move(done)](bool ok, const val& /*value*/) mutable {
-                          const auto self = weak.lock();
-                          const val local = self ? self->pc_["localDescription"] : val::null();
-                          if (!ok || local.isNull()) {
-                              done(make_error_code(error::backend_failure), {}, {});
-                              return;
-                          }
-                          const auto type = self->loop_.utf8(local["type"], self->memory_);
-                          const auto sdp = self->loop_.utf8(local["sdp"], self->memory_);
-                          done({}, type, sdp);
-                      }},
-                     memory_);
-    }
-
-    /**
-     * Applies the remote peer's offer or answer, with `setRemoteDescription()`.
-     *
-     * @param type "offer" or "answer", read during the call.
-     * @param sdp The description's SDP, read during the call.
-     * @param done Called once the promise settles, or with `error::backend_failure` when it is
-     * rejected.
-     */
-    void set_remote_description(std::string_view type, std::string_view sdp,
-                                handler<void(backend::error_code)> done) override {
-        val description = val::object();
-        description.set("type", loop_.text(type));
-        description.set("sdp", loop_.text(sdp));
-        detail::then(
-            loop_, detail::js_call(pc_, "setRemoteDescription", description),
-            {std::allocator_arg, allocator(),
-             [done = std::move(done)](bool ok, const val& /*value*/) mutable {
-                 done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
-             }},
-            memory_);
-    }
-
-    /**
-     * Adds a remote ICE candidate, with `addIceCandidate()`.
-     *
-     * The text comes from a peer: one `JSON.parse` refuses is dropped, as a candidate the browser
-     * refuses is.
-     *
-     * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
-     * @param done Called once the candidate is added, or with `error::backend_failure` when the
-     * text is not JSON or the browser refuses the candidate.
-     */
-    void add_ice_candidate(std::string_view candidate_json,
-                           handler<void(backend::error_code)> done) override {
-        const auto candidate =
-            detail::js_call(val::global("JSON"), "parse", loop_.text(candidate_json));
-        detail::then(
-            loop_,
-            candidate.ok ? detail::js_call(pc_, "addIceCandidate", candidate.value) : candidate,
-            {std::allocator_arg, allocator(),
-             [done = std::move(done)](bool ok, const val& /*value*/) mutable {
-                 done(ok ? backend::error_code{} : make_error_code(error::backend_failure));
-             }},
-            memory_);
-    }
-
-    /**
-     * Whether a remote description was applied.
-     *
-     * @return Whether its `remoteDescription` is not null.
-     */
-    bool has_remote_description() const override { return !pc_["remoteDescription"].isNull(); }
-
-    /** Closes the connection and its channels. */
-    void close() override { pc_.call<void>("close"); }
-
-    /**
-     * The browser's own `RTCPeerConnection`, what media will be added to.
-     *
-     * @return The connection.
-     * @see "Roadmap", in the guide.
-     */
-    const val& native_handle() const { return pc_; }
-
-private:
-    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
-
-    backend::connection_state state() const {
-        using backend::connection_state;
-        // Compared in JavaScript, so reading a state allocates nothing on the C++ side.
-        const val connection = pc_["connectionState"];
-        const val ice = pc_["iceConnectionState"];
-        const auto is = [](const val& state, const char* name) {
-            return state.strictlyEquals(val(name));
-        };
-        if (is(connection, "failed") || is(ice, "failed")) {
-            return connection_state::failed;
-        }
-        if (is(connection, "closed") || is(ice, "closed")) {
-            return connection_state::closed;
-        }
-        if (is(connection, "disconnected") || is(ice, "disconnected")) {
-            return connection_state::disconnected;
-        }
-        if (is(connection, "connected") || is(ice, "connected") || is(ice, "completed")) {
-            return connection_state::connected;
-        }
-        if (is(connection, "connecting") || is(ice, "checking")) {
-            return connection_state::connecting;
-        }
-        return connection_state::fresh;
-    }
-
-    void on_event(int slot, const val& event) {
-        const auto h = h_;
-        if (!h) {
-            return;
-        }
-        if (slot == 0) {
-            const val candidate = event["candidate"];
-            if (candidate.isNull() || candidate.isUndefined() || !h->ice_candidate) {
-                return;
-            }
-            const auto json =
-                loop_.utf8(val::global("JSON").call<val>("stringify", candidate), memory_);
-            h->ice_candidate(json);
-        } else if (slot == 1) {
-            if (h->data_channel) {
-                h->data_channel(std::allocate_shared<data_channel>(allocator(), loop_,
-                                                                   event["channel"], memory_));
-            }
-        } else if (h->state) {
-            h->state(state());
-        }
-    }
-
-    event_loop& loop_;
-    std::pmr::memory_resource* memory_;
-    int id_;
-    val pc_ = val::undefined();
-    std::shared_ptr<handlers> h_;
-};
-
-/**
  * AES-GCM through `crypto.subtle`, under a key imported once, as Trystero's `encrypt` and `decrypt`
  * do.
  *
@@ -907,17 +525,12 @@ private:
 class backend : public trystero::backend::factory {
 public:
     /**
-     * Constructs the page's backend.
-     *
-     * @param loop The page's loop, which must outlive the backend and every object it makes.
-     */
-    explicit backend(event_loop& loop) : loop_(loop) {}
-
-    /**
-     * The most `RTCPeerConnection` objects the page's rooms hold, every backend of the page
-     * together, counted from their construction until the garbage collector frees them: half of the
-     * 500 Chromium allows a page, which it counts the same way, so that a closed connection still
-     * counts until a collection the page cannot ask for.
+     * The most `RTCPeerConnection` objects the page holds, every program of the page together,
+     * counted from their construction until the garbage collector frees them: half of the 500
+     * Chromium allows a page, which it counts the same way, so that a closed connection still
+     * counts until a collection the page cannot ask for. It is the cap of the backend's
+     * webcpp::webrtc runtime, `runtime_options::max_peer_connections`, whose census of the page
+     * counts the connections webcpp::webrtc makes.
      *
      * Tip: a room makes at most 64 connections in any 57 s, so floods of four rooms reach this
      * within a minute when no collection runs; the page then makes none until one does, and its
@@ -925,6 +538,19 @@ public:
      * free for what the page makes without a room.
      */
     static constexpr std::size_t max_peer_connections = 256;
+
+    /**
+     * Constructs the page's backend, with a webcpp::webrtc runtime of its own: in the browser the
+     * page's census counts the connections of every runtime alike.
+     *
+     * @param loop The page's loop, which must outlive the backend and every object it makes.
+     */
+    explicit backend(event_loop& loop)
+        : loop_(loop),
+          runtime_(std::allocate_shared<::webcpp::webrtc::runtime>(
+              std::pmr::polymorphic_allocator<>(std::pmr::get_default_resource()),
+              ::webcpp::webrtc::runtime_options{.max_peer_connections = max_peer_connections,
+                                                .thread_pool_size = 0})) {}
 
     /**
      * Opens a WebSocket to a relay, with the page's `WebSocket`.
@@ -943,22 +569,21 @@ public:
     }
 
     /**
-     * Makes a peer connection, with the page's `RTCPeerConnection`.
+     * Makes a peer connection of webcpp::webrtc, over the page's `RTCPeerConnection`.
      *
      * @param servers The STUN and TURN servers, read during the call.
      * @param memory The app's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
      * @return The connection, or null when the page holds `max_peer_connections`, or when the
-     * browser refuses to make one, as `peer_connection::create` says.
+     * browser refuses to make one: it throws for a server it cannot use, and when the page holds as
+     * many connections as it allows.
      */
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        const val census = val::take_ownership(webcpp_trystero_js_census());
-        if (census["held"].as<double>() >= static_cast<double>(max_peer_connections)) {
-            return nullptr;
-        }
-        return peer_connection::create(loop_, servers, memory);
+        auto made = webrtc::peer_connection::make(runtime_, loop_.get_executor(), servers, {},
+                                                  *this, memory);
+        return made ? *made : nullptr;
     }
 
     /**
@@ -1019,6 +644,7 @@ public:
 
 private:
     event_loop& loop_;
+    std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
 };
 
 }  // namespace webcpp::trystero::browser

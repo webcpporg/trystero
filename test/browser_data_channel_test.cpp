@@ -4,11 +4,12 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the browser backend's data channels, under node, over a plain object in place of the
-// page's RTCDataChannel: what a peer can send that is no frame is dropped before it is read. A text
-// message "1e300" once threw a RangeError out of `new Uint8Array`, and "300000000" made a 300 MB
-// frame; a binary message larger than any room frame is dropped too. Only the frame sent last
-// reaches the handler, and nothing larger than it is allocated.
+// Tests the browser backend's data channels, webcpp::webrtc's, under node, over plain objects in
+// place of the page's RTCPeerConnection and RTCDataChannel: what a peer can send that is no frame
+// is dropped. A text message "1e300" once threw a RangeError out of `new Uint8Array`, and
+// "300000000" made a 300 MB frame: webcpp::webrtc delivers a text as the few bytes it holds, which
+// the channel drops; a binary message larger than any room frame is dropped too. Only the frame
+// sent last reaches the handler, and nothing larger than the largest message sent is allocated.
 //
 // main sets the test up and returns with node's exit code at 1; the verdict comes when the last
 // frame arrives, or from a deadline that fails by name, and node exits once nothing is pending.
@@ -16,13 +17,17 @@
 #include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
 
+#include <webcpp/asio/io_context.hpp>
+
+#include <emscripten/em_asm.h>
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
 
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
+
+#include "require.hpp"
 
 namespace trystero = webcpp::trystero;
 using emscripten::val;
@@ -50,11 +55,12 @@ private:
 };
 
 struct state {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::browser::event_loop loop{io};
+    trystero::browser::backend backend{loop};
     watching_resource memory;
-    val channel = val::object();
-    std::shared_ptr<trystero::browser::data_channel> wrapper;
+    std::shared_ptr<trystero::backend::peer_connection> connection;
+    std::shared_ptr<trystero::backend::data_channel> wrapper;
     int messages = 0;
     std::size_t last_size = 0;
     val deadline = val::undefined();
@@ -73,15 +79,40 @@ void set_exit_code(int code) {
 void deliver(const val& data) {
     val event = val::object();
     event.set("data", data);
-    val::global("setTimeout")(the_state().channel["onmessage"], val(0), event);
+    val::global("setTimeout")(val::global("lastChannel")["onmessage"], val(0), event);
 }
 
 }  // namespace
 
 int main() {
     auto& s = the_state();
-    s.channel.set("readyState", val("open"));
-    s.wrapper = std::make_shared<trystero::browser::data_channel>(s.loop, s.channel, &s.memory);
+    // A connection whose channel is open from the start, and which the test reaches as
+    // lastChannel.
+    EM_ASM({
+        globalThis.RTCPeerConnection = class {
+            constructor() {
+                this.connectionState = 'new';
+                this.iceConnectionState = 'new';
+                this.localDescription = null;
+                this.remoteDescription = null;
+            }
+            createDataChannel(label) {
+                const channel = {};
+                channel.label = label;
+                channel.readyState = 'open';
+                channel.bufferedAmount = 0;
+                channel.send = function(){};
+                channel.close = function(){};
+                globalThis.lastChannel = channel;
+                return channel;
+            }
+            close() {}
+        };
+    });
+    s.connection = s.backend.make_peer_connection({}, &s.memory);
+    webcpp::test::require(BOOST_TEST(s.connection != nullptr));
+    s.wrapper = s.connection->create_data_channel("data");
+    webcpp::test::require(BOOST_TEST(s.wrapper != nullptr));
     s.wrapper->set_handlers({
         .open = {},
         .message =
@@ -91,7 +122,7 @@ int main() {
                 s.last_size = frame.size();
                 BOOST_TEST_EQ(s.messages, 1);
                 BOOST_TEST_EQ(s.last_size, 3U);
-                BOOST_TEST_LT(s.memory.largest, std::size_t{1024});
+                BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
                 val::global("clearTimeout")(s.deadline);
                 set_exit_code(boost::report_errors());
             },

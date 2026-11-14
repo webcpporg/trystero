@@ -12,12 +12,13 @@
 #include <webcpp/trystero/browser/js.hpp>
 #include <webcpp/trystero/handler.hpp>
 
+#include <webcpp/asio/bind_allocator.hpp>       // lint-world: binds an allocator only
+#include <webcpp/asio/execution.hpp>            // lint-world: posts and polls, never blocks
+#include <webcpp/asio/executor_work_guard.hpp>  // lint-world: posts and polls, never blocks
+#include <webcpp/asio/io_context.hpp>           // lint-world: posts and polls, never blocks
+#include <webcpp/asio/post.hpp>                 // lint-world: posts and polls, never blocks
+
 #include <emscripten/val.h>
-#include <boost/asio/bind_allocator.hpp>       // lint-world: binds an allocator only
-#include <boost/asio/execution.hpp>            // lint-world: posts and polls, never blocks
-#include <boost/asio/executor_work_guard.hpp>  // lint-world: posts and polls, never blocks
-#include <boost/asio/io_context.hpp>           // lint-world: posts and polls, never blocks
-#include <boost/asio/post.hpp>                 // lint-world: posts and polls, never blocks
 
 #include <cstddef>
 #include <cstdint>
@@ -40,7 +41,7 @@ class event_loop;
  *
  * Giving it work while no JavaScript event is being handled schedules one `poll()` in a microtask,
  * so posted work runs without a polling loop and without the application calling `poll()`. A room
- * in the browser is constructed with it, through `boost::asio::any_io_executor`.
+ * in the browser is constructed with it, through `webcpp::asio::any_io_executor`.
  *
  * @see "The browser backend", in the guide.
  */
@@ -58,16 +59,16 @@ public:
      *
      * @return The loop's io_context.
      */
-    [[nodiscard]] boost::asio::execution_context& query(
-        boost::asio::execution::context_t /*context*/) const noexcept;
+    [[nodiscard]] webcpp::asio::execution_context& query(
+        webcpp::asio::execution::context_t /*context*/) const noexcept;
 
     /**
      * The blocking property, which Asio queries: `execute` never runs the work inside the call.
      *
      * @return `blocking.never`.
      */
-    static constexpr boost::asio::execution::blocking_t::never_t query(
-        boost::asio::execution::blocking_t /*blocking*/) noexcept {
+    static constexpr webcpp::asio::execution::blocking_t::never_t query(
+        webcpp::asio::execution::blocking_t /*blocking*/) noexcept {
         return {};
     }
 
@@ -77,7 +78,7 @@ public:
      * @return A copy of this executor.
      */
     [[nodiscard]] executor require(
-        boost::asio::execution::blocking_t::never_t /*never*/) const noexcept {
+        webcpp::asio::execution::blocking_t::never_t /*never*/) const noexcept {
         return executor(*loop_);
     }
 
@@ -145,10 +146,10 @@ public:
      * @param memory The resource the entries of the registrations are allocated in; it must
      * outlive the loop.
      */
-    explicit event_loop(boost::asio::io_context& io,
+    explicit event_loop(webcpp::asio::io_context& io,
                         std::pmr::memory_resource* memory = std::pmr::get_default_resource())
         : io_(io),
-          work_(boost::asio::make_work_guard(io)),
+          work_(webcpp::asio::make_work_guard(io)),
           token_(emscripten::val::object()),
           decoder_(emscripten::val::global("TextDecoder").new_()),
           encoder_(emscripten::val::global("TextEncoder").new_()),
@@ -228,7 +229,7 @@ public:
      *
      * @return The io_context it was constructed with.
      */
-    boost::asio::io_context& io() noexcept { return io_; }
+    webcpp::asio::io_context& io() noexcept { return io_; }
 
     /**
      * An executor of this loop, what a room in the browser is constructed with.
@@ -325,11 +326,11 @@ public:
             } else if (const auto it = callbacks_.find(id); it != callbacks_.end() && depth_ > 1) {
                 // Delivered when it runs, by id: the registration may be gone by then, and its
                 // object with it. Ids are never reused.
-                boost::asio::post(io_, boost::asio::bind_allocator(
-                                           it->second->get_allocator(),
-                                           [this, id, slot, event = std::move(event)]() mutable {
-                                               deliver(id, slot, std::move(event));
-                                           }));
+                webcpp::asio::post(io_, webcpp::asio::bind_allocator(
+                                            it->second->get_allocator(),
+                                            [this, id, slot, event = std::move(event)]() mutable {
+                                                deliver(id, slot, std::move(event));
+                                            }));
             } else {
                 deliver(id, slot, std::move(event));
             }
@@ -390,8 +391,8 @@ private:
 
     static constexpr int poll_id = 0;
 
-    boost::asio::io_context& io_;
-    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_;
+    webcpp::asio::io_context& io_;
+    webcpp::asio::executor_work_guard<webcpp::asio::io_context::executor_type> work_;
     emscripten::val token_;
     emscripten::val decoder_;
     emscripten::val encoder_;
@@ -401,14 +402,14 @@ private:
     bool poll_scheduled_ = false;
 };
 
-inline boost::asio::execution_context& executor::query(
-    boost::asio::execution::context_t /*context*/) const noexcept {
+inline webcpp::asio::execution_context& executor::query(
+    webcpp::asio::execution::context_t /*context*/) const noexcept {
     return loop_->io();
 }
 
 template <class F>
 void executor::execute(F&& f) const {
-    boost::asio::post(loop_->io(), std::forward<F>(f));
+    webcpp::asio::post(loop_->io(), std::forward<F>(f));
     loop_->schedule_poll();
 }
 

@@ -41,15 +41,6 @@ emscripten::EM_VAL webcpp_trystero_js_try(emscripten::EM_VAL target, emscripten:
  */
 emscripten::EM_VAL webcpp_trystero_js_handler(emscripten::EM_VAL token, const void* loop, int id,
                                               int slot);
-
-/**
- * The page's census of its `RTCPeerConnection` objects, one for every program of the page, made on
- * the first call: `held`, the connections counted from their construction until the garbage
- * collector frees them, as Chromium counts them against its limit; `add(connection)`, which counts
- * one; and `onrelease`, a function of the new count called after each release, for a test. Without
- * `FinalizationRegistry` nothing is counted.
- */
-emscripten::EM_VAL webcpp_trystero_js_census();
 }
 
 namespace webcpp::trystero::browser::detail {

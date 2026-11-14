@@ -13,18 +13,18 @@
 #include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program
 
-#include <boost/asio/as_tuple.hpp>
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include <webcpp/asio/as_tuple.hpp>
+#include <webcpp/asio/co_spawn.hpp>
+#include <webcpp/asio/detached.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/use_awaitable.hpp>
 
 #include <cstdio>
 #include <iostream>
 #include <optional>
 #include <string>
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 // end::includes[]
 

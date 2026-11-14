@@ -27,11 +27,12 @@
 #include <webcpp/trystero/browser/event_loop.hpp>
 #include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>  // lint-world: posts handlers only
+
 #include <emscripten/em_asm.h>
 #include <emscripten/stack.h>
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>  // lint-world: posts handlers only
 #include <boost/core/lightweight_test.hpp>
 
 #include <malloc.h>
@@ -50,7 +51,7 @@ namespace {
 constexpr int escapes = 3000;
 
 struct state {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::browser::event_loop loop{io};
     val deadline = val::undefined();
     std::uintptr_t stack_before = 0;
@@ -106,7 +107,7 @@ void cpp_escapes_free_their_exceptions() {
             return;
         }
         s.heap_after = in_use;
-        boost::asio::post(s.loop.get_executor(), [] {
+        webcpp::asio::post(s.loop.get_executor(), [] {
             const auto& s = the_state();
             BOOST_TEST_EQ(s.heap_after, s.heap_before);
             BOOST_TEST_EQ(val::global("trysteroTestReported").as<int>(), cpp_escapes);
@@ -166,7 +167,7 @@ void nested_recovery() {
         BOOST_TEST_EQ(loop.depth(), 1);
         loop.recover(loop.depth());
         BOOST_TEST_EQ(loop.depth(), 1);
-        boost::asio::post(loop.get_executor(), [] {
+        webcpp::asio::post(loop.get_executor(), [] {
             BOOST_TEST_EQ(the_state().loop.depth(), 1);  // the poll that runs it
             after_nested_recovery();
         });
@@ -200,7 +201,7 @@ void many_escapes() {
         }
         s.stack_after = emscripten_stack_get_current();
         ++s.served_after;
-        boost::asio::post(s.loop.get_executor(), [] {
+        webcpp::asio::post(s.loop.get_executor(), [] {
             const auto& s = the_state();
             BOOST_TEST_EQ(s.served_after, 1);
             BOOST_TEST_EQ(s.stack_after, s.stack_before);
@@ -238,7 +239,7 @@ int main() {
     // An event whose callback posts work, then throws: JSON.parse of a text that is not JSON, as
     // the backend once did with a peer's candidate.
     after(0, [](int /*slot*/, const val& /*event*/) {
-        boost::asio::post(the_state().loop.get_executor(), many_escapes);
+        webcpp::asio::post(the_state().loop.get_executor(), many_escapes);
         val::global("JSON").call<val>("parse", val("not JSON at all"));
     });
     the_state().deadline = after(10'000, [](int /*slot*/, const val& /*event*/) {
