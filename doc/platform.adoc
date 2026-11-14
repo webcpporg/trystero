@@ -345,6 +345,16 @@ in either suspension variant).
   the `run` of `main` is suspended, an embind function returns a promise
   that never settles, and its second call aborts a debug build (measured
   with Emscripten 6.0.11).
+* A `page_call`'s handler is a handler of the run, and lets no JavaScript
+  error out, webcpp::asio's rule for every handler (webcpp::asio's guide, "a
+  JavaScript error out of a handler"): an error that leaves it leaves `run`
+  with it, and the program's run never resumes (measured with Emscripten
+  6.0.11 under node: the process ends with the error, in either suspension
+  variant). A page may pass any value, so the handler checks its type before
+  it converts it, with `isString()`, `isNumber()` or `typeOf()`, and reads a
+  field only of what is neither `null` nor `undefined`: embind's
+  `as<std::string>()` of a number throws a `BindingError`, and a field of
+  `undefined` a `TypeError`.
 
 So nothing runs while nothing happens, a handler runs as soon as the run
 family resumes after its event, and a turn of `max_handlers_per_turn`
@@ -452,16 +462,18 @@ include::{examples}/chat/chat.cpp[tag=state]
 ----
 
 The program joins the app and the room its user typed, and sets its
-handlers; a received message goes from its frame straight into a JavaScript
-string:
+handlers; it reads the page's form only once it knows it holds two strings,
+since its handler lets no JavaScript error out
+(<<trystero-platform-run>>), and a received message goes from its frame
+straight into a JavaScript string:
 
 [source]
 ----
 include::{examples}/chat/chat.cpp[tag=join]
 ----
 
-`send_message` shows the message at once, and reports a failure in the
-page's log:
+`send_message` ignores a value that is not a string, shows the message at
+once, and reports a failure in the page's log:
 
 [source]
 ----

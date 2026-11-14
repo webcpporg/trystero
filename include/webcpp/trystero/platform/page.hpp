@@ -80,8 +80,17 @@ inline emscripten::val js_string(std::string_view utf8) {
  * page_call is destroyed, or once its work is posted and the page_call destroyed before it runs,
  * reaches nothing.
  *
+ * `f` is a handler of the run, and lets no JavaScript error out, webcpp::asio's rule for every
+ * handler: an error that leaves `f` leaves `run` with it, and the program's run never resumes
+ * (measured with Emscripten 6.0.11 under node: the process ends with the error, in either
+ * suspension variant). A page may pass any value, so `f` checks its type before it converts it,
+ * with `isString()`, `isNumber()` or `typeOf()`, and reads a field only of what is neither null
+ * nor undefined: embind's `as<std::string>()` of a number throws a `BindingError`, and a field of
+ * undefined a `TypeError`.
+ *
  * @tparam F A callable of one `const emscripten::val&`, the value the page passed.
- * @see "The program runs its io_context", in the guide.
+ * @see "The program runs its io_context", in the guide, and webcpp::asio's guide, "A JavaScript
+ * error out of a handler".
  */
 template <class F>
 // The bridge indexes the call by its registration, a private base: its one owner is the call.
@@ -92,7 +101,7 @@ public:
      *
      * @param ex The executor `f` is posted to, an io_context's of webcpp::asio, which must outlive
      * the page_call or be destroyed first, which ends it.
-     * @param f What each call runs, on the executor.
+     * @param f What each call runs, on the executor; it lets no JavaScript error out.
      * @param memory The resource `f` and each posted call are allocated in.
      */
     page_call(webcpp::asio::any_io_executor ex, F f,
