@@ -17,6 +17,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -252,7 +253,7 @@ void a_frame_is_delivered_once_its_last_byte_drained() {
     // Each poll_one runs one drain step, the only handler queued, which posts the next.
     io.poll_one();
     BOOST_TEST_EQ(net.buffered(p.offerer_id), frame.size() - 1024);
-    for (int step = 1; step < 15; ++step) {
+    for (std::size_t step = 1; step < 15; ++step) {
         io.poll_one();
     }
     BOOST_TEST_EQ(net.buffered(p.offerer_id), 1024U);
@@ -358,7 +359,7 @@ void the_virtual_clock_moves_only_when_advanced() {
     memory_network net{io};
     net.virtual_clock = true;
     auto* m = std::pmr::get_default_resource();
-    std::vector<int> fired;
+    std::vector<std::uint32_t> fired;
     const auto t10 = net.make_timer(m);
     const auto t5 = net.make_timer(m);
     const auto cancelled = net.make_timer(m);
@@ -370,10 +371,10 @@ void the_virtual_clock_moves_only_when_advanced() {
     BOOST_TEST(fired.empty());
     BOOST_TEST_EQ(net.now_ms(), 0.0);
     net.advance(7s);
-    BOOST_TEST(fired == std::vector<int>{5});
+    BOOST_TEST(fired == std::vector<std::uint32_t>{5});
     BOOST_TEST_EQ(net.now_ms(), 7000.0);
     net.advance(3s);
-    BOOST_TEST((fired == std::vector<int>{5, 10}));
+    BOOST_TEST((fired == std::vector<std::uint32_t>{5, 10}));
     BOOST_TEST_EQ(net.now_ms(), 10000.0);
     // Two timers due at the same instant both fire, in the order they were started, not made.
     const auto made_first = net.make_timer(m);
@@ -381,7 +382,7 @@ void the_virtual_clock_moves_only_when_advanced() {
     made_second->start(2s, [&fired] { fired.push_back(21); });
     made_first->start(2s, [&fired] { fired.push_back(22); });
     net.advance(2s);
-    BOOST_TEST((fired == std::vector<int>{5, 10, 21, 22}));
+    BOOST_TEST((fired == std::vector<std::uint32_t>{5, 10, 21, 22}));
 }
 
 // The clock moves from the first advance, before any timer is made, and a timer made then starts

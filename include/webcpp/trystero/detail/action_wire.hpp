@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
@@ -362,7 +363,7 @@ private:
     // reports.
     struct waiting_inline {  // NOLINT(bugprone-exception-escape)
         incoming message;
-        double arrived_ms = 0;
+        time_point arrived{};
     };
 
     struct peer_in {
@@ -573,7 +574,7 @@ private:
         if (in.count() >= max_pending_per_peer) {
             return;
         }
-        in.waiting.push_back({.message = std::move(message), .arrived_ms = factory_.now_ms()});
+        in.waiting.push_back({.message = std::move(message), .arrived = steady_now(factory_)});
     }
 
     peer_in& incoming_for(std::string_view peer) {
@@ -697,14 +698,14 @@ private:
     /** Delivers inline frames whose action now has a receiver, and accepts the next transfer of
      * each idle peer. */
     void drain() {
-        const double now = factory_.now_ms();
+        const auto now = steady_now(factory_);
         std::pmr::vector<incoming> ready(memory_);
         for (auto& [peer, in] : incoming_) {
             std::pmr::deque<waiting_inline> still_waiting(memory_);
             for (auto& w : in.waiting) {
                 if (cb_.has_receiver(w.message.name())) {
                     ready.push_back(std::move(w.message));
-                } else if (now - w.arrived_ms < static_cast<double>(transfer_timeout.count())) {
+                } else if (now - w.arrived < transfer_timeout) {
                     still_waiting.push_back(std::move(w));
                 }
             }

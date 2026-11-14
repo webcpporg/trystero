@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
@@ -29,10 +30,10 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -179,7 +180,7 @@ public:
         if (n.connected) {
             return;
         }
-        n.last_ms = factory_.now_ms();
+        n.last_message = steady_now(factory_);
         if (message->is_announcement()) {
             on_announcement(relay, peer, n);
         } else if (!message->offer.empty()) {
@@ -230,8 +231,11 @@ private:
     static constexpr auto answering_ttl = std::chrono::milliseconds(23'333);
     static constexpr auto first_offer_retry = std::chrono::milliseconds(2'000);
     static constexpr auto later_offer_retry = std::chrono::milliseconds(4'800);
-    static constexpr int max_offer_retries = 2;
+    static constexpr std::uint32_t max_offer_retries = 2;
     static constexpr std::size_t max_pending_candidates = 128;
+    /** The least time between two counter-announcements to one peer on a relay, and between two
+     * replays of an answer on a relay: Trystero's second, for each. */
+    static constexpr auto per_peer_interval = std::chrono::milliseconds(1'000);
     /** The least time between two counter-announcements of the room on a relay: Trystero's
      * `announceIntervalMs`, the pace at which it announces. */
     static constexpr auto counter_announce_interval = std::chrono::milliseconds(5'333);
@@ -265,12 +269,12 @@ private:
               answer_messages(a),
               answer_relays(a),
               answer_candidates(a),
-              answer_replayed_ms(a),
-              counter_announced_ms(a) {}
+              answer_replayed(a),
+              counter_announced(a) {}
 
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
-        double last_ms = 0;
+        time_point last_message{};
         // Whether a signal of this negotiation that did not open was reported.
         bool failed_open_reported = false;
         // Whether an offer or an answer of this negotiation that the room had used before was
@@ -286,7 +290,7 @@ private:
             offer_candidates;  // plaintext, gathered before the offer went out
         std::shared_ptr<backend::timer> offer_expiry;
         std::pmr::map<std::size_t, std::shared_ptr<backend::timer>> offer_retry;
-        std::pmr::map<std::size_t, int> offer_retries;
+        std::pmr::map<std::size_t, std::uint32_t> offer_retries;
         // Our answer to their offer.
         side answer;
         std::pmr::string answered_offer_id;
@@ -297,10 +301,10 @@ private:
         std::pmr::set<std::size_t> answer_relays;
         std::pmr::vector<std::pmr::string>
             answer_candidates;  // plaintext, gathered before the answer went out
-        std::pmr::map<std::size_t, double> answer_replayed_ms;
+        std::pmr::map<std::size_t, time_point> answer_replayed;
         std::shared_ptr<backend::timer> answer_expiry;
         // Counter-announcements, per relay.
-        std::pmr::map<std::size_t, double> counter_announced_ms;
+        std::pmr::map<std::size_t, time_point> counter_announced;
     };
 
     pmr_allocator allocator() const { return {memory_}; }
@@ -337,7 +341,7 @@ private:
             }
             ++unconnected;
             if (!n.offer.pc && !n.answer.pc &&
-                (idle == peers_.end() || n.last_ms < idle->second.last_ms)) {
+                (idle == peers_.end() || n.last_message < idle->second.last_message)) {
                 idle = it;
             }
         }
@@ -372,7 +376,7 @@ private:
      * null beyond it, logged once per peer, or when the backend makes none, reported.
      */
     std::shared_ptr<backend::peer_connection> make_connection(std::string_view peer) {
-        if (!constructions_.take(factory_.now_ms())) {
+        if (!constructions_.take(steady_now(factory_))) {
             if (first_refusal(peer)) {
                 log_("signal", "refusing ", peer, ": ", max_connections_per_window,
                      " connections were made in the last ", offer_ttl.count(),
@@ -403,20 +407,19 @@ private:
             if (n.offer.pc) {
                 return;
             }
-            const double now = factory_.now_ms();
-            if (const auto it = n.counter_announced_ms.find(relay);
-                it != n.counter_announced_ms.end() && now - it->second < 1000) {
+            const auto now = steady_now(factory_);
+            if (const auto it = n.counter_announced.find(relay);
+                it != n.counter_announced.end() && now - it->second < per_peer_interval) {
                 return;
             }
             // Room-wide too: a flood of fresh ids below ours must not have the relay rate-limit
             // the room. A peer not asked offers on our next announcement instead.
-            if (const auto it = counter_announced_ms_.find(relay);
-                it != counter_announced_ms_.end() &&
-                now - it->second < static_cast<double>(counter_announce_interval.count())) {
+            if (const auto it = counter_announced_.find(relay);
+                it != counter_announced_.end() && now - it->second < counter_announce_interval) {
                 return;
             }
-            counter_announced_ms_[relay] = now;
-            n.counter_announced_ms[relay] = now;
+            counter_announced_[relay] = now;
+            n.counter_announced[relay] = now;
             log_("signal", "announcement from ", peer, ": their id is lower, asking them to offer");
             cb_.publish(relay, peer_topic(peer),
                         protocol::write_signal({.peer_id = self_id_}, {}, memory_));
@@ -612,7 +615,7 @@ private:
         n.answered_offer_id = offer_id;
         n.answered_offer = offer;
         n.answer_relays.insert(relay);
-        n.answer_replayed_ms[relay] = factory_.now_ms();
+        n.answer_replayed[relay] = steady_now(factory_);
         const auto pc = n.answer.pc;
         const auto weak = weak_from_this();
         pc->set_handlers({
@@ -663,13 +666,13 @@ private:
     /** The same offer again: Trystero replays its answer on that relay, at most once a second. */
     void replay_answer(std::size_t relay, std::string_view peer, std::string_view offer_id,
                        std::string_view offer, negotiation& n) {
-        const double now = factory_.now_ms();
-        const auto last = n.answer_replayed_ms.find(relay);
+        const auto now = steady_now(factory_);
+        const auto last = n.answer_replayed.find(relay);
         if (!n.answer.pc || n.answered_offer != offer || n.answered_offer_id != offer_id ||
-            (last != n.answer_replayed_ms.end() && now - last->second < 1000)) {
+            (last != n.answer_replayed.end() && now - last->second < per_peer_interval)) {
             return;
         }
-        n.answer_replayed_ms[relay] = now;
+        n.answer_replayed[relay] = now;
         n.answer_relays.insert(relay);
         const auto topic = peer_topic(peer);
         for (const auto& message : n.answer_messages) {
@@ -838,10 +841,11 @@ private:
         }
         log_("signal", "could not open the ", what, " from ", peer,
              ": another password, or forged in its name; ignored");
-        const double now = factory_.now_ms();
-        const auto interval = static_cast<double>(failed_open_report_interval.count());
-        if (unreported_failed_opens_ == 0 && now - failed_open_reported_ms_ >= interval) {
-            failed_open_reported_ms_ = now;
+        const auto now = steady_now(factory_);
+        if (unreported_failed_opens_ == 0 &&
+            (!failed_open_reported_ ||
+             now - *failed_open_reported_ >= failed_open_report_interval)) {
+            failed_open_reported_ = now;
             cb_.failed(peer, make_error_code(error::wrong_password), {});
             return;
         }
@@ -849,8 +853,11 @@ private:
             return;  // the report of the interval is already due
         }
         failed_open_report_ = factory_.make_timer(memory_);
-        const auto delay = std::chrono::milliseconds(
-            static_cast<long long>(std::max(0.0, failed_open_reported_ms_ + interval - now)));
+        // The interval runs from the last report, which there always is by now.
+        const auto due = failed_open_reported_.value_or(now) + failed_open_report_interval;
+        const auto delay =
+            std::max(std::chrono::milliseconds::zero(),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(due - now));
         failed_open_report_->start(delay, bind<void()>([weak = weak_from_this()] {
                                        if (const auto self = weak.lock()) {
                                            self->report_failed_opens();
@@ -864,11 +871,13 @@ private:
         if (closed_ || count == 0) {
             return;
         }
-        failed_open_reported_ms_ = factory_.now_ms();
+        failed_open_reported_ = steady_now(factory_);
         std::pmr::string what(memory_);
         protocol::json::append_integer(what, static_cast<std::int64_t>(count));
         what += " more peers sent signals that did not open with the room key, in the last ";
-        protocol::json::append_integer(what, failed_open_report_interval.count() / 1000);
+        protocol::json::append_integer(
+            what,
+            std::chrono::duration_cast<std::chrono::seconds>(failed_open_report_interval).count());
         what += " s: another password, or forged in their names";
         cb_.failed({}, make_error_code(error::wrong_password), what);
     }
@@ -1121,7 +1130,7 @@ private:
         n.answer_messages.clear();
         n.answer_relays.clear();
         n.answer_candidates.clear();
-        n.answer_replayed_ms.clear();
+        n.answer_replayed.clear();
         n.answer_expiry.reset();
     }
 
@@ -1139,13 +1148,13 @@ private:
     std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
     std::pmr::deque<std::pmr::string> refused_{memory_};
     construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
-    std::pmr::map<std::size_t, double> counter_announced_ms_{memory_};  // per relay
+    std::pmr::map<std::size_t, time_point> counter_announced_{memory_};  // per relay
     replay_cache used_{remembered_descriptions, memory_};
     std::size_t failed_opens_ = 0;
-    // Negotiations whose failed open waits for the next report, when it was last made, and the
-    // timer of the next.
+    // Negotiations whose failed open waits for the next report, when it was last made (never
+    // yet, when empty), and the timer of the next.
     std::size_t unreported_failed_opens_ = 0;
-    double failed_open_reported_ms_ = -std::numeric_limits<double>::infinity();
+    std::optional<time_point> failed_open_reported_;
     std::shared_ptr<backend::timer> failed_open_report_;
     std::size_t replayed_ = 0;
     bool closed_ = false;

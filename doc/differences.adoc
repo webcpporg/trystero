@@ -106,6 +106,10 @@ These features of Trystero are not ported, each for its reason:
 
 | Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
 
+| A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is NIP-01's, 64 lowercase hexadecimal digits; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id of another form would let a relay fill the room's resource with the ids kept
+
+| The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
+
 |===
 
 *`on_peer_join` does not replay the joined peers.* Trystero calls a newly
