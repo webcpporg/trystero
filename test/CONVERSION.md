@@ -42,6 +42,13 @@ run as the build asks and once more without them (`native_peer_connection_no_exc
 (`webrtc::peer_connection`, `webrtc::data_channel`) in place of `native::peer_connection` and
 `native::data_channel`, which are gone, with each old assertion kept.
 
+Since one platform backend replaced `native::backend` and `browser::backend` (2026-11-14), the
+four native programs are `platform_sealer_test.cpp`, `platform_websocket_test.cpp`,
+`platform_peer_connection_test.cpp` and `platform_room_test.cpp`, the targets `platform_sealer`,
+`platform_websocket`, `platform_peer_connection` and `platform_room`. The sealer's runs on both
+targets, its steps chained through the `io_context` rather than one `poll()` each, with the cases
+of the browser's sealer test folded in. The tables below keep the names of the conversion.
+
 ## How each form was converted
 
 | Old | New | Why |

@@ -5,7 +5,7 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the shape of a page's program, under node: main runs the io_context from the start, under
-// a work guard, and the page calls into C++ through `browser::page_call`, functions of
+// a work guard, and the page calls into C++ through `platform::page_call`, functions of
 // webcpp::asio's bridge that only post to it (nothing runs the io_context from a JavaScript event).
 //
 // - A page with no room yet keeps running: nothing but the work guard holds the io_context until
@@ -26,7 +26,7 @@
 #include "support/rooms.hpp"
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/page.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/asio/browser/bridge.hpp>
@@ -125,14 +125,14 @@ void send(page& p, const val& text) {
 
 int main() {
     page p;
-    const trystero::browser::page_call join_call(p.f.io.get_executor(),
-                                                 [&p](const val& /*argument*/) { join(p); });
-    const trystero::browser::page_call send_call(p.f.io.get_executor(),
-                                                 [&p](const val& text) { send(p, text); });
+    const trystero::platform::page_call join_call(p.f.io.get_executor(),
+                                                  [&p](const val& /*argument*/) { join(p); });
+    const trystero::platform::page_call send_call(p.f.io.get_executor(),
+                                                  [&p](const val& text) { send(p, text); });
     {
         // A call of a page_call destroyed before its work runs reaches nothing.
-        const trystero::browser::page_call gone(p.f.io.get_executor(),
-                                                [&p](const val& /*argument*/) { ++p.late; });
+        const trystero::platform::page_call gone(p.f.io.get_executor(),
+                                                 [&p](const val& /*argument*/) { ++p.late; });
         gone.function()(val(1));
     }
     // clang-format off

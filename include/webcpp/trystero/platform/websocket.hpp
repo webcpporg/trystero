@@ -4,8 +4,8 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-#ifndef WEBCPP_TRYSTERO_NATIVE_WEBSOCKET_HPP
-#define WEBCPP_TRYSTERO_NATIVE_WEBSOCKET_HPP
+#ifndef WEBCPP_TRYSTERO_PLATFORM_WEBSOCKET_HPP
+#define WEBCPP_TRYSTERO_PLATFORM_WEBSOCKET_HPP
 
 #include <webcpp/trystero/config.hpp>
 
@@ -51,18 +51,21 @@
 #include <type_traits>
 #include <utility>
 
-namespace webcpp::trystero::native {
+namespace webcpp::trystero::platform {
 
 /**
- * What a native WebSocket tolerates of a relay that stops reading or answering.
+ * What a relay's WebSocket tolerates of a relay that stops reading or answering.
  *
- * @see "The native backend", in the guide.
+ * @see "The platform backend", in the guide.
  */
 struct websocket_limits {
     /**
      * The most bytes of text queued to write: a relay that stops reading lets them pile up, and a
      * text beyond this drops the connection, which reports a close, so that the room reconnects
      * with its backoff.
+     *
+     * It bounds the session's own queue on both targets, and in a page also what the page's
+     * `WebSocket` holds unsent, its `bufferedAmount`, through webcpp::beast's `queue_limits::send`.
      */
     std::size_t max_queued_bytes = protocol::max_queued_relay_bytes;
 
@@ -250,10 +253,11 @@ inline std::optional<url_parts> parse_url(
 }
 
 /**
- * One WebSocket connection over webcpp::beast, composed of Asio operations on the room's executor,
- * each a callback that holds the session until it completes: resolve, connect, TLS for `wss`, the
- * handshake, then a read loop handing each message to the handler as a view of the read buffer.
- * Writes are queued, one in flight at a time, as Beast requires.
+ * One WebSocket connection over webcpp::beast, on both targets, composed of Asio operations on the
+ * room's executor, each a callback that holds the session until it completes: resolve, connect, TLS
+ * for `wss`, the handshake, then a read loop handing each message to the handler as a view of the
+ * read buffer. Writes are queued, one in flight at a time, as Beast requires; a write that fails
+ * ends the connection, which reports its close once.
  *
  * Tip: every operation's handler carries the room's allocator, so that what Asio and Beast
  * allocate for it, and the read buffer, are in the room's resource beside the session, its
@@ -420,7 +424,7 @@ private:
             tls.set_verify_callback(
                 webcpp::asio::ssl::host_name_verification(std::string(url_.host)));
 #endif
-            // In the browser the page's WebSocket sends the name and verifies the certificate.
+            // In a page its WebSocket sends the name and verifies the certificate.
             ws_.next_layer().async_handshake(
                 webcpp::asio::ssl::stream_base::client,
                 bound([self = this->shared_from_this()](const boost::system::error_code& error) {
@@ -449,6 +453,14 @@ private:
 #endif
         // A page's WebSocket cannot ping, and its stream refuses keep-alive pings: no idle timeout.
         ws_.set_option(timeouts);
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        // The page's WebSocket writes at once: what a relay does not read piles up in its
+        // bufferedAmount, which the stream bounds as the session bounds its queue, and closes past.
+        ws_.set_option(webcpp::beast::websocket::queue_limits{
+            .send = limits_.max_queued_bytes,
+            .receive = webcpp::beast::websocket::queue_limits{}.receive,
+        });
+#endif
         ws_.async_handshake(
             url_.handshake_host, url_.target,
             bound([self = this->shared_from_this()](const boost::system::error_code& ec) {
@@ -485,7 +497,7 @@ private:
 
     // NOLINTNEXTLINE(misc-no-recursion)
     void on_read(const boost::system::error_code& ec, std::size_t size) {
-        if (ec) {
+        if (ec || ended_) {  // a failed write ended it: nothing is reported after its close
             end();
             return;
         }
@@ -521,12 +533,27 @@ private:
         auto handler = [self = this->shared_from_this()](  // NOLINT(misc-no-recursion)
                            const boost::system::error_code& ec, std::size_t) {
             if (ec) {
-                self->writing_ = false;
+                self->fail();
                 return;
             }
             self->write_next();
         };
         ws_.async_write(webcpp::asio::buffer(writing_text_), bound(std::move(handler)));
+    }
+
+    /**
+     * A write failed: the relay is unreachable, or, in a page, its `WebSocket` held more than the
+     * bound unsent, whose close event may never come. The connection is dropped and its close
+     * reported at once, without waiting for the read to fail; one already closing, whose writes
+     * fail as it closes, ends as its read does.
+     */
+    void fail() {
+        writing_ = false;
+        if (std::exchange(closing_, true)) {
+            return;
+        }
+        webcpp::beast::get_lowest_layer(ws_).close();
+        end();
     }
 
     void end() {
@@ -587,17 +614,19 @@ private:
 }  // namespace detail
 
 /**
- * Connects to a Nostr relay over webcpp::beast: `ws://` in the clear, `wss://` over TLS with `tls`.
+ * Connects to a Nostr relay over webcpp::beast, on both targets: `ws://` in the clear, `wss://`
+ * over TLS with `tls`; natively over Boost.Beast's own stream, in a page over its `WebSocket`.
  *
  * Writes are queued, one in flight at a time; a received message is handed over as a view of the
- * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection. A
- * relay that stops reading is dropped once the queue would pass `limits.max_queued_bytes`, and,
- * natively, one that stops answering once `limits.idle_timeout` passes with its keep-alive ping
- * unanswered; both report a close. The URL is read with Boost.URL: an IPv6 address in brackets, a
- * scheme in any case. A URL it cannot parse, one with userinfo or a fragment, and a `wss://` URL
- * without `tls`, report a close, as an unreachable relay does. Natively a `wss://` connection
- * names the host to the server (SNI) when it is a name, and checks the certificate against the
- * URL's host, a name or an address. It needs no exceptions.
+ * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection, a
+ * page's before it is copied into WebAssembly. A relay that stops reading is dropped once the
+ * queue, or a page's `bufferedAmount`, would pass `limits.max_queued_bytes`, and, natively, one
+ * that stops answering once `limits.idle_timeout` passes with its keep-alive ping unanswered; each
+ * reports one close. The URL is read with Boost.URL: an IPv6 address in brackets, a scheme in any
+ * case. A URL it cannot parse, one with userinfo or a fragment, and a `wss://` URL without `tls`,
+ * report a close, as an unreachable relay does. Natively a `wss://` connection names the host to
+ * the server (SNI) when it is a name, and checks the certificate against the URL's host, a name or
+ * an address; in a page the browser does both. It needs no exceptions.
  *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection and should verify
@@ -609,7 +638,7 @@ private:
  * are theirs.
  * @param limits What it tolerates of a relay that stops reading or answering.
  * @return The WebSocket; destroying it drops the connection without reporting it.
- * @see "The native backend", in the guide.
+ * @see "The platform backend", in the guide.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(
     const webcpp::asio::any_io_executor& ex, webcpp::asio::ssl::context* tls, std::string_view url,
@@ -640,6 +669,6 @@ inline std::shared_ptr<backend::websocket> connect_websocket(
     return std::allocate_shared<detail::websocket_handle<false>>(allocator, session);
 }
 
-}  // namespace webcpp::trystero::native
+}  // namespace webcpp::trystero::platform
 
 #endif

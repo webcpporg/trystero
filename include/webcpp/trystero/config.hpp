@@ -24,11 +24,12 @@
  in a build that has them.
 
  trystero raises no exception of its own: every operation that can fail
- completes with an error code, and every part of it, both backends included,
- works with exceptions and without them. Its WebRTC is webcpp::webrtc's, which
- natively calls libdatachannel's C API, where no exception crosses.
+ completes with an error code, and every part of it, the platform backend
+ included, works with exceptions and without them. Its WebRTC is
+ webcpp::webrtc's, which natively calls libdatachannel's C API, where no
+ exception crosses.
 
- @see "The native backend", in the guide.
+ @see "The platform backend", in the guide.
 */
 #define WEBCPP_TRYSTERO_NO_EXCEPTIONS
 #undef WEBCPP_TRYSTERO_NO_EXCEPTIONS
