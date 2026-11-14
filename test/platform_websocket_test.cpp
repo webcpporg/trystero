@@ -31,6 +31,7 @@
 
 #include <chrono>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -437,8 +438,17 @@ void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
 
 // A relay at an IPv6 literal, here 127.0.0.1 written as an IPv4-mapped IPv6 address so that the
 // test stays on the loopback where IPv6 has no address: its brackets must not reach the resolver.
+// The connection is a socket of IPv6's family, which a kernel without IPv6 cannot open (one with
+// IPv6 disabled by sysctl opens it, and reaches the mapped address): there the case does not apply.
 void a_relay_at_an_ipv6_address_opens() {
     asio::io_context io;
+    tcp::socket probe(io);
+    if (boost::system::error_code ec; probe.open(tcp::v6(), ec)) {
+        std::cout
+            << "a_relay_at_an_ipv6_address_opens: not applicable, no socket of IPv6's family ("
+            << ec.message() << ")\n";
+        return;
+    }
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
