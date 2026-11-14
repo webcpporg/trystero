@@ -10,34 +10,12 @@
 
 project /webcpp/trystero ;
 
-# Only libsecp256k1 is externally installed. Native WebRTC and OpenSSL are
-# pinned source dependencies, built together for the consumer's B2 variant.
+# libsecp256k1 (every room) is webcpp's build of it, /third_party//secp256k1:
+# v0.8.0 from the submodule third_party/libs/secp256k1, with the tables the
+# feature webcpp-secp256k1-tables chooses (small on emscripten, large natively;
+# CODING-GUIDELINES.md chapter 5). Native WebRTC and OpenSSL are pinned source
+# dependencies too, built together for the consumer's B2 variant.
 import errors ;
-import webcpp ;
-
-# tag::dependencies[]
-local secp256k1-root = [ webcpp.external trystero : libsecp256k1
-    : SECP256K1_ROOT : secp256k1-native : secp256k1.h : native ] ;
-local secp256k1-emscripten-root = [ webcpp.external trystero : libsecp256k1
-    : SECP256K1_EMSCRIPTEN_ROOT : secp256k1-emscripten : secp256k1.h : emscripten ] ;
-lib secp256k1 : : <name>secp256k1 <toolset>emscripten
-    <search>$(secp256k1-emscripten-root)/lib
-  : : <include>$(secp256k1-emscripten-root)/include ;
-lib secp256k1 : : <name>libsecp256k1 <toolset>msvc
-    <search>$(secp256k1-root)/lib
-  : : <include>$(secp256k1-root)/include <define>SECP256K1_STATIC ;
-lib secp256k1 : : <name>secp256k1 <search>$(secp256k1-root)/lib
-  : : <include>$(secp256k1-root)/include ;
-# Searched libraries are used only through usage requirements.
-explicit secp256k1 ;
-# end::dependencies[]
-
-# The dependencies of the rooms: libsecp256k1, the emscripten build of it on
-# emscripten. Checked only when a target that uses trystero is built.
-rule trystero-dependencies ( properties * )
-{
-    return [ webcpp.external-found trystero : libsecp256k1 : $(properties) ] ;
-}
 
 # The native backend's own dependencies, checked only when a target that
 # uses it is built.
@@ -55,9 +33,9 @@ rule native-dependencies ( properties * )
 # program then fails to link, undefined _embind_register_function), since
 # b2 takes only free features from usage requirements.
 # tag::trystero[]
-alias trystero : : <conditional>@trystero-dependencies
+alias trystero : :
   : : <include>include <library>/boost//headers <library>/webcpp//boost_json
-  <library>/webcpp/config//config <library>secp256k1
+  <library>/webcpp/config//config <library>/third_party//secp256k1
   <toolset>emscripten:<define>BOOST_ASIO_DISABLE_THREADS
   <toolset>emscripten:<linkflags>-lembind ;
 # end::trystero[]

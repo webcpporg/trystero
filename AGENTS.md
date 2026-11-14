@@ -51,21 +51,20 @@ holds only what is specific to trystero.
   alone in a call of their own, without it, so the lint analyses the timer,
   the sealer and the WebSockets without exceptions too. trystero raises
   nothing of its own; a raise would go through `boost::throw_exception`.
-- **The dependencies.** libsecp256k1 (every room) remains an external
-  installation, found through `webcpp.external` and `webcpp.external-found`
-  at `-sSECP256K1_ROOT=<dir>` or `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, then
-  `.local/secp256k1-native` or `.local/secp256k1-emscripten`. Native system
-  fallback outside Windows is allowed only for this dependency. A missing
-  installation leaves trystero out unless `webcpp-require-external=on`.
-  MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
-  The native backend instead names `/webcpp/third_party//libdatachannel`,
+- **The dependencies.** libsecp256k1 (every room) is webcpp's own build,
+  `/third_party//secp256k1` (v0.8.0, from `third_party/libs/secp256k1`), which
+  `/webcpp/trystero//trystero` names; its tables come from
+  `webcpp-secp256k1-tables` (see `doc/building.adoc`). Nothing is installed
+  outside the checkout, once the pinned submodules are initialised.
+  The native backend also names `/webcpp/third_party//libdatachannel`,
   which builds pinned libdatachannel 0.24.6, libjuice, usrsctp and libsrtp as
   separate static archives against `/webcpp/third_party//openssl` and its
   matching generated headers. These are the same OpenSSL target used by
   Asio and Beast, so a combined application has one provider. No
   `LIBDATACHANNEL_ROOT`, `OPENSSL_ROOT` or installed binary is consulted.
   Initialize their sources with `git submodule update --init --recursive
-  third_party/libs/libdatachannel third_party/libs/openssl`. Native builds
+  third_party/libs/libdatachannel third_party/libs/openssl
+  third_party/libs/secp256k1`. Native builds
   need CMake 3.21 or newer in addition to OpenSSL's Perl and Make/nmake.
   B2 forwards the configured compiler, C++ ABI, runtime and optimization
   flags, and isolates artifacts by their effective configuration. The

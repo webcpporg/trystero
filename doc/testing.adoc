@@ -262,9 +262,8 @@ and run the unit tests with GCC 14 and with clang 18 against
 `libstdc{plus}{plus}` in a Linux container, Ubuntu 24.04, with `docker run`
 and the network `none`, which leaves the loopback alone: every test passes,
 which shows that none reaches beyond the machine
-(<<trystero-invariant-6,guarantee 6>>). libsecp256k1 is installed before
-running the container. B2 builds the pinned OpenSSL, libdatachannel and
-nested source dependencies inside the container with the lane's compiler,
+(<<trystero-invariant-6,guarantee 6>>). B2 builds the pinned libsecp256k1, OpenSSL,
+libdatachannel and nested source dependencies inside the container with the lane's compiler,
 runtime and static link configuration. These builds need no network access.
 
 [#trystero-testing-provider]

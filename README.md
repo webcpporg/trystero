@@ -65,25 +65,19 @@ send a wrong room proof, reported by the lower id only.
 
 trystero is developed inside the webcpp superproject, as a Boost library is
 developed inside Boost. Its TLS and WebRTC dependencies are built from
-pinned sources; only libsecp256k1 needs an external installation:
+pinned sources, and so is libsecp256k1:
 
 | Library | Needed by | Found where |
 | --- | --- | --- |
-| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `-sSECP256K1_ROOT=<dir>` natively, `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else `.local/secp256k1-native` and `.local/secp256k1-emscripten` |
+| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `/third_party//secp256k1`, from `third_party/libs/secp256k1` |
 | libdatachannel 0.24.6 | the native backend | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
 | OpenSSL 3.5.9 | the native backend | `/webcpp/third_party//openssl`, also used by Asio and Beast |
 
-The libsecp256k1 `-s` option, on b2's command line, names a directory with the library's
-`include/` and `lib/`; the environment is never read. Without it, the library
-is looked for in the superproject's `.local/` directory the table names,
-where webcpp's CI installs it, and else, natively outside Windows, in
-`/usr/include` or `/usr/local/include`, where a system install is
-legitimate; a relative `-s` is read from b2's working directory. A `-s` that names a directory
-without the library's header stops the build, naming it. A library found
-nowhere leaves trystero out: its tests and examples are skipped, b2 says so
-once, naming the library and where it looked, and every other library
-builds; `webcpp-require-external=on`, which the CI gives, stops the build
-instead. With them found,
+The tables of libsecp256k1 follow `webcpp-secp256k1-tables`: `auto` is window 15 and
+comb 11x6 natively (a larger program, faster signing and verification) and window 2 and
+comb 2x5 on emscripten (the same signing, verification a little slower than window 4, a
+smaller program). A program that wants otherwise asks for `<webcpp-secp256k1-tables>small`
+or `large`. With the pinned source submodules initialized,
 
     b2 libs/trystero/test libs/trystero/example
     b2 toolset=emscripten libs/trystero/test libs/trystero/example
@@ -241,34 +235,13 @@ git clone https://github.com/emscripten-core/emsdk.git
 git clone --recurse-submodules https://github.com/webcpporg/webcpp.git
 ```
 
-### 5. Build libsecp256k1
-
-libsecp256k1 is built twice: natively, and with Emscripten for the browser.
-
-```sh
-git clone --branch v0.8.0 https://github.com/bitcoin-core/secp256k1.git
-options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-  -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_EXTRAKEYS=ON \
-  -DSECP256K1_ECMULT_WINDOW_SIZE=4 -DSECP256K1_ECMULT_GEN_KB=2 \
-  -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF \
-  -DSECP256K1_BUILD_BENCHMARK=OFF"
-
-cmake -S secp256k1 -B build-secp256k1-native $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-native
-cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
-
-./emsdk/upstream/emscripten/emcmake cmake -S secp256k1 -B build-secp256k1-emscripten $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-emscripten
-cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
-```
-
-### 6. Initialize the native dependencies
+### 5. Initialize the native dependencies
 
 The recursive checkout already includes pinned OpenSSL, libdatachannel,
 libjuice, usrsctp, plog and libsrtp sources. For an existing checkout:
 
 ```sh
-git -C webcpp submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel
+git -C webcpp submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel third_party/libs/secp256k1
 ```
 
 B2 builds them with the selected compiler, runtime and C++ ABI when the
@@ -279,7 +252,7 @@ combined application; no system OpenSSL or installed libdatachannel is used.
 Native Trystero targets declare `<threading>multi` because WebRTC runs
 worker threads. The supplied examples and tests declare it already.
 
-### 7. Tell b2 its compilers and Boost
+### 6. Tell b2 its compilers and Boost
 
 ```sh
 cat > user-config.jam <<EOF
@@ -290,7 +263,7 @@ using emscripten : : $PWD/emsdk/upstream/emscripten/em++
 EOF
 ```
 
-### 8. Build the native quick start and the chat page
+### 7. Build the native quick start and the chat page
 
 ```sh
 cd webcpp
@@ -304,7 +277,7 @@ The second command ends by printing the chat site's directory,
 `bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,
 which holds `index.html`, `chat-program.js` and `chat-program.wasm`.
 
-### 9. Run them
+### 8. Run them
 
 In a terminal, from `webcpp`, start the native quick start. It runs until you
 stop it with Ctrl-C:
@@ -334,11 +307,6 @@ Every browser tab that joins the same app and room joins the same chat.
 
 ### When something goes wrong
 
-- **b2 says trystero is left out**: a library is not in the directory of
-  `webcpp/.local/` it names; install it there as steps 5 and 6 do, or give
-  b2 `-s<VARIABLE>=<dir>` with the directory that `cmake --install` wrote.
-- **b2 stops naming a `-s`**: it names a directory without the library's
-  header; give the directory that `cmake --install` wrote.
 - **b2 prints `node: bad option: --experimental-wasm-threads`** when it
   configures the emscripten toolset: b2's toolset probes node with a flag that
   recent Node removed. It is harmless.

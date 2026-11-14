@@ -9,8 +9,7 @@
 
 trystero is header-only, and is developed inside the webcpp superproject, as
 a Boost library is developed inside Boost. Its native TLS and WebRTC
-dependencies are built from pinned sources. Only libsecp256k1 needs an
-external installation:
+dependencies, and libsecp256k1, are built from pinned sources:
 
 [cols="2,2,3",options="header"]
 |===
@@ -18,9 +17,7 @@ external installation:
 
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules
 | every room: it signs the Nostr events peers meet through
-| `-sSECP256K1_ROOT=<dir>` natively, else `.local/secp256k1-native`;
-  `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else
-  `.local/secp256k1-emscripten`
+| `/third_party//secp256k1`, built from `third_party/libs/secp256k1`
 
 | libdatachannel 0.24.6
 | the native backend
@@ -31,26 +28,12 @@ external installation:
 | `/webcpp/third_party//openssl`, shared by the Asio, Beast and Trystero build graphs
 |===
 
-The libsecp256k1 `-s` option names a directory with the library's `include/` and `lib/`, on b2's
-command line; the environment is never read, so that a variable a shell keeps
-from another day never replaces `.local/` without a word. Without it, the
-library is looked for in the directory of `.local/` that the table names,
-where webcpp's continuous integration installs it, when that directory holds
-the library's header, and else, natively outside Windows, in `/usr/include`
-or `/usr/local/include`, where a system install is legitimate. A relative
-`-s` is read from b2's working directory. A `-s` that names a directory without the library's
-header stops the build, naming it. A library found nowhere leaves trystero
-out: its tests and examples are skipped, the build says so once, naming the
-library and where it looked, and every other library builds; with
-`webcpp-require-external=on`, as the continuous integration builds, it stops
-the build instead. With MSVC, libsecp256k1 uses CMake's
-`libsecp256k1.lib`, linked statically with `SECP256K1_STATIC` defined.
-trystero's `build.jam` declares that external dependency so:
-
-[listing]
-----
-include::{library-root}/build.jam[tag=dependencies]
-----
+The tables of libsecp256k1 are chosen by the feature
+`webcpp-secp256k1-tables`. With `auto`, the default, natively they are window 15
+and comb 11x6: a larger program, and faster signing and verification. On emscripten
+they are window 2 and comb 2x5: the same signing, verification a little slower than
+window 4, and a smaller program. A program that wants otherwise asks for
+`<webcpp-secp256k1-tables>small` or `<webcpp-secp256k1-tables>large`.
 
 [#trystero-building-project]
 === In a b2 project
@@ -120,7 +103,7 @@ include::{webcpp-root}/tools/ci/emsdk.jam[tag=emsdk]
 include::{webcpp-root}/tools/ci/emsdk.jam[tag=emscripten]
 ----
 
-With it, libsecp256k1 installed and the pinned source submodules initialized, from the root of a webcpp checkout,
+With it and the pinned source submodules initialized, from the root of a webcpp checkout,
 these build the tests and the examples, natively and on emscripten:
 
 [source,bash]
@@ -132,35 +115,12 @@ b2 toolset=emscripten libs/trystero/test libs/trystero/example
 [#trystero-building-dependencies]
 === Preparing the dependencies
 
-libsecp256k1 is built twice: natively, and with Emscripten for the browser.
-Its small tables keep the browser's download small:
-
-[source,bash]
-----
-git clone --branch v0.8.0 https://github.com/bitcoin-core/secp256k1.git
-options="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
-  -DSECP256K1_ENABLE_MODULE_SCHNORRSIG=ON -DSECP256K1_ENABLE_MODULE_EXTRAKEYS=ON \
-  -DSECP256K1_ECMULT_WINDOW_SIZE=4 -DSECP256K1_ECMULT_GEN_KB=2 \
-  -DSECP256K1_BUILD_TESTS=OFF -DSECP256K1_BUILD_EXHAUSTIVE_TESTS=OFF \
-  -DSECP256K1_BUILD_BENCHMARK=OFF"
-
-cmake -S secp256k1 -B build-secp256k1-native $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-native
-cmake --build build-secp256k1-native && cmake --install build-secp256k1-native
-
-emcmake cmake -S secp256k1 -B build-secp256k1-emscripten $options \
-  -DCMAKE_INSTALL_PREFIX=$PWD/webcpp/.local/secp256k1-emscripten
-cmake --build build-secp256k1-emscripten && cmake --install build-secp256k1-emscripten
-----
-
-where `webcpp` is the checkout of the superproject: each is installed in the
-directory of `.local/` where the build looks for it.
-
 Initialize the native dependencies from the superproject root:
 
 [source,bash]
 ----
-git submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel
+git submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel \
+  third_party/libs/secp256k1
 ----
 
 Install CMake 3.21 or newer, Perl and Make (native Windows Perl and nmake
