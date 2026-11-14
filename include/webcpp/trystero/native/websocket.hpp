@@ -109,26 +109,23 @@ inline boost::system::error_code openssl_error() {
  */
 inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
 #ifdef WEBCPP_TARGET_NATIVE
-    SSL_CTX* const raw = SSL_CTX_new(TLS_client_method());
-    if (raw == nullptr) {
+    std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> raw(SSL_CTX_new(TLS_client_method()),
+                                                          &SSL_CTX_free);
+    if (!raw) {
+        return detail::openssl_error();
+    }
+    if (SSL_CTX_set_min_proto_version(raw.get(), TLS1_2_VERSION) != 1) {
+        return detail::openssl_error();
+    }
+    SSL_CTX_set_options(raw.get(), SSL_OP_NO_COMPRESSION);
+    SSL_CTX_set_verify(raw.get(), SSL_VERIFY_PEER, nullptr);
+    // The system's certificate authorities: the files of OpenSSL's default verify paths, read as
+    // Asio's set_default_verify_paths(ec) reads them, which also returns a copy of its error.
+    if (SSL_CTX_set_default_verify_paths(raw.get()) != 1) {  // lint-world: the system's authorities
         return detail::openssl_error();
     }
     // The context owns the handle from here, and throws only for a null one.
-    webcpp::asio::ssl::context context(raw);
-    if (SSL_CTX_set_min_proto_version(raw, TLS1_2_VERSION) != 1) {
-        return detail::openssl_error();
-    }
-    SSL_CTX_set_options(raw, SSL_OP_NO_COMPRESSION);
-    boost::system::error_code ec;
-    context.set_default_verify_paths(ec);  // lint-world: the system's certificate authorities
-    if (ec) {
-        return ec;
-    }
-    context.set_verify_mode(webcpp::asio::ssl::verify_peer, ec);
-    if (ec) {
-        return ec;
-    }
-    return context;
+    return webcpp::asio::ssl::context(raw.release());
 #else
     webcpp::asio::ssl::context context(webcpp::asio::ssl::context::tls_client);
     boost::system::error_code ec;
@@ -470,13 +467,19 @@ private:
         read();
     }
 
-    void read() {
-        ws_.async_read(buffer_, bound([self = this->shared_from_this()](
-                                          const boost::system::error_code& ec, std::size_t size) {
-                           self->on_read(ec, size);
-                       }));
+    // A loop of asynchronous operations, not a recursion: each handler runs from the executor once
+    // the call that started its operation has returned, so the stack never grows. Hence the
+    // exemptions from misc-no-recursion of read, its handler and on_read, and of write_next and
+    // its handler, the cycles of the read loop and of the writes.
+    void read() {                                          // NOLINT(misc-no-recursion)
+        auto handler = [self = this->shared_from_this()](  // NOLINT(misc-no-recursion)
+                           const boost::system::error_code& ec, std::size_t size) {
+            self->on_read(ec, size);
+        };
+        ws_.async_read(buffer_, bound(std::move(handler)));
     }
 
+    // NOLINTNEXTLINE(misc-no-recursion)
     void on_read(const boost::system::error_code& ec, std::size_t size) {
         if (ec) {
             end();
@@ -500,9 +503,10 @@ private:
      *
      * Tip: the connection can end while a write is in flight, and `end` then clears the queue; the
      * text being written is no longer in it, so the write reads a text the session owns, and its
-     * completion touches only that text.
+     * completion touches only that text. Its handler calls it again from the executor, a loop and
+     * not a recursion, as the reads' (`read`), hence its exemption from misc-no-recursion.
      */
-    void write_next() {
+    void write_next() {  // NOLINT(misc-no-recursion)
         if (queue_.empty() || !open_ || ended_) {
             writing_ = false;
             return;
@@ -510,15 +514,15 @@ private:
         writing_text_ = std::move(queue_.front());
         queue_.pop_front();
         queued_bytes_ -= writing_text_.size();
-        ws_.async_write(webcpp::asio::buffer(writing_text_),
-                        bound([self = this->shared_from_this()](const boost::system::error_code& ec,
-                                                                std::size_t) {
-                            if (ec) {
-                                self->writing_ = false;
-                                return;
-                            }
-                            self->write_next();
-                        }));
+        auto handler = [self = this->shared_from_this()](  // NOLINT(misc-no-recursion)
+                           const boost::system::error_code& ec, std::size_t) {
+            if (ec) {
+                self->writing_ = false;
+                return;
+            }
+            self->write_next();
+        };
+        ws_.async_write(webcpp::asio::buffer(writing_text_), bound(std::move(handler)));
     }
 
     void end() {

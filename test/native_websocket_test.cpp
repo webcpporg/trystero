@@ -151,10 +151,10 @@ struct tls_echo_server {
         : acceptor(io, {asio::ip::make_address("127.0.0.1"), 0}),
           context(asio::ssl::context::tls_server) {
         boost::system::error_code ec;
-        context.use_certificate_chain(asio::buffer(relay_certificate), ec);
-        webcpp::test::require(BOOST_TEST(!ec));
-        context.use_private_key(asio::buffer(relay_key), asio::ssl::context::pem, ec);
-        webcpp::test::require(BOOST_TEST(!ec));
+        webcpp::test::require(
+            BOOST_TEST(!context.use_certificate_chain(asio::buffer(relay_certificate), ec)));
+        webcpp::test::require(BOOST_TEST(
+            !context.use_private_key(asio::buffer(relay_key), asio::ssl::context::pem, ec)));
         // Called for every client hello, with the name the client sent or none.
         SSL_CTX_set_tlsext_servername_callback(context.native_handle(), &record_server_name);
         SSL_CTX_set_tlsext_servername_arg(context.native_handle(), this);
@@ -207,8 +207,9 @@ struct tls_echo_server {
 
     tcp::acceptor acceptor;
     asio::ssl::context context;
-    std::vector<std::string> server_names;
-    int failed_handshakes = 0;
+    // Written by the server's own callbacks, also while a test holds the server const.
+    mutable std::vector<std::string> server_names;
+    mutable int failed_handshakes = 0;
 };
 
 /** What a hostile relay does once it reads a client's first message. */
@@ -537,7 +538,7 @@ void a_relay_of_an_authority_not_trusted_closes_without_opening() {
 void a_backend_reaches_relays_with_the_tls_context_it_is_given() {
     asio::io_context io;
     const echo_server plain(io);
-    tls_echo_server secure(io);
+    const tls_echo_server secure(io);
     {
         trystero::native::backend backend(io.get_executor(),
                                           webcpp::asio::make_tls_client_context(test_authority));
