@@ -54,9 +54,9 @@ Each backend is a header of its own:
 
 | `<webcpp/trystero/browser/backend.hpp>`
 | emscripten
-| the page's `WebSocket`, `setTimeout` and `crypto.subtle`, through embind,
-  and webcpp::webrtc over the page's `RTCPeerConnection` and
-  `RTCDataChannel` (<<trystero-browser>>)
+| the page's `WebSocket` and `crypto.subtle`, through webcpp::asio's bridge,
+  webcpp::asio's timers, and webcpp::webrtc over the page's
+  `RTCPeerConnection` and `RTCDataChannel` (<<trystero-browser>>)
 
 | `<webcpp/trystero/native/backend.hpp>`
 | native
@@ -79,9 +79,10 @@ namespace `webcpp::trystero`.
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
   events: every room needs it.
-* In the browser: Emscripten 6.0.11, the version webcpp pins, and a page
+* In the browser: Emscripten 6.0.11, the version webcpp pins, a page
   served from a secure context (https, or http on `localhost`), where
-  `crypto.subtle` exists.
+  `crypto.subtle` exists, and a program whose `main` runs its `io_context`
+  (<<trystero-browser-run>>).
 * Natively:
   https://github.com/paullouisageneau/libdatachannel[libdatachannel] 0.24.6,
   through webcpp::webrtc, and OpenSSL 3.

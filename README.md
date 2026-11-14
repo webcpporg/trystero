@@ -11,7 +11,7 @@ A room runs on two targets, through a backend of each:
 
 | Backend | Header | Target | Built on |
 | --- | --- | --- | --- |
-| the browser's | `<webcpp/trystero/browser/backend.hpp>` | emscripten | the page's `WebSocket` and `crypto.subtle`, through embind, and webcpp::webrtc over its `RTCPeerConnection` |
+| the browser's | `<webcpp/trystero/browser/backend.hpp>` | emscripten | the page's `WebSocket` and `crypto.subtle`, through webcpp::asio's bridge, webcpp::asio's timers, and webcpp::webrtc over its `RTCPeerConnection` |
 | the native one | `<webcpp/trystero/native/backend.hpp>` | native | webcpp::webrtc over libdatachannel for WebRTC, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM |
 
 `<webcpp/trystero.hpp>` is the rooms themselves, which build on both targets
@@ -19,8 +19,11 @@ and include neither backend. Both backends' WebRTC is
 [webcpp::webrtc](https://github.com/webcpporg/webrtc)'s, the same peer
 connection and data channel on both targets, and trystero's Asio is
 [webcpp::asio](https://github.com/webcpporg/asio), Boost.Asio itself
-natively. Every name is in the namespace `webcpp::trystero`. Messages,
-binary data and pings are ported; audio and video tracks are not yet.
+natively: a program runs its `io_context` from `main` on both targets, in
+the browser under a work guard, where `run` suspends into the page's event
+loop and the page's calls into C++ only post to it. Every name is in the
+namespace `webcpp::trystero`. Messages, binary data and pings are ported;
+audio and video tracks are not yet.
 
 trystero raises no exception of its own: an operation that can fail completes
 with an error code. Every part of it, both backends included, compiles and
@@ -156,7 +159,8 @@ int main() {
 }
 ```
 
-The browser quick start's app and the room it joins, which a page keeps alive as long as the tab:
+The browser quick start's app and the room it joins, which its `main` keeps alive as long as the
+tab, running the `io_context` as a native program does:
 
 <!-- include::example/quick_start.cpp[tag=application] -->
 ```cpp
@@ -167,12 +171,11 @@ struct lobby {
     trystero::action<std::string> echo = room.make_action<std::string>("echo");
 };
 
-/** What the page keeps alive: event loop, backend, app, and the room it joined. */
+/** What the page keeps alive: its io_context, the backend, the app, and the room it joined. */
 struct application {
     asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
-    trystero::app app{loop.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
+    trystero::browser::backend backend{io.get_executor()};
+    trystero::app app{io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
     std::optional<lobby> joined;
 
     /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses

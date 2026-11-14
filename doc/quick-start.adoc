@@ -17,12 +17,11 @@ both. <<trystero-building-examples>> builds and runs them.
 [#trystero-quick-start-browser]
 === In the browser
 
-A browser program keeps five things alive for as long as its page: an
-`io_context`, the `browser::event_loop` that drives it from the page's
-JavaScript events, the `browser::backend` that implements the platform over
-the browser's APIs, the app that owns its identity and shared connections,
-and the room joined through that app. Actions are made from the room by name and
-payload type:
+A browser program keeps four things alive for as long as its page: an
+`io_context`, the `browser::backend` that implements the platform over the
+browser's APIs on the executor of that `io_context`, the app that owns its
+identity and shared connections, and the room joined through that app.
+Actions are made from the room by name and payload type:
 
 [source]
 ----
@@ -31,13 +30,9 @@ include::{examples}/quick_start.cpp[tag=includes]
 include::{examples}/quick_start.cpp[tag=application]
 ----
 
-`<webcpp/trystero/browser/src.hpp>` is included in exactly one source file
-of the program: it defines the functions the page calls into the library
-with.
-
 Handlers are set once the application exists. This program greets every peer
-that completes the handshake, prints every `chat` message, and starts a
-coroutine that answers the `echo` action:
+that completes the handshake, prints every `chat` message, starts a
+coroutine that answers the `echo` action, and runs the `io_context`:
 
 [source]
 ----
@@ -53,17 +48,20 @@ leaving the room ends the loop instead of throwing:
 include::{examples}/quick_start.cpp[tag=coroutine]
 ----
 
-`main` returns at once. Nothing blocks in a browser: every JavaScript event
-that reaches the library runs its handlers and then whatever became ready on
-the `io_context` (<<trystero-browser>>).
+`main` runs the `io_context` for as long as the page lives, as a native
+program does, under a work guard, since a page that waits for its peers may
+have no work of its own. Nothing blocks the browser: whenever nothing is
+ready, `run` suspends into the browser's event loop, and every JavaScript
+event that reaches the library is posted to the `io_context`, whose handlers
+run when `run` resumes (<<trystero-browser>>).
 
 [#trystero-quick-start-native]
 === Natively
 
 The same app and its joined room, natively, whole: a program that greets every peer that joins
 and prints what it receives on `chat`. A native program runs its
-`io_context` itself, since there is no event loop of a page to drive it, and
-webcpp::webrtc posts what libdatachannel's threads report to it:
+`io_context` as the browser's does, and webcpp::webrtc posts what
+libdatachannel's threads report to it:
 
 [source]
 ----
