@@ -372,5 +372,193 @@
             "01004032653466303963373734303634316634643332333364646431656530636435346162613165376664633639653862336532646466636465643838626163643364020063686174",
             "0200004032653466303963373734303634316634643332333364646431656530636435346162613165376664633639653862336532646466636465643838626163643364"
         ]
+    },
+    "event_messages": {
+        "secret_key": "ea25be8deb88b3e137d8e64800a8f1f323fdf2a5ec32e8d5f28fc5bafad693df",
+        "aux": "0b2845627f9cb9d6f3102d4a6784a1bedbf815324f6c89a6c3e0fd1a3754718e",
+        "created_at": 1759700000,
+        "events": [
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f",
+                "id": "1a1d25f95e3d191c5013f25147ae177218b97ace92b83429191abe55eb0c396b",
+                "message": "[\"EVENT\",{\"kind\":22890,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"1a1d25f95e3d191c5013f25147ae177218b97ace92b83429191abe55eb0c396b\",\"sig\":\"f20743fac20bca48ec3d3e5545188fcf392cf719607a52e5ab4a42978d42036c68bafec56f1727484c1c2232c55ec170db5dab795edf776ed56cb2ec1ba09d9e\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "quote \" backslash \\ both \\\" solidus / space   tilde ~",
+                "id": "5389620285f316864588a74ab8b06f8d7bf0cf6b3536ad8b0fb5e3bfb8b41bc6",
+                "message": "[\"EVENT\",{\"kind\":22890,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"quote \\\" backslash \\\\ both \\\\\\\" solidus / space   tilde ~\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"5389620285f316864588a74ab8b06f8d7bf0cf6b3536ad8b0fb5e3bfb8b41bc6\",\"sig\":\"b57c6506bbc141d819181a6af8c52820cd058ae1c3df78c8772f39d4ec7b56d86fa41521375fe3c8a9ced10dd7996c70a3483a8506a899884d4a8474d7792329\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "line separator   paragraph separator   delete ",
+                "id": "8cb08d994e6070975ebaa7b1448a76df8f11af1ea39d17ec7e0021fd4936ee17",
+                "message": "[\"EVENT\",{\"kind\":22890,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"line separator   paragraph separator   delete \",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"8cb08d994e6070975ebaa7b1448a76df8f11af1ea39d17ec7e0021fd4936ee17\",\"sig\":\"76a457faff38f4daaa016a67185d71fa9cac213de3b474c442680d59e9e2b30bfb907cbbf92f7134e435836cd8f94f14b90efa0f1301316e54724b192ec4e9c5\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "astral 🎉 𝄞, two bytes é  ߿, three ☕ ࠀ ￿",
+                "id": "2d68203eac4a759e21079a3f4b4871d31e912ce44f2ad8ba8746d313ea9d7053",
+                "message": "[\"EVENT\",{\"kind\":22890,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"astral 🎉 𝄞, two bytes é  ߿, three ☕ ࠀ ￿\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"2d68203eac4a759e21079a3f4b4871d31e912ce44f2ad8ba8746d313ea9d7053\",\"sig\":\"24ffe69b6129f4e4144f48c441df99fc578a021e73141d7b9452bd98234e0b56a0224399e80e344ab7642cf22c3467c0f1c20463667c7a32e803dc780ae0443c\"}]"
+            },
+            {
+                "topic": "topic \u0000 \u001f \" \\      🎉",
+                "content": "{\"peerId\":\"abc\",\"nonce\":\"12345678\"}",
+                "id": "23e556c7184e81b671731fa9f7c7a0d52ffcdf4c7a9c9ebbde4dd6fde2a5d115",
+                "message": "[\"EVENT\",{\"kind\":20129,\"tags\":[[\"x\",\"topic \\u0000 \\u001f \\\" \\\\      🎉\"]],\"created_at\":1759700000,\"content\":\"{\\\"peerId\\\":\\\"abc\\\",\\\"nonce\\\":\\\"12345678\\\"}\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"23e556c7184e81b671731fa9f7c7a0d52ffcdf4c7a9c9ebbde4dd6fde2a5d115\",\"sig\":\"3c9df43a7063d0e2f5cc1d6feec3cd2dad55f1e3c56073cf884ca1aa57c23b312b27d7a970bea57e746d507d3407b381f7c000655c27e8c111803c952030f924\"}]"
+            },
+            {
+                "topic": "",
+                "content": "",
+                "id": "cff4dd0852bd9746a0b233a890ae9e67db1559f3bd0744d74f5fc2ee0ff50e02",
+                "message": "[\"EVENT\",{\"kind\":20000,\"tags\":[[\"x\",\"\"]],\"created_at\":1759700000,\"content\":\"\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"cff4dd0852bd9746a0b233a890ae9e67db1559f3bd0744d74f5fc2ee0ff50e02\",\"sig\":\"f99498986e5f1779cd7c8762f3719517193528e511f292db4b7a6feefb0ed6601c2f972c262f6f1a58288982688002861828c4e350b693aa4290186fd16daef3\"}]"
+            }
+        ]
+    },
+    "signal_texts": [
+        {
+            "signal": {
+                "peerId": "\u0000\u0001\u001f",
+                "nonce": "\" \\      🎉"
+            },
+            "text": "{\"peerId\":\"\\u0000\\u0001\\u001f\",\"nonce\":\"\\\" \\\\      🎉\"}"
+        },
+        {
+            "signal": {
+                "peerId": "\b\f\n\r\t\u000b",
+                "passive": true,
+                "nonce": "n0nce"
+            },
+            "text": "{\"peerId\":\"\\b\\f\\n\\r\\t\\u000b\",\"passive\":true,\"nonce\":\"n0nce\"}"
+        },
+        {
+            "signal": {
+                "peerId": "p",
+                "offerId": " ",
+                "offer": "🎉\u0000𝄞 é"
+            },
+            "text": "{\"peerId\":\"p\",\"offerId\":\" \",\"offer\":\"🎉\\u0000𝄞 é\"}"
+        },
+        {
+            "signal": {
+                "peerId": "p",
+                "offerId": "o",
+                "candidate": "\u001f   \"\\",
+                "passive": true
+            },
+            "text": "{\"peerId\":\"p\",\"offerId\":\"o\",\"candidate\":\"\\u001f   \\\"\\\\\",\"passive\":true}"
+        },
+        {
+            "signal": {
+                "peerId": "q\"\\\n",
+                "answer": " \u0000"
+            },
+            "text": "{\"peerId\":\"q\\\"\\\\\\n\",\"answer\":\" \\u0000\"}"
+        }
+    ],
+    "duplicate_keys": {
+        "signals": [
+            {
+                "text": "{\"peerId\":\"first\",\"peerId\":\"last\",\"nonce\":\"n\"}",
+                "read": {
+                    "peer_id": "last",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"plain\",\"peer\\u0049d\":\"escaped\"}",
+                "read": {
+                    "peer_id": "escaped",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"offerId\":\"first\",\"offer\":\"first\",\"offerId\":\"last\",\"offer\":\"last\"}",
+                "read": {
+                    "peer_id": "p",
+                    "offer": "last",
+                    "offer_id": "last",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"offer\":\"\",\"offer\":\"sealed\"}",
+                "read": {
+                    "peer_id": "p",
+                    "offer": "sealed",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"offer\":\"sealed\",\"offer\":\"\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"candidate\":1,\"candidate\":\"sealed\"}",
+                "read": {
+                    "peer_id": "p",
+                    "candidate": "sealed",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"answer\":\"sealed\",\"answer\":null}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"passive\":true,\"passive\":false}",
+                "read": {
+                    "peer_id": "p",
+                    "passive": false
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"passive\":false,\"passive\":true}",
+                "read": {
+                    "peer_id": "p",
+                    "passive": true
+                }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"peerId\":\"\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"\",\"answer\":\"sealed\",\"peerId\":\"p\"}",
+                "read": {
+                    "peer_id": "p",
+                    "answer": "sealed",
+                    "passive": false
+                }
+            }
+        ],
+        "root_topic": "731p275e6u4l455l3849481dl46536q3g1r6h5y",
+        "events": [
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]],\"content\":\"{\\\"peerId\\\":\\\"content-first\\\",\\\"answer\\\":\\\"x\\\"}\",\"content\":\"{\\\"peerId\\\":\\\"content-last\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "content-last"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]],\"content\":\"{\\\"peerId\\\":\\\"escaped-first\\\",\\\"answer\\\":\\\"x\\\"}\",\"con\\u0074ent\":\"{\\\"peerId\\\":\\\"escaped-last\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "escaped-last"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"another-topic\"]],\"content\":\"{\\\"peerId\\\":\\\"root-tags-last\\\",\\\"answer\\\":\\\"x\\\"}\",\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]]}]",
+                "acted": "root-tags-last"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]],\"content\":\"{\\\"peerId\\\":\\\"root-tags-first\\\",\\\"answer\\\":\\\"x\\\"}\",\"tags\":[[\"x\",\"another-topic\"]]}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]],\"content\":7,\"content\":\"{\\\"peerId\\\":\\\"text-content-last\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "text-content-last"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"731p275e6u4l455l3849481dl46536q3g1r6h5y\"]],\"content\":\"{\\\"peerId\\\":\\\"text-content-first\\\",\\\"answer\\\":\\\"x\\\"}\",\"content\":7}]",
+                "acted": null
+            }
+        ]
     }
 }
