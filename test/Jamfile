@@ -140,6 +140,11 @@ webcpp.run platform_page_peer_connection : platform_page_peer_connection_test.cp
 # A page's program: main runs the io_context under a work guard, and the
 # page's calls into C++ only post to it.
 webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
+# A page's sealer allocates nothing outside the room's resource from the
+# start of a seal or an open to its completion: the global operator new and
+# the C library's allocation functions, replaced, count none.
+webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
+  : $(platform) : emscripten ;
 # end::page[]
 
 # The same, built without exceptions, as a page's program may be: no
@@ -155,6 +160,9 @@ webcpp.run platform_page_data_channel_no_exceptions : platform_page_data_channel
 webcpp.run platform_page_peer_connection_no_exceptions : platform_page_peer_connection_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_no_exceptions : platform_page_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_sealer_allocation_no_exceptions
+  : platform_page_sealer_allocation_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 

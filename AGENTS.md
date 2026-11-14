@@ -583,11 +583,14 @@ holds only what is specific to trystero.
     (measured: two per post, in every round of five posts, natively and on
     emscripten). So `detail::post` posts through the executor of an
     `io_context` when the room's executor is one, where Asio allocates the
-    operation as the handler's allocator says; on another executor the
-    wrapper stays Asio's. A user's completion handler is allocated as its
-    own associated allocator says: the room never binds its allocator over
-    it, and the page shows `bind_allocator` with the room's resource. When
-    the room erases a completion handler's type
+    operation as the handler's allocator says, and a page's sealer awaits
+    each Web Crypto promise through it so too
+    (`platform_page_sealer_allocation` proves it, against two C library
+    allocations a seal or an open before); on another executor, a strand for
+    one, the wrapper stays Asio's. A user's completion handler is allocated
+    as its own associated allocator says: the room never binds its allocator
+    over it, and the page shows `bind_allocator` with the room's resource.
+    When the room erases a completion handler's type
     (`detail::completion`, an `any_completion_handler`), it records whether
     the handler's associated executor is the room's, which only the concrete
     type tells without allocating; such a completion runs from an operation
@@ -646,8 +649,9 @@ holds only what is specific to trystero.
     every wait of an io_context with a timer or a socket, and which callocs
     an array on every call (the test replaces it, below), and under Asyncify
     the unwind data of every suspension of the run (the test counts it
-    apart, below); and in a page, each pending Web Crypto promise's entry in
-    the bridge's map, in the io_context's allocator (the WebSocket and
+    apart, below); and in a page, the storage of the bridge's map of pending
+    Web Crypto promises, in the io_context's allocator, made for the first
+    and grown when more are pending at once than it holds (the WebSocket and
     `page_call` registrations are intrusive; a socket's events are posted in
     the room's resource, a `page_call`'s in the resource it is given). The
     test's `memory_network` allocates its relays in its own resource.

@@ -179,11 +179,15 @@ A move assignment carries the source's allocator with its target.
 `webcpp::asio::any_io_executor` is wrapped by Asio in a function
 object allocated with `std::allocator`, from Asio's per-thread recycling
 cache, which calls `std::aligned_alloc` on a miss (measured: two per post,
-in every round of five posts, natively and on emscripten). So the room posts
-through the executor of an `io_context` when its executor is one, where Asio
-allocates the operation as the handler's allocator says; on another
-executor the wrapper stays Asio's. On both targets the room's executor is the
-executor of an `io_context`.
+in every round of five posts, natively and on emscripten). So the room, and
+the platform backend's sealer, post through the executor of an `io_context`
+when the executor they were given is one, where Asio allocates the operation
+as the handler's allocator says, and in a page the sealer awaits each Web
+Crypto promise through it too, so that its settlement is posted the same way.
+On another executor, a strand over the `io_context` for one, the wrapper
+stays Asio's (<<trystero-allocation-outside>>). The executor is the
+program's: the examples and the tests give the app and the backend the
+executor of their `io_context`.
 
 *The backends.* Each method of `backend::factory` that makes an object takes
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
@@ -234,10 +238,12 @@ nothing.
 * what `emscripten::val` holds, in the JavaScript heap;
 * the counter of the room's JSON storage, which Boost.JSON allocates with
   `operator new`, once per room;
-* Asio's own once-per-context allocations: its services and the scheduler's
-  first operation;
+* Asio's own once-per-context allocations: its services, in a page
+  webcpp::asio's bridge among them, and the scheduler's first operation;
 * the wrapper Asio puts around a post through an executor that is not the
-  executor of an `io_context`;
+  executor of an `io_context`, a strand for one, and, given such an
+  executor, around the settlement of each Web Crypto promise of a page's
+  sealer;
 * webcpp::webrtc's posts from libdatachannel's threads, which carry Asio's
   default allocator, since the resource is touched only on the room's
   executor; and the wrapper Asio puts around webcpp::webrtc's completions,
@@ -272,11 +278,17 @@ nothing.
   an array on every call;
 * on Emscripten under Asyncify, the unwind data Asyncify allocates whenever
   the browser program's `run` suspends;
-* in the browser, the entry of each pending Web Crypto promise in the map of
-  webcpp::asio's bridge, in the allocator of the `io_context`: the
-  registrations of a WebSocket and of a `page_call` are intrusive, the events
-  of a socket are posted in the room's resource, and the calls of a
-  `page_call` in the resource it is given.
+* in the browser, the storage of the map in which webcpp::asio's bridge finds
+  each pending Web Crypto promise, in the allocator of the `io_context`,
+  made for the first and grown when more are pending at once than it holds,
+  and kept until the `io_context` is destroyed. The rest of a page's seal or
+  open, the wait for its promise and the post of its settlement, is in the
+  room's resource when the backend's executor is an `io_context`'s: the
+  test `platform_page_sealer_allocation`, after a first seal and open, sees
+  neither `operator new` nor the C library allocate from the start of a seal
+  or an open to its completion. The registrations of a WebSocket and of a
+  `page_call` are intrusive, the events of a socket are posted in the room's
+  resource, and the calls of a `page_call` in the resource it is given.
 
 The test's memory relays are shared by every room of a test: they allocate
 their relays through the resource they are constructed with.

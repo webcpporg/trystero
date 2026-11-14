@@ -21,6 +21,7 @@
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 #include <webcpp/asio/bind_allocator.hpp>       // lint-world: binds an allocator only
 #include <webcpp/asio/browser/async_await.hpp>  // lint-world: awaits the page's promises
+#include <webcpp/asio/io_context.hpp>           // lint-world: names its executor only
 
 #include <emscripten/em_asm.h>
 #include <emscripten/val.h>
@@ -182,10 +183,12 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
  * `crypto.subtle`, under a key imported once, as Trystero's `encrypt` and `decrypt` do.
  *
  * Each Web Crypto promise is awaited with webcpp::asio's `browser::async_await`, which posts its
- * settlement to the executor. The text is copied into JavaScript during the call; an operation that
- * arrives while the key is still being imported waits with a copy of its text, in the room's
- * resource. Without `crypto.subtle`, outside a secure context, every operation fails. A seal's IV
- * comes from the platform's one source of randomness, `getentropy` there.
+ * settlement to the executor, through the io_context's own executor when the executor is one, so
+ * that the wait and the settlement's post are both in the room's resource. The text is copied into
+ * JavaScript during the call; an operation that arrives while the key is still being imported waits
+ * with a copy of its text, in the room's resource. Without `crypto.subtle`, outside a secure
+ * context, every operation fails. A seal's IV comes from the platform's one source of randomness,
+ * `getentropy` there.
  *
  * @see "The platform backend", in the guide.
  */
@@ -266,28 +269,46 @@ private:
         });
     }
 
+    /**
+     * Awaits `promise`, its settlement posted to `handler` through the io_context's own executor
+     * when `ex_` is one.
+     *
+     * Tip: as `trystero::detail::post` does. Asio posts what it posts through an `any_io_executor`
+     * in a function object and an operation of `std::allocator`, which it takes from the C library
+     * when its cache has none (measured: two for each seal and each open); through the io_context's
+     * own executor the operation is allocated as the handler's allocator says, in the room's
+     * resource.
+     */
+    template <class Handler>
+    void await(emscripten::val promise, Handler&& handler) {
+        if (const auto* io = ex_.target<webcpp::asio::io_context::executor_type>()) {
+            webcpp::asio::browser::async_await(*io, std::move(promise),
+                                               std::forward<Handler>(handler));
+            return;
+        }
+        webcpp::asio::browser::async_await(ex_, std::move(promise), std::forward<Handler>(handler));
+    }
+
     void encrypt(std::string_view plaintext, done_handler done) {
         std::array<std::uint8_t, protocol::seal_iv_size> iv{};
         if (!detail::fill_random(iv)) {
             fail(std::move(done), error::backend_failure);
             return;
         }
-        webcpp::asio::browser::async_await(
-            ex_,
-            detail::take(detail::js_crypt(false, key_.as_handle(), iv.data(), iv.size(),
-                                          plaintext.data(), plaintext.size())),
-            webcpp::asio::bind_allocator(
-                allocator(),
-                [iv, done = std::move(done), memory = memory_](
-                    boost::system::error_code ec, const emscripten::val& cipher) mutable {
-                    if (ec) {
-                        done(make_error_code(error::backend_failure), {});
-                        return;
-                    }
-                    const auto sealed =
-                        protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
-                    done({}, sealed);
-                }));
+        await(detail::take(detail::js_crypt(false, key_.as_handle(), iv.data(), iv.size(),
+                                            plaintext.data(), plaintext.size())),
+              webcpp::asio::bind_allocator(
+                  allocator(),
+                  [iv, done = std::move(done), memory = memory_](
+                      boost::system::error_code ec, const emscripten::val& cipher) mutable {
+                      if (ec) {
+                          done(make_error_code(error::backend_failure), {});
+                          return;
+                      }
+                      const auto sealed =
+                          protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
+                      done({}, sealed);
+                  }));
     }
 
     void decrypt(std::string_view sealed, done_handler done) {
@@ -296,21 +317,19 @@ private:
             fail(std::move(done), error::wrong_password);
             return;
         }
-        webcpp::asio::browser::async_await(
-            ex_,
-            detail::take(detail::js_crypt(true, key_.as_handle(), parts->iv.data(),
-                                          parts->iv.size(), parts->ciphertext.data(),
-                                          parts->ciphertext.size())),
-            webcpp::asio::bind_allocator(allocator(), [done = std::move(done), memory = memory_](
-                                                          boost::system::error_code ec,
-                                                          const emscripten::val& plain) mutable {
-                if (ec) {
-                    done(make_error_code(error::wrong_password), {});
-                    return;
-                }
-                const auto b = detail::from_js(plain, memory);
-                done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
-            }));
+        await(detail::take(detail::js_crypt(true, key_.as_handle(), parts->iv.data(),
+                                            parts->iv.size(), parts->ciphertext.data(),
+                                            parts->ciphertext.size())),
+              webcpp::asio::bind_allocator(allocator(), [done = std::move(done), memory = memory_](
+                                                            boost::system::error_code ec,
+                                                            const emscripten::val& plain) mutable {
+                  if (ec) {
+                      done(make_error_code(error::wrong_password), {});
+                      return;
+                  }
+                  const auto b = detail::from_js(plain, memory);
+                  done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+              }));
     }
 
     /**
@@ -332,14 +351,13 @@ private:
             return;
         }
         state_ = key_state::importing;
-        webcpp::asio::browser::async_await(
-            ex_, detail::take(detail::js_import_key(raw_key_.data(), raw_key_.size())),
-            webcpp::asio::bind_allocator(
-                allocator(), [weak](boost::system::error_code ec, const emscripten::val& key) {
-                    if (const auto self = weak.lock()) {
-                        self->key_imported(!ec, key);
-                    }
-                }));
+        await(detail::take(detail::js_import_key(raw_key_.data(), raw_key_.size())),
+              webcpp::asio::bind_allocator(
+                  allocator(), [weak](boost::system::error_code ec, const emscripten::val& key) {
+                      if (const auto self = weak.lock()) {
+                          self->key_imported(!ec, key);
+                      }
+                  }));
     }
 
     void key_imported(bool ok, const emscripten::val& key) {
