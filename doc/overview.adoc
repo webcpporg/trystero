@@ -30,14 +30,16 @@ The library provides:
 * one immutable password per app, part of every room's sealed signaling
   key and challenge handshake; separate passwords use separate apps and ids;
 * every asynchronous operation as an Asio initiating function, so it
-  completes with a callback, `boost::asio::use_awaitable`,
-  `boost::asio::deferred` or any other completion token;
+  completes with a callback, `webcpp::asio::use_awaitable`,
+  `webcpp::asio::deferred` or any other completion token of webcpp::asio,
+  which natively is Boost.Asio itself;
 * an `app` per program in one application and password domain, with one identity and one
   connection per remote peer shared by its rooms;
 * a resource for the app and an optional resource for each room, which
   receive their allocations (<<trystero-allocation>>);
 * a backend interface that separates the room from the platform, and its
-  two implementations, for the browser and for native programs.
+  two implementations, for the browser and for native programs, whose WebRTC
+  is webcpp::webrtc's on both.
 
 [#trystero-overview-targets]
 === Two backends
@@ -52,13 +54,15 @@ Each backend is a header of its own:
 
 | `<webcpp/trystero/browser/backend.hpp>`
 | emscripten
-| the page's `WebSocket`, `RTCPeerConnection`, `RTCDataChannel`,
-  `setTimeout` and `crypto.subtle`, through embind (<<trystero-browser>>)
+| the page's `WebSocket`, `setTimeout` and `crypto.subtle`, through embind,
+  and webcpp::webrtc over the page's `RTCPeerConnection` and
+  `RTCDataChannel` (<<trystero-browser>>)
 
 | `<webcpp/trystero/native/backend.hpp>`
 | native
-| libdatachannel for WebRTC, Boost.Beast for the relays' WebSockets,
-  OpenSSL for TLS and AES-GCM, and Asio's timers (<<trystero-native>>)
+| webcpp::webrtc over libdatachannel for WebRTC, Boost.Beast for the relays'
+  WebSockets, OpenSSL for TLS and AES-GCM, and Asio's timers
+  (<<trystero-native>>)
 |===
 
 Both run the same room, and both meet Trystero JS peers. Every name is in the
@@ -70,6 +74,8 @@ namespace `webcpp::trystero`.
 * A {cpp}20 compiler.
 * Boost 1.92: Asio, Container (its `pmr` base class), Core, Hash2, JSON and
   System; and Beast for the native backend.
+* webcpp::asio, and webcpp::webrtc for both backends' WebRTC
+  (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
   events: every room needs it.
@@ -77,10 +83,9 @@ namespace `webcpp::trystero`.
   served from a secure context (https, or http on `localhost`), where
   `crypto.subtle` exists.
 * Natively:
-  https://github.com/paullouisageneau/libdatachannel[libdatachannel] 0.24.6
-  and OpenSSL 3, and exceptions (<<trystero-native-exceptions>>).
+  https://github.com/paullouisageneau/libdatachannel[libdatachannel] 0.24.6,
+  through webcpp::webrtc, and OpenSSL 3.
 
 trystero raises no exception of its own: an operation that can fail
-completes with an error code. The rooms, the protocol and the browser
-backend compile without exceptions; so do the native timer, sealer and
-WebSockets.
+completes with an error code. Every part of it, both backends included,
+compiles and works without exceptions (<<trystero-native-exceptions>>).

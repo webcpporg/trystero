@@ -115,8 +115,9 @@ handler set right after `join` sees every join; `peers()` lists the
 joined peers for a handler set later.
 
 *`peers()` lists ids.* Trystero's `getPeers` maps each id to its
-`RTCPeerConnection`. A connection is the backend's, a page's object in the
-browser and libdatachannel's natively, and the room does not hand it out.
+`RTCPeerConnection`. A connection is the backend's, webcpp::webrtc's over a
+page's object in the browser and over libdatachannel's natively, and the
+room does not hand it out.
 
 *A send to a peer that has not joined fails.* Trystero warns on the console
 and resolves; `async_send` completes with `error::no_such_peer`, since an

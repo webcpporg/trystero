@@ -231,9 +231,10 @@ peers.
 === Completion tokens and ownership
 
 Every asynchronous operation is an Asio initiating function. With a callback
-it calls it on the room's executor; with `boost::asio::use_awaitable` it
-resumes a coroutine; with `boost::asio::deferred` it returns an operation
-started later.
+it calls it on the room's executor; with `webcpp::asio::use_awaitable` it
+resumes a coroutine; with `webcpp::asio::deferred` it returns an operation
+started later. webcpp::asio is Boost.Asio itself natively, so Boost.Asio's
+tokens are the same there; on emscripten they are webcpp::asio's.
 
 Because a deferred operation starts after the call, the arguments of an
 asynchronous operation are owned: `async_send` takes its value by value,

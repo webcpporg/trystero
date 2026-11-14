@@ -83,7 +83,7 @@ short-lived one, or a test.
 
 A completion handler is the user's, and is allocated as its own associated
 allocator says: the room never binds its allocator over it.
-`boost::asio::bind_allocator` gives one the room's resource. The allocation
+`webcpp::asio::bind_allocator` gives one the room's resource. The allocation
 test makes the allocator of a resource:
 
 [source]
@@ -151,9 +151,10 @@ A move assignment carries the source's allocator with its target.
 [#trystero-allocation-asio]
 === Asio, the backends, Boost.JSON and the protocol
 
-*Asio.* Every `post`, `dispatch`, timer wait and `any_completion_handler`
-the room makes carries `boost::asio::bind_allocator` over its resource. A
-post through `boost::asio::any_io_executor` is wrapped by Asio in a function
+*Asio,* webcpp::asio's, which natively is Boost.Asio itself. Every `post`,
+`dispatch`, timer wait and `any_completion_handler` the room makes carries
+`webcpp::asio::bind_allocator` over its resource. A post through
+`webcpp::asio::any_io_executor` is wrapped by Asio in a function
 object allocated with `std::allocator`, from Asio's per-thread recycling
 cache, which calls `std::aligned_alloc` on a miss (measured: two per post,
 in every round of five posts, natively and on emscripten). So the room posts
@@ -165,7 +166,11 @@ executor, as the browser's `event_loop` executor, the wrapper stays Asio's.
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
 data channels and received frames use the app's resource; relay sockets,
 sealers and room timers use the room's. Objects and their handlers allocate
-through that supplied resource.
+through that supplied resource. The backend's WebRTC
+(<<trystero-design-backend-webrtc>>) gives webcpp::webrtc's connections and
+channels a `std::pmr::polymorphic_allocator` on the app's resource, which
+their state, their queues, their texts and their operations use: each
+operation's handler is bound to it.
 
 *Boost.JSON* allocates through `json_resource`, a
 `boost::container::pmr::memory_resource` that forwards to a
@@ -186,8 +191,10 @@ nothing.
 [#trystero-allocation-outside]
 === What stays outside the resource
 
-* libdatachannel's and OpenSSL's own allocations, with the `std::string` and
-  `rtc::Description` libdatachannel's API takes and returns;
+* libdatachannel's and OpenSSL's own allocations, the copy libdatachannel's C
+  API makes of a message before webcpp::webrtc reads it into the frame, and,
+  natively, webcpp::webrtc's copies of what libdatachannel's threads report,
+  in the standard allocator;
 * what `emscripten::val` holds, in the JavaScript heap;
 * the counter of the room's JSON storage, which Boost.JSON allocates with
   `operator new`, once per room;
@@ -195,16 +202,20 @@ nothing.
   first operation;
 * the wrapper Asio puts around a post through an executor that is not the
   executor of an `io_context`;
-* the native backend's posts from libdatachannel's threads, which carry
-  Asio's default allocator, since the resource is touched only on the room's
-  executor;
+* webcpp::webrtc's posts from libdatachannel's threads, which carry Asio's
+  default allocator, since the resource is touched only on the room's
+  executor; and the wrapper Asio puts around webcpp::webrtc's completions,
+  which it posts through `webcpp::asio::any_io_executor`;
 * Boost.Beast's and Asio's state inside the native WebSocket: its stream,
   its resolver's results, its coroutines' frames;
 * the payload types `std::string`, `bytes` and `payload`, with
   `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on
   every wait of an `io_context` with a timer or a socket, and which callocs
-  an array on every call.
+  an array on every call;
+* on Emscripten under Asyncify, the unwind data Asyncify allocates when a
+  call of webcpp::asio's run family suspends, which a program whose
+  `io_context` the browser's `event_loop` polls never does.
 
 The browser's `event_loop` and the test's memory relays are shared by every
 room of a page or of a test: they allocate the entries of their
@@ -247,8 +258,11 @@ The counting resources also count a return of memory they never gave, a
 Asio's once-per-context allocations are made before anything is counted;
 without them the count is 8, not 2. On Emscripten the test also replaces
 `select()` with one that keeps its array on the stack, so that the count
-sees the rooms' allocations rather than the C library's wait. The test is
-declared in `test/Jamfile`:
+sees the rooms' allocations rather than the C library's wait; and, under
+Asyncify, where the test's own `run_for` suspends, it marks Asyncify's
+allocation of a suspension's unwind data and counts it apart, as
+webcpp::asio's allocation test does. The test runs in both of
+webcpp::asio's suspension variants. It is declared in `test/Jamfile`:
 
 [listing]
 ----

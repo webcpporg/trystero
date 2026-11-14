@@ -31,20 +31,29 @@
 | `room.hpp`, `detail/*.hpp`
 | the Nostr strategy, signaling, bindings, action wire and room API
 
+| Backend's WebRTC
+| `webrtc/*.hpp`
+| webcpp::webrtc's peer connections and data channels, and trystero's
+  policies over them, on both targets
+
 | Browser backend
 | `browser/*.hpp`
 | `emscripten::val` over the browser's APIs, and the event loop
 
 | Native backend
 | `native/*.hpp`
-| libdatachannel, Boost.Beast, OpenSSL and Asio's timers
+| Boost.Beast, OpenSSL and Asio's timers
 |===
 
 Everything above the backend interface is the core, which builds on both
-targets: the same room runs over the browser's APIs, over libdatachannel, and
-over the memory relays of the tests (<<trystero-testing>>). The core never
-includes a backend, libdatachannel, OpenSSL or Emscripten: a boundary of the
-library's own, which webcpp's lint checks, keeps it so.
+targets: the same room runs over the browser's WebRTC and libdatachannel's,
+both through webcpp::webrtc, and over the memory relays of the tests
+(<<trystero-testing>>). The core never includes a backend, the backend's
+WebRTC, webcpp::webrtc, libdatachannel, OpenSSL or Emscripten: a boundary of
+the library's own, which webcpp's lint checks, keeps it so. Its Asio is
+webcpp::asio: natively Boost.Asio itself, on emscripten the backend
+webcpp::asio ships, whose `io_context` webcpp::webrtc's browser objects
+deliver their events to.
 
 [#trystero-design-sharing]
 === Connections shared by the rooms of an app
@@ -112,13 +121,70 @@ caused it has returned, never inside it: the room calls these operations from
 inside handlers whose state a completion run there would change under them.
 
 [#trystero-design-webrtc]
-=== Why the browser's own WebRTC
+=== Why webcpp::webrtc
 
-libdatachannel's WebAssembly port, datachannel-wasm, has no media and hides
-the `RTCPeerConnection` it wraps. Binding the browser's objects directly
-through `emscripten::val` is smaller than that wrapper, reports every error,
-and leaves the browser's whole WebRTC stack (capture, codecs, playout) within
-reach for media.
+Both backends' WebRTC is webcpp::webrtc's: the W3C's API in Asio's model, one
+interface natively, over libdatachannel's C API, and in the browser, over the
+page's own `RTCPeerConnection`. It replaces the backend's own wrappers of
+each, so that trystero keeps only its policies over WebRTC, the same on both
+targets. In the browser it binds the page's objects, not libdatachannel's
+WebAssembly port, datachannel-wasm, which has no media and hides the
+`RTCPeerConnection` it wraps; natively its C API lets the backend work
+without exceptions. The backend interface stays a handful of abstract
+classes (<<trystero-design-backend>>): the rooms of the tests run over the
+memory relays, on both targets, where node has no WebRTC, and the interop
+fixtures wrap the native backend's connections.
+
+[#trystero-design-backend-webrtc]
+=== The backend's WebRTC
+
+Both backends make their peer connections and data channels the same way, in
+`<webcpp/trystero/webrtc/peer_connection.hpp>` and `data_channel.hpp`:
+`webrtc::peer_connection` and `webrtc::data_channel` hold webcpp::webrtc's
+`basic_peer_connection` and `basic_data_channel` over a
+`std::pmr::polymorphic_allocator` on the app's resource, keep a wait of each
+kind pending on them, re-armed on the executor, and report what each
+completes with through the backend interface. What is trystero's, and stays
+in them, over webcpp::webrtc:
+
+* The states. A connection reports one state, which merges its connection
+  state and its ICE state as a page sees both: failed when either failed,
+  then closed, disconnected, connected (or ICE completed), connecting (or ICE
+  checking), and new.
+* The candidates. A local candidate leaves as the JSON of an
+  `RTCIceCandidateInit`, the form Trystero JS adds with `addIceCandidate`; a
+  remote one is read from that JSON. Natively it carries `sdpMid` and an
+  `sdpMLineIndex` of 0, and no user name fragment, as libdatachannel gives
+  none.
+* The frames. A channel reads every message as it comes, with
+  `async_receive`, into a vector of the app's resource, which the message
+  handler then owns. A text message, as a peer can send, or a binary one
+  larger than any room frame, is dropped there, on the executor: neither can
+  be a frame. What reaches the executor is bounded by webcpp::webrtc: a
+  message is at most `max_message_size`, 256 KiB, which natively
+  libdatachannel cuts a longer one to, and past which in the browser, or past
+  16 MiB of unread messages, the channel closes. A binary payload moves when
+  its message buffer and the room use the same resource, and is copied once
+  otherwise; chunked transfers assemble their buffer in the room's resource.
+* The frames no room has read. Valid binary frames that arrive before the
+  message handler is installed wait in a FIFO in the app's resource. The
+  queue holds at most 64 frames for at most 10 seconds from its first frame,
+  Trystero's pending-data bounds. Overflow or expiry closes the channel;
+  closing or destroying it discards the pending frames. The backend's timer
+  invalidates an expiry already queued when the queue drains or closes.
+  Installing a receiver posts delivery on the executor with the app's
+  allocator. It never calls the receiver inline, and delivery checks the
+  current handler and channel before each frame, so a handler may replace
+  itself or close the channel. A message already read ahead of that delivery
+  drains older frames first when a receiver is available.
+* The pace. The channel reports the buffered amount falling to 64 KiB, after
+  a send left it above, as `onbufferedamountlow` does.
+* The caps. The native backend makes at most
+  `backend_config::max_peer_connections_per_minute` connections in any
+  minute, its own policy against floods (<<trystero-native-config>>); and the
+  connections alive at once are webcpp::webrtc's `runtime`'s to cap, natively
+  the backend's runtime's (<<trystero-native-runtime>>), in the browser the
+  page's census (<<trystero-browser-bounds>>).
 
 [#trystero-design-text]
 === Text is a view, a copy is a decision
@@ -141,12 +207,14 @@ The asynchronous operations are the exception, for the reason
 <<trystero-usage-tokens>> gives.
 
 [#trystero-design-dependencies]
-=== Optional native dependencies
+=== Dependencies
 
-libdatachannel is under the MPL 2.0 and OpenSSL under the Apache License
-2.0. Both are needed only by the native backend, which a browser program
-never includes: `/webcpp/trystero//trystero` depends on neither, and
-`/webcpp/trystero//native` adds them, as OpenSSL is optional for Asio.
+trystero builds on webcpp::asio, and its backends on webcpp::webrtc.
+`/webcpp/trystero//trystero` brings `/webcpp/asio//asio`, and on emscripten
+`/webcpp/webrtc//webrtc`, the browser's WebRTC; `/webcpp/trystero//native`
+brings `/webcpp/webrtc//webrtc` natively, with its libdatachannel, under the
+MPL 2.0, and OpenSSL, under the Apache License 2.0. Neither is in a browser
+program, as OpenSSL is optional for Asio.
 
 [#trystero-design-licensing]
 === Licensing

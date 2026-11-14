@@ -8,9 +8,10 @@
 == The native backend
 
 Natively, `native::backend` implements the backend interface over
-https://github.com/paullouisageneau/libdatachannel[libdatachannel] for
-WebRTC, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM,
-and Asio's timers. A native room is the same room as a browser's or Trystero
+webcpp::webrtc for WebRTC, which natively is
+https://github.com/paullouisageneau/libdatachannel[libdatachannel]'s
+(<<trystero-design-backend-webrtc>>), Boost.Beast for the relays' WebSockets, OpenSSL
+for TLS and AES-GCM, and Asio's timers. A native room is the same room as a browser's or Trystero
 JS's: they meet over the same relays and exchange the same frames. One
 backend serves every app and room of the program, with separate app
 objects and distinct self ids for different passwords, beside the executor it runs
@@ -20,54 +21,33 @@ on it or polling it (<<trystero-quick-start-native>>).
 [#trystero-native-exceptions]
 === Exceptions
 
-trystero raises no exception of its own, but libdatachannel reports errors by
-throwing, and the native backend's data channel and peer connection catch
-what it throws on refused input and complete with `error::backend_failure`.
-So they need exceptions: without them, or with `WEBCPP_NO_EXCEPTIONS` or
-`WEBCPP_TRYSTERO_NO_EXCEPTIONS` defined, `native::data_channel`,
-`native::peer_connection` and `native::backend`, which makes their objects,
-do not exist, and code that uses them does not compile. The native timer,
-sealer and WebSockets, and the rest of trystero, are unchanged.
+trystero raises no exception of its own, and the native backend works with
+exceptions and without them, as the rest of trystero does. libdatachannel
+reports errors by throwing, but webcpp::webrtc calls its C API, which catches
+what it throws and returns a code: a refused description, candidate or
+channel completes with `error::backend_failure`, a connection the platform
+refuses is not made, and no exception crosses into trystero.
 
 `<webcpp/trystero/config.hpp>`, which every header includes first, defines
 `WEBCPP_TRYSTERO_NO_EXCEPTIONS` when webcpp has no exceptions
 (`WEBCPP_HAS_EXCEPTIONS` is not defined: the compiler has none, or the
 program defined `WEBCPP_NO_EXCEPTIONS`); a developer may define it for
-trystero alone in a build that has them.
-Each program and test that uses the native backend's WebRTC declares
-`<exception-handling>on` itself, whatever the build asks
-(<<trystero-building-project>>). One function of the backend throws: its
-constructor, a `boost::system::system_error` when OpenSSL cannot make the
-TLS context or load the system's certificate authorities.
+trystero alone in a build that has them. It changes nothing in trystero's
+behaviour. One function of the backend throws: its constructor, a
+`boost::system::system_error` when OpenSSL cannot make the TLS context or
+load the system's certificate authorities; without exceptions Boost calls
+the program's `boost::throw_exception` instead.
 
 [#trystero-native-threads]
 === Threads
 
-libdatachannel delivers its events on threads of its own. The backend never
-runs a handler there: each event copies what it carries and is posted to the
-room's executor, through a weak reference, so an event that arrives after its
-object is gone does nothing. Every handler of the room and every completion
-runs on the executor, as in the browser. An application that runs the
-`io_context` on several threads gives the app a strand, shared by all its rooms.
-
-A received data channel message is copied once, out of libdatachannel's
-`std::vector<std::byte>` into the app's resource, on the executor. A view
-handler reads it there. A binary payload moves when its message buffer
-and the room use the same resource, and is copied once otherwise; chunked
-transfers assemble their buffer in the room's resource. A text message, as a peer can
-send, or a binary one larger than any room frame, is dropped on
-libdatachannel's thread: neither can be a frame.
-
-Valid binary frames that arrive before the message handler is installed wait
-in a FIFO in the app's resource. The queue holds at most 64 frames for at most
-10 seconds from its first frame. Overflow or expiry closes the channel;
-closing or destroying it discards the pending frames. The existing native
-timer invalidates an expiry already queued when the queue drains or closes.
-Installing a receiver posts delivery on the executor with the app's
-allocator. It never calls the receiver inline, and delivery checks the current
-handler and channel before each frame, so a handler may replace itself or
-close the channel. A message already queued ahead of that delivery drains
-older frames first when a receiver is available.
+libdatachannel delivers its events on threads of its own. Neither
+webcpp::webrtc nor the backend runs a handler there: webcpp::webrtc posts each
+event to the room's executor, through a weak reference, so an event that
+arrives after its object is gone does nothing. Every handler of the room and
+every completion runs on the executor, as in the browser. An application
+that runs the `io_context` on several threads gives the app a strand, shared
+by all its rooms.
 
 If a transport closes during adoption, before the room obtains a binding,
 the room forgets that negotiation and restarts announcements. Its later close
@@ -76,15 +56,35 @@ event cannot leave signaling marked connected with no binding.
 [#trystero-native-libdatachannel]
 === What the backend asks of libdatachannel
 
-* Automatic negotiation is off, so an offer or an answer exists only when the
-  signaling asks for one, as in the browser.
-* Every object libdatachannel hands out is held by the backend:
-  libdatachannel keeps only weak references.
-* Local candidates leave as the JSON of an `RTCIceCandidateInit`, the form
-  Trystero JS adds with `addIceCandidate`.
-* The `rtc::PeerConnection` object and its control block are made in the
-  app's resource; what that object allocates inside libdatachannel is
-  libdatachannel's (<<trystero-allocation-outside>>).
+What libdatachannel does is webcpp::webrtc's: its C API, which works without
+exceptions, automatic negotiation off, so that an offer or an answer exists
+only when the signaling asks for one, as in the browser, and every object it
+hands out held until its owner lets it go. The backend adds:
+
+* Its connections bind to `backend_config::bind_address`.
+* A TURN URL with a user name and a credential is written
+  `turn:user:credential@host`, the form libdatachannel parses
+  (webcpp::webrtc's `ice_server`).
+* A URL libdatachannel cannot parse, as a `stuns:` one, a scheme it does not
+  know, is left out of the connection, each URL being tried alone, where a
+  browser refuses the whole connection.
+* What libdatachannel allocates inside itself is libdatachannel's
+  (<<trystero-allocation-outside>>).
+
+[#trystero-native-runtime]
+=== The runtime
+
+webcpp::webrtc's `runtime` holds what libdatachannel keeps for the whole
+process, its threads and its global state, and caps the peer connections
+alive at once. A native backend makes one of its own, with
+`backend_config::runtime`, or takes the program's: `native::backend(ex,
+runtime, config)`. Each of its connections and channels keeps that runtime
+alive, so that one which outlives the backend, in a handler the
+`io_context` still holds, never outlives the runtime. A process holds one
+runtime at a time, since libdatachannel's state is the process's: a program
+with several native backends at once, or that uses webcpp::webrtc beside
+trystero, makes one `webcpp::webrtc::runtime` before its `io_context` and
+gives it to each.
 
 [#trystero-native-config]
 === Its configuration
@@ -109,6 +109,15 @@ with, beside the app's `ice_servers`:
   its peers behave (<<trystero-protocol-bounds>>), so the default lets four
   rooms do so at once. A connection still counts against its negotiating
   room's 57 s window after adoption by the app; presence and reuse make none.
+
+| `runtime`
+| What the backend's own webcpp::webrtc runtime is made with,
+  `webcpp::webrtc::runtime_options`: its `max_peer_connections`, the most
+  connections alive at once, 256 by default, beyond which the backend makes
+  none and a room reports each negotiation it cannot start, and a connection
+  gives its place back once it is gone; and `thread_pool_size`,
+  libdatachannel's threads, its own default when 0. Unused when the backend
+  is given the program's runtime (<<trystero-native-runtime>>).
 
 | `relay_limits`
 | What the relays' WebSockets tolerate of a relay that stops reading or

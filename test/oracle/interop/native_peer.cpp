@@ -152,7 +152,7 @@ trystero::room join(trystero::app& app, const std::string& room_id,
 }
 
 // A controlled native handoff: the transport is open, but signaling receives its open event
-// 100 ms later. Real messages still use the native wrapper, including its pre-handoff queue.
+// 100 ms later. Real messages still use the backend's WebRTC, including its pre-handoff queue.
 class delayed_channel : public trystero::backend::data_channel,
                         public std::enable_shared_from_this<delayed_channel> {
 public:

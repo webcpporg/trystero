@@ -8,8 +8,9 @@
 == The browser backend
 
 In the browser, `browser::backend` implements the backend interface over the
-page's own `WebSocket`, `RTCPeerConnection`, `RTCDataChannel`, `setTimeout`
-and `crypto.subtle`, through embind's `emscripten::val`, and
+page's own `WebSocket`, `setTimeout` and `crypto.subtle`, through embind's
+`emscripten::val`, and over its `RTCPeerConnection` and `RTCDataChannel`
+through webcpp::webrtc (<<trystero-design-backend-webrtc>>), and
 `browser::event_loop` runs the room's executor from the page's events. One
 of each serves every app and room of the page. Apps with different
 passwords use distinct self ids and share no connection or presence.
@@ -22,9 +23,12 @@ only source of events. An `io_context` never runs on its own there:
 `browser::event_loop` drives it without ever calling `run()`.
 
 * Every JavaScript event that reaches the library, a socket's message, a
-  settled promise, an ICE candidate or a timer, is dispatched to its
-  handler, and is followed by `io_context::poll()`, which runs everything
-  that became ready.
+  settled promise or a timer, is dispatched to its handler, and is followed
+  by `io_context::poll()`, which runs everything that became ready.
+* webcpp::webrtc's objects receive the page's WebRTC events through
+  webcpp::asio's bridge, a service of the loop's `io_context`, which posts to
+  the loop's executor, and so schedules a `poll()` as any work posted outside
+  an event does.
 * Work given to the loop's executor, `browser::executor`, while no
   JavaScript event is being handled posts to the `io_context` and schedules
   one `poll()` in a microtask.
@@ -42,7 +46,9 @@ wake-ups and up to an interval of latency. The backend's timers are
 === How JavaScript reaches {cpp}
 
 The page calls one function, `trystero_dispatch`, which
-`<webcpp/trystero/browser/src.hpp>` exports. A JavaScript handler is that
+`<webcpp/trystero/browser/src.hpp>` exports; webcpp::webrtc's events come
+through webcpp::asio's bridge, whose JavaScript `/webcpp/asio//asio` links
+into every program on emscripten. A JavaScript handler is that
 function bound to the event loop, a registration and a slot. An object
 registers a callback with the loop and removes it when it is destroyed, so a
 late event for a destroyed object finds nothing; a destroyed loop marks every
@@ -57,10 +63,11 @@ resource: no `std::string` is made to carry either.
 === No JavaScript exception enters WebAssembly
 
 The browser backend makes every call into JavaScript that can throw, a
-constructor, `JSON.parse`, a `send`, a WebRTC or Web Crypto method, through
+constructor, `JSON.parse`, a `send` or a Web Crypto method, through
 one function defined once in `browser/src.hpp` with `EM_JS`, which runs it
 inside `try` and returns a value or the exception as a value; the {cpp} turns
-that into the error its interface has. Every event of the page enters {cpp}
+that into the error its interface has; webcpp::webrtc's JavaScript catches
+the page's WebRTC exceptions the same way. Every event of the page enters {cpp}
 through a function of the same file that catches what still escapes, puts
 WebAssembly's stack pointer and the loop's depth back as they were before the
 call, reports it and lets the loop poll again. With exceptions,
@@ -72,10 +79,12 @@ peer's malformed message never stops the page's loop.
 [#trystero-browser-bounds]
 === What a page bounds
 
-* A data channel message that is not an `ArrayBuffer`, as a text message a
-  peer sends, or that is larger than any room frame
-  (`protocol::max_room_frame_bytes`), is dropped before it is read: neither
-  can be a frame.
+* A data channel message is read by webcpp::webrtc, a text as the UTF-8 it
+  holds and a binary one as its bytes, and dropped on the executor when it is
+  a text, as a peer can send, or larger than any room frame
+  (`protocol::max_room_frame_bytes`): neither can be a frame. webcpp::webrtc
+  bounds what it reads: a message past `max_message_size` (256 KiB), or
+  unread messages past `max_received_bytes` (16 MiB), close the channel.
 * A relay's text longer than 1 MiB (`protocol::max_relay_message_bytes`) is
   not copied into WebAssembly: the socket closes, and reports the close.
 * A text that would take the socket's `bufferedAmount` beyond 4 MiB
@@ -84,11 +93,14 @@ peer's malformed message never stops the page's loop.
   ping, so the browser has no idle timeout, which the native backend has
   (<<trystero-native-relays>>).
 * A page makes at most `browser::backend::max_peer_connections` (256) peer
-  connections across all apps and rooms it serves, counted from their construction until the garbage collector
-  frees them, as Chromium counts them against its own 500 (measured with
-  headless Chrome: the 501st throws "Cannot create so many
-  PeerConnections", and a closed one counts until a collection). Beyond,
-  the rooms report each negotiation they cannot start, and the rest of
+  connections across all apps and rooms it serves, counted from their
+  construction until the garbage collector frees them, as Chromium counts
+  them against its own 500 (measured with headless Chrome: the 501st throws
+  "Cannot create so many PeerConnections", and a closed one counts until a
+  collection). It is the cap of the webcpp::webrtc runtime the backend owns,
+  `runtime_options::max_peer_connections`, and webcpp::webrtc's census of
+  the page counts every connection it makes, with any runtime. Beyond, the
+  rooms report each negotiation they cannot start, and the rest of
   Chromium's count stays free for what the page makes without a room.
 
 Peer connections, data channels and received frames use the app's resource;
@@ -102,9 +114,14 @@ binds another room without making another peer connection.
   `crypto.subtle`, which seals the signaling, does not exist, and every
   sealing operation fails with `error::backend_failure`.
 * No threads: Emscripten's threads need a cross-origin isolated page, so
-  trystero uses none. `/webcpp/trystero//trystero` defines
-  `BOOST_ASIO_DISABLE_THREADS` on emscripten, and the loop drives Asio on
-  the page's one thread.
+  trystero uses none. Its Asio is webcpp::asio's, built without threads when
+  the program has no pthread ABI, and the loop drives it on the page's one
+  thread.
+* A suspension variant of webcpp::asio, which `/webcpp/trystero//trystero`
+  brings: `webcpp-suspend=jspi`, the default, for a browser with JavaScript
+  Promise Integration, or `asyncify` for any other. The loop never runs the
+  `io_context`, so no program of trystero suspends, but webcpp::asio's
+  runtime is linked either way.
 * A program that lives as long as the page: the event loop must outlive
   every room and object it serves.
 * Boost.JSON's definitions, which a program links from `/webcpp//boost_json`,

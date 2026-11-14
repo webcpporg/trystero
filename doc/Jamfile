@@ -12,8 +12,7 @@ webcpp.doc trystero : trystero.adoc ;
 # emscripten, whose own headers hold only for wasm32's types, so the
 # reference reads every header for Emscripten's target, as em++ compiles
 # (/webcpp//emscripten-reference), with the native backend's target, which
-# brings libdatachannel and OpenSSL, and the browser build's define of
-# build.jam, which a requirement conditioned on the emscripten toolset does
-# not give it.
+# brings webcpp::webrtc, libdatachannel and OpenSSL, and Boost.Asio without
+# threads, as wasm32 has none, for the native backend's Beast and timers.
 webcpp.reference trystero : <library>/webcpp/trystero//native <threading>multi
   <library>/webcpp//emscripten-reference <define>BOOST_ASIO_DISABLE_THREADS ;

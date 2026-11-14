@@ -8,9 +8,10 @@
 == Building
 
 trystero is header-only, and is developed inside the webcpp superproject, as
-a Boost library is developed inside Boost. Its native TLS and WebRTC
-dependencies are built from pinned sources. Only libsecp256k1 needs an
-external installation:
+a Boost library is developed inside Boost. It builds on two libraries of
+webcpp's: webcpp::asio, and webcpp::webrtc, the WebRTC of both its backends.
+Its native TLS and WebRTC dependencies are built from pinned sources. Only
+libsecp256k1 needs an external installation:
 
 [cols="2,2,3",options="header"]
 |===
@@ -22,8 +23,16 @@ external installation:
   `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else
   `.local/secp256k1-emscripten`
 
+| webcpp::asio
+| every room
+| `/webcpp/asio//asio`: natively Boost.Asio, on emscripten the backend it ships
+
+| webcpp::webrtc
+| both backends' WebRTC
+| `/webcpp/webrtc//webrtc`, the superproject's `libs/webrtc`
+
 | libdatachannel 0.24.6
-| the native backend
+| the native backend, through webcpp::webrtc
 | `/webcpp/third_party//libdatachannel`, built from `third_party/libs/libdatachannel`
 
 | OpenSSL 3.5.9
@@ -57,9 +66,8 @@ include::{library-root}/build.jam[tag=dependencies]
 
 A b2 project uses the rooms and the browser backend through
 `/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
-libsecp256k1 and Boost.JSON's definitions, compiled once per variant, and,
-on emscripten, embind and `BOOST_ASIO_DISABLE_THREADS`, since the page has no
-threads:
+webcpp::asio, libsecp256k1 and Boost.JSON's definitions, compiled once per
+variant, and, on emscripten, webcpp::webrtc and embind:
 
 [listing]
 ----
@@ -69,9 +77,13 @@ include::{library-root}/build.jam[tag=trystero]
 embind is linked as a flag, `-lembind`, rather than with b2's own
 `<embind>on`: that feature is not free, and b2 ignores a feature that is not
 free among usage requirements, so a program that used it would not link.
+On emscripten webcpp::asio builds without threads, since the page has none,
+and links its runtime in the suspension variant the build asks,
+`webcpp-suspend=jspi` by default or `asyncify`; a program is named after
+it, as `quick_start-60-d-jspi.js`.
 
-A native program uses `/webcpp/trystero//native`, which adds libdatachannel
-and the same source-built OpenSSL used by Asio and Beast:
+A native program uses `/webcpp/trystero//native`, which adds webcpp::webrtc,
+with libdatachannel and the same source-built OpenSSL used by Asio and Beast:
 
 [listing]
 ----
@@ -82,17 +94,17 @@ The native backend uses worker threads, so each consumer declares
 `<threading>multi`. Its OpenSSL dependency is the matching threaded variant;
 a single-threaded native backend is rejected before compilation.
 
-The native backend's WebRTC also needs exceptions (<<trystero-native-exceptions>>),
-and b2 lets no usage requirement override a build's
-`exception-handling=off`, so each program and test that uses it declares
-`<exception-handling>on` itself, as the examples do:
+The native backend works with exceptions and without them
+(<<trystero-native-exceptions>>), so a program builds as it asks, as the
+examples do:
 
 [listing]
 ----
 include::{examples}/Jamfile[tag=native]
 ----
 
-and as trystero's own tests of the native backend's connections do:
+and as trystero's own tests of the native backend's connections do, once
+without exceptions too:
 
 [listing]
 ----

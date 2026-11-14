@@ -21,5 +21,6 @@ trystero's own code, which is under the Boost Software License alone.
 The BIP-340 signatures of the Nostr events are
 https://github.com/bitcoin-core/secp256k1[libsecp256k1]'s, by the Bitcoin
 Core contributors, under the MIT License. The native backend's WebRTC is
-https://github.com/paullouisageneau/libdatachannel[libdatachannel]'s, by
+webcpp::webrtc's, over
+https://github.com/paullouisageneau/libdatachannel[libdatachannel], by
 Paul-Louis Ageneau, under the Mozilla Public License 2.0.

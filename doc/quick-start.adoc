@@ -45,7 +45,7 @@ include::{examples}/quick_start.cpp[tag=main]
 ----
 
 The coroutine awaits messages with `async_receive` and answers with
-`async_send`. `boost::asio::as_tuple` turns the error into a value, so
+`async_send`. `webcpp::asio::as_tuple` turns the error into a value, so
 leaving the room ends the loop instead of throwing:
 
 [source]
@@ -63,7 +63,7 @@ the `io_context` (<<trystero-browser>>).
 The same app and its joined room, natively, whole: a program that greets every peer that joins
 and prints what it receives on `chat`. A native program runs its
 `io_context` itself, since there is no event loop of a page to drive it, and
-the native backend posts what libdatachannel's threads report to it:
+webcpp::webrtc posts what libdatachannel's threads report to it:
 
 [source]
 ----

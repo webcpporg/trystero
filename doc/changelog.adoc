@@ -16,6 +16,20 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* Changed both backends' WebRTC to webcpp::webrtc, one implementation for
+native and the browser.
+* Changed the native backend to work without exceptions, as the rest does.
+* *Breaking change:* Removed the backends' own peer connection and data
+channel classes, and their `native_handle()`; use `native::backend` or
+`browser::backend`.
+* *Breaking change:* Changed trystero's Asio to webcpp::asio; a browser
+program uses `webcpp::asio::io_context`.
+* Added `native::backend_config::runtime`: at most 256 native connections
+alive at once.
+* Added a `native::backend` constructor that takes the program's
+webcpp::webrtc runtime.
+* Changed browser data channels to keep frames that arrive before a
+handler, 64 for 10 s.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]

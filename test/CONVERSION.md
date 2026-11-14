@@ -35,6 +35,13 @@ build has exceptions is the user's choice and a library supports both (owner dec
 2026-10-10). The lint analyses each test a second time without exceptions, except the two
 that declare them.
 
+Since the backends' WebRTC moved to webcpp::webrtc (2026-11-14), which natively calls
+libdatachannel's C API, `native_peer_connection` and `native_room` declare no exceptions: they
+run as the build asks and once more without them (`native_peer_connection_no_exceptions`,
+`native_room_no_exceptions`). `native_peer_connection` tests the backend's WebRTC
+(`webrtc::peer_connection`, `webrtc::data_channel`) in place of `native::peer_connection` and
+`native::data_channel`, which are gone, with each old assertion kept.
+
 ## How each form was converted
 
 | Old | New | Why |
