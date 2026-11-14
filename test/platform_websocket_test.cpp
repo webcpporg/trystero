@@ -535,6 +535,43 @@ void a_relay_of_an_authority_not_trusted_closes_without_opening() {
     BOOST_TEST(!seen.opened);
 }
 
+// A program's context made as Asio makes a client's, whose verify mode is verify_none, whether it
+// trusts the test's authority or nothing: the socket still verifies the relay, as a page's
+// WebSocket always does, so it refuses the relay's certificate at the address the certificate does
+// not name, and under its name when the context trusts nothing; the context itself is unchanged.
+void a_programs_context_that_verifies_nothing_still_refuses_a_relay() {
+    asio::io_context io;
+    tls_echo_server server(io);
+    asio::ssl::context trusting(asio::ssl::context::tls_client);
+    boost::system::error_code ec;
+    if (!BOOST_TEST(!trusting.add_certificate_authority(asio::buffer(test_authority), ec))) {
+        return;
+    }
+    asio::ssl::context trusting_nothing(asio::ssl::context::tls_client);
+    reports other_name;
+    const auto at_address = trystero::platform::connect_websocket(
+        io.get_executor(), &trusting, server.url("127.0.0.1"), other_name.record(),
+        std::pmr::get_default_resource());
+    reports untrusted;
+    const auto under_name = trystero::platform::connect_websocket(
+        io.get_executor(), &trusting_nothing, server.url("localhost"), untrusted.record(),
+        std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] {
+        return other_name.closes == 1 && untrusted.closes == 1 && server.failed_handshakes == 2;
+    }));
+    BOOST_TEST(!other_name.opened);
+    BOOST_TEST(!untrusted.opened);
+    // The relay under its name, which the trusted authority signed, is still reached.
+    reports named;
+    const auto reached =
+        trystero::platform::connect_websocket(io.get_executor(), &trusting, server.url("localhost"),
+                                              named.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return named.opened || named.closes != 0; }));
+    BOOST_TEST(named.opened);
+    BOOST_TEST_EQ(SSL_CTX_get_verify_mode(trusting.native_handle()), SSL_VERIFY_NONE);
+    BOOST_TEST_EQ(SSL_CTX_get_verify_mode(trusting_nothing.native_handle()), SSL_VERIFY_NONE);
+}
+
 // A backend given the authorities a program trusts reaches a relay they sign; one whose context
 // could not be made holds the error, reaches no wss:// relay, and still reaches a ws:// one.
 void a_backend_reaches_relays_with_the_tls_context_it_is_given() {
@@ -855,6 +892,7 @@ int main() {
     a_relay_over_tls_opens_and_is_sent_its_name();
     a_relay_whose_certificate_names_another_host_closes_without_opening();
     a_relay_of_an_authority_not_trusted_closes_without_opening();
+    a_programs_context_that_verifies_nothing_still_refuses_a_relay();
     a_backend_reaches_relays_with_the_tls_context_it_is_given();
     a_backend_makes_its_own_tls_context();
     a_backend_may_trust_webcpps_embedded_roots();

@@ -137,9 +137,14 @@ reports a close, as an unreachable one does, and the room retries it later
 as it would any other.
 
 Over TLS, natively, the connection names the relay's host to the server
-(SNI) when it is a name, never when it is an address, and checks the relay's
-certificate against the URL's host, a name or an address; in a page the
-browser does both, against its own authorities. By default the backend makes
+(SNI) when it is a name, never when it is an address, verifies the relay's
+certificate whatever the verify mode of the context, and checks it against
+the URL's host, a name or an address; in a page the browser does all three,
+against its own authorities. A program's context made as Asio makes a
+client's, `ssl::context(ssl::context::tls_client)`, whose verify mode is
+`verify_none`, still has every relay verified against the authorities it
+trusts, as a page's `WebSocket` always verifies; the context itself is left
+as it is. By default the backend makes
 its TLS context with `platform::make_tls_context()`: natively TLS 1.2 or
 newer, and the system's certificate authorities, those OpenSSL's default
 verify paths name; in a page a context that records only the policy the

@@ -415,6 +415,15 @@ private:
         if constexpr (Secure) {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
             auto& tls = ws_.next_layer();
+            // The relay is verified whatever the context's own mode, which a program's context
+            // made as Asio makes a client's leaves at verify_none, so that a certificate that does
+            // not verify fails the handshake, as a page's WebSocket always fails it.
+            boost::system::error_code verify;
+            tls.set_verify_mode(webcpp::asio::ssl::verify_peer, verify);
+            if (verify) {
+                end();
+                return;
+            }
             // SNI names a host name only, never an address (RFC 6066).
             if (url_.named && !webcpp::beast::set_server_name(tls, url_.host)) {
                 end();
@@ -625,12 +634,14 @@ private:
  * reports one close. The URL is read with Boost.URL: an IPv6 address in brackets, a scheme in any
  * case. A URL it cannot parse, one with userinfo or a fragment, and a `wss://` URL without `tls`,
  * report a close, as an unreachable relay does. Natively a `wss://` connection names the host to
- * the server (SNI) when it is a name, and checks the certificate against the URL's host, a name or
- * an address; in a page the browser does both. It needs no exceptions.
+ * the server (SNI) when it is a name, verifies the relay's certificate whatever the verify mode of
+ * `tls`, and checks it against the URL's host, a name or an address; in a page the browser does
+ * all three. It needs no exceptions.
  *
  * @param ex The executor every handler runs on.
- * @param tls The TLS context of `wss://`, which must outlive the connection and should verify
- * peers, as the context of @ref make_tls_context does; null when the program has none.
+ * @param tls The TLS context of `wss://`, which must outlive the connection, or null when the
+ * program has none; natively the connection verifies the relay against its authorities even when
+ * its verify mode is `verify_none`, as Asio makes a client's context.
  * @param url The relay's URL, read during the call.
  * @param h What the WebSocket reports.
  * @param memory The room's resource, which the connection, its handlers, its queued texts, its read
