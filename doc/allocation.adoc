@@ -62,9 +62,9 @@ Destroying a handle closes its work but queued completions can still free
 memory. Declare both `app_config::memory` and `room_options::memory`
 resources before the `io_context`, then construct the backend, app and
 rooms. Drain or destroy the `io_context` before destroying either resource.
-In the browser, keep them until all pending promises settle: the page's
-`event_loop` registrations retain their handlers, so in practice resources
-live for the page's life.
+In the browser, keep them until all pending promises settle: a pending
+`async_await` holds its handler, so in practice resources live for the page's
+life.
 
 No check in debug builds catches the misuse: trystero holds a raw pointer
 and cannot see the resource end, and the use comes after the room is gone,
@@ -110,11 +110,14 @@ it with `std::allocator`.
 [#trystero-allocation-containers]
 === Containers and shared objects
 
-Every container trystero declares is a `std::pmr` one: `std::pmr::string`
-(and `peer_id`), `std::pmr::vector` (and `backend::bytes`,
-`protocol::bytes` and `pmr_bytes`), `std::pmr::deque`, `std::pmr::map`,
-`std::pmr::set`, `std::pmr::unordered_map` and `std::pmr::unordered_set`,
-built over their owner's resource; `app_config`, `room_options`, `send_options`,
+Every container trystero declares is a `std::pmr` one or a Boost container
+over `std::pmr::polymorphic_allocator`: `std::pmr::string` (and `peer_id`),
+`std::pmr::vector` (and `backend::bytes`, `protocol::bytes` and
+`pmr_bytes`), `std::pmr::deque`, `std::pmr::map` and `std::pmr::set`, and
+`boost::unordered_flat_set` (the event ids a strategy remembers),
+`boost::circular_buffer` (the construction window, the recent challenges)
+and `boost::circular_buffer_space_optimized` (the replay cache), built over
+their owner's resource; `app_config`, `room_options`, `send_options`,
 `message_info` and `backend::ice_server` hold them too. Two types stay the
 user's choice of `std::allocator`: `trystero::bytes`, a
 `std::vector<std::uint8_t>`, and `trystero::payload`, a variant of
@@ -160,7 +163,8 @@ cache, which calls `std::aligned_alloc` on a miss (measured: two per post,
 in every round of five posts, natively and on emscripten). So the room posts
 through the executor of an `io_context` when its executor is one, where Asio
 allocates the operation as the handler's allocator says; on another
-executor, as the browser's `event_loop` executor, the wrapper stays Asio's.
+executor the wrapper stays Asio's. On both targets the room's executor is the
+executor of an `io_context`.
 
 *The backends.* Each method of `backend::factory` that makes an object takes
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
@@ -206,22 +210,25 @@ nothing.
   default allocator, since the resource is touched only on the room's
   executor; and the wrapper Asio puts around webcpp::webrtc's completions,
   which it posts through `webcpp::asio::any_io_executor`;
-* Boost.Beast's and Asio's state inside the native WebSocket: its stream,
-  its resolver's results, its coroutines' frames;
+* natively, Boost.Beast's state inside a relay's WebSocket, its stream's,
+  and the resolver's results; the WebSocket's operations, its read buffer
+  and its queued texts are in the room's resource, since each of its
+  handlers carries the room's allocator;
 * the payload types `std::string`, `bytes` and `payload`, with
   `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on
   every wait of an `io_context` with a timer or a socket, and which callocs
   an array on every call;
-* on Emscripten under Asyncify, the unwind data Asyncify allocates when a
-  call of webcpp::asio's run family suspends, which a program whose
-  `io_context` the browser's `event_loop` polls never does.
+* on Emscripten under Asyncify, the unwind data Asyncify allocates whenever
+  the browser program's `run` suspends;
+* in the browser, the entry of each pending Web Crypto promise in the map of
+  webcpp::asio's bridge, in the allocator of the `io_context`: the
+  registrations of a WebSocket and of a `page_call` are intrusive, the events
+  of a socket are posted in the room's resource, and the calls of a
+  `page_call` in the resource it is given.
 
-The browser's `event_loop` and the test's memory relays are shared by every
-room of a page or of a test: they allocate the entries of their
-registrations and their relays through the resource they are constructed
-with, and a registered callback stays in its own resource, a room's for a
-room's object.
+The test's memory relays are shared by every room of a test: they allocate
+their relays through the resource they are constructed with.
 
 [#trystero-allocation-proof]
 === The proof

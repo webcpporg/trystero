@@ -53,7 +53,7 @@ rule native-dependencies ( properties * )
 }
 
 # Asio is webcpp::asio: natively Boost.Asio itself, on emscripten the shipped
-# backend, without threads (the event loop drives it), whose browser runtime
+# backend, without threads (main runs it), whose browser runtime
 # webcpp::webrtc's browser objects deliver through. On emscripten the browser
 # backend's WebRTC is webcpp::webrtc's, and the backend reaches the page
 # through embind: -lembind, what b2's <embind>on links, which as a usage

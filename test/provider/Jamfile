@@ -11,7 +11,6 @@ webcpp.original python3 ;
 # Keep ownership with Trystero so CI provisions its external secp256k1.
 # The common executable names all three public dependency aliases.
 webcpp.drive combined : ../../../../tools/openssl/test//combined_provider
-  : <variant>release <threading>multi <exception-handling>on
-    <webcpp-drive-timeout>60
+  : <variant>release <threading>multi <webcpp-drive-timeout>60
   : driver.py : : native ;
 webcpp.lane provider-integration : combined : native ;
