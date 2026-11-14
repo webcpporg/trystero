@@ -16,40 +16,41 @@
 // until the garbage collector frees them, as Chromium counts them: beyond, the backend makes none,
 // closed or dropped connections still count, and once a collection frees them it makes one again.
 //
-// main runs the checks that need no event, and starts the collection; the verdict comes once the
-// census counts a connection less, which a timer looks for, and a deadline fails by name if it
-// never comes. Node exits once nothing is pending.
+// main runs the checks that need no event, and runs the io_context, where a timer collects and
+// looks every 10 ms for the census to count a connection less, the verdict; a verdict that does
+// not come within 10 s fails by name.
 
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 
 #include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
+#include <webcpp/asio/steady_timer.hpp>
 
 #include <emscripten/em_asm.h>
 #include <emscripten/val.h>
 #include <boost/core/lightweight_test.hpp>
+#include <boost/system/error_code.hpp>
+#include <webcpp/test/exit_status.hpp>
 
+#include <chrono>
+#include <cstddef>
 #include <memory>
 #include <memory_resource>
 #include <vector>
 
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using emscripten::val;
+using namespace std::chrono_literals;
 
 namespace {
 
 struct state {
-    webcpp::asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
-    val deadline = val::undefined();
+    asio::io_context io;
+    trystero::browser::backend backend{io.get_executor()};
+    asio::steady_timer look{io};
     bool done = false;
 };
-
-state& the_state() {
-    static state s;
-    return s;
-}
 
 /** The connections webcpp::webrtc's census of the page counts. */
 double held() {
@@ -58,38 +59,36 @@ double held() {
     return census.isUndefined() ? 0 : census["held"].as<double>();
 }
 
-/** Calls `setTimeout` with a function that runs `f` through the loop, as the page's events do. */
-val after(int milliseconds, trystero::browser::event_loop::callback f) {
-    auto& loop = the_state().loop;
-    const int id = loop.add(std::move(f));
-    return val::global("setTimeout")(loop.handler(id, 0), val(milliseconds), val::undefined());
+/** Runs node's garbage collector, exposed for this test. */
+void collect() {
+    EM_ASM({
+        require('v8').setFlagsFromString('--expose-gc');
+        require('vm').runInNewContext('gc')();
+    });
 }
 
-void set_exit_code(int code) {
-    val::global("process").set("exitCode", val(code));
-}
-
-/** Once a collection released a connection, the backend makes one again; until then, it looks
- * again a little later. */
-void on_release(int /*slot*/, const val& /*event*/) {
-    auto& s = the_state();
-    if (s.done) {
-        return;
-    }
+/** Once a collection released a connection, the backend makes one again; until then, it collects
+ * and looks again 10 ms later, while node runs the collection's finalizers. */
+void look_for_release(state& s) {
     if (held() >= trystero::browser::backend::max_peer_connections) {
-        after(10, on_release);
+        collect();
+        s.look.expires_after(10ms);
+        s.look.async_wait([&s](boost::system::error_code ec) {
+            if (!ec) {
+                look_for_release(s);
+            }
+        });
         return;
     }
     s.done = true;
     BOOST_TEST(s.backend.make_peer_connection({}, std::pmr::get_default_resource()) != nullptr);
-    val::global("clearTimeout")(s.deadline);
-    set_exit_code(boost::report_errors());
+    s.io.stop();
 }
 
 }  // namespace
 
 int main() {
-    auto& s = the_state();
+    state s;
     std::pmr::memory_resource* const memory = std::pmr::get_default_resource();
 
     // node has no RTCPeerConnection.
@@ -143,19 +142,13 @@ int main() {
     BOOST_TEST_EQ(held(), static_cast<double>(budget));
     BOOST_TEST(s.backend.make_peer_connection({}, memory) == nullptr);
 
-    // A collection frees them: node's gc, exposed for this test, from an event after this one;
-    // the census counts the release once the FinalizationRegistry has seen it.
-    after(0, [](int /*slot*/, const val& /*event*/) {
-        EM_ASM({
-            require('v8').setFlagsFromString('--expose-gc');
-            require('vm').runInNewContext('gc')();
-        });
-        after(10, on_release);
-    });
-    s.deadline = after(10'000, [](int /*slot*/, const val& /*event*/) {
+    // A collection frees them: node's gc, from a handler of the io_context, after the
+    // connections' own posted work; the census counts the release once the FinalizationRegistry
+    // has seen it, from node's event loop, while the run waits.
+    asio::post(s.io, [&s] { look_for_release(s); });
+    s.io.run_for(10s);  // lint-run: the test's event loop, held by its timer until the verdict
+    if (!s.done) {
         BOOST_ERROR("no collection released a connection");
-        set_exit_code(boost::report_errors());
-    });
-    set_exit_code(1);  // until the verdict
-    return 0;
+    }
+    return webcpp::test::exit_status(boost::report_errors());
 }

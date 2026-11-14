@@ -6,7 +6,8 @@
 //
 // The C++ side of the interop test: a page that joins a room with the library, built for the
 // browser. The driver (run.mjs) configures it through the URL and reads what happened from
-// `window.events`.
+// `window.events`. Its main starts the peer and runs the io_context for the page's life, under a
+// work guard; the driver's one call, `leave`, only posts to it.
 //
 // | Query parameter | Meaning                                                            |
 // | app, room       | the app id and room id                                             |
@@ -24,9 +25,10 @@
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
 
+#include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
 
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
@@ -54,12 +56,11 @@ struct extra_room {
     std::unique_ptr<trystero::action<trystero::bytes>> file;
 };
 
-/** Everything the page keeps alive: the io_context, the event loop, the backend, the app, the room
- * and its actions. */
+/** Everything the page keeps alive: the io_context, the backend, the app, the room and its
+ * actions. */
 struct page {
     webcpp::asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
+    trystero::browser::backend backend{io.get_executor()};
     std::unique_ptr<trystero::app> app;
     std::unique_ptr<trystero::room> room;
     std::unique_ptr<trystero::action<std::string>> chat;
@@ -73,7 +74,8 @@ struct page {
     std::uint64_t next_ping = 0;
 };
 
-/** The page's one state, made when the driver starts the peer, kept as long as the tab. */
+/** The page's one state, which main runs and the driver's calls post to, kept as long as the tab.
+ */
 page& the_page() {
     static page state;
     return state;
@@ -123,8 +125,8 @@ void record_connection(std::string_view category, std::string_view text) {
 
 void log(std::string_view category, std::string_view text) {
     record_connection(category, text);
-    val::global("window").call<void>("trysteroLog", the_page().loop.text(category),
-                                     the_page().loop.text(text));
+    val::global("window").call<void>("trysteroLog", trystero::browser::js_string(category),
+                                     trystero::browser::js_string(text));
 }
 
 /** A checksum the driver can compare without moving the payload: sum of bytes times their position,
@@ -264,8 +266,7 @@ void ping_second() {
 
 void start() {
     page& app = the_page();
-    app.app =
-        std::make_unique<trystero::app>(app.loop.get_executor(), app.backend, config_of_page());
+    app.app = std::make_unique<trystero::app>(app.io.get_executor(), app.backend, config_of_page());
     app.app->on_error(
         [](std::string_view peer, boost::system::error_code ec, std::string_view what) {
             record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
@@ -359,15 +360,28 @@ void start() {
     }
 }
 
-/** Called by the driver: leave the room with Trystero's farewell. */
+/** Called by the driver: posts the leave of the room, with Trystero's farewell. */
 void leave() {
-    the_page().room->async_leave(
-        [](boost::system::error_code ec) { record("left", {{"error", ec ? ec.message() : ""}}); });
+    webcpp::asio::post(the_page().io, [] {
+        if (!the_page().room) {
+            return;
+        }
+        the_page().room->async_leave([](boost::system::error_code ec) {
+            record("left", {{"error", ec ? ec.message() : ""}});
+        });
+    });
 }
 
 }  // namespace
 
 EMSCRIPTEN_BINDINGS(interop_peer) {
-    emscripten::function("start", &start);
     emscripten::function("leave", &leave);
+}
+
+int main() {
+    page& app = the_page();
+    // Between the driver's calls the page may have no work: the guard keeps the run going.
+    const auto guard = webcpp::asio::make_work_guard(app.io);
+    start();
+    app.io.run();  // lint-run: the page's program, suspended into the browser's event loop
 }

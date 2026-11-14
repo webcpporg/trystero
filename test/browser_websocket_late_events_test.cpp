@@ -12,28 +12,35 @@
 // the room after its close was reported. A second socket sends one text larger than the bound
 // alone: it is dropped at once, and reports one close.
 //
-// main sets the test up and returns with node's exit code at 1. The verdict runs on the timer
-// queue once both closes are reported, behind every event the stand-in had queued by then, or a
-// deadline fails by name.
+// main runs the io_context under a work guard. Once both closes are reported, the verdict waits
+// for a promise that a JavaScript timer settles, behind every event the stand-in had queued by
+// then, and releases the guard; a step that does not come within 10 s fails by name.
 
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript exports
 #include <webcpp/trystero/protocol/relays.hpp>
 
+#include <webcpp/asio/browser/async_await.hpp>
+#include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
 
 #include <emscripten/em_js.h>
 #include <emscripten/val.h>
 #include <boost/core/lightweight_test.hpp>
+#include <boost/system/error_code.hpp>
+#include <webcpp/test/browser_values.hpp>  // once per program: its EM_JS
+#include <webcpp/test/exit_status.hpp>
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
 #include <string>
 #include <string_view>
 
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using emscripten::val;
+using namespace std::chrono_literals;
 
 // The stand-in: it opens on the next turn, adds each text's UTF-8 length to bufferedAmount and
 // never drains it, queues a message event for each text sent and a close event after close().
@@ -72,75 +79,65 @@ EM_JS(void, install_late_websocket, (), {
 namespace {
 
 struct state {
-    webcpp::asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
+    asio::io_context io;
+    asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
+    trystero::browser::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::websocket> stalled;
     std::shared_ptr<trystero::backend::websocket> big;
     int stalled_closes = 0;
     int messages_after_close = 0;
     int big_closes = 0;
-    int verdict = 0;
-    val deadline = val::undefined();
+    bool judged = false;
 };
 
-state& the_state() {
-    static state s;
-    return s;
-}
-
-void set_exit_code(int code) {
-    val::global("process").set("exitCode", val(code));
-}
-
-void judge(int /*slot*/, const val& /*event*/) {
-    auto& s = the_state();
+void judge(state& s) {
     BOOST_TEST_EQ(s.stalled_closes, 1);
     BOOST_TEST_EQ(s.messages_after_close, 0);
     BOOST_TEST_EQ(s.big_closes, 1);
     BOOST_TEST_EQ(val::global("lateCloses").as<int>(), 2);
-    val::global("clearTimeout")(s.deadline);
     s.stalled.reset();
     s.big.reset();
-    set_exit_code(boost::report_errors());
+    s.judged = true;
+    s.guard.reset();
 }
 
 /** Once both sockets reported their close, judges behind every event the stand-in queued. */
-void closed() {
-    const auto& s = the_state();
+void closed(state& s) {
     if (s.stalled_closes == 0 || s.big_closes == 0) {
         return;
     }
-    val::global("setTimeout")(s.loop.handler(s.verdict, 0), val(0), val::undefined());
+    asio::browser::async_await(s.io.get_executor(),
+                               val::take_ownership(test_promise_after(0, 0, false)),
+                               [&s](boost::system::error_code ec, const val& /*value*/) {
+                                   BOOST_TEST(!ec);
+                                   judge(s);
+                               });
 }
 
 }  // namespace
 
 int main() {
     install_late_websocket();
-    auto& s = the_state();
-    s.verdict = s.loop.add(judge);
+    state s;
     s.stalled = s.backend.connect("wss://relay.test",
                                   {
                                       .open =
-                                          [] {
-                                              const auto& s = the_state();
+                                          [&s] {
                                               const std::string text(std::size_t{64} * 1024, 't');
                                               for (int i = 0; i < 100; ++i) {
                                                   s.stalled->send(text);
                                               }
                                           },
                                       .message =
-                                          [](std::string_view /*text*/) {
-                                              auto& s = the_state();
+                                          [&s](std::string_view /*text*/) {
                                               if (s.stalled_closes != 0) {
                                                   ++s.messages_after_close;
                                               }
                                           },
                                       .close =
-                                          [] {
-                                              ++the_state().stalled_closes;
-                                              closed();
+                                          [&s] {
+                                              ++s.stalled_closes;
+                                              closed(s);
                                           },
                                   },
                                   std::pmr::get_default_resource());
@@ -148,23 +145,20 @@ int main() {
         "wss://relay.test",
         {
             .open =
-                [] {
-                    const auto& s = the_state();
+                [&s] {
                     s.big->send(std::string(trystero::protocol::max_queued_relay_bytes + 1, 'b'));
                 },
             .message = {},
             .close =
-                [] {
-                    ++the_state().big_closes;
-                    closed();
+                [&s] {
+                    ++s.big_closes;
+                    closed(s);
                 },
         },
         std::pmr::get_default_resource());
-    const int id = s.loop.add([](int /*slot*/, const val& /*event*/) {
+    s.io.run_for(10s);  // lint-run: the test's event loop, held by its work guard until the verdict
+    if (!s.judged) {
         BOOST_ERROR("a dropped socket did not report its close");
-        set_exit_code(boost::report_errors());
-    });
-    s.deadline = val::global("setTimeout")(s.loop.handler(id, 0), val(10'000), val::undefined());
-    set_exit_code(1);  // until the verdict
-    return 0;
+    }
+    return webcpp::test::exit_status(boost::report_errors());
 }

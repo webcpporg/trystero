@@ -11,26 +11,31 @@
 // the channel drops; a binary message larger than any room frame is dropped too. Only the frame
 // sent last reaches the handler, and nothing larger than the largest message sent is allocated.
 //
-// main sets the test up and returns with node's exit code at 1; the verdict comes when the last
-// frame arrives, or from a deadline that fails by name, and node exits once nothing is pending.
+// main runs the io_context under a work guard, which the verdict releases when the last frame
+// arrives; a frame that does not come within 10 s fails by name.
 
 #include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
 
+#include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
 
 #include <emscripten/em_asm.h>
 #include <emscripten/val.h>
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
 
 #include "require.hpp"
 
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using emscripten::val;
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -55,25 +60,15 @@ private:
 };
 
 struct state {
-    webcpp::asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
     watching_resource memory;
+    asio::io_context io;
+    asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
+    trystero::browser::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::peer_connection> connection;
     std::shared_ptr<trystero::backend::data_channel> wrapper;
     int messages = 0;
     std::size_t last_size = 0;
-    val deadline = val::undefined();
 };
-
-state& the_state() {
-    static state s;
-    return s;
-}
-
-void set_exit_code(int code) {
-    val::global("process").set("exitCode", val(code));
-}
 
 /** Delivers `data` to the channel's `onmessage` from a timer, as the page delivers a message. */
 void deliver(const val& data) {
@@ -85,7 +80,7 @@ void deliver(const val& data) {
 }  // namespace
 
 int main() {
-    auto& s = the_state();
+    state s;
     // A connection whose channel is open from the start, and which the test reaches as
     // lastChannel.
     EM_ASM({
@@ -116,15 +111,11 @@ int main() {
     s.wrapper->set_handlers({
         .open = {},
         .message =
-            [](const trystero::backend::bytes& frame) {
-                auto& s = the_state();
+            [&s](const trystero::backend::bytes& frame) {
                 ++s.messages;
                 s.last_size = frame.size();
-                BOOST_TEST_EQ(s.messages, 1);
-                BOOST_TEST_EQ(s.last_size, 3U);
-                BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
-                val::global("clearTimeout")(s.deadline);
-                set_exit_code(boost::report_errors());
+                s.guard.reset();
+                s.io.stop();
             },
         .close = {},
         .buffered_amount_low = {},
@@ -135,11 +126,13 @@ int main() {
     deliver(val::global("ArrayBuffer").new_(val(20'000)));
     deliver(val::global("ArrayBuffer").new_(val(3)));
 
-    const int id = s.loop.add([](int /*slot*/, const val& /*event*/) {
+    s.io.run_for(10s);  // lint-run: the test's event loop, held by its work guard until the verdict
+    if (s.messages == 0) {
         BOOST_ERROR("the frame sent last never arrived");
-        set_exit_code(boost::report_errors());
-    });
-    s.deadline = val::global("setTimeout")(s.loop.handler(id, 0), val(10'000), val::undefined());
-    set_exit_code(1);  // until the verdict
-    return 0;
+    }
+    // The first frame to arrive is the last one sent: the run stopped there.
+    BOOST_TEST_EQ(s.messages, 1);
+    BOOST_TEST_EQ(s.last_size, 3U);
+    BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
+    return webcpp::test::exit_status(boost::report_errors());
 }
