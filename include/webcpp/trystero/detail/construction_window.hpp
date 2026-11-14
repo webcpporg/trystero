@@ -34,6 +34,12 @@ public:
                         std::pmr::memory_resource* memory)
         : times_(limit, memory), window_(window) {}
 
+    /** Deleted: a boost::circular_buffer moves by swapping its allocator, which std::pmr's
+     * cannot. */
+    construction_window(construction_window&&) = delete;
+    /** Deleted, as the move constructor is. */
+    construction_window& operator=(construction_window&&) = delete;
+
     /** Takes a construction at `now`, or returns false and takes none when `limit` were allowed in
      * the window that ends then. */
     bool take(time_point now) {
