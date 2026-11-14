@@ -528,9 +528,11 @@ public:
      * The most `RTCPeerConnection` objects the page holds, every program of the page together,
      * counted from their construction until the garbage collector frees them: half of the 500
      * Chromium allows a page, which it counts the same way, so that a closed connection still
-     * counts until a collection the page cannot ask for. It is the cap of the backend's
-     * webcpp::webrtc runtime, `runtime_options::max_peer_connections`, whose census of the page
-     * counts the connections webcpp::webrtc makes.
+     * counts until a collection the page cannot ask for.
+     *
+     * It is the cap of the backend's webcpp::webrtc runtime,
+     * `runtime_options::max_peer_connections`, whose census of the page counts the connections
+     * webcpp::webrtc makes.
      *
      * Tip: a room makes at most 64 connections in any 57 s, so floods of four rooms reach this
      * within a minute when no collection runs; the page then makes none until one does, and its

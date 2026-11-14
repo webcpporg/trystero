@@ -138,7 +138,9 @@ public:
 
     /**
      * Replaces the handlers, kept in a shared object so that one replacing them during its own call
-     * outlives the call. A message handler installed while frames wait posts their delivery.
+     * outlives the call.
+     *
+     * A message handler installed while frames wait posts their delivery.
      *
      * @param h The new handlers, kept in the channel's resource.
      */

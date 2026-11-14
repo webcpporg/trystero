@@ -182,8 +182,8 @@ in them, over webcpp::webrtc:
 * The caps. The native backend makes at most
   `backend_config::max_peer_connections_per_minute` connections in any
   minute, its own policy against floods (<<trystero-native-config>>); and the
-  connections alive at once are webcpp::webrtc's `runtime`'s to cap, natively
-  the backend's runtime's (<<trystero-native-runtime>>), in the browser the
+  `runtime` of webcpp::webrtc caps the connections alive at once, natively
+  the backend's own (<<trystero-native-runtime>>), in the browser over the
   page's census (<<trystero-browser-bounds>>).
 
 [#trystero-design-text]

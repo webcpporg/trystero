@@ -17,8 +17,8 @@
 
 #include <openssl/evp.h>
 #include <openssl/rand.h>
-#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
-#include <boost/asio/post.hpp>             // lint-world: posts handlers only
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <webcpp/asio/post.hpp>             // lint-world: posts handlers only
 
 #include <array>
 #include <memory>
@@ -110,7 +110,7 @@ public:
      * @param memory The room's resource, which its texts and its completions are allocated in; it
      * must outlive the completions it posts.
      */
-    sealer(boost::asio::any_io_executor ex, std::array<std::uint8_t, 32> key,
+    sealer(webcpp::asio::any_io_executor ex, std::array<std::uint8_t, 32> key,
            std::pmr::memory_resource* memory)
         : ex_(std::move(ex)), key_(key), memory_(memory) {}
 
@@ -168,7 +168,7 @@ private:
         complete(std::move(done), make_error_code(e), std::pmr::string(memory_));
     }
 
-    boost::asio::any_io_executor ex_;
+    webcpp::asio::any_io_executor ex_;
     std::array<std::uint8_t, 32> key_;
     std::pmr::memory_resource* memory_;
 };

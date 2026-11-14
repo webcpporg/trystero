@@ -11,10 +11,10 @@
 
 #include <webcpp/trystero/backend.hpp>
 
-#include <boost/asio/any_io_executor.hpp>  // lint-world: Trystero's timers
-#include <boost/asio/bind_allocator.hpp>   // lint-world: allocates timer waits
-#include <boost/asio/steady_timer.hpp>     // lint-world: Trystero's timers
 #include <boost/system/error_code.hpp>
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: Trystero's timers
+#include <webcpp/asio/bind_allocator.hpp>   // lint-world: allocates timer waits
+#include <webcpp/asio/steady_timer.hpp>     // lint-world: Trystero's timers
 
 #include <chrono>
 #include <cstdint>
@@ -42,7 +42,7 @@ public:
      * @param memory The room's resource, which each wait is allocated in; it must outlive the
      * timer's pending waits.
      */
-    timer(const boost::asio::any_io_executor& ex, std::pmr::memory_resource* memory)
+    timer(const webcpp::asio::any_io_executor& ex, std::pmr::memory_resource* memory)
         : timer_(ex),
           memory_(memory),
           waits_(
@@ -58,7 +58,7 @@ public:
     void start(std::chrono::milliseconds delay, handler<void()> fire) override {
         const std::uint64_t wait = ++*waits_;
         timer_.expires_after(delay);
-        timer_.async_wait(boost::asio::bind_allocator(
+        timer_.async_wait(webcpp::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [waits = std::weak_ptr<std::uint64_t>(waits_), wait,
              fire = std::move(fire)](boost::system::error_code ec) mutable {
@@ -75,7 +75,7 @@ public:
     }
 
 private:
-    boost::asio::steady_timer timer_;  // lint-world: Trystero's timers
+    webcpp::asio::steady_timer timer_;  // lint-world: Trystero's timers
     std::pmr::memory_resource* memory_;
     // The number of the wait under way: a handler that finds another, or none, does nothing.
     std::shared_ptr<std::uint64_t> waits_;

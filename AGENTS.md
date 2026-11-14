@@ -64,7 +64,13 @@ holds only what is specific to trystero.
   Boost.Asio itself, and on emscripten the backend webcpp::asio ships, a
   service of whose `io_context` webcpp::webrtc's browser objects deliver
   through, so the room's executor must be webcpp::asio's. The native backend
-  keeps Boost.Asio's names, which Boost.Beast takes. `/webcpp/trystero//trystero`
+  names it too (its executor, timer and sealer), but for its relays'
+  WebSockets, which are Boost.Beast's over Boost.Asio: `native::backend`'s
+  private `relay_executor` hands them the backend's executor, natively the
+  same type. The guide's reference reads every header for Emscripten's
+  target, where webcpp::asio is its own and the native backend is never
+  built: there `relay_executor` names no executor, and the native headers
+  still parse. `/webcpp/trystero//trystero`
   brings `/webcpp/asio//asio`: on emscripten every program is built in a
   suspension variant (`webcpp-suspend=jspi` by default, or `asyncify`) and
   named after it (`quick_start-60-d-jspi.js`), and the suites run in both.

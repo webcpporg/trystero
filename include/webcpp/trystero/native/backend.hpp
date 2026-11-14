@@ -21,8 +21,10 @@
 #include <webcpp/webrtc/options.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
+#include <webcpp/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+
 #include <openssl/rand.h>
-#include <boost/asio/any_io_executor.hpp>  // lint-world: posts handlers only
+#include <boost/asio/any_io_executor.hpp>  // lint-world: the relays' Boost.Beast WebSockets
 #include <boost/asio/ssl/context.hpp>      // lint-world: the relays' TLS
 
 #include <array>
@@ -72,8 +74,9 @@ struct backend_config {
 
     /**
      * What the backend's own webcpp::webrtc runtime is made with: the most peer connections alive
-     * at once, 256 by default, and libdatachannel's threads. A backend given the program's runtime
-     * does not use it.
+     * at once, 256 by default, and libdatachannel's threads.
+     *
+     * A backend given the program's runtime does not use it.
      */
     ::webcpp::webrtc::runtime_options runtime = {};
 
@@ -110,7 +113,7 @@ public:
      * context or load the system's certificate authorities; without exceptions, Boost's
      * `throw_exception`, which the program defines, is called instead.
      */
-    explicit backend(boost::asio::any_io_executor ex, backend_config config = {})
+    explicit backend(webcpp::asio::any_io_executor ex, backend_config config = {})
         : backend(std::move(ex), nullptr, std::move(config)) {}
 
     /**
@@ -122,7 +125,7 @@ public:
      * @param config What its peer connections are made with; its `runtime` is not used.
      * @throws std::exception As the other constructor.
      */
-    backend(boost::asio::any_io_executor ex, ::webcpp::webrtc::runtime& runtime,
+    backend(webcpp::asio::any_io_executor ex, ::webcpp::webrtc::runtime& runtime,
             backend_config config = {})
         // An empty owner: the pointer does not own the program's runtime.
         : backend(std::move(ex),
@@ -157,7 +160,8 @@ public:
     std::shared_ptr<trystero::backend::websocket> connect(
         std::string_view url, trystero::backend::websocket::handlers h,
         std::pmr::memory_resource* memory) override {
-        return connect_websocket(ex_, tls_, url, std::move(h), memory, config_.relay_limits);
+        return connect_websocket(relay_executor(), tls_, url, std::move(h), memory,
+                                 config_.relay_limits);
     }
 
     /**
@@ -249,7 +253,7 @@ public:
 
 private:
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    backend(boost::asio::any_io_executor ex, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
+    backend(webcpp::asio::any_io_executor ex, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
             backend_config config)
         // NOLINTEND(performance-unnecessary-value-param)
         : ex_(std::move(ex)),
@@ -260,6 +264,21 @@ private:
           tls_(boost::asio::ssl::context::tls_client) {
         tls_.set_default_verify_paths();
         tls_.set_verify_mode(boost::asio::ssl::verify_peer);
+    }
+
+    /**
+     * The executor of the relays' WebSockets, which are Boost.Beast's and take Boost.Asio's.
+     *
+     * Natively webcpp::asio is Boost.Asio, and the two executors are one: the backend builds
+     * natively alone. The reference of the guide reads every header for Emscripten's target,
+     * where webcpp::asio is its own and the backend is never built: it names no executor there.
+     */
+    [[nodiscard]] boost::asio::any_io_executor relay_executor() const {
+#ifdef WEBCPP_TARGET_NATIVE
+        return ex_;
+#else
+        return {};
+#endif
     }
 
     /** A runtime of the backend's own, which its connections share with it. */
@@ -302,7 +321,7 @@ private:
         return out;
     }
 
-    boost::asio::any_io_executor ex_;
+    webcpp::asio::any_io_executor ex_;
     backend_config config_;
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
     trystero::detail::construction_window constructions_;
