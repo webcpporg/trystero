@@ -5,16 +5,20 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the shape of a page's program, under node: main runs the io_context from the start, under
-// a work guard, and the page reaches C++ through functions the program exports, which only post to
-// it, as webcpp::asio's model asks (nothing runs the io_context from a JavaScript event).
+// a work guard, and the page calls into C++ through `browser::page_call`, functions of
+// webcpp::asio's bridge that only post to it (nothing runs the io_context from a JavaScript event).
 //
 // - A page with no room yet keeps running: nothing but the work guard holds the io_context until
 //   the page's first call, 50 ms after main started it, whose posted work joins a room of each of
 //   two apps over the memory relays. Without the guard, the run returns at once, having run
 //   nothing, and no room is ever joined.
 // - A page's call made while the run is suspended reaches the room: once the two rooms meet, the
-//   page calls the second export from a JavaScript timer, and its posted work sends on the first
-//   room's action, which the second room receives. Neither export runs any of that inside its call.
+//   page calls the second function twice from a JavaScript timer, and its posted work sends each
+//   text on the first room's action, which the second room receives. A call returns undefined at
+//   once, and its work runs from the run, never inside the call. Under Asyncify an embind
+//   function called while main is suspended returns a promise that never settles, and its second
+//   call aborts a debug build (measured with Emscripten 6.0.11): page_call is no embind function.
+// - A call of a page_call destroyed meanwhile reaches nothing.
 //
 // main ends with the errors counted once the run returns; a step that does not come within 10 s
 // fails by name.
@@ -22,14 +26,15 @@
 #include "support/rooms.hpp"
 
 #include <webcpp/trystero/app.hpp>
+#include <webcpp/trystero/browser/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
+#include <webcpp/asio/browser/bridge.hpp>
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
-#include <webcpp/asio/post.hpp>
 
 #include <emscripten/em_asm.h>
-#include <emscripten/em_macros.h>
+#include <emscripten/val.h>
 #include <boost/core/lightweight_test.hpp>
 #include <boost/system/error_code.hpp>
 #include <webcpp/test/exit_status.hpp>
@@ -38,10 +43,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 namespace test = webcpp::trystero::test;
+using emscripten::val;
 using namespace std::chrono_literals;
 
 namespace {
@@ -57,28 +64,34 @@ struct page {
     std::optional<trystero::room> z;
     std::optional<trystero::action<std::string>> chat_a;
     std::optional<trystero::action<std::string>> chat_z;
-    bool in_export = false;
-    bool ran_inside_an_export = false;
+    bool ran_inside_a_call = false;
     bool joined = false;
     int met = 0;
-    bool sent = false;
-    std::string received;
+    std::vector<std::string> received;
+    int late = 0;
 };
 
-/** Records whether posted work runs inside an export's call, which it never should. */
+/** Records whether posted work runs inside a call of the page's, which it never should. */
 void handling(page& p) {
-    if (p.in_export) {
-        p.ran_inside_an_export = true;
+    if (asio::use_service<asio::browser::bridge>(p.f.io).delivering()) {
+        p.ran_inside_a_call = true;
     }
 }
 
-/** Schedules the second export from a JavaScript timer, once both rooms met. */
+/** Calls the page's second function twice from a JavaScript timer, once both rooms met. */
 void met(page& p) {
     if (++p.met != 2) {
         return;
     }
     // A function expression: clang-format splits an arrow function's => into = >.
-    EM_ASM({ setTimeout(function() { _test_page_send($0); }, 0); }, &p);
+    EM_ASM({
+        setTimeout(
+            function() {
+                globalThis.pageReturned = globalThis.pageSend("from the page");
+                globalThis.pageSend("again");
+            },
+            0);
+    });
 }
 
 /** Joins a room of each app, and sets their handlers. */
@@ -94,44 +107,52 @@ void join(page& p) {
     p.a->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
     p.z->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
     p.chat_z->on_message([&p](std::string text, const trystero::message_info& /*info*/) {
-        p.received = std::move(text);
-        p.f.io.stop();
+        p.received.push_back(std::move(text));
+        if (p.received.size() == 2) {
+            p.f.io.stop();
+        }
     });
+}
+
+/** Sends the page's text on the first room's action. */
+void send(page& p, const val& text) {
+    handling(p);
+    p.chat_a->async_send(text.as<std::string>(),
+                         [](boost::system::error_code ec) { BOOST_TEST(!ec); });
 }
 
 }  // namespace
 
-/** The page's first call: it posts the join, nothing more. */
-extern "C" EMSCRIPTEN_KEEPALIVE void test_page_join(page* p) {
-    p->in_export = true;
-    asio::post(p->f.io, [p] { join(*p); });
-    p->in_export = false;
-}
-
-/** The page's second call: it posts a send on the first room's action, nothing more. */
-extern "C" EMSCRIPTEN_KEEPALIVE void test_page_send(page* p) {
-    p->in_export = true;
-    asio::post(p->f.io, [p] {
-        handling(*p);
-        p->chat_a->async_send("from the page", [p](boost::system::error_code ec) {
-            BOOST_TEST(!ec);
-            p->sent = true;
-        });
-    });
-    p->in_export = false;
-}
-
 int main() {
     page p;
-    // A function expression: clang-format splits an arrow function's => into = >.
-    EM_ASM({ setTimeout(function() { _test_page_join($0); }, 50); }, &p);
+    const trystero::browser::page_call join_call(p.f.io.get_executor(),
+                                                 [&p](const val& /*argument*/) { join(p); });
+    const trystero::browser::page_call send_call(p.f.io.get_executor(),
+                                                 [&p](const val& text) { send(p, text); });
+    {
+        // A call of a page_call destroyed before its work runs reaches nothing.
+        const trystero::browser::page_call gone(p.f.io.get_executor(),
+                                                [&p](const val& /*argument*/) { ++p.late; });
+        gone.function()(val(1));
+    }
+    // clang-format off
+    EM_ASM(({
+        const join = Emval.toValue($0);
+        globalThis.pageSend = Emval.toValue($1);
+        globalThis.pageReturned = "not called";
+        setTimeout(() => join(null), 50);
+    }), join_call.function().as_handle(), send_call.function().as_handle());
+    // clang-format on
     p.f.io.run_for(10s);  // lint-run: the page's program, held by its work guard
     if (!p.joined) {
         BOOST_ERROR("the run ended before the page's first call");
-    } else if (p.received.empty()) {
-        BOOST_ERROR("the page's send never reached the other room");
+    } else if (p.received.size() != 2) {
+        BOOST_ERROR("the page's sends never reached the other room");
     }
-    BOOST_TEST_EQ(p.received, "from the page");
-    BOOST_TEST(!p.ran_inside_an_export);
+    const std::vector<std::string> expected{"from the page", "again"};
+    BOOST_TEST_ALL_EQ(p.received.begin(), p.received.end(), expected.begin(), expected.end());
+    BOOST_TEST(val::global("pageReturned").isUndefined());
+    BOOST_TEST(!p.ran_inside_a_call);
+    BOOST_TEST_EQ(p.late, 0);
     return webcpp::test::exit_status(boost::report_errors());
 }

@@ -27,8 +27,8 @@
 namespace webcpp::trystero::detail {
 
 /**
- * The backend's timer over webcpp::asio's steady_timer, on both targets, whose waits are allocated
- * in the resource it is given.
+ * The backend's timer over the steady timer of webcpp::asio, on both targets, whose waits are
+ * allocated in the resource it is given.
  *
  * Tip: Asio cannot take back an expiry it has already queued, which it then completes as a
  * success; so each wait carries its number, and `cancel`, a later `start` and the destructor end

@@ -34,12 +34,16 @@ in either suspension variant).
 * The program holds a work guard on the `io_context` for the page's life: a
   page that waits for its user, or for its peers, has no work of its own, and
   without the guard `run` would return.
-* The page reaches {cpp} through the functions the program exports to it,
-  through embind or `EMSCRIPTEN_KEEPALIVE`, and each only posts to the
-  `io_context`. Nothing calls `run`, `poll` or `dispatch` from a JavaScript
-  event: while `run` is suspended, an event sees the `io_context` as running
-  in this thread, and a call of the run family there fails at its first
-  suspension (webcpp::asio's guide, "Who may call it").
+* The page reaches {cpp} through `browser::page_call`, a function of
+  webcpp::asio's bridge that the program hands to the page, and whose every
+  call only posts its work to the `io_context`. Nothing calls `run`, `poll`
+  or `dispatch` from a JavaScript event: while `run` is suspended, an event
+  sees the `io_context` as running in this thread, and a call of the run
+  family there fails at its first suspension (webcpp::asio's guide, "Who may
+  call it"). Nor is a page's call an embind function: under Asyncify, while
+  the `run` of `main` is suspended, an embind function returns a promise
+  that never settles, and its second call aborts a debug build (measured
+  with Emscripten 6.0.11).
 
 So nothing runs while nothing happens, a handler runs as soon as the run
 family resumes after its event, and a turn of `max_handlers_per_turn`
@@ -49,9 +53,9 @@ handlers is followed by a yield, which lets the page render. A handler's
 [#trystero-browser-javascript]
 === How JavaScript reaches {cpp}
 
-Every function the page calls with an event is made by webcpp::asio's
-bridge, for a registration and a key that is never reused, and only posts to
-the `io_context`: an object registers when it is made and removes its
+Every function the page calls with an event, or with a call of its own
+(`browser::page_call`), is made by webcpp::asio's bridge, for a registration
+and a key that is never reused, and only posts to the `io_context`: an object registers when it is made and removes its
 registration when it is destroyed, so a late event for a destroyed object
 finds nothing. A Web Crypto promise is awaited with webcpp::asio's
 `browser::async_await`, whose settlement is posted the same way and whose
@@ -166,22 +170,11 @@ page's log:
 include::{examples}/chat/chat.cpp[tag=send]
 ----
 
-The page calls `join` and `send` from its own events, a form's submission;
-each only posts the work to the `io_context`, which `main` runs:
-
-[source]
-----
-include::{examples}/chat/chat.cpp[tag=calls]
-----
-
-They are what the program exports to the page, through embind:
-
-[source]
-----
-include::{examples}/chat/chat.cpp[tag=bindings]
-----
-
-And `main` runs the `io_context`, under a work guard, for the page's life:
+`main` keeps the chat, makes the page's two calls, each a
+`browser::page_call`, which it hands to the page, and runs the `io_context`,
+under a work guard, for the page's life. The page calls `joinRoom` and `sendText` from its own
+events, a form's submission, and each call only posts its work to the
+`io_context`:
 
 [source]
 ----

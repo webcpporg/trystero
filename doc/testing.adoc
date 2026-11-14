@@ -152,9 +152,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
   `RTCPeerConnection` of the test's, a data channel's refusal of what is no
   frame, and the page's peer connections, made or refused, and
   webcpp::webrtc's census of them; and the shape of a page's program, whose
-  work guard keeps a page with no room yet running, and whose exported
-  functions, called from JavaScript while `run` is suspended, only post,
-  and reach the room.
+  work guard keeps a page with no room yet running, and whose
+  `browser::page_call` functions, called from JavaScript while `run` is
+  suspended, return at once, only post, and reach the room, twice in a row
+  under Asyncify too.
 |===
 
 The native backend's tests run once more without exceptions

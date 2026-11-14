@@ -7,7 +7,7 @@
 // The C++ side of the interop test: a page that joins a room with the library, built for the
 // browser. The driver (run.mjs) configures it through the URL and reads what happened from
 // `window.events`. Its main starts the peer and runs the io_context for the page's life, under a
-// work guard; the driver's one call, `leave`, only posts to it.
+// work guard; the driver's one call, `window.leave`, a `browser::page_call`, only posts to it.
 //
 // | Query parameter | Meaning                                                            |
 // | app, room       | the app id and room id                                             |
@@ -28,9 +28,7 @@
 
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
-#include <webcpp/asio/post.hpp>
 
-#include <emscripten/bind.h>
 #include <emscripten/val.h>
 #include <boost/json/object.hpp>
 #include <boost/json/serialize.hpp>
@@ -360,28 +358,25 @@ void start() {
     }
 }
 
-/** Called by the driver: posts the leave of the room, with Trystero's farewell. */
+/** The driver's call, `window.leave`: leaves the room with Trystero's farewell. */
 void leave() {
-    webcpp::asio::post(the_page().io, [] {
-        if (!the_page().room) {
-            return;
-        }
-        the_page().room->async_leave([](boost::system::error_code ec) {
-            record("left", {{"error", ec ? ec.message() : ""}});
-        });
-    });
+    if (!the_page().room) {
+        return;
+    }
+    the_page().room->async_leave(
+        [](boost::system::error_code ec) { record("left", {{"error", ec ? ec.message() : ""}}); });
 }
 
 }  // namespace
-
-EMSCRIPTEN_BINDINGS(interop_peer) {
-    emscripten::function("leave", &leave);
-}
 
 int main() {
     page& app = the_page();
     // Between the driver's calls the page may have no work: the guard keeps the run going.
     const auto guard = webcpp::asio::make_work_guard(app.io);
+    // The driver's one call, a function of webcpp::asio's bridge that posts the leave.
+    const trystero::browser::page_call leave_call(app.io.get_executor(),
+                                                  [](const val& /*argument*/) { leave(); });
+    val::global("window").set("leave", leave_call.function());
     start();
     app.io.run();  // lint-run: the page's program, suspended into the browser's event loop
 }

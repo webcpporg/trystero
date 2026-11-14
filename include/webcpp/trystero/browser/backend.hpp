@@ -258,6 +258,83 @@ inline val js_string(std::string_view utf8) {
 }
 
 /**
+ * A function the page calls into C++ with, made by webcpp::asio's bridge, each call of which posts
+ * `f` with the value the page passed to the executor's io_context.
+ *
+ * It is how a page reaches a program whose `main` runs its io_context: the call returns at once,
+ * having run nothing, and `f` runs when the run family does, never inside the page's event, in
+ * either suspension variant. An embind function would run its work inside the event, and under
+ * Asyncify, while `main` is suspended in its run, returns a promise that never settles, and aborts
+ * a debug build at its second call (measured with Emscripten 6.0.11). A call made once the
+ * page_call is destroyed, or once its work is posted and the page_call destroyed before it runs,
+ * reaches nothing.
+ *
+ * @tparam F A callable of one `const emscripten::val&`, the value the page passed.
+ * @see "The program runs its io_context", in the guide.
+ */
+template <class F>
+// The bridge indexes the call by its registration, a private base: its one owner is the call.
+class page_call final : private webcpp::asio::browser::intrusive_registration {
+public:
+    /**
+     * Makes the function, registered with the bridge of the io_context of `ex`.
+     *
+     * @param ex The executor `f` is posted to, an io_context's of webcpp::asio, which must outlive
+     * the page_call or be destroyed first, which ends it.
+     * @param f What each call runs, on the executor.
+     * @param memory The resource `f` and each posted call are allocated in.
+     */
+    page_call(webcpp::asio::any_io_executor ex, F f,
+              std::pmr::memory_resource* memory = std::pmr::get_default_resource())
+        : ex_(std::move(ex)),
+          memory_(memory),
+          f_(std::allocate_shared<F>(std::pmr::polymorphic_allocator<>(memory), std::move(f))),
+          bridge_(&detail::bridge_of(ex_)),
+          key_(bridge_->add(*this)) {}
+
+    /** Not copyable: the bridge delivers to it by its address. */
+    page_call(const page_call&) = delete;
+
+    /** Not copy-assignable: the bridge delivers to it by its address. */
+    page_call& operator=(const page_call&) = delete;
+
+    /** Destroys the function: a call from now on, or one posted and not yet run, reaches nothing.
+     */
+    ~page_call() {
+        if (bridge_ != nullptr) {
+            bridge_->remove(key_);
+        }
+    }
+
+    /**
+     * The JavaScript function, of one argument, which the program hands to the page.
+     *
+     * @return The function; undefined once the io_context is destroyed.
+     */
+    [[nodiscard]] val function() const {
+        return bridge_ != nullptr ? bridge_->function(key_) : val::undefined();
+    }
+
+private:
+    bool deliver(const val& argument) override {
+        trystero::detail::post(ex_, memory_, [weak = std::weak_ptr<F>(f_), argument] {
+            if (const auto f = weak.lock()) {
+                (*f)(argument);
+            }
+        });
+        return false;
+    }
+
+    void shutdown() noexcept override { bridge_ = nullptr; }
+
+    webcpp::asio::any_io_executor ex_;
+    std::pmr::memory_resource* memory_;
+    std::shared_ptr<F> f_;
+    webcpp::asio::browser::bridge* bridge_;
+    std::uint64_t key_;
+};
+
+/**
  * A WebSocket over the page's `WebSocket`, whose events reach the executor through webcpp::asio's
  * bridge.
  *
@@ -286,9 +363,9 @@ public:
      * @param memory The room's resource, which the WebSocket's handlers, its events and the texts
      * it receives are allocated in.
      */
-    websocket(const webcpp::asio::any_io_executor& ex, std::string_view url, handlers h,
+    websocket(webcpp::asio::any_io_executor ex, std::string_view url, handlers h,
               std::pmr::memory_resource* memory)
-        : ex_(ex),
+        : ex_(std::move(ex)),
           memory_(memory),
           h_(std::allocate_shared<handlers>(std::pmr::polymorphic_allocator<>(memory),
                                             std::move(h))),
@@ -476,9 +553,9 @@ public:
      * @param memory The room's resource, which its texts, its waiting operations and its
      * completions are allocated in.
      */
-    sealer(const webcpp::asio::any_io_executor& ex, std::array<std::uint8_t, 32> key,
+    sealer(webcpp::asio::any_io_executor ex, std::array<std::uint8_t, 32> key,
            std::pmr::memory_resource* memory)
-        : ex_(ex), raw_key_(key), memory_(memory), waiting_(memory) {}
+        : ex_(std::move(ex)), raw_key_(key), memory_(memory), waiting_(memory) {}
 
     /**
      * Seals a text under a fresh random IV, with `crypto.subtle.encrypt`.
@@ -643,10 +720,10 @@ private:
  * `emscripten::val` holds is in the JavaScript heap. It needs a secure context, where
  * `crypto.subtle` exists.
  *
- * Tip: every object it makes runs on its executor, whose io_context the program runs from `main`
- * (`io.run()`, under a work guard) for as long as the page lives: the page's events, the timers
- * and the promises it awaits post to that io_context, and run only while it runs. The app is
- * given an executor of the same io_context.
+ * Tip: every object it makes runs on its executor, whose io_context the program runs from `main`,
+ * under a work guard, for as long as the page lives: the page's events, the timers and the
+ * promises it awaits post to that io_context, and run only while it runs. The app is given an
+ * executor of the same io_context.
  *
  * @see "The browser backend", in the guide.
  */
@@ -726,7 +803,7 @@ public:
     }
 
     /**
-     * Makes a timer, over webcpp::asio's `steady_timer`.
+     * Makes a timer, over the steady timer of webcpp::asio.
      *
      * @param memory The room's resource, which the timer and its waits are allocated in.
      * @return The timer, not started.

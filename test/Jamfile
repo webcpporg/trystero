@@ -102,7 +102,8 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # end::allocation[]
 
 # The browser backend's own tests, under node, which has the page's
-# WebSocket, Web Crypto and microtasks but no WebRTC.
+# WebSocket and Web Crypto but no WebRTC; each main runs its io_context, as
+# a page's program does, and suspends in it in either variant.
 # tag::browser[]
 webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
 webcpp.run browser_websocket_bound : browser_websocket_bound_test.cpp : : emscripten ;
