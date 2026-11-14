@@ -729,6 +729,7 @@ public:
                                                  std::pmr::memory_resource* memory) override;
 
     void random(std::span<std::uint8_t> out) override {
+        random_bytes += out.size();
         for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
         }
@@ -761,6 +762,8 @@ public:
     std::size_t made_connections = 0;
     /** The most peer connections that were open at once. */
     std::size_t peak_connections = 0;
+    /** How many random bytes were drawn. */
+    std::size_t random_bytes = 0;
     /** How much faster than real time the timers and the clock run, for tests of long timeouts. */
     std::uint32_t time_scale = 1;
     /** How many of the next peer connections to refuse, as a browser at its limit does. */

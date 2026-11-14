@@ -8,10 +8,6 @@
 // support/memory_backend.hpp. WEBCPP_TEST_TRYSTERO_VERBOSE in the environment prints each room's
 // log on the standard error.
 
-// Boost.Unordered counts the probes and the comparisons of its open-addressing containers, which
-// the case of colliding event ids reads; before any of its headers.
-#define BOOST_UNORDERED_ENABLE_STATS
-
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -39,7 +35,7 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -694,6 +690,12 @@ void the_replay_cache_remembers_the_last_ones() {
     BOOST_TEST(!none.contains("one"));
 }
 
+/** A NIP-01 event id, 64 lowercase hexadecimal digits, all `digit`. */
+std::string event_id_of(char digit) {
+    std::string id(trystero::detail::recent_event_ids::id_size, digit);
+    return id;
+}
+
 // A relay may repeat an event, and every relay carries the events of the room: the strategy acts on
 // an event id once among the newest it remembers, and on the oldest again once forgotten.
 void recent_event_ids_drop_a_repeat_and_forget_the_oldest() {
@@ -701,68 +703,93 @@ void recent_event_ids_drop_a_repeat_and_forget_the_oldest() {
     {
         const std::array<std::uint8_t, 16> key{};
         trystero::detail::recent_event_ids ids(3, key, &memory);
-        BOOST_TEST(ids.remember("a"));
-        BOOST_TEST(!ids.remember("a"));
-        BOOST_TEST(ids.remember("b"));
-        BOOST_TEST(ids.remember("c"));
-        BOOST_TEST(!ids.remember("a"));
-        BOOST_TEST(ids.remember("d"));
+        const auto a = event_id_of('a');
+        const auto b = event_id_of('b');
+        const auto c = event_id_of('c');
+        const auto d = event_id_of('d');
+        BOOST_TEST(ids.remember(a));
+        BOOST_TEST(!ids.remember(a));
+        BOOST_TEST(ids.remember(b));
+        BOOST_TEST(ids.remember(c));
+        BOOST_TEST(!ids.remember(a));
+        BOOST_TEST(ids.remember(d));
         BOOST_TEST_EQ(ids.size(), 3U);
-        BOOST_TEST(ids.remember("a"));
-        BOOST_TEST(!ids.remember("c"));
-        BOOST_TEST(!ids.remember("d"));
-        BOOST_TEST(ids.remember("b"));
-        // An event without an id is never taken for a repeat.
-        BOOST_TEST(ids.remember(""));
-        BOOST_TEST(ids.remember(""));
+        BOOST_TEST(ids.remember(a));
+        BOOST_TEST(!ids.remember(c));
+        BOOST_TEST(!ids.remember(d));
+        BOOST_TEST(ids.remember(b));
         BOOST_TEST_EQ(ids.size(), 3U);
         BOOST_TEST_GT(memory.in_use, 0U);
     }
     BOOST_TEST_EQ(memory.in_use, 0U);
 }
 
-// Ids a relay chooses so that the standard library's unseeded hash puts them all in one bucket of a
-// std::unordered_set sized for the ids remembered, the strategy's index before, where each lookup
-// walks every one of them, cost the index a probe and a comparison each: it hashes them with
-// SipHash under a key of its own. The ids are found by search, as an attacker finds them.
-void colliding_event_ids_stay_fast() {
-    constexpr std::size_t count = 2048;
-    constexpr std::size_t capacity = trystero::detail::nostr_strategy::remembered_events;
-    std::unordered_set<std::string_view> reference;
-    reference.reserve(capacity);
-    std::vector<std::string> colliding;
-    colliding.reserve(count);
-    std::string candidate(64, '0');  // the length of a Nostr event id, in hexadecimal
-    const auto target = reference.bucket(candidate);
-    for (std::uint64_t n = 0; colliding.size() < count; ++n) {
-        for (std::size_t i = 0; i < 16; ++i) {
-            candidate[candidate.size() - 1 - i] = "0123456789abcdef"[(n >> (4 * i)) & 15U];
-        }
-        if (reference.bucket(candidate) == target) {
-            colliding.push_back(candidate);
-        }
+// Trystero takes every event a relay sends, repeats included. The port drops a repeat only of an
+// id NIP-01 defines, 64 lowercase hexadecimal digits: any other id, of any length, is acted on as
+// Trystero acts on it, every time, and never stored, so that a relay cannot fill the room's
+// resource with the 4096 ids remembered.
+void event_ids_other_than_nip01_ones_are_never_remembered() {
+    counting_resource memory;
+    const std::array<std::uint8_t, 16> key{};
+    trystero::detail::recent_event_ids ids(3, key, &memory);
+    std::string uppercase = event_id_of('a');
+    uppercase.back() = 'A';
+    std::string not_hex = event_id_of('a');
+    not_hex.front() = 'g';
+    for (const std::string& id : {
+             std::string(),
+             std::string(63, 'a'),
+             std::string(65, 'a'),
+             uppercase,
+             not_hex,
+             std::string(std::size_t{1} << 20U, 'a'),
+         }) {
+        BOOST_TEST(ids.remember(id));
+        BOOST_TEST(ids.remember(id));
     }
-    reference.insert(colliding.begin(), colliding.end());
-    BOOST_TEST_GE(reference.bucket_count(), capacity);
-    BOOST_TEST_EQ(reference.bucket_size(target), count);
+    BOOST_TEST_EQ(ids.size(), 0U);
+    BOOST_TEST_EQ(memory.in_use, 0U);
+}
 
-    std::array<std::uint8_t, 16> key{};
-    key.fill(0x5a);
-    trystero::detail::recent_event_ids ids(capacity, key, std::pmr::get_default_resource());
-    const auto fresh =
-        std::ranges::count_if(colliding, [&](const auto& id) { return ids.remember(id); });
-    const auto repeated =
-        std::ranges::count_if(colliding, [&](const auto& id) { return !ids.remember(id); });
-    BOOST_TEST_EQ(static_cast<std::size_t>(fresh), count);
-    BOOST_TEST_EQ(static_cast<std::size_t>(repeated), count);
-    const auto stats = ids.index().get_stats();
-    // Measured: 1.08, 1.04, 0.03, 1 and 1.01; a chain of `count` ids would cost about half of them,
-    // a thousand comparisons, at each lookup.
-    BOOST_TEST_LE(stats.insertion.probe_length.average, 1.5);
-    BOOST_TEST_LE(stats.unsuccessful_lookup.probe_length.average, 1.5);
-    BOOST_TEST_LE(stats.unsuccessful_lookup.num_comparisons.average, 0.5);
-    BOOST_TEST_LE(stats.successful_lookup.probe_length.average, 1.5);
-    BOOST_TEST_LE(stats.successful_lookup.num_comparisons.average, 1.5);
+// The ids are whatever a relay sends, so the index hashes them with SipHash under a key of the
+// strategy's: under another key, an id hashes elsewhere, so that ids a relay chose to collide under
+// one key do not under the next.
+void the_event_id_hash_is_keyed() {
+    std::array<std::uint8_t, trystero::detail::recent_event_ids::key_size> one{};
+    one.fill(1);
+    std::array<std::uint8_t, trystero::detail::recent_event_ids::key_size> two{};
+    two.fill(2);
+    const trystero::detail::recent_event_ids::keyed_hash under_one(one);
+    const trystero::detail::recent_event_ids::keyed_hash under_two(two);
+    const auto id = event_id_of('e');
+    BOOST_TEST_NE(under_one(id), under_two(id));
+    BOOST_TEST_EQ(under_one(id), trystero::detail::recent_event_ids::keyed_hash(one)(id));
+}
+
+// A strategy draws its index's key from the backend's randomness when it is made, beside its
+// signer's secret: a relay cannot know it.
+void a_strategy_draws_the_key_of_its_event_ids() {
+    fixture f;
+    const auto before = f.net.random_bytes;
+    const auto strategy = std::make_shared<trystero::detail::nostr_strategy>(
+        f.net, std::span<const std::pmr::string>(), std::pmr::vector<std::pmr::string>(), "topic",
+        trystero::handler<std::pmr::string()>(),
+        trystero::detail::nostr_strategy::message_handler(), trystero::detail::logger(),
+        std::pmr::get_default_resource(), boost::json::storage_ptr());
+    BOOST_TEST_EQ(f.net.random_bytes - before,
+                  32U + trystero::detail::recent_event_ids::key_size);  // the secret, the key
+}
+
+// A boost::circular_buffer moves by swapping its allocators, which std::pmr's cannot: the classes
+// that hold one over the room's resource say they cannot move, rather than fail to compile when
+// moved.
+void classes_over_a_pmr_circular_buffer_do_not_move() {
+    BOOST_TEST(!std::is_move_constructible_v<trystero::detail::construction_window>);
+    BOOST_TEST(!std::is_move_assignable_v<trystero::detail::construction_window>);
+    BOOST_TEST(!std::is_move_constructible_v<trystero::detail::recent_challenges>);
+    BOOST_TEST(!std::is_move_assignable_v<trystero::detail::recent_challenges>);
+    BOOST_TEST(!std::is_move_constructible_v<trystero::detail::replay_cache>);
+    BOOST_TEST(!std::is_move_assignable_v<trystero::detail::replay_cache>);
 }
 
 /** Joins B to A, records what `record` keeps of the relays meanwhile, and has B leave; B's app goes
@@ -1487,7 +1514,10 @@ int main() {
     announcements_with_forged_answers_are_bounded();
     the_replay_cache_remembers_the_last_ones();
     recent_event_ids_drop_a_repeat_and_forget_the_oldest();
-    colliding_event_ids_stay_fast();
+    event_ids_other_than_nip01_ones_are_never_remembered();
+    the_event_id_hash_is_keyed();
+    a_strategy_draws_the_key_of_its_event_ids();
+    classes_over_a_pmr_circular_buffer_do_not_move();
     a_replayed_answer_is_refused();
     a_replayed_offer_is_refused();
     a_reflected_offer_is_refused_as_an_answer();

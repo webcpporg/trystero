@@ -18,6 +18,7 @@
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <boost/endian/conversion.hpp>
 #include <boost/hash2/get_integral_result.hpp>
 #include <boost/hash2/siphash.hpp>
 #include <boost/json/storage_ptr.hpp>
@@ -45,6 +46,10 @@ namespace webcpp::trystero::detail {
  * The ids of the newest Nostr events a strategy received, so that it acts on each event once: a
  * relay may repeat one, and every relay of the room carries it.
  *
+ * Only an id NIP-01 defines, 64 lowercase hexadecimal digits, is remembered: an event with any
+ * other id is acted on every time, as Trystero, which remembers none, acts on every event, so that
+ * what a relay makes the room hold is `capacity` ids of 64 bytes.
+ *
  * Tip: an id is whatever a relay sends, so the index hashes it with SipHash under a key drawn when
  * the strategy is made. The standard library's hashes are unseeded: ids a relay chose to fall in
  * one bucket of a `std::unordered_set` would make each of its lookups walk all of them.
@@ -53,6 +58,9 @@ class recent_event_ids {
 public:
     /** The size of the hash's key, SipHash's 128 bits. */
     static constexpr std::size_t key_size = 16;
+
+    /** The size of an id the index remembers: NIP-01's, the SHA-256 of the event in hexadecimal. */
+    static constexpr std::size_t id_size = 64;
 
     /** SipHash of an id under a key, which Boost.Unordered uses as it is. */
     class keyed_hash {
@@ -87,9 +95,9 @@ public:
           capacity_(capacity) {}
 
     /** Whether `id` is new; a new one is remembered in place of the oldest beyond `capacity`, and
-     * an empty one is always new and never remembered. */
+     * one that is not NIP-01's is always new and never remembered. */
     bool remember(std::string_view id) {
-        if (id.empty()) {
+        if (!is_nip01_id(id)) {
             return true;
         }
         if (index_.contains(id)) {
@@ -108,11 +116,14 @@ public:
     /** How many ids are remembered. */
     [[nodiscard]] std::size_t size() const { return order_.size(); }
 
-    /** The index, for its statistics, which Boost.Unordered keeps with
-     * `BOOST_UNORDERED_ENABLE_STATS`. */
-    [[nodiscard]] const index_type& index() const noexcept { return index_; }
-
 private:
+    /** Whether `id` is an event id as NIP-01 writes it: 64 lowercase hexadecimal digits. */
+    static bool is_nip01_id(std::string_view id) {
+        return id.size() == id_size && std::ranges::all_of(id, [](char c) {
+                   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+               });
+    }
+
     index_type index_;
     std::pmr::deque<std::pmr::string> order_;
     std::size_t capacity_;
@@ -373,7 +384,8 @@ private:
         factory_.random(random);
         // A share of the bound in [0, 1), in steps of 1/65536, and the delay in whole
         // milliseconds below it.
-        const double share = ((std::uint32_t{random[0]} << 8U) | random[1]) / 65536.0;
+        const std::uint16_t draw = boost::endian::load_big_u16(random.data());
+        const double share = draw / 65536.0;
         const auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(share * r.retry);
         r.retry = std::min(r.retry * 2, max_retry);
         r.reconnect_timer = factory_.make_timer(memory_);
