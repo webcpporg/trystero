@@ -147,7 +147,8 @@ struct url_parts {  // NOLINT(bugprone-exception-escape)
     bool secure = false;
     /** Whether the host is a name, not an address: TLS names only a name to the server (SNI). */
     bool named = false;
-    /** The host the resolver looks up: a name in lower case, or an address, IPv6 without brackets.
+    /**
+     * The host the resolver looks up: a name in lower case, or an address, IPv6 without brackets.
      */
     std::pmr::string host;
     /** The port, in decimal, the scheme's default when the URL names none. */
@@ -226,7 +227,9 @@ inline std::optional<url_parts> parse_url(
             break;
         case boost::urls::host_type::ipv6:
             out.host.assign(address.data(), address.size());
-            out.handshake_host.append("[").append(out.host).append("]");
+            out.handshake_host = "[";
+            out.handshake_host += out.host;
+            out.handshake_host += "]";
             break;
         default:  // none, or an IPvFuture address, which no resolver knows
             return std::nullopt;
