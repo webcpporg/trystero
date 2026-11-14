@@ -183,6 +183,9 @@ inline std::pmr::string room_token(
 /**
  * Trystero's `strToNum`: the sum of the text's UTF-16 code units, modulo `limit`.
  *
+ * Tip: it computes in doubles, JavaScript's Numbers, as `strToNum` does, so that every peer derives
+ * the same kinds and relays; the oracle's fixtures pin it.
+ *
  * @param text The text, in UTF-8.
  * @param limit The modulus; the default is JavaScript's `Number.MAX_SAFE_INTEGER`.
  * @return The number, in [0, `limit`).

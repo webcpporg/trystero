@@ -134,12 +134,13 @@ inline std::optional<sealed_parts> parse_sealed(
     for (std::string_view ivs = text.substr(0, dollar); !ivs.empty();) {
         const auto comma = ivs.find(',');
         const auto item = ivs.substr(0, comma);
-        unsigned value = 0;
+        // A byte: from_chars refuses a number above 255 as out of range.
+        std::uint8_t value = 0;
         const auto [end, ec] = std::from_chars(item.data(), item.data() + item.size(), value);
-        if (ec != std::errc{} || end != item.data() + item.size() || value > 255) {
+        if (ec != std::errc{} || end != item.data() + item.size()) {
             return std::nullopt;
         }
-        out.iv.push_back(static_cast<std::uint8_t>(value));
+        out.iv.push_back(value);
         ivs = comma == std::string_view::npos ? std::string_view{} : ivs.substr(comma + 1);
     }
     auto ciphertext = base64_decode(text.substr(dollar + 1), memory);

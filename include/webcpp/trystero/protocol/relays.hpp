@@ -80,7 +80,8 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
  * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks
  * the same order.
  *
- * Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
+ * Tip: the seed and the draws are doubles, JavaScript's Numbers, as in Trystero; `std::sin` and
+ * V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
  *
  * @tparam Sequence A sequence with `size()` and random access, as `std::pmr::vector`.
  * @param items The items, shuffled in the copy returned.
