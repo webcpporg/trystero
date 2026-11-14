@@ -576,6 +576,23 @@ void a_backend_makes_its_own_tls_context() {
     BOOST_TEST(backend.tls_context().has_value());
 }
 
+// A backend that trusts webcpp's embedded Mozilla roots in place of the system's, as the guide
+// shows it made (doc: #trystero-native-relays): the test's authority is not among them, so its
+// relay is unreachable.
+void a_backend_may_trust_webcpps_embedded_roots() {
+    asio::io_context io;
+    const tls_echo_server server(io);
+    // tag::embedded-roots[]
+    trystero::native::backend backend(io.get_executor(), webcpp::asio::make_tls_client_context());
+    // end::embedded-roots[]
+    BOOST_TEST(backend.tls_context().has_value());
+    reports seen;
+    const auto socket =
+        backend.connect(server.url("localhost"), seen.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
+    BOOST_TEST(!seen.opened);
+}
+
 void opens_sends_in_order_receives_and_closes_once() {
     asio::io_context io;
     const echo_server server(io);
@@ -837,6 +854,7 @@ int main() {
     a_relay_of_an_authority_not_trusted_closes_without_opening();
     a_backend_reaches_relays_with_the_tls_context_it_is_given();
     a_backend_makes_its_own_tls_context();
+    a_backend_may_trust_webcpps_embedded_roots();
     opens_sends_in_order_receives_and_closes_once();
     a_message_longer_than_a_relay_sends_closes_the_socket();
     an_unreachable_relay_closes_without_opening();

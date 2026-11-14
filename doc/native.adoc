@@ -159,10 +159,9 @@ context and gives it to the backend: webcpp's embedded Mozilla roots, which
 read no file of the system, with `webcpp::asio::make_tls_client_context()`,
 or a private authority with `webcpp::asio::make_tls_client_context(pem)`:
 
-[source,cpp]
+[source]
 ----
-trystero::native::backend backend(io.get_executor(),
-                                  webcpp::asio::make_tls_client_context());
+include::{library-root}/test/native_websocket_test.cpp[tag=embedded-roots,indent=0]
 ----
 
 The backend takes the context as `make_tls_client_context` returns it, a

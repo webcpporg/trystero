@@ -227,9 +227,9 @@ inline std::optional<url_parts> parse_url(
             break;
         case boost::urls::host_type::ipv6:
             out.host.assign(address.data(), address.size());
-            out.handshake_host = "[";
+            out.handshake_host.push_back('[');
             out.handshake_host += out.host;
-            out.handshake_host += "]";
+            out.handshake_host.push_back(']');
             break;
         default:  // none, or an IPvFuture address, which no resolver knows
             return std::nullopt;
@@ -238,7 +238,8 @@ inline std::optional<url_parts> parse_url(
     const auto written = std::to_chars(digits.data(), digits.data() + digits.size(), port);
     out.port.assign(digits.data(), written.ptr);
     if (port != default_port) {
-        out.handshake_host.append(":").append(out.port);
+        out.handshake_host.push_back(':');
+        out.handshake_host += out.port;
     }
     const auto target = view.encoded_target();
     if (target.empty() || target.front() != '/') {
