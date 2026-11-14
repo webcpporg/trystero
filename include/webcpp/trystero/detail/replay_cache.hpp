@@ -11,13 +11,14 @@
 
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <boost/circular_buffer.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
 #include <string_view>
-#include <vector>
 
 namespace webcpp::trystero::detail {
 
@@ -33,9 +34,10 @@ namespace webcpp::trystero::detail {
  */
 class replay_cache {
 public:
-    /** Remembers nothing yet; the digests are allocated in `memory`, up to `capacity` of them. */
+    /** Remembers nothing yet; the digests are allocated in `memory`, up to `capacity` of them, as
+     * they come. */
     replay_cache(std::size_t capacity, std::pmr::memory_resource* memory)
-        : digests_(memory), capacity_(capacity) {}
+        : digests_(capacity, memory) {}
 
     /** Whether `opened`, an offer's or an answer's text, is among the last `capacity` used. */
     [[nodiscard]] bool contains(std::string_view opened) const {
@@ -43,23 +45,14 @@ public:
     }
 
     /** Remembers `opened` as used, in place of the oldest once `capacity` are remembered. */
-    void insert(std::string_view opened) {
-        if (capacity_ == 0) {
-            return;
-        }
-        if (digests_.size() < capacity_) {
-            digests_.push_back(protocol::sha256(opened));
-            return;
-        }
-        digests_[next_] = protocol::sha256(opened);
-        next_ = (next_ + 1) % capacity_;
-    }
+    void insert(std::string_view opened) { digests_.push_back(protocol::sha256(opened)); }
 
 private:
-    // A ring once full, whose oldest digest is at next_.
-    std::pmr::vector<std::array<std::uint8_t, 32>> digests_;
-    std::size_t capacity_;
-    std::size_t next_ = 0;
+    using digest = std::array<std::uint8_t, 32>;
+
+    // Its storage grows with the digests remembered, up to `capacity`: a quiet room needs a few.
+    boost::circular_buffer_space_optimized<digest, std::pmr::polymorphic_allocator<digest>>
+        digests_;
 };
 
 }  // namespace webcpp::trystero::detail

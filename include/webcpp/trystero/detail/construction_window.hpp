@@ -9,11 +9,11 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <boost/circular_buffer.hpp>
+
 #include <chrono>
 #include <cstddef>
-#include <limits>
 #include <memory_resource>
-#include <vector>
 
 namespace webcpp::trystero::detail {
 
@@ -30,23 +30,20 @@ public:
     /** No construction yet; the times are allocated in `memory`. */
     construction_window(std::size_t limit, std::chrono::milliseconds window,
                         std::pmr::memory_resource* memory)
-        : times_(limit, -std::numeric_limits<double>::infinity(), memory),
-          window_ms_(static_cast<double>(window.count())) {}
+        : times_(limit, memory), window_ms_(static_cast<double>(window.count())) {}
 
     /** Takes a construction at `now_ms`, or returns false and takes none when `limit` were
      * allowed in the window that ends then. */
     bool take(double now_ms) {
-        if (times_.empty() || now_ms - times_[next_] < window_ms_) {
+        if (times_.capacity() == 0 || (times_.full() && now_ms - times_.front() < window_ms_)) {
             return false;
         }
-        times_[next_] = now_ms;
-        next_ = (next_ + 1) % times_.size();
+        times_.push_back(now_ms);  // in the oldest's place once full
         return true;
     }
 
 private:
-    std::pmr::vector<double> times_;  // a ring; times_[next_] is the oldest
-    std::size_t next_ = 0;
+    boost::circular_buffer<double, std::pmr::polymorphic_allocator<double>> times_;
     double window_ms_;
 };
 

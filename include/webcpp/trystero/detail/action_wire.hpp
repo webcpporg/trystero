@@ -608,7 +608,7 @@ private:
         b.name = p.name;
         b.format = p.format;
         b.metadata = p.metadata;
-        b.size = p.size;
+        b.size = static_cast<std::size_t>(p.size);  // within max_receive_bytes_, checked above
         b.timer = factory_.make_timer(memory_);
         arm(peer, p.id, b);
         drain();

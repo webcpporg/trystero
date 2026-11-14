@@ -189,8 +189,8 @@ public:
             if (!existing->leaving()) {
                 return error::already_joined;
             }
-            // Trystero's rejoin (C/strategy.mjs:38): the old room's presence(0) goes before the
-            // new room's presence(1).
+            // Trystero's rejoin (dist/strategy.mjs:38): the old room's presence(0) goes before
+            // the new room's presence(1).
             existing->finish_farewell();
         }
         if (impl_->counted_rooms() >= max_rooms) {

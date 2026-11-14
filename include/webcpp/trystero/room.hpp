@@ -17,6 +17,7 @@
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
 #include <webcpp/trystero/detail/post.hpp>
+#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/rebinding.hpp>
 #include <webcpp/trystero/detail/signaling.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -586,8 +587,10 @@ public:
             allocator(), factory_, app_->relay_urls(), std::move(topics), root_topic_,
             bind<std::pmr::string()>([weak, memory = memory_] {
                 const auto self = weak.lock();
-                return self ? protocol::write_signal({.peer_id = self->app_->self_id()},
-                                                     self->random_id(protocol::nonce_size), memory)
+                return self ? protocol::write_signal(
+                                  {.peer_id = self->app_->self_id()},
+                                  detail::random_id(self->factory_, protocol::nonce_size, memory),
+                                  memory)
                             : std::pmr::string(memory);
             }),
             bind<void(std::size_t, std::string_view, std::string_view)>(
@@ -941,16 +944,6 @@ private:
         detail::post(ex_, memory_, std::forward<F>(f));
     }
 
-    std::pmr::string random_id(std::size_t n) {
-        std::array<std::uint8_t, 64> random{};
-        factory_.random(std::span(random).first(n));
-        std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i) {
-            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
-        }
-        return id;
-    }
-
     action_slot& slot_for(std::string_view name) {
         auto it = actions_.find(name);
         if (it == actions_.end()) {
@@ -1198,7 +1191,7 @@ private:
             return;
         }
         if (app_->self_id() < peer) {
-            state.challenge = random_id(36);
+            state.challenge = detail::random_id(factory_, 36, memory_);  // Trystero's genId(36)
             if (const auto history = rebinds_.find(peer); history != rebinds_.end()) {
                 history->second.challenges.push(std::pmr::string(state.challenge, memory_));
             }

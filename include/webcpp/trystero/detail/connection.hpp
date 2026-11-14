@@ -473,10 +473,10 @@ inline void connection::end(std::string_view reason_view) {
     channel_->close();
     pc_->close();
     // The bindings are let go before anyone is told: a room may destroy its binding, or itself,
-    // from inside `ended` (Trystero's clear, C/shared-peer.mjs:170-180). Every attached binding is
-    // told, those of the drain order first, then the others in the order they attached: an end
-    // from inside a drain's turn leaves waiters of that drain in no drain order. A failure may
-    // detach or destroy another binding, so each is looked up before its turn; one attached
+    // from inside `ended` (Trystero's clear, dist/shared-peer.mjs:170-180). Every attached
+    // binding is told, those of the drain order first, then the others in the order they attached:
+    // an end from inside a drain's turn leaves waiters of that drain in no drain order. A failure
+    // may detach or destroy another binding, so each is looked up before its turn; one attached
     // meanwhile finds the connection not live, and fails at once.
     bound_.clear();
     auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
@@ -540,7 +540,7 @@ inline void connection::keep(std::string_view token, backend::bytes&& frame) {
     }
     kept_.emplace_back(std::pmr::string(token, memory_), std::move(frame));
     if (!kept_timer_) {
-        // All kept frames go 10 s after the first, as Trystero's (C/shared-peer.mjs:425-428).
+        // All kept frames go 10 s after the first, as in Trystero's dist/shared-peer.mjs:425-428.
         kept_timer_ = factory_.make_timer(memory_);
         kept_timer_->start(kept_frames_ttl,
                            {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_),
@@ -557,7 +557,7 @@ inline void connection::keep(std::string_view token, backend::bytes&& frame) {
 }
 
 /** With nothing kept, the window stops, so that the next kept frame has 10 s of its own, as
- * Trystero's syncDataTimers (C/shared-peer.mjs:417-422). */
+ * Trystero's syncDataTimers does (dist/shared-peer.mjs:417-422). */
 inline void connection::forget_kept_if_empty() {
     if (!kept_.empty()) {
         return;

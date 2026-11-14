@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <initializer_list>
 #include <memory_resource>
-#include <random>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -38,25 +38,24 @@ inline constexpr std::size_t offer_id_size = 12;
 inline constexpr std::size_t nonce_size = 8;
 
 /**
- * A random id of `n` characters of `id_alphabet`, Trystero's `genId`.
+ * An id of one character of `id_alphabet` for each random byte, Trystero's `genId`.
  *
- * @tparam Generator A uniform random bit generator.
- * @param n The id's length.
- * @param generator The source of randomness.
+ * Each byte picks the character at its remainder in 62, as Trystero picks one character of its
+ * `charSet` for each draw, so an id of `n` characters takes `n` random bytes.
+ *
+ * Tip: 256 is not a multiple of 62, so each of the first eight characters comes from 5 of the 256
+ * bytes and each other from 4: the id is as unpredictable as its bytes, not uniform.
+ *
+ * @param random The random bytes, one for each character.
  * @param memory The resource the id is allocated in.
- * @return The id.
+ * @return The id, as long as `random`.
  */
-template <class Generator>
-std::pmr::string make_id(std::size_t n, Generator& generator,
-                         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    // A distribution draws through a non-const operator(), which misc-const-correctness does not
-    // see through the dependent generator.
-    // NOLINTNEXTLINE(misc-const-correctness)
-    std::uniform_int_distribution<std::size_t> pick(0, id_alphabet.size() - 1);
-    std::pmr::string out(n, '0', memory);
-    for (auto& c : out) {
-        c = id_alphabet[pick(generator)];
-    }
+inline std::pmr::string random_id(
+    std::span<const std::uint8_t> random,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(random.size(), '0', memory);
+    std::ranges::transform(random, out.begin(),
+                           [](std::uint8_t b) { return id_alphabet[b % id_alphabet.size()]; });
     return out;
 }
 

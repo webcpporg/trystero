@@ -23,7 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
-#include <random>
+#include <memory_resource>
 #include <span>
 #include <sstream>
 #include <string>
@@ -296,12 +296,100 @@ void signals() {
     // stringizes the macro's arguments, reads a raw string's \" as an escape and stops (C2017).
     constexpr std::string_view escaped = R"({"peerId":"q\"\\\n"})";
     BOOST_TEST_EQ(tp::write_signal({.peer_id = "q\"\\\n"}), escaped);
-    // A fixed seed: the test checks the form of an id, the same on every run.
-    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
-    std::mt19937 generator(42);
-    const auto id = tp::make_id(tp::peer_id_size, generator);
+}
+
+// An id has one character of Trystero's 62 for each random byte, the byte's remainder in 62: the
+// first and the last character, and the remainders 0 and 61 of larger bytes.
+void random_ids() {
+    const std::array<std::uint8_t, 6> random{0, 61, 62, 123, 124, 255};
+    BOOST_TEST_EQ(tp::random_id(random), "0z0z07");
+    BOOST_TEST_EQ(tp::random_id(std::span<const std::uint8_t>{}), "");
+    std::array<std::uint8_t, tp::peer_id_size> all{};
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        all[i] = static_cast<std::uint8_t>(i * 13);
+    }
+    std::pmr::monotonic_buffer_resource memory;
+    const auto id = tp::random_id(all, &memory);
+    BOOST_TEST(id.get_allocator().resource() == &memory);
     BOOST_TEST_EQ(id.size(), tp::peer_id_size);
     BOOST_TEST_EQ(id.find_first_not_of(tp::id_alphabet), std::string::npos);
+}
+
+// An offer's size is a float64 that Trystero accepts up to Number.MAX_SAFE_INTEGER, 2^53 - 1, the
+// bytes 43 3f ff ff ff ff ff ff, and refuses from 2^53, 43 40 00 00 00 00 00 00, as any size that
+// is not a positive integer: the largest is read whole on every target, a 32-bit one too.
+void offer_sizes_at_two_to_the_53() {
+    const auto offer_of_size = [](const std::array<std::uint8_t, 8>& size) {
+        auto frame = tp::encode_offer("file", tp::payload_format::binary, "", 7, 1);
+        std::ranges::copy(size, frame.begin() + 40);
+        return frame;
+    };
+    const auto largest =
+        tp::decode_action(offer_of_size({0x43, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff}));
+    if (!BOOST_TEST(largest.frame.has_value())) {
+        return;
+    }
+    const auto& p = std::get<tp::proposal>(*largest.frame);
+    BOOST_TEST_EQ(p.size, std::uint64_t{9007199254740991});
+    BOOST_TEST_EQ(p.size, tp::max_offer_size);
+    BOOST_TEST_EQ(p.id, 7U);
+    const std::array<std::array<std::uint8_t, 8>, 6> refused{{
+        {0x43, 0x40, 0, 0, 0, 0, 0, 0},  // 2^53
+        {0x43, 0x40, 0, 0, 0, 0, 0, 1},  // 2^53 + 2
+        {0x3f, 0xf8, 0, 0, 0, 0, 0, 0},  // 1.5
+        {0, 0, 0, 0, 0, 0, 0, 0},        // 0
+        {0xbf, 0xf0, 0, 0, 0, 0, 0, 0},  // -1
+        {0x7f, 0xf8, 0, 0, 0, 0, 0, 0},  // NaN
+    }};
+    for (const auto& size : refused) {
+        const auto decoded = tp::decode_action(offer_of_size(size));
+        BOOST_TEST(!decoded.frame.has_value());
+        BOOST_TEST(decoded.error == tp::wire_error::invalid_proposal);
+    }
+}
+
+// Every field wider than a byte is big-endian, as DataView writes it, high bytes included: the
+// oracle's frames have a short metadata, small ids, offsets and sizes, and a token of 64 bytes.
+void wide_fields_are_big_endian() {
+    const std::string metadata(0x0102, 'm');
+    const auto offer =
+        tp::encode_offer("file", tp::payload_format::binary, metadata, 0x01020304, 0x12345678);
+    const std::array<std::uint8_t, 14> offer_fields{0x01, 0x02, 0x01, 0x02, 0x03, 0x04, 0x41,
+                                                    0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00};
+    BOOST_TEST_ALL_EQ(offer.begin() + 34, offer.begin() + 48, offer_fields.begin(),
+                      offer_fields.end());
+    const auto decoded = std::get<tp::proposal>(*tp::decode_action(offer).frame);
+    BOOST_TEST_EQ(decoded.id, 0x01020304U);
+    BOOST_TEST_EQ(decoded.size, 0x12345678U);
+    BOOST_TEST_EQ(decoded.metadata.size(), metadata.size());
+
+    const tp::bytes data{9};
+    const auto chunk = tp::encode_chunk(0x0a0b0c0d, 0x12345678, data);
+    const tp::bytes expected_chunk{2,    2,    0x0a, 0x0b, 0x0c, 0x0d, 0x41, 0xb2,
+                                   0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 9};
+    BOOST_TEST_ALL_EQ(chunk.begin(), chunk.end(), expected_chunk.begin(), expected_chunk.end());
+    const auto c = std::get<tp::chunk>(*tp::decode_action(chunk).frame);
+    BOOST_TEST_EQ(c.id, 0x0a0b0c0dU);
+    BOOST_TEST_EQ(c.offset, 305419896.0);
+    const auto accepted = tp::encode_accepted(0xfffefdfc);
+    const tp::bytes expected_accepted{2, 3, 0xff, 0xfe, 0xfd, 0xfc};
+    BOOST_TEST_ALL_EQ(accepted.begin(), accepted.end(), expected_accepted.begin(),
+                      expected_accepted.end());
+
+    const std::string token(0x012c, 't');
+    const auto presence = tp::presence_frame(token, true);
+    BOOST_TEST_EQ(presence.size(), 4 + token.size());
+    BOOST_TEST_EQ(presence[2], 0x01);
+    BOOST_TEST_EQ(presence[3], 0x2c);
+    const auto room = tp::room_frame(token, data);
+    BOOST_TEST_EQ(room.size(), 3 + token.size() + data.size());
+    BOOST_TEST_EQ(room[1], 0x01);
+    BOOST_TEST_EQ(room[2], 0x2c);
+    const std::string longest(tp::max_room_token_bytes, 't');
+    const auto envelope = tp::decode_envelope(tp::room_frame(longest, data));
+    if (BOOST_TEST(envelope.has_value())) {
+        BOOST_TEST_EQ(envelope->token.size(), tp::max_room_token_bytes);
+    }
 }
 
 // Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
@@ -361,7 +449,10 @@ int main(int argc, char* argv[]) {
     inline_frames(fixture);
     chunked_frames(fixture);
     envelopes(fixture);
+    offer_sizes_at_two_to_the_53();
+    wide_fields_are_big_endian();
     signals();
+    random_ids();
     signal_bounds();
     text();
     return boost::report_errors();

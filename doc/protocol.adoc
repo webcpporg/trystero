@@ -54,6 +54,14 @@ comes back to 3.3 s only once a connection stayed open for 60 s, so that a
 relay that closes the room at once after each open is tried less and less
 often.
 
+A relay may repeat an event, and every relay of the room carries it, so a
+room acts on an event once: it remembers the ids of the newest 4096 events it
+received (`detail::nostr_strategy::remembered_events`) and drops one it
+remembers. An id is whatever a relay sends, so the room indexes the ids with
+SipHash under a key it draws when it is made: no relay can choose ids that
+fall together, as it can in the standard library's unseeded hash, where each
+lookup would walk all of them.
+
 [#trystero-protocol-signaling]
 === Signaling
 
@@ -129,7 +137,13 @@ to that peer, and that peer only.
 Action frames are Trystero's action wire, version 2: an inline frame carries
 the payload whole; a larger payload is an offer, accepted or refused by the
 receiver, then chunks of at most 16,370 bytes, in order. Integers and
-float64 values are big-endian, as JavaScript's `DataView` writes them.
+float64 values are big-endian, as JavaScript's `DataView` writes them. An
+offer's size is a float64 that must be a whole number from 1 to 2^53^ - 1,
+JavaScript's `Number.MAX_SAFE_INTEGER` (`protocol::max_offer_size`), as
+Trystero checks it: any other makes the frame malformed, and the room kicks
+its sender, as Trystero does. The size is read in 64 bits on every target,
+so a 32-bit one too compares the whole size with `max_receive_bytes`, and
+refuses a transfer beyond it as Trystero does.
 
 [cols="1,3",options="header"]
 |===

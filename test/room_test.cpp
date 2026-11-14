@@ -8,6 +8,10 @@
 // support/memory_backend.hpp. WEBCPP_TEST_TRYSTERO_VERBOSE in the environment prints each room's
 // log on the standard error.
 
+// Boost.Unordered counts the probes and the comparisons of its open-addressing containers, which
+// the case of colliding event ids reads; before any of its headers.
+#define BOOST_UNORDERED_ENABLE_STATS
+
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -35,6 +39,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -686,6 +691,77 @@ void the_replay_cache_remembers_the_last_ones() {
     trystero::detail::replay_cache none(0, std::pmr::get_default_resource());
     none.insert("one");
     BOOST_TEST(!none.contains("one"));
+}
+
+// A relay may repeat an event, and every relay carries the events of the room: the strategy acts on
+// an event id once among the newest it remembers, and on the oldest again once forgotten.
+void recent_event_ids_drop_a_repeat_and_forget_the_oldest() {
+    counting_resource memory;
+    {
+        const std::array<std::uint8_t, 16> key{};
+        trystero::detail::recent_event_ids ids(3, key, &memory);
+        BOOST_TEST(ids.remember("a"));
+        BOOST_TEST(!ids.remember("a"));
+        BOOST_TEST(ids.remember("b"));
+        BOOST_TEST(ids.remember("c"));
+        BOOST_TEST(!ids.remember("a"));
+        BOOST_TEST(ids.remember("d"));
+        BOOST_TEST_EQ(ids.size(), 3U);
+        BOOST_TEST(ids.remember("a"));
+        BOOST_TEST(!ids.remember("c"));
+        BOOST_TEST(!ids.remember("d"));
+        BOOST_TEST(ids.remember("b"));
+        // An event without an id is never taken for a repeat.
+        BOOST_TEST(ids.remember(""));
+        BOOST_TEST(ids.remember(""));
+        BOOST_TEST_EQ(ids.size(), 3U);
+        BOOST_TEST_GT(memory.in_use, 0U);
+    }
+    BOOST_TEST_EQ(memory.in_use, 0U);
+}
+
+// Ids a relay chooses so that the standard library's unseeded hash puts them all in one bucket of a
+// std::unordered_set sized for the ids remembered, the strategy's index before, where each lookup
+// walks every one of them, cost the index a probe and a comparison each: it hashes them with
+// SipHash under a key of its own. The ids are found by search, as an attacker finds them.
+void colliding_event_ids_stay_fast() {
+    constexpr std::size_t count = 2048;
+    constexpr std::size_t capacity = trystero::detail::nostr_strategy::remembered_events;
+    std::unordered_set<std::string_view> reference;
+    reference.reserve(capacity);
+    std::vector<std::string> colliding;
+    colliding.reserve(count);
+    std::string candidate(64, '0');  // the length of a Nostr event id, in hexadecimal
+    const auto target = reference.bucket(candidate);
+    for (std::uint64_t n = 0; colliding.size() < count; ++n) {
+        for (std::size_t i = 0; i < 16; ++i) {
+            candidate[candidate.size() - 1 - i] = "0123456789abcdef"[(n >> (4 * i)) & 15U];
+        }
+        if (reference.bucket(candidate) == target) {
+            colliding.push_back(candidate);
+        }
+    }
+    reference.insert(colliding.begin(), colliding.end());
+    BOOST_TEST_GE(reference.bucket_count(), capacity);
+    BOOST_TEST_EQ(reference.bucket_size(target), count);
+
+    std::array<std::uint8_t, 16> key{};
+    key.fill(0x5a);
+    trystero::detail::recent_event_ids ids(capacity, key, std::pmr::get_default_resource());
+    const auto fresh =
+        std::ranges::count_if(colliding, [&](const auto& id) { return ids.remember(id); });
+    const auto repeated =
+        std::ranges::count_if(colliding, [&](const auto& id) { return !ids.remember(id); });
+    BOOST_TEST_EQ(static_cast<std::size_t>(fresh), count);
+    BOOST_TEST_EQ(static_cast<std::size_t>(repeated), count);
+    const auto stats = ids.index().get_stats();
+    // Measured: 1.08, 1.04, 0.03, 1 and 1.01; a chain of `count` ids would cost about half of them,
+    // a thousand comparisons, at each lookup.
+    BOOST_TEST_LE(stats.insertion.probe_length.average, 1.5);
+    BOOST_TEST_LE(stats.unsuccessful_lookup.probe_length.average, 1.5);
+    BOOST_TEST_LE(stats.unsuccessful_lookup.num_comparisons.average, 0.5);
+    BOOST_TEST_LE(stats.successful_lookup.probe_length.average, 1.5);
+    BOOST_TEST_LE(stats.successful_lookup.num_comparisons.average, 1.5);
 }
 
 /** Joins B to A, records what `record` keeps of the relays meanwhile, and has B leave; B's app goes
@@ -1409,6 +1485,8 @@ int main() {
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();
     the_replay_cache_remembers_the_last_ones();
+    recent_event_ids_drop_a_repeat_and_forget_the_oldest();
+    colliding_event_ids_stay_fast();
     a_replayed_answer_is_refused();
     a_replayed_offer_is_refused();
     a_reflected_offer_is_refused_as_an_answer();

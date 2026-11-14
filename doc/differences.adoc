@@ -90,9 +90,9 @@ These features of Trystero are not ported, each for its reason:
 
 | Rooms per app | unbounded; a peer advertising a 65th is dropped by the other side | `join` refuses the 65th, counting rooms in their farewell | the 65th would cost every connection of the app
 
-| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection, as today
+| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection
 
-| Relay sockets and the Nostr key | shared by the rooms of the page, topics batched per socket | per room, as today | not part of this decision; invisible to peers; shared through the app in a later change
+| Relay sockets and the Nostr key | shared by the rooms of the page, topics batched per socket | per room | not part of this decision; invisible to peers; shared through the app in a later change
 
 | Relay and ICE configuration | the first room's relays; each negotiating room's RTC configuration | the app's, for every room | one configuration for what the rooms share
 
@@ -102,7 +102,7 @@ These features of Trystero are not ported, each for its reason:
 
 | Renegotiation and media over a shared connection | routed through a control room, streams owned per room; a connection with any media is destroyed when its last room goes | not ported | media is on the roadmap (<<trystero-roadmap>>)
 
-| Passive rooms | presence only for active rooms | not ported | as today
+| Passive rooms | presence only for active rooms | not ported | not ported yet: a room always announces itself
 
 | Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
 

@@ -11,12 +11,12 @@
 #include <webcpp/trystero/backend.hpp>
 
 #include <boost/assert.hpp>
+#include <boost/circular_buffer.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -30,7 +30,8 @@ class connection;
 constexpr std::chrono::milliseconds rebinding_step(std::chrono::milliseconds handshake_timeout,
                                                    std::uint32_t ends) {
     BOOST_ASSERT(ends >= 1);
-    constexpr std::chrono::milliseconds keep_time{10'000};  // Trystero's (C/data-limits.mjs:4)
+    // Trystero's pendingDataTimeoutMs (dist/data-limits.mjs:4).
+    constexpr std::chrono::milliseconds keep_time{10'000};
     constexpr std::chrono::milliseconds margin{1'000};
     constexpr std::chrono::milliseconds cap{300'000};
     if (handshake_timeout >= cap - margin) {
@@ -50,15 +51,10 @@ public:
     static constexpr std::size_t capacity = 8;
 
     /** Keeps the bounded challenge history in the room resource. */
-    explicit recent_challenges(std::pmr::polymorphic_allocator<> a) : values_(a) {}
+    explicit recent_challenges(std::pmr::polymorphic_allocator<> a) : values_(capacity, a) {}
 
-    /** Remembers a challenge, dropping the oldest beyond capacity. */
-    void push(std::pmr::string challenge) {
-        values_.push_back(std::move(challenge));
-        if (values_.size() > capacity) {
-            values_.pop_front();
-        }
-    }
+    /** Remembers a challenge, in the oldest's place beyond capacity. */
+    void push(std::pmr::string challenge) { values_.push_back(std::move(challenge)); }
 
     /** Whether any remembered challenge satisfies the response matcher. */
     template <class Matches>
@@ -70,7 +66,8 @@ public:
     void clear() { values_.clear(); }
 
 private:
-    std::pmr::deque<std::pmr::string> values_;
+    boost::circular_buffer<std::pmr::string, std::pmr::polymorphic_allocator<std::pmr::string>>
+        values_;
 };
 
 /** One room's history of a peer on a particular shared connection. */

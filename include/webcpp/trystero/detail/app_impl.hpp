@@ -14,6 +14,7 @@
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/post.hpp>
+#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
@@ -105,7 +106,7 @@ public:
             set_aside("self_id is longer than any peer accepts, so the app uses a random one");
         }
         if (self_id_.empty()) {
-            self_id_ = random_id(protocol::peer_id_size);
+            self_id_ = detail::random_id(factory_, protocol::peer_id_size, memory_);
         }
         if (idle_timeout_ < std::chrono::milliseconds::zero()) {
             idle_timeout_ = std::chrono::milliseconds::zero();
@@ -275,13 +276,14 @@ public:
     }
 
     /** The connection a room's negotiation opened becomes the app's, or, when the app already has
-     * a live one to that peer, is closed and the existing one returned (C/shared-peer.mjs:105-108).
+     * a live one to that peer, is closed and the existing one returned, as in Trystero's
+     * dist/shared-peer.mjs:105-108.
      *
      * Tip: a stale connection to the peer, one whose channel is closing, ends first, as Trystero
-     * clears it (C/shared-peer.mjs:142-149): the rooms hear its end before the new connection is
-     * adopted, and a room may adopt one to the peer from inside that call, which is then the one
-     * shared, or ends in its turn if it is stale by then. One whose end is
-     * already under way, further up the stack, is let go: it ends no second time. */
+     * clears it (dist/shared-peer.mjs:142-149): the rooms hear its end before the new
+     * connection is adopted, and a room may adopt one to the peer from inside that call, which is
+     * then the one shared, or ends in its turn if it is stale by then. One whose end is already
+     * under way, further up the stack, is let go: it ends no second time. */
     std::shared_ptr<connection> adopt(std::string_view peer_view,
                                       std::shared_ptr<backend::peer_connection> pc,
                                       std::shared_ptr<backend::data_channel> channel) {
@@ -325,7 +327,7 @@ private:
         }
         const auto weak = weak_from_this();
         // The connection whose `ended` this is, set once it exists: its end erases its own entry
-        // only, never one a room adopted since (Trystero's owns(), C/shared-peer.mjs:210-212).
+        // only, never one a room adopted since (Trystero's owns(), dist/shared-peer.mjs:210-212).
         const auto owner = std::allocate_shared<std::weak_ptr<connection>>(allocator());
         auto c = std::allocate_shared<connection>(
             allocator(), factory_, peer, std::move(pc), std::move(channel),
@@ -413,16 +415,6 @@ private:
     void set_aside(std::string_view what) {
         log_("app", what);
         setup_reports_.emplace_back(what);
-    }
-
-    std::pmr::string random_id(std::size_t n) {
-        std::array<std::uint8_t, 64> random{};
-        factory_.random(std::span(random).first(n));
-        std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i) {
-            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
-        }
-        return id;
     }
 
     [[nodiscard]] std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }

@@ -11,27 +11,111 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <boost/hash2/get_integral_result.hpp>
+#include <boost/hash2/siphash.hpp>
 #include <boost/json/storage_ptr.hpp>
+#include <boost/unordered/unordered_flat_set.hpp>
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 namespace webcpp::trystero::detail {
+
+/**
+ * The ids of the newest Nostr events a strategy received, so that it acts on each event once: a
+ * relay may repeat one, and every relay of the room carries it.
+ *
+ * Tip: an id is whatever a relay sends, so the index hashes it with SipHash under a key drawn when
+ * the strategy is made. The standard library's hashes are unseeded: ids a relay chose to fall in
+ * one bucket of a `std::unordered_set` would make each of its lookups walk all of them.
+ */
+class recent_event_ids {
+public:
+    /** The size of the hash's key, SipHash's 128 bits. */
+    static constexpr std::size_t key_size = 16;
+
+    /** SipHash of an id under a key, which Boost.Unordered uses as it is. */
+    class keyed_hash {
+    public:
+        /** SipHash's output is uniform, so Boost.Unordered takes it without mixing it again. */
+        using is_avalanching = std::true_type;
+
+        /** Hashes under `key`. */
+        explicit keyed_hash(std::span<const std::uint8_t, key_size> key)
+            : hasher_(key.data(), key.size()) {}
+
+        /** The hash of `id`. */
+        std::size_t operator()(std::string_view id) const noexcept {
+            auto h = hasher_;
+            h.update(id.data(), id.size());
+            return boost::hash2::get_integral_result<std::size_t>(h);
+        }
+
+    private:
+        boost::hash2::siphash_64 hasher_;
+    };
+
+    /** The index of the remembered ids, views of the strings the order owns. */
+    using index_type = boost::unordered_flat_set<std::string_view, keyed_hash, std::equal_to<>,
+                                                 std::pmr::polymorphic_allocator<std::string_view>>;
+
+    /** Remembers nothing yet: up to `capacity` ids, hashed under `key`, allocated in `memory`. */
+    recent_event_ids(std::size_t capacity, std::span<const std::uint8_t, key_size> key,
+                     std::pmr::memory_resource* memory)
+        : index_(0, keyed_hash(key), std::equal_to<>(), memory),
+          order_(memory),
+          capacity_(capacity) {}
+
+    /** Whether `id` is new; a new one is remembered in place of the oldest beyond `capacity`, and
+     * an empty one is always new and never remembered. */
+    bool remember(std::string_view id) {
+        if (id.empty()) {
+            return true;
+        }
+        if (index_.contains(id)) {
+            return false;
+        }
+        // A deque never moves what it holds, so the view stays valid until pop_front.
+        const std::string_view stored = order_.emplace_back(id);
+        index_.insert(stored);
+        if (order_.size() > capacity_) {
+            index_.erase(order_.front());
+            order_.pop_front();
+        }
+        return true;
+    }
+
+    /** How many ids are remembered. */
+    [[nodiscard]] std::size_t size() const { return order_.size(); }
+
+    /** The index, for its statistics, which Boost.Unordered keeps with
+     * `BOOST_UNORDERED_ENABLE_STATS`. */
+    [[nodiscard]] const index_type& index() const noexcept { return index_; }
+
+private:
+    index_type index_;
+    std::pmr::deque<std::pmr::string> order_;
+    std::size_t capacity_;
+};
 
 /**
  * Trystero's Nostr strategy: one subscription per relay to the room's root and self topics,
@@ -77,8 +161,7 @@ public:
           log_(std::move(log)),
           signer_(make_signer(factory, memory)),
           relays_(memory),
-          seen_(memory),
-          seen_order_(memory) {
+          seen_(remembered_events, draw_key(factory), memory) {
         relays_.reserve(urls.size());
         for (const auto& url : urls) {
             relays_.emplace_back(url, memory);
@@ -142,6 +225,7 @@ private:
     static constexpr double first_retry_ms = 3333;
     static constexpr double max_retry_ms = 60'000;
     static constexpr double healthy_ms = 60'000;
+    static constexpr std::size_t subscription_id_size = 64;
 
     struct relay_state {
         relay_state(std::string_view address, std::pmr::memory_resource* memory)
@@ -173,17 +257,14 @@ private:
         }
     }
 
-    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
-
-    std::pmr::string make_subscription_id() {
-        std::array<std::uint8_t, 64> random{};
-        factory_.random(random);
-        std::pmr::string id(random.size(), '0', memory_);
-        for (std::size_t i = 0; i < random.size(); ++i) {
-            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
-        }
-        return id;
+    static std::array<std::uint8_t, recent_event_ids::key_size> draw_key(
+        backend::factory& factory) {
+        std::array<std::uint8_t, recent_event_ids::key_size> key{};
+        factory.random(key);
+        return key;
     }
+
+    std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
 
     std::pmr::string event_for(std::string_view topic, std::string_view content) {
         std::array<std::uint8_t, 32> aux{};
@@ -244,7 +325,7 @@ private:
         r.open = true;
         r.opened_ms = factory_.now_ms();
         if (r.subscription.empty()) {
-            r.subscription = make_subscription_id();
+            r.subscription = random_id(factory_, subscription_id_size, memory_);
         }
         r.socket->send(protocol::nostr::subscribe_message(r.subscription, topics_,
                                                           factory_.unix_seconds(), memory_));
@@ -343,23 +424,6 @@ private:
         }
     }
 
-    /** Whether an event id is new; a relay may repeat one, and several relays carry the same. */
-    bool remember(std::string_view id) {
-        if (id.empty()) {
-            return true;
-        }
-        if (seen_.contains(id)) {
-            return false;
-        }
-        const auto& stored = seen_order_.emplace_back(id);  // made in the deque's resource
-        seen_.insert(stored);
-        if (seen_order_.size() > remembered_events) {
-            seen_.erase(seen_order_.front());
-            seen_order_.pop_front();
-        }
-        return true;
-    }
-
     void on_relay_message(std::size_t index, std::string_view text) {
         boost::system::error_code ec;
         const auto document = protocol::json::parse(text, json_, ec);
@@ -375,7 +439,7 @@ private:
             if (e->subscription != r.subscription || e->topic.empty()) {
                 return;
             }
-            if (std::ranges::find(topics_, e->topic) == topics_.end() || !remember(e->id)) {
+            if (std::ranges::find(topics_, e->topic) == topics_.end() || !seen_.remember(e->id)) {
                 return;
             }
             on_message_(index, e->topic, e->content);
@@ -429,15 +493,6 @@ private:
                                   }});
     }
 
-    /** Transparent hashing, so an id read as a view is looked up without building a string. */
-    struct view_hash {
-        using is_transparent = void;
-
-        std::size_t operator()(std::string_view s) const noexcept {
-            return std::hash<std::string_view>{}(s);
-        }
-    };
-
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
     boost::json::storage_ptr json_;
@@ -448,10 +503,7 @@ private:
     logger log_;
     protocol::nostr::signer signer_;
     std::pmr::vector<relay_state> relays_;
-    // The ids are owned by `seen_order_`, a deque, which never moves what it holds; `seen_` indexes
-    // them by view.
-    std::pmr::unordered_set<std::string_view, view_hash, std::equal_to<>> seen_;
-    std::pmr::deque<std::pmr::string> seen_order_;
+    recent_event_ids seen_;
     bool stopped_ = false;
 };
 

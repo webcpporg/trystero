@@ -13,6 +13,7 @@
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/replay_cache.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -316,16 +317,6 @@ private:
         return protocol::peer_topic(app_id_, room_id_, peer, memory_);
     }
 
-    std::pmr::string make_id(std::size_t n) {
-        std::array<std::uint8_t, 32> random{};
-        factory_.random(std::span(random).first(n));
-        std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i) {
-            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
-        }
-        return id;
-    }
-
     negotiation* find(std::string_view peer) {
         const auto it = peers_.find(peer);
         return it == peers_.end() ? nullptr : &it->second;
@@ -444,7 +435,7 @@ private:
     }
 
     void start_offer(std::string_view peer, negotiation& n) {
-        n.offer_id = make_id(protocol::offer_id_size);
+        n.offer_id = random_id(factory_, protocol::offer_id_size, memory_);
         n.offer.pc = make_connection(peer);
         if (!n.offer.pc) {
             reset_offer(n);
