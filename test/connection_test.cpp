@@ -731,7 +731,7 @@ void taking_every_kept_frame_restarts_the_window() {
 }
 
 // A withdrawal that leaves nothing kept stops the window too, as Trystero's syncDataTimers does
-// (C/shared-peer.mjs:417-422, 468-472).
+// (dist/shared-peer.mjs:417-422, 468-472).
 void a_withdrawal_that_empties_the_kept_frames_restarts_the_window() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);

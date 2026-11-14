@@ -12,7 +12,7 @@ A room runs on two targets, through a backend of each:
 | Backend | Header | Target | Built on |
 | --- | --- | --- | --- |
 | the browser's | `<webcpp/trystero/browser/backend.hpp>` | emscripten | the page's `WebSocket` and `crypto.subtle`, through webcpp::asio's bridge, webcpp::asio's timers, and webcpp::webrtc over its `RTCPeerConnection` |
-| the native one | `<webcpp/trystero/native/backend.hpp>` | native | webcpp::webrtc over libdatachannel for WebRTC, Boost.Beast for the relays' WebSockets, OpenSSL for TLS and AES-GCM |
+| the native one | `<webcpp/trystero/native/backend.hpp>` | native | webcpp::webrtc over libdatachannel for WebRTC, webcpp::beast for the relays' WebSockets, natively Boost.Beast's, their URLs read with Boost.URL, OpenSSL for TLS and AES-GCM |
 
 `<webcpp/trystero.hpp>` is the rooms themselves, which build on both targets
 and include neither backend. Both backends' WebRTC is
@@ -68,15 +68,18 @@ send a wrong room proof, reported by the lower id only.
 ## Building inside the superproject
 
 trystero is developed inside the webcpp superproject, as a Boost library is
-developed inside Boost. It builds on webcpp::asio and webcpp::webrtc, two
-libraries of the superproject; its TLS and WebRTC dependencies are built from
-pinned sources; only libsecp256k1 needs an external installation:
+developed inside Boost. It builds on webcpp::asio, webcpp::webrtc and, for
+the native relays, webcpp::beast, three libraries of the superproject; its
+TLS and WebRTC dependencies are built from pinned sources; only libsecp256k1
+needs an external installation:
 
 | Library | Needed by | Found where |
 | --- | --- | --- |
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `-sSECP256K1_ROOT=<dir>` natively, `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else `.local/secp256k1-native` and `.local/secp256k1-emscripten` |
 | webcpp::asio | every room | `/webcpp/asio//asio` |
 | webcpp::webrtc | both backends' WebRTC | `/webcpp/webrtc//webrtc` |
+| webcpp::beast | the native backend's relays: their WebSockets and TLS | `/webcpp/beast//tls`: natively Boost.Beast over the source-built OpenSSL |
+| Boost.URL | the native backend's relays: their URLs | `/webcpp//boost_url`, built from Boost's sources once per variant |
 | libdatachannel 0.24.6 | the native backend, through webcpp::webrtc | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
 | OpenSSL 3.5.9 | the native backend | `/webcpp/third_party//openssl`, also used by Asio and Beast |
 
@@ -102,9 +105,11 @@ project uses the rooms and the browser backend through
 webcpp::asio, libsecp256k1 and Boost.JSON's definitions, compiled once per
 variant, and on emscripten webcpp::webrtc and embind; a program there is
 built in webcpp::asio's suspension variant, `webcpp-suspend=jspi` by default
-or `asyncify`. A native program uses `/webcpp/trystero//native`, which adds
-webcpp::webrtc, with libdatachannel and OpenSSL, and declares
-`<threading>multi` itself, as `example/Jamfile` does.
+or `asyncify`. A native program uses `/webcpp/trystero//native` and
+declares `<threading>multi` itself, as `example/Jamfile` does; the target
+adds webcpp::webrtc, with libdatachannel and OpenSSL, webcpp::beast's TLS and
+Boost.URL for the relays, and webcpp::asio's `//tls`, whose embedded
+authorities a program may trust in place of the system's.
 
 ## The examples
 
