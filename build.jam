@@ -70,8 +70,14 @@ alias trystero : : <conditional>@trystero-dependencies
 
 # The native backend: its WebRTC is webcpp::webrtc's, which brings the pinned
 # libdatachannel and OpenSSL, and works with exceptions on and off, through
-# libdatachannel's C API; so does the backend.
+# libdatachannel's C API; so does the backend. Its relays' WebSockets are
+# webcpp::beast's over the same OpenSSL (//tls), their URLs read with
+# Boost.URL, built from Boost's sources once per variant; webcpp::asio's
+# //tls adds webcpp's embedded authorities, which a program may trust in
+# place of the system's (make_tls_client_context).
 # tag::native[]
 alias native : : <conditional>@native-dependencies
-  : : <library>trystero <library>/webcpp/webrtc//webrtc ;
+  : : <library>trystero <library>/webcpp/webrtc//webrtc
+  <library>/webcpp/beast//tls <library>/webcpp/asio//tls
+  <library>/webcpp//boost_url ;
 # end::native[]
