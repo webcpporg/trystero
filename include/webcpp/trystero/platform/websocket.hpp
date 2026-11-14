@@ -271,9 +271,18 @@ inline std::optional<url_parts> parse_url(
  *
  * Tip: every operation's handler carries the room's allocator, so that what Asio and Beast
  * allocate for it, and the read buffer, are in the room's resource beside the session, its
- * handlers and its queued texts; natively Boost.Beast's stream state, the resolver's results and
- * OpenSSL's state are theirs. On Emscripten the page's stream keeps its state in the room's
- * resource too.
+ * handlers and its queued texts, with nothing in the default allocator for a message. On
+ * Emscripten the page's stream keeps its state in the room's resource too, and its `WebSocket`
+ * makes the handshake. Natively what Beast, Asio and OpenSSL allocate of their own takes no
+ * allocator and stays outside the room's resource, for each connection: the WebSocket stream's
+ * state and the TCP stream's, the WebSocket's write buffer and, over TLS, Asio's two TLS buffers
+ * and OpenSSL's state; the resolver's state and results; the handshake's request and response,
+ * the header fields of both and, for a response that is not 101, its body, which Beast's own
+ * parser reads up to Beast's default limit for a response, 8 MiB, that no option of its stream
+ * lowers; the verify callback Asio's `set_verify_callback` makes with `new`, with its copy of the
+ * host; each wait of Beast's timers, from Asio's per-thread recycling cache (the TCP stream's
+ * deadline over the connection and the TLS handshake, the WebSocket's handshake, idle and close
+ * timeouts); and each keep-alive ping's frame.
  */
 template <bool Secure>
 class websocket_session : public std::enable_shared_from_this<websocket_session<Secure>> {
@@ -648,18 +657,25 @@ private:
  * `tls`, and checks it against the URL's host, a name or an address; in a page the browser does
  * all three. It needs no exceptions.
  *
+ * The connection, its handlers, its queued texts, its read buffer and its operations are in
+ * `memory`, and a message allocates nothing in the default allocator. Natively what Boost.Beast,
+ * Asio and OpenSSL allocate of their own stays outside it, for each connection: their streams'
+ * state, the resolver's, the handshake's request and response, the verify callback, their timers'
+ * waits and each keep-alive ping's frame. Among it, a relay that answers the handshake with a
+ * status other than 101 can have Beast read a body of up to 8 MiB, Beast's default limit for a
+ * response, which no option of its stream lowers, before the connection reports its close.
+ *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection, or null when the
  * program has none; natively the connection verifies the relay against its authorities even when
  * its verify mode is `verify_none`, as Asio makes a client's context.
  * @param url The relay's URL, read during the call.
  * @param h What the WebSocket reports.
- * @param memory The room's resource, which the connection, its handlers, its queued texts, its read
- * buffer and its operations are allocated in; natively Boost.Beast's stream state and OpenSSL's
- * are theirs.
+ * @param memory The room's resource, which the connection's own allocations are in.
  * @param limits What it tolerates of a relay that stops reading or answering.
  * @return The WebSocket; destroying it drops the connection without reporting it.
  * @see "The platform backend", in the guide.
+ * @see "What stays outside the resource", in the guide.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(
     const webcpp::asio::any_io_executor& ex, webcpp::asio::ssl::context* tls, std::string_view url,

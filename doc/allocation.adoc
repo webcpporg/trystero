@@ -242,11 +242,29 @@ nothing.
   default allocator, since the resource is touched only on the room's
   executor; and the wrapper Asio puts around webcpp::webrtc's completions,
   which it posts through `webcpp::asio::any_io_executor`;
-* natively, Boost.Beast's state inside a relay's WebSocket, its stream's,
-  and the resolver's results; the WebSocket's operations, its read buffer
-  and its queued texts are in the room's resource on both targets, since
-  each of its handlers carries the room's allocator, and in a page the
-  stream's own state is there too;
+* natively, for each relay connection, what Boost.Beast and Asio allocate of
+  their own, which takes no allocator from a handler: the state of the
+  WebSocket stream and of the TCP stream under it, the WebSocket's write
+  buffer, made at its first write, and, over TLS, the two 17 KiB buffers of
+  Asio's TLS stream; the resolver's state and its results, with what the C
+  library's `getaddrinfo` allocates on Asio's resolver thread; the WebSocket
+  handshake's request and response, the header fields of both and, for a
+  response that is not 101, its body, which Beast's own parser reads up to
+  Beast's default limit for a response, 8 MiB, that no option of its stream
+  lowers (measured: an 8 MiB body held about 18 MiB at its peak, as its
+  string grew); over TLS, the verify callback Asio's `set_verify_callback`
+  makes with `new`, with the copy of the host that `host_name_verification`
+  holds, a `std::string`; each wait of Beast's timers, from Asio's
+  per-thread recycling cache, which calls `std::aligned_alloc` on a miss:
+  the TCP stream's deadline over the connection and the TLS handshake, and
+  the WebSocket's handshake, idle and close timeouts; and each keep-alive
+  ping's frame, with `new`. The WebSocket's operations, its read buffer and
+  its queued texts are in the room's resource on both targets, since each of
+  its handlers carries the room's allocator, and a message allocates nothing
+  outside it (measured with a stack for each `operator new` on the room's
+  thread: a hundred texts sent and received made none but the write
+  buffer's, at the first); in a page the stream's own state is there too,
+  and the page's `WebSocket` makes the handshake;
 * the payload types `std::string`, `bytes` and `payload`, with
   `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on
