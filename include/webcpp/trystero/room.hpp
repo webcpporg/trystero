@@ -774,7 +774,7 @@ public:
             return;
         }
         it->second.pings.push_back(
-            {.started_ms = factory_.now_ms(), .handler = std::move(handler)});
+            {.started = steady_now(factory_), .handler = std::move(handler)});
         send_internal("@_ping", it->first);
     }
 
@@ -903,7 +903,7 @@ private:
     enum class end_kind { peer_left, withdrawn, kick, connection_end, room_end };
 
     struct pending_ping {
-        double started_ms = 0;
+        detail::time_point started{};
         completion<void(boost::system::error_code, std::chrono::milliseconds)> handler;
     };
 
@@ -1310,8 +1310,8 @@ private:
             if (it_peer != peers_.end() && !it_peer->second.pings.empty()) {
                 auto ping = std::move(it_peer->second.pings.front());
                 it_peer->second.pings.pop_front();
-                const auto elapsed = std::chrono::milliseconds(
-                    static_cast<long long>(factory_.now_ms() - ping.started_ms));
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    steady_now(factory_) - ping.started);
                 complete(std::move(ping.handler), boost::system::error_code{}, elapsed);
             }
         } else if (name == "@_leave") {

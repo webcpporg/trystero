@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -119,8 +120,10 @@ void nostr_events(const json::object& fixture) {
     for (const auto& entry : fixture.at("nostr_events").as_array()) {
         const auto& e = entry.as_object();
         BOOST_TEST_EQ(tp::nostr::topic_kind(str(e.at("topic"))), e.at("kind").as_int64());
-        const auto id = tp::nostr::event_id(str(e.at("pubkey")), e.at("created_at").as_int64(),
-                                            static_cast<int>(e.at("kind").as_int64()),
+        const auto created_at =
+            std::chrono::sys_seconds(std::chrono::seconds(e.at("created_at").as_int64()));
+        const auto id = tp::nostr::event_id(str(e.at("pubkey")), created_at,
+                                            static_cast<std::uint32_t>(e.at("kind").as_int64()),
                                             str(e.at("topic")), str(e.at("content")));
         BOOST_TEST_EQ(tp::to_hex(id), str(e.at("id")));
     }
@@ -131,7 +134,8 @@ void nostr_events(const json::object& fixture) {
     BOOST_TEST(key.has_value());
     std::array<std::uint8_t, 32> aux{};
     const auto message =
-        tp::nostr::event_message(*key, 1759700000, "topic-a", R"({"peerId":"p"})", aux);
+        tp::nostr::event_message(*key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)),
+                                 "topic-a", R"({"peerId":"p"})", aux);
     const auto parsed = json::parse(message).as_array();
     auto event = parsed.at(1).as_object();
     const auto id = *tp::from_hex(event.at("id").as_string());

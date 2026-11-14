@@ -9,6 +9,8 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/detail/clock.hpp>
+
 #include <boost/circular_buffer.hpp>
 
 #include <chrono>
@@ -30,21 +32,25 @@ public:
     /** No construction yet; the times are allocated in `memory`. */
     construction_window(std::size_t limit, std::chrono::milliseconds window,
                         std::pmr::memory_resource* memory)
-        : times_(limit, memory), window_ms_(static_cast<double>(window.count())) {}
+        : times_(limit, memory), window_(window) {}
 
-    /** Takes a construction at `now_ms`, or returns false and takes none when `limit` were
-     * allowed in the window that ends then. */
-    bool take(double now_ms) {
-        if (times_.capacity() == 0 || (times_.full() && now_ms - times_.front() < window_ms_)) {
+    /** Takes a construction at `now`, or returns false and takes none when `limit` were allowed in
+     * the window that ends then. */
+    bool take(time_point now) {
+        if (times_.capacity() == 0 || (times_.full() && now - times_.front() < window_)) {
             return false;
         }
-        times_.push_back(now_ms);  // in the oldest's place once full
+        times_.push_back(now);  // in the oldest's place once full
         return true;
     }
 
+    /** Takes a construction at `now_ms`, milliseconds of the backend's clock as a backend reads
+     * its own `now_ms`, as take(time_point) does. */
+    bool take(double now_ms) { return take(from_backend_ms(now_ms)); }
+
 private:
-    boost::circular_buffer<double, std::pmr::polymorphic_allocator<double>> times_;
-    double window_ms_;
+    boost::circular_buffer<time_point, std::pmr::polymorphic_allocator<time_point>> times_;
+    std::chrono::milliseconds window_;
 };
 
 }  // namespace webcpp::trystero::detail
