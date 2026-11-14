@@ -4,19 +4,25 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the native peer connection, libdatachannel's, between two connections in one process,
-// wired to each other directly: what the signaling would carry over the relays is handed across
-// here. Each connection is bound to 127.0.0.1, so that its one host candidate is the loopback's and
-// no other interface is needed. The backend makes at most
-// `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them.
+// Tests the native backend's peer connection, webcpp::webrtc's over libdatachannel, between two
+// connections in one process, wired to each other directly: what the signaling would carry over
+// the relays is handed across here. Each connection is bound to 127.0.0.1, so that its one host
+// candidate is the loopback's and no other interface is needed. The backend makes at most
+// `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them,
+// and holds at most its runtime's `max_peer_connections` at once.
 
 #include <webcpp/trystero/native/backend.hpp>
-#include <webcpp/trystero/native/peer_connection.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/webrtc/data_channel.hpp>
+#include <webcpp/trystero/webrtc/peer_connection.hpp>
+
+#include <webcpp/webrtc/peer_connection.hpp>
+#include <webcpp/webrtc/runtime.hpp>
 
 #include <boost/asio/execution.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
+#include <boost/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -59,14 +65,19 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
     return done();
 }
 
+/** The program's runtime, which outlives its io_context and every connection. */
+std::shared_ptr<webcpp::webrtc::runtime> program_runtime(webcpp::webrtc::runtime& runtime) {
+    return {std::shared_ptr<webcpp::webrtc::runtime>(), &runtime};
+}
+
 /** Two connected peers: the offerer's channel and the answerer's, with what each received. */
 struct pair {
+    webcpp::webrtc::runtime runtime;
     asio::io_context io;
+    trystero::native::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
     std::thread::id io_thread = std::this_thread::get_id();
-    std::shared_ptr<backend::peer_connection> offerer = trystero::native::peer_connection::create(
-        io.get_executor(), {}, loopback, std::pmr::get_default_resource());
-    std::shared_ptr<backend::peer_connection> answerer = trystero::native::peer_connection::create(
-        io.get_executor(), {}, loopback, std::pmr::get_default_resource());
+    std::shared_ptr<backend::peer_connection> offerer;
+    std::shared_ptr<backend::peer_connection> answerer;
     std::shared_ptr<backend::data_channel> offer_end;
     std::shared_ptr<backend::data_channel> answer_end;
     std::vector<backend::bytes> at_offerer, at_answerer;
@@ -74,14 +85,44 @@ struct pair {
     std::vector<backend::connection_state> answerer_states;
     int answer_closes = 0;
 
+    /** What makes the offerer's executor of the io_context's. */
+    using executor_wrapper = std::function<asio::any_io_executor(asio::any_io_executor)>;
+
+    /** The offerer is made in `offer_memory`, on the executor `wrap` makes of the io_context's;
+     * the answerer as an app's. */
+    explicit pair(std::pmr::memory_resource* offer_memory = std::pmr::get_default_resource(),
+                  const executor_wrapper& wrap = {})
+        : offerer(made(trystero::webrtc::peer_connection::make(
+              program_runtime(runtime), wrap ? wrap(io.get_executor()) : io.get_executor(), {},
+              loopback, factory, offer_memory))),
+          answerer(made(trystero::webrtc::peer_connection::make(
+              program_runtime(runtime), io.get_executor(), {}, loopback, factory,
+              std::pmr::get_default_resource()))) {}
+
+    pair(const pair&) = delete;
+    pair& operator=(const pair&) = delete;
+
+    /** Lets go of both connections and channels, which aborts what they wait for. */
+    void reset() {
+        offer_end.reset();
+        answer_end.reset();
+        offerer.reset();
+        answerer.reset();
+    }
+
+    static std::shared_ptr<backend::peer_connection> made(
+        boost::system::result<std::shared_ptr<trystero::webrtc::peer_connection>> r) {
+        require(BOOST_TEST(r.has_value()));
+        return std::move(*r);
+    }
+
     void on_io_thread() {
         if (std::this_thread::get_id() != io_thread) {
             off_thread = true;
         }
     }
 
-    void connect(std::pmr::memory_resource* channel_memory = nullptr,
-                 const std::optional<asio::any_io_executor>& channel_executor = {}) {
+    void connect() {
         offerer->set_handlers({
             .ice_candidate =
                 [this](std::string_view c) {
@@ -109,16 +150,8 @@ struct pair {
                     answerer_states.push_back(s);
                 },
         });
-        if (channel_memory != nullptr || channel_executor) {
-            const auto native =
-                std::static_pointer_cast<trystero::native::peer_connection>(offerer);
-            offer_end = trystero::native::data_channel::create(
-                channel_executor.value_or(io.get_executor()),
-                native->native_handle()->createDataChannel("data"),
-                channel_memory != nullptr ? channel_memory : std::pmr::get_default_resource());
-        } else {
-            offer_end = offerer->create_data_channel("data");
-        }
+        offer_end = offerer->create_data_channel("data");
+        require(BOOST_TEST(offer_end != nullptr));
         watch(offer_end, offer_open, at_offerer, nullptr);
         offerer->set_local_description([this](backend::error_code ec, std::string_view type,
                                               std::string_view sdp) {
@@ -164,8 +197,9 @@ struct pair {
     }
 };
 
-// Observes the native channel's posted callbacks without running them. This lets a test
-// install a receiver after a real message is queued and before that message is dispatched.
+// Observes the offerer's posted callbacks, webcpp::webrtc's and the channel's, without running
+// them. This lets a test install a receiver after a real message is read and before its delivery
+// is dispatched.
 struct queued_tasks {
     std::mutex mutex;
     std::deque<std::function<void()>> ready;
@@ -173,6 +207,20 @@ struct queued_tasks {
     std::size_t size() {
         const std::scoped_lock lock(mutex);
         return ready.size();
+    }
+
+    /** Runs the one task queued first, if any. */
+    void run_one() {
+        std::function<void()> f;
+        {
+            const std::scoped_lock lock(mutex);
+            if (ready.empty()) {
+                return;
+            }
+            f = std::move(ready.front());
+            ready.pop_front();
+        }
+        f();
     }
 
     void run() {
@@ -225,11 +273,33 @@ public:
     }
 };
 
+/** A pair whose offerer posts to a queue the test runs, in `memory`. */
 struct queued_pair : pair {
-    std::shared_ptr<queued_tasks> tasks = std::make_shared<queued_tasks>();
+    std::shared_ptr<queued_tasks> tasks;
 
-    void connect(std::pmr::memory_resource* memory = nullptr) {
-        pair::connect(memory, asio::any_io_executor(queued_executor(io.get_executor(), tasks)));
+    explicit queued_pair(
+        std::pmr::memory_resource* memory = std::pmr::get_default_resource(),
+        const std::shared_ptr<queued_tasks>& queue = std::make_shared<queued_tasks>())
+        : pair(memory,
+               [queue](asio::any_io_executor inner) {
+                   return asio::any_io_executor(queued_executor(std::move(inner), queue));
+               }),
+          tasks(queue) {}
+
+    queued_pair(const queued_pair&) = delete;
+    queued_pair& operator=(const queued_pair&) = delete;
+
+    /** Lets go of the connections, then of what their ends posted: a queued task holds the
+     * queue's executor, which holds the queue. */
+    ~queued_pair() {
+        reset();
+        tasks->run();
+        const std::scoped_lock lock(tasks->mutex);
+        tasks->ready.clear();
+    }
+
+    void connect() {
+        pair::connect();
         require(BOOST_TEST(until([&] { return offer_open && answer_open; })));
     }
 
@@ -243,9 +313,15 @@ struct queued_pair : pair {
             limit);
     }
 
+    /** Runs the offerer's events until its channel keeps `count` frames for a receiver. */
     void receive(std::size_t count) {
-        require(BOOST_TEST(run_until(io, [&] { return tasks->size() >= count; })));
-        tasks->run();
+        require(BOOST_TEST(until([&] { return kept() >= count; })));
+    }
+
+    /** The frames the offerer's channel keeps for a receiver. */
+    [[nodiscard]] std::size_t kept() const {
+        return std::static_pointer_cast<trystero::webrtc::data_channel>(offer_end)
+            ->pending_frames();
     }
 };
 
@@ -314,8 +390,11 @@ void a_full_pending_queue_drains_in_order_and_uses_replacement_handlers() {
     }
     p.receive(64);
     std::vector<int> received;
-    // The 65th callback is already queued before set_handlers posts its flush.
+    // The 65th frame's delivery is already queued before set_handlers posts its flush: the
+    // channel's read, then its completion.
     p.answer_end->send(backend::bytes{64});
+    require(BOOST_TEST(run_until(p.io, [&] { return p.tasks->size() >= 1; })));
+    p.tasks->run_one();
     require(BOOST_TEST(run_until(p.io, [&] { return p.tasks->size() >= 1; })));
     bool first = true;
     bool registering = true;
@@ -455,8 +534,8 @@ private:
 void pending_frames_and_delivery_use_the_channels_resource() {
     pending_memory memory;
     {
-        queued_pair p;
-        p.connect(&memory);
+        queued_pair p(&memory);
+        p.connect();
         require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
         p.offer_end->set_handlers({});
         for (int i = 0; i < 64; ++i) {
@@ -488,14 +567,25 @@ void pending_frames_and_delivery_use_the_channels_resource() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    const auto pc = trystero::native::peer_connection::create(io.get_executor(), {}, loopback,
-                                                              std::pmr::get_default_resource());
-    std::optional<backend::error_code> result;
-    pc->add_ice_candidate("not json", [&](backend::error_code ec) { result = ec; });
-    if (!BOOST_TEST(run_until(io, [&] { return result.has_value(); }))) {
+    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    const auto pc = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    require(BOOST_TEST(pc != nullptr));
+    std::vector<backend::error_code> results;
+    pc->add_ice_candidate("not json", [&](backend::error_code ec) { results.push_back(ec); });
+    pc->add_ice_candidate(R"({"sdpMid":"0"})",
+                          [&](backend::error_code ec) { results.push_back(ec); });
+    // A candidate before a remote description, which the signaling never adds.
+    pc->add_ice_candidate(
+        R"({"candidate":"candidate:1 1 UDP 1 127.0.0.1 9 typ host","sdpMid":"0"})",
+        [&](backend::error_code ec) { results.push_back(ec); });
+    pc->set_remote_description("neither", "v=0",
+                               [&](backend::error_code ec) { results.push_back(ec); });
+    if (!BOOST_TEST(run_until(io, [&] { return results.size() == 4; }))) {
         return;
     }
-    BOOST_TEST(*result == trystero::error::backend_failure);
+    for (const auto& ec : results) {
+        BOOST_TEST(ec == trystero::error::backend_failure);
+    }
 }
 
 void the_backend_makes_at_most_its_budget_in_a_minute() {
@@ -517,6 +607,162 @@ void the_backend_makes_at_most_its_budget_in_a_minute() {
     BOOST_TEST(factory.make_peer_connection({}, std::pmr::get_default_resource()) == nullptr);
 }
 
+void the_runtime_holds_at_most_its_cap_at_once() {
+    asio::io_context io;
+    trystero::native::backend factory(
+        io.get_executor(),
+        {.bind_address = std::pmr::string(loopback), .runtime = {.max_peer_connections = 2}});
+    auto first = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    const auto second = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    BOOST_TEST(first != nullptr);
+    BOOST_TEST(second != nullptr);
+    BOOST_TEST_EQ(factory.runtime().peer_connections(), 2U);
+    BOOST_TEST(factory.make_peer_connection({}, std::pmr::get_default_resource()) == nullptr);
+    // Unlike the minute's budget, a connection gives its place back once it is gone.
+    first.reset();
+    BOOST_TEST_EQ(factory.runtime().peer_connections(), 1U);
+    BOOST_TEST(factory.make_peer_connection({}, std::pmr::get_default_resource()) != nullptr);
+}
+
+void a_url_libdatachannel_cannot_parse_is_left_out() {
+    asio::io_context io;
+    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    // stuns:, which WebRTC admits and libdatachannel does not know, beside a server it parses.
+    std::vector<backend::ice_server> servers;
+    servers.push_back({
+        .urls = {"stuns:127.0.0.1:9", "stun:127.0.0.1:9"},
+        .username = {},
+        .credential = {},
+    });
+    servers.push_back({.urls = {"stuns:127.0.0.1:10"}, .username = {}, .credential = {}});
+    const auto pc = factory.make_peer_connection(servers, std::pmr::get_default_resource());
+    BOOST_TEST(pc != nullptr);
+    // The probes are given up: only the connection made counts.
+    BOOST_TEST_EQ(factory.runtime().peer_connections(), 1U);
+}
+
+/** The JSON of a candidate of webcpp::webrtc, as a peer sends it. */
+std::string json_of(const webcpp::webrtc::ice_candidate& c) {
+    return boost::json::serialize(boost::json::object{
+        {"candidate", c.candidate},
+        {"sdpMid", c.sdp_mid},
+        {"sdpMLineIndex", c.sdp_m_line_index.value_or(0)},
+    });
+}
+
+// A peer may send what is no frame: a text message, which a data channel of webcpp::webrtc
+// delivers as text, is dropped, and the frames around it arrive. The remote peer is
+// webcpp::webrtc's own, which sends text.
+void a_text_message_is_dropped_and_the_frames_around_it_arrive() {
+    webcpp::webrtc::runtime runtime;
+    asio::io_context io;
+    trystero::native::backend factory(io.get_executor(), runtime, {.bind_address = loopback});
+    const auto local = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    require(BOOST_TEST(local != nullptr));
+    webcpp::webrtc::configuration config;
+    config.bind_address = loopback;
+    auto made = webcpp::webrtc::peer_connection::make(runtime, io.get_executor(), config);
+    require(BOOST_TEST(made.has_value()));
+    webcpp::webrtc::peer_connection& remote = *made;
+
+    // Candidates wait until the side they go to has both descriptions.
+    bool negotiated = false;
+    std::vector<std::string> to_remote;
+    std::vector<std::string> to_local;
+    const auto add_to_remote = [&remote](std::string_view json) {
+        const auto v = boost::json::parse(json).as_object();
+        const std::string_view text = v.at("candidate").as_string();
+        const std::string_view mid = v.at("sdpMid").as_string();
+        remote.async_add_ice_candidate({.candidate = text, .sdp_mid = mid},
+                                       [](webcpp::webrtc::detail::error_code) {});
+    };
+    local->set_handlers({
+        .ice_candidate =
+            [&](std::string_view json) {
+                if (negotiated) {
+                    add_to_remote(json);
+                } else {
+                    to_remote.emplace_back(json);
+                }
+            },
+        .data_channel = {},
+        .state = {},
+    });
+    std::function<void()> trickle = [&] {
+        remote.async_wait_ice_candidate(
+            [&](webcpp::webrtc::detail::error_code ec, const webcpp::webrtc::ice_candidate& c) {
+                if (ec || c.candidate.empty()) {
+                    return;
+                }
+                if (negotiated) {
+                    local->add_ice_candidate(json_of(c), [](backend::error_code) {});
+                } else {
+                    to_local.push_back(json_of(c));
+                }
+                trickle();
+            });
+    };
+    trickle();
+    std::optional<webcpp::webrtc::data_channel> sender;
+    remote.async_accept_data_channel(
+        [&](webcpp::webrtc::detail::error_code ec, webcpp::webrtc::data_channel c) {
+            if (!ec) {
+                sender.emplace(std::move(c));
+            }
+        });
+    const auto channel = local->create_data_channel("data");
+    require(BOOST_TEST(channel != nullptr));
+    std::vector<backend::bytes> received;
+    channel->set_handlers({
+        .open = {},
+        .message = [&](backend::bytes frame) { received.push_back(std::move(frame)); },
+        .close = {},
+        .buffered_amount_low = {},
+    });
+    local->set_local_description(
+        [&](backend::error_code ec, std::string_view, std::string_view offer) {
+            require(BOOST_TEST(!ec));
+            remote.async_set_remote_description(
+                {.type = webcpp::webrtc::sdp_type::offer, .sdp = offer},
+                [&](webcpp::webrtc::detail::error_code ec) {
+                    require(BOOST_TEST(!ec));
+                    remote.async_set_local_description(
+                        [&](webcpp::webrtc::detail::error_code ec,
+                            const webcpp::webrtc::session_description& answer) {
+                            require(BOOST_TEST(!ec));
+                            local->set_remote_description(
+                                "answer", answer.sdp, [&](backend::error_code ec) {
+                                    require(BOOST_TEST(!ec));
+                                    negotiated = true;
+                                    for (const auto& c : std::exchange(to_remote, {})) {
+                                        add_to_remote(c);
+                                    }
+                                    for (const auto& c : std::exchange(to_local, {})) {
+                                        local->add_ice_candidate(c, [](backend::error_code) {});
+                                    }
+                                });
+                        });
+                });
+        });
+    require(BOOST_TEST(run_until(io, [&] {
+        return channel->is_open() && sender &&
+               sender->ready_state() == webcpp::webrtc::data_channel_state::open;
+    })));
+    const std::vector<std::uint8_t> before{1, 2, 3};
+    const std::vector<std::uint8_t> after{4, 5};
+    BOOST_TEST(!sender->send(asio::buffer(before)));
+    BOOST_TEST(!sender->send_text("1e300"));
+    BOOST_TEST(!sender->send(asio::buffer(after)));
+    require(BOOST_TEST(run_until(io, [&] { return received.size() == 2; })));
+    BOOST_TEST_ALL_EQ(received[0].begin(), received[0].end(), before.begin(), before.end());
+    BOOST_TEST_ALL_EQ(received[1].begin(), received[1].end(), after.begin(), after.end());
+    // Nothing more arrives: the text was dropped, not delivered late.
+    run_until(io, [] { return false; }, 200ms);
+    BOOST_TEST_EQ(received.size(), 2U);
+    sender.reset();
+    remote.close();
+}
+
 }  // namespace
 
 int main() {
@@ -529,6 +775,9 @@ int main() {
     a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
     the_backend_makes_at_most_its_budget_in_a_minute();
+    the_runtime_holds_at_most_its_cap_at_once();
+    a_url_libdatachannel_cannot_parse_is_left_out();
+    a_text_message_is_dropped_and_the_frames_around_it_arrive();
     pending_frames_and_delivery_use_the_channels_resource();
     return boost::report_errors();
 }

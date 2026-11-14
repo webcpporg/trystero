@@ -10,8 +10,9 @@
 
 project /webcpp/trystero ;
 
-# Only libsecp256k1 is externally installed. Native WebRTC and OpenSSL are
-# pinned source dependencies, built together for the consumer's B2 variant.
+# Only libsecp256k1 is externally installed. WebRTC is webcpp::webrtc's, whose
+# native libdatachannel and its OpenSSL are pinned source dependencies, built
+# together for the consumer's B2 variant.
 import errors ;
 import webcpp ;
 
@@ -40,7 +41,8 @@ rule trystero-dependencies ( properties * )
 }
 
 # The native backend's own dependencies, checked only when a target that
-# uses it is built.
+# uses it is built: its WebRTC, libdatachannel's through webcpp::webrtc, runs
+# on worker threads.
 rule native-dependencies ( properties * )
 {
     if <threading>single in $(properties)
@@ -62,12 +64,10 @@ alias trystero : : <conditional>@trystero-dependencies
   <toolset>emscripten:<linkflags>-lembind ;
 # end::trystero[]
 
-# The native backend needs exceptions: libdatachannel reports errors by
-# throwing, and data_channel.hpp and peer_connection.hpp catch them. Each
-# headers-alone call, test and program of it declares
-# <exception-handling>on itself, since b2 lets no usage requirement override
-# a build's exception-handling=off.
+# The native backend: its WebRTC is webcpp::webrtc's, which brings the pinned
+# libdatachannel and OpenSSL, and works with exceptions on and off, through
+# libdatachannel's C API; so does the backend.
 # tag::native[]
 alias native : : <conditional>@native-dependencies
-  : : <library>trystero <library>/webcpp/third_party//libdatachannel ;
+  : : <library>trystero <library>/webcpp/webrtc//webrtc ;
 # end::native[]

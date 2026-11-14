@@ -15,7 +15,7 @@
 
 // MrDocs parses trystero as a build with exceptions does, where the macro is
 // not defined: this definition, undone at once, is the one the reference
-// lists, and the parse goes on with every API that needs exceptions in it.
+// lists, and the parse goes on as such a build's.
 #ifdef __MRDOCS__
 /**
  Defined when trystero is built without exceptions: when webcpp has none (the
@@ -24,10 +24,9 @@
  in a build that has them.
 
  trystero raises no exception of its own: every operation that can fail
- completes with an error code. The native backend's WebRTC, over
- libdatachannel, which reports errors by throwing, needs exceptions: while this
- is defined, `native::data_channel`, `native::peer_connection` and
- `native::backend` do not exist, and the rest of trystero is unchanged.
+ completes with an error code, and every part of it, both backends included,
+ works with exceptions and without them. Its WebRTC is webcpp::webrtc's, which
+ natively calls libdatachannel's C API, where no exception crosses.
 
  @see "The native backend", in the guide.
 */

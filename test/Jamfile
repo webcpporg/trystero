@@ -16,22 +16,16 @@ import webcpp ;
 
 webcpp.targets native emscripten ;
 
-# The headers that build on both targets, the native backend's, against
-# libdatachannel and OpenSSL, and the browser backend's, on emscripten. The
-# native timer (backend.hpp), sealer and WebSockets compile without
-# exceptions, so the lint analyses them so too. data_channel.hpp and
-# peer_connection.hpp declare nothing without exceptions, so they are
-# compiled with them whatever the build asks: libdatachannel reports errors
-# by throwing.
+# The headers that build on both targets, the native backend's and the
+# backend's WebRTC over webcpp::webrtc, against libdatachannel and OpenSSL,
+# and the browser backend's, on emscripten. Every one compiles with
+# exceptions and without them, as the build asks, so the lint analyses them
+# so too.
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/native/backend.hpp trystero/native/sealer.hpp trystero/native/timer.hpp
-    trystero/native/websocket.hpp
+  : trystero/native/*.hpp trystero/webrtc/*.hpp
   : <library>/webcpp/trystero//native <threading>multi : native ;
-webcpp.headers-alone trystero : ../include
-  : trystero/native/data_channel.hpp trystero/native/peer_connection.hpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
 webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
 
 # config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when webcpp has no
@@ -48,10 +42,8 @@ webcpp.compile config_all_off : config_test.cpp
 # The protocol against what Trystero JS computed, which the original's oracle
 # wrote into fixtures/expected/expected.json, and whole rooms over the memory
 # backend of support/memory_backend.hpp: on both targets. The native
-# backend's tests, over libdatachannel and OpenSSL, run natively only. Two
-# need exceptions whatever the build asks: the types of data_channel.hpp,
-# peer_connection.hpp and backend.hpp exist only with them, since
-# libdatachannel reports errors by throwing.
+# backend's tests, over webcpp::webrtc's libdatachannel and OpenSSL, run
+# natively only.
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
@@ -83,11 +75,19 @@ webcpp.run native_websocket : native_websocket_test.cpp
     <define>_GLIBCXX_ASSERTIONS
   : native ;
 webcpp.run native_timer : native_timer_test.cpp : <library>/webcpp/trystero//native <threading>multi : native ;
+# The backend's WebRTC over webcpp::webrtc, and whole rooms over it, as the
+# build asks and without exceptions: webcpp::webrtc calls libdatachannel's C
+# API, which catches what libdatachannel throws, so the native backend needs
+# none.
 # tag::native[]
 webcpp.run native_peer_connection : native_peer_connection_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi : native ;
 webcpp.run native_room : native_room_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>on : native ;
+  : <library>/webcpp/trystero//native <threading>multi : native ;
+webcpp.run native_peer_connection_no_exceptions : native_peer_connection_test.cpp
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>off : native ;
+webcpp.run native_room_no_exceptions : native_room_test.cpp
+  : <library>/webcpp/trystero//native <threading>multi <exception-handling>off : native ;
 # end::native[]
 
 # Every allocation of two rooms that exchange a payload goes through the
