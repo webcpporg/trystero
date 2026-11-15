@@ -7,44 +7,40 @@
 # MSVC deprecates std::getenv, which room_test.cpp reads, for a getenv_s of
 # its own (C4996), an error under /WX: the tests keep the standard's. A test
 # of rooms over Asio holds more sections than MSVC's object format allows by
-# default (C1128, measured in room, native_websocket, native_peer_connection
-# and native_room): /bigobj.
+# default (C1128, measured in room, and in platform_websocket,
+# platform_peer_connection and platform_room when they were native_*):
+# /bigobj.
 project : requirements <library>/webcpp/trystero//trystero
   <toolset>msvc:<define>_CRT_SECURE_NO_WARNINGS <toolset>msvc:<cxxflags>/bigobj ;
 
-import feature ;
 import webcpp ;
 
 webcpp.targets native emscripten ;
 
-# The headers that build on both targets, the native backend's and the
-# backend's WebRTC over webcpp::webrtc, against libdatachannel and OpenSSL,
-# and the browser backend's, on emscripten, which includes that WebRTC there.
-# Every one compiles with exceptions and without them, as the build asks, so
-# the lint analyses them so too.
+# Natively the platform backend needs worker threads, libdatachannel's; a
+# page has none.
+rule native-threads ( properties * )
+{
+    if ! <toolset>emscripten in $(properties)
+    {
+        return <threading>multi ;
+    }
+}
+local platform = <library>/webcpp/trystero//platform <conditional>@native-threads ;
+
+# The headers that build on both targets: the core, and the platform backend
+# with its WebRTC over webcpp::webrtc, natively against libdatachannel and
+# OpenSSL, in a page over its own objects; and a page's own header, which
+# builds only on emscripten. Every one compiles with exceptions and without
+# them, as the build asks, so the lint analyses them so too.
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/native/backend.hpp trystero/native/sealer.hpp trystero/native/timer.hpp
-    trystero/webrtc/*.hpp
-  : <library>/webcpp/trystero//native <threading>multi : native ;
-webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
-
-# The relay session names webcpp::asio and webcpp::beast only, and compiles on
-# both targets, though only the native backend uses it: natively against the
-# native backend's dependencies, on emscripten against webcpp::beast's browser
-# implementation and Boost.URL, so that the lanes, not only the reference's
-# parse, prove it compiles there.
-rule relay-session-dependencies ( properties * )
-{
-    if [ feature.get-values <toolset> : $(properties) ] = emscripten
-    {
-        return <library>/webcpp/beast//browser <library>/webcpp//boost_url ;
-    }
-    return <library>/webcpp/trystero//native <threading>multi ;
-}
-webcpp.headers-alone trystero : ../include : trystero/native/websocket.hpp
-  : <conditional>@relay-session-dependencies : native emscripten ;
+  : trystero/platform/backend.hpp trystero/platform/entropy.hpp
+    trystero/platform/sealer.hpp trystero/platform/websocket.hpp trystero/webrtc/*.hpp
+  : $(platform) ;
+webcpp.headers-alone trystero : ../include : trystero/platform/page.hpp
+  : $(platform) : emscripten ;
 
 # config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when webcpp has no
 # exceptions, and keeps it when a developer defines it in a build that has
@@ -59,9 +55,7 @@ webcpp.compile config_all_off : config_test.cpp
 
 # The protocol against what Trystero JS computed, which the original's oracle
 # wrote into fixtures/expected/expected.json, and whole rooms over the memory
-# backend of support/memory_backend.hpp: on both targets. The native
-# backend's tests, over webcpp::webrtc's libdatachannel and OpenSSL, run
-# natively only.
+# backend of support/memory_backend.hpp: on both targets.
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
@@ -81,35 +75,47 @@ webcpp.run memory_backend : memory_backend_test.cpp ;
 webcpp.run connection : connection_test.cpp ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
-# The timer over webcpp::asio's steady_timer, which the browser backend
+# The timer over webcpp::asio's steady_timer, which the platform backend
 # makes: a wait cancelled, restarted or destroyed never fires.
 webcpp.run timer : timer_test.cpp ;
 # end::both-targets[]
-webcpp.run native_sealer : native_sealer_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi <testing.input-file>fixtures/expected/expected.json : native ;
-# The WebSocket test is built with the standard libraries' own checks, libc++'s
+
+# The platform backend's own tests, on each target that builds them. On both:
+# the backend itself (its own state in backend_config::memory, its clocks,
+# its randomness, its TLS context); its sealer, natively OpenSSL's AES-GCM, in
+# a page Web Crypto under node, against what Trystero JS sealed; and relays it
+# cannot reach. Natively, against libdatachannel and in-process servers: the
+# relays' WebSocket, built with the standard libraries' own checks, libc++'s
 # extensive hardening and libstdc++'s assertions, so that a completion that
-# touches a container its socket cleared fails at once, not one run in many.
-webcpp.run native_websocket : native_websocket_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi
-    <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
+# touches a container its socket cleared fails at once, not one run in many;
+# the backend's WebRTC; and whole rooms over it. Each as the build asks and,
+# but the WebSocket's, which runs once with those checks, without exceptions
+# too: webcpp::webrtc calls libdatachannel's C API, which catches what
+# libdatachannel throws, so the backend needs none.
+# tag::platform[]
+webcpp.run platform_backend : platform_backend_test.cpp : $(platform) ;
+webcpp.run platform_sealer : platform_sealer_test.cpp
+  : $(platform) <testing.input-file>fixtures/expected/expected.json ;
+webcpp.run platform_websocket_unreachable : platform_websocket_unreachable_test.cpp
+  : $(platform) ;
+webcpp.run platform_websocket : platform_websocket_test.cpp
+  : $(platform) <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
     <define>_GLIBCXX_ASSERTIONS
   : native ;
-webcpp.run native_timer : native_timer_test.cpp : <library>/webcpp/trystero//native <threading>multi : native ;
-# The backend's WebRTC over webcpp::webrtc, and whole rooms over it, as the
-# build asks and without exceptions: webcpp::webrtc calls libdatachannel's C
-# API, which catches what libdatachannel throws, so the native backend needs
-# none.
-# tag::native[]
-webcpp.run native_peer_connection : native_peer_connection_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi : native ;
-webcpp.run native_room : native_room_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi : native ;
-webcpp.run native_peer_connection_no_exceptions : native_peer_connection_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>off : native ;
-webcpp.run native_room_no_exceptions : native_room_test.cpp
-  : <library>/webcpp/trystero//native <threading>multi <exception-handling>off : native ;
-# end::native[]
+webcpp.run platform_peer_connection : platform_peer_connection_test.cpp
+  : $(platform) : native ;
+webcpp.run platform_room : platform_room_test.cpp : $(platform) : native ;
+webcpp.run platform_backend_no_exceptions : platform_backend_test.cpp
+  : $(platform) <exception-handling>off ;
+webcpp.run platform_sealer_no_exceptions : platform_sealer_test.cpp
+  : $(platform) <testing.input-file>fixtures/expected/expected.json <exception-handling>off ;
+webcpp.run platform_websocket_unreachable_no_exceptions : platform_websocket_unreachable_test.cpp
+  : $(platform) <exception-handling>off ;
+webcpp.run platform_peer_connection_no_exceptions : platform_peer_connection_test.cpp
+  : $(platform) <exception-handling>off : native ;
+webcpp.run platform_room_no_exceptions : platform_room_test.cpp
+  : $(platform) <exception-handling>off : native ;
+# end::platform[]
 
 # Every allocation of two rooms that exchange a payload goes through the
 # resources of their configurations, and the global operator new and the C
@@ -119,38 +125,57 @@ webcpp.run native_room_no_exceptions : native_room_test.cpp
 webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # end::allocation[]
 
-# The browser backend's own tests, under node, which has the page's
-# WebSocket and Web Crypto but no WebRTC; each main runs its io_context, as
-# a page's program does, and suspends in it in either variant.
-# tag::browser[]
-webcpp.run browser_websocket : browser_websocket_test.cpp : : emscripten ;
-webcpp.run browser_websocket_bound : browser_websocket_bound_test.cpp : : emscripten ;
-webcpp.run browser_websocket_late_events : browser_websocket_late_events_test.cpp : : emscripten ;
-webcpp.run browser_sealer : browser_sealer_test.cpp : : emscripten ;
-webcpp.run browser_data_channel : browser_data_channel_test.cpp : : emscripten ;
-webcpp.run browser_peer_connection : browser_peer_connection_test.cpp : : emscripten ;
+# The platform backend in a page, under node, which has the page's WebSocket
+# and Web Crypto but no WebRTC: stand-ins for the page's objects where a test
+# needs them. Each main runs its io_context, as a page's program does, and
+# suspends in it in either variant.
+# tag::page[]
+webcpp.run platform_page_websocket_bound : platform_page_websocket_bound_test.cpp
+  : $(platform) : emscripten ;
+webcpp.run platform_page_websocket_late_events : platform_page_websocket_late_events_test.cpp
+  : $(platform) : emscripten ;
+webcpp.run platform_page_data_channel : platform_page_data_channel_test.cpp
+  : $(platform) : emscripten ;
+webcpp.run platform_page_peer_connection : platform_page_peer_connection_test.cpp
+  : $(platform) : emscripten ;
 # A page's program: main runs the io_context under a work guard, and the
 # page's calls into C++ only post to it.
-webcpp.run browser_page : browser_page_test.cpp : : emscripten ;
-# end::browser[]
+webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
+# A page's sealer allocates nothing outside the room's resource from the
+# start of a seal or an open to its completion: the global operator new and
+# the C library's allocation functions, replaced, count none.
+webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
+  : $(platform) : emscripten ;
+# A page_call's handler sees the page's value as it is when it runs; a
+# function the page kept reaches nothing once its page_call, or its
+# io_context, is destroyed; and a page_call outlives its io_context harmlessly.
+webcpp.run platform_page_call : platform_page_call_test.cpp : $(platform) : emscripten ;
+# A relay socket's handlers and a sealer's completions run outside the page's
+# events.
+webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
+# end::page[]
 
-# The same, built without exceptions, as a program that uses the browser
-# backend may be: no exception may enter WebAssembly there either.
+# The same, built without exceptions, as a page's program may be: no
+# exception may enter WebAssembly there either.
 # tag::no-exceptions[]
-webcpp.run browser_websocket_no_exceptions : browser_websocket_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_websocket_bound_no_exceptions : browser_websocket_bound_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_websocket_late_events_no_exceptions : browser_websocket_late_events_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_sealer_no_exceptions : browser_sealer_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_data_channel_no_exceptions : browser_data_channel_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_peer_connection_no_exceptions : browser_peer_connection_test.cpp
-  : <exception-handling>off : emscripten ;
-webcpp.run browser_page_no_exceptions : browser_page_test.cpp
-  : <exception-handling>off : emscripten ;
+webcpp.run platform_page_websocket_bound_no_exceptions : platform_page_websocket_bound_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_websocket_late_events_no_exceptions
+  : platform_page_websocket_late_events_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_data_channel_no_exceptions : platform_page_data_channel_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_peer_connection_no_exceptions : platform_page_peer_connection_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_no_exceptions : platform_page_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_sealer_allocation_no_exceptions
+  : platform_page_sealer_allocation_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_call_no_exceptions : platform_page_call_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_handlers_no_exceptions : platform_page_handlers_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 
 # The combined Asio/Beast/Trystero provider has its own recurring native lane.

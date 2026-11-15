@@ -4,14 +4,15 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the native backend's peer connection, webcpp::webrtc's over libdatachannel, between two
+// Tests the platform backend's peer connection natively, webcpp::webrtc's over libdatachannel,
+// between two
 // connections in one process, wired to each other directly: what the signaling would carry over
 // the relays is handed across here. Each connection is bound to 127.0.0.1, so that its one host
 // candidate is the loopback's and no other interface is needed. The backend makes at most
 // `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them,
 // and holds at most its runtime's `max_peer_connections` at once.
 
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/webrtc/data_channel.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
@@ -78,7 +79,7 @@ std::shared_ptr<webcpp::webrtc::runtime> program_runtime(webcpp::webrtc::runtime
 struct pair {
     webcpp::webrtc::runtime runtime;
     asio::io_context io;
-    trystero::native::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
+    trystero::platform::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
     std::thread::id io_thread = std::this_thread::get_id();
     std::shared_ptr<backend::peer_connection> offerer;
     std::shared_ptr<backend::peer_connection> answerer;
@@ -575,7 +576,7 @@ void pending_frames_and_delivery_use_the_channels_resource() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    trystero::platform::backend factory(io.get_executor(), {.bind_address = loopback});
     const auto pc = factory.make_peer_connection({}, std::pmr::get_default_resource());
     require(BOOST_TEST(pc != nullptr));
     std::vector<backend::error_code> results;
@@ -598,7 +599,7 @@ void a_malformed_candidate_fails_without_throwing() {
 
 void the_backend_makes_at_most_its_budget_in_a_minute() {
     asio::io_context io;
-    trystero::native::backend factory(
+    trystero::platform::backend factory(
         io.get_executor(),
         {.bind_address = std::pmr::string(loopback), .max_peer_connections_per_minute = 3});
     std::vector<std::shared_ptr<backend::peer_connection>> made;
@@ -617,7 +618,7 @@ void the_backend_makes_at_most_its_budget_in_a_minute() {
 
 void the_runtime_holds_at_most_its_cap_at_once() {
     asio::io_context io;
-    trystero::native::backend factory(
+    trystero::platform::backend factory(
         io.get_executor(),
         {.bind_address = std::pmr::string(loopback), .runtime = {.max_peer_connections = 2}});
     auto first = factory.make_peer_connection({}, std::pmr::get_default_resource());
@@ -634,7 +635,7 @@ void the_runtime_holds_at_most_its_cap_at_once() {
 
 void a_url_libdatachannel_cannot_parse_is_left_out() {
     asio::io_context io;
-    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    trystero::platform::backend factory(io.get_executor(), {.bind_address = loopback});
     // stuns:, which WebRTC admits and libdatachannel does not know, beside a server it parses.
     std::vector<backend::ice_server> servers;
     servers.push_back({
@@ -663,14 +664,14 @@ std::string json_of(const webcpp::webrtc::ice_candidate& c) {
 }
 
 /**
- * The native backend's connection, offering, and a peer connection of webcpp::webrtc's own,
+ * The platform backend's connection, offering, and a peer connection of webcpp::webrtc's own,
  * answering, in one process: what the signaling would carry is handed across, each candidate held
  * until the side it goes to has both descriptions.
  */
 struct mixed_pair {
     webcpp::webrtc::runtime runtime;
     asio::io_context io;
-    trystero::native::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
+    trystero::platform::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
     std::shared_ptr<backend::peer_connection> local =
         factory.make_peer_connection({}, std::pmr::get_default_resource());
     std::optional<webcpp::webrtc::peer_connection> remote;

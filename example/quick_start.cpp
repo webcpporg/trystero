@@ -10,7 +10,7 @@
 
 // tag::includes[]
 #include <webcpp/trystero.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 
 #include <webcpp/asio/as_tuple.hpp>
 #include <webcpp/asio/co_spawn.hpp>
@@ -41,7 +41,7 @@ struct lobby {
 /** What the page keeps alive: its io_context, the backend, the app, and the room it joined. */
 struct application {
     asio::io_context io;
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     trystero::app app{io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
     std::optional<lobby> joined;
 

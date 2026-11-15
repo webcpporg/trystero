@@ -5,9 +5,9 @@
 # https://www.boost.org/LICENSE_1_0.txt)
 #
 # trystero, serverless WebRTC rooms, wire compatible with Trystero. A program
-# uses /webcpp/trystero//trystero, the rooms and the browser backend, or
-# /webcpp/trystero//native for the native backend. Both backends' WebRTC is
-# webcpp::webrtc's.
+# uses /webcpp/trystero//platform, the rooms and the platform backend, on
+# both targets; /webcpp/trystero//trystero is the rooms alone, over a backend
+# of the program's own, as the tests' memory relays are.
 
 project /webcpp/trystero ;
 
@@ -41,45 +41,43 @@ rule trystero-dependencies ( properties * )
     return [ webcpp.external-found trystero : libsecp256k1 : $(properties) ] ;
 }
 
-# The native backend's own dependencies, checked only when a target that
-# uses it is built: its WebRTC, libdatachannel's through webcpp::webrtc, runs
-# on worker threads.
-rule native-dependencies ( properties * )
+# The platform backend's own dependencies, checked only when a target that
+# uses it is built: natively its WebRTC, libdatachannel's through
+# webcpp::webrtc, runs on worker threads.
+rule platform-dependencies ( properties * )
 {
-    if <threading>single in $(properties)
+    if <threading>single in $(properties) && ! <toolset>emscripten in $(properties)
     {
-        errors.user-error "Trystero's native backend uses worker threads. Add <threading>multi to the consuming target or pass threading=multi." ;
+        errors.user-error "Trystero's platform backend uses worker threads natively. Add <threading>multi to the consuming target or pass threading=multi." ;
     }
 }
 
-# Asio is webcpp::asio: natively Boost.Asio itself, on emscripten the shipped
-# backend, without threads (main runs it), whose browser runtime
-# webcpp::webrtc's browser objects deliver through. On emscripten the browser
-# backend's WebRTC is webcpp::webrtc's, and the backend reaches the page
-# through embind: -lembind, what b2's <embind>on links, which as a usage
-# requirement it would drop (measured: a program then fails to link,
-# undefined _embind_register_function), since b2 takes only free features
-# from usage requirements. Every JSON text the rooms read or write is
-# webcpp::document's, which brings Boost.JSON's parser and Boost.Charconv's
-# definitions.
+# The rooms: Asio is webcpp::asio, natively Boost.Asio itself, on emscripten
+# the shipped backend, without threads (main runs it), which links embind. Every JSON text the rooms read or
+# write is webcpp::document's, which brings Boost.JSON's parser and
+# Boost.Charconv's definitions.
 # tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
-  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1
-  <toolset>emscripten:<library>/webcpp/webrtc//webrtc
-  <toolset>emscripten:<linkflags>-lembind ;
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1 ;
 # end::trystero[]
 
-# The native backend: its WebRTC is webcpp::webrtc's, which brings the pinned
-# libdatachannel and OpenSSL, and works with exceptions on and off, through
-# libdatachannel's C API; so does the backend. Its relays' WebSockets are
-# webcpp::beast's over the same OpenSSL (//tls), their URLs read with
-# Boost.URL, built from Boost's sources once per variant; webcpp::asio's
-# //tls adds webcpp's embedded authorities, which a program may trust in
-# place of the system's (make_tls_client_context).
-# tag::native[]
-alias native : : <conditional>@native-dependencies
+# The platform backend, one for both targets: its WebRTC is webcpp::webrtc's,
+# its relays' WebSockets webcpp::beast's, their URLs read with Boost.URL,
+# built from Boost's sources once per variant. Natively webcpp::webrtc brings
+# the pinned libdatachannel and OpenSSL, and works with exceptions on and
+# off, through libdatachannel's C API; so does the backend. Its relays run
+# over the same OpenSSL (//tls), and webcpp::asio's //tls adds webcpp's
+# embedded authorities, which a program may trust in place of the system's
+# (make_tls_client_context). On emscripten webcpp::webrtc and webcpp::beast
+# bind the page's RTCPeerConnection and WebSocket (//browser), and no
+# OpenSSL is linked.
+# tag::platform[]
+alias platform : : <toolset>emscripten
+  : : <library>trystero <library>/webcpp/webrtc//webrtc
+  <library>/webcpp/beast//browser <library>/webcpp//boost_url ;
+alias platform : : <conditional>@platform-dependencies
   : : <library>trystero <library>/webcpp/webrtc//webrtc
   <library>/webcpp/beast//tls <library>/webcpp/asio//tls
   <library>/webcpp//boost_url ;
-# end::native[]
+# end::platform[]

@@ -16,11 +16,12 @@ webcpp.targets native emscripten ;
 # Each needs the public relays or a browser, so it is linked and never run.
 # tag::native[]
 webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//native <threading>multi : native ;
+  : <library>/webcpp/trystero//platform <threading>multi : native ;
 # end::native[]
 # tag::browser[]
 webcpp.link quick_start : quick_start.cpp
-  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+  : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
+    <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
 # end::browser[]
 
 # The chat page, on emscripten: its program and the site it is served from.

@@ -4,16 +4,17 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the native WebSocket client, webcpp::beast's, natively Boost.Beast's, against servers in
-// the same process, on 127.0.0.1: an echo server in the clear and one over TLS, with a test
-// authority of its own, and relays that misbehave.
+// Tests the platform backend's relay WebSocket natively, webcpp::beast's, there Boost.Beast's,
+// against servers in the same process, on 127.0.0.1: an echo server in the clear and one over TLS,
+// with a test authority of its own, and relays that misbehave.
 
-#include <webcpp/trystero/native/backend.hpp>
-#include <webcpp/trystero/native/websocket.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/platform/websocket.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 
 #include <webcpp/asio/tls_client_context.hpp>
 
+#include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/co_spawn.hpp>
@@ -30,6 +31,7 @@
 
 #include <chrono>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -332,7 +334,7 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 }
 
 void urls_name_a_scheme_host_port_and_path() {
-    const auto secure = trystero::native::detail::parse_url("wss://relay.example.org");
+    const auto secure = trystero::platform::detail::parse_url("wss://relay.example.org");
     if (!BOOST_TEST(secure.has_value())) {
         return;
     }
@@ -342,7 +344,7 @@ void urls_name_a_scheme_host_port_and_path() {
     BOOST_TEST_EQ(secure->port, "443");
     BOOST_TEST_EQ(secure->handshake_host, "relay.example.org");
     BOOST_TEST_EQ(secure->target, "/");
-    const auto plain = trystero::native::detail::parse_url("ws://127.0.0.1:7447/nostr?x=1");
+    const auto plain = trystero::platform::detail::parse_url("ws://127.0.0.1:7447/nostr?x=1");
     if (!BOOST_TEST(plain.has_value())) {
         return;
     }
@@ -352,14 +354,32 @@ void urls_name_a_scheme_host_port_and_path() {
     BOOST_TEST_EQ(plain->port, "7447");
     BOOST_TEST_EQ(plain->handshake_host, "127.0.0.1:7447");
     BOOST_TEST_EQ(plain->target, "/nostr?x=1");
-    BOOST_TEST(!trystero::native::detail::parse_url("https://example.org").has_value());
-    BOOST_TEST(!trystero::native::detail::parse_url("wss://").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("https://example.org").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("wss://").has_value());
+}
+
+// A host is a name or an address once its escapes are decoded, as a page reads it: 127.0.0.1 with
+// escaped digits, a name to Boost.URL, is an address, which TLS never names to the server (SNI).
+void urls_read_an_escaped_address_as_an_address() {
+    const auto escaped = trystero::platform::detail::parse_url("wss://%31%32%37.0.0.1:7447/");
+    if (!BOOST_TEST(escaped.has_value())) {
+        return;
+    }
+    BOOST_TEST(!escaped->named);
+    BOOST_TEST_EQ(escaped->host, "127.0.0.1");
+    BOOST_TEST_EQ(escaped->handshake_host, "127.0.0.1:7447");
+    const auto name = trystero::platform::detail::parse_url("wss://%72elay.example.org/");
+    if (!BOOST_TEST(name.has_value())) {
+        return;
+    }
+    BOOST_TEST(name->named);
+    BOOST_TEST_EQ(name->host, "relay.example.org");
 }
 
 // An IPv6 address reaches the resolver without its brackets; a scheme in capitals is still a
 // WebSocket's; userinfo and a fragment, which a page's WebSocket refuses, are refused.
 void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
-    const auto ipv6 = trystero::native::detail::parse_url("ws://[::1]:7447/nostr");
+    const auto ipv6 = trystero::platform::detail::parse_url("ws://[::1]:7447/nostr");
     if (!BOOST_TEST(ipv6.has_value())) {
         return;
     }
@@ -368,14 +388,14 @@ void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
     BOOST_TEST_EQ(ipv6->port, "7447");
     BOOST_TEST_EQ(ipv6->handshake_host, "[::1]:7447");
     BOOST_TEST_EQ(ipv6->target, "/nostr");
-    const auto default_port = trystero::native::detail::parse_url("wss://[2001:db8::1]");
+    const auto default_port = trystero::platform::detail::parse_url("wss://[2001:db8::1]");
     if (!BOOST_TEST(default_port.has_value())) {
         return;
     }
     BOOST_TEST_EQ(default_port->host, "2001:db8::1");
     BOOST_TEST_EQ(default_port->port, "443");
     BOOST_TEST_EQ(default_port->handshake_host, "[2001:db8::1]");
-    const auto capitals = trystero::native::detail::parse_url("WSS://Relay.Example.ORG/Path");
+    const auto capitals = trystero::platform::detail::parse_url("WSS://Relay.Example.ORG/Path");
     if (!BOOST_TEST(capitals.has_value())) {
         return;
     }
@@ -384,46 +404,98 @@ void urls_name_ipv6_hosts_and_refuse_what_a_page_refuses() {
     BOOST_TEST_EQ(capitals->port, "443");
     BOOST_TEST_EQ(capitals->target, "/Path");
     // The scheme's own port, written out, is still the default one; an empty port is too.
-    const auto written_default = trystero::native::detail::parse_url("ws://relay.example.org:080");
+    const auto written_default =
+        trystero::platform::detail::parse_url("ws://relay.example.org:080");
     if (!BOOST_TEST(written_default.has_value())) {
         return;
     }
     BOOST_TEST_EQ(written_default->port, "80");
     BOOST_TEST_EQ(written_default->handshake_host, "relay.example.org");
-    const auto empty_port = trystero::native::detail::parse_url("wss://relay.example.org:/");
+    const auto empty_port = trystero::platform::detail::parse_url("wss://relay.example.org:/");
     if (!BOOST_TEST(empty_port.has_value())) {
         return;
     }
     BOOST_TEST_EQ(empty_port->port, "443");
-    const auto query = trystero::native::detail::parse_url("ws://relay.example.org?x=1");
+    const auto query = trystero::platform::detail::parse_url("ws://relay.example.org?x=1");
     if (!BOOST_TEST(query.has_value())) {
         return;
     }
     BOOST_TEST_EQ(query->target, "/?x=1");
-    const auto escaped = trystero::native::detail::parse_url("ws://rel%61y.example.org/");
+    const auto escaped = trystero::platform::detail::parse_url("ws://rel%61y.example.org/");
     if (!BOOST_TEST(escaped.has_value())) {
         return;
     }
     BOOST_TEST_EQ(escaped->host, "relay.example.org");
-    BOOST_TEST(!trystero::native::detail::parse_url("wss://user:pw@relay.example.org").has_value());
-    BOOST_TEST(!trystero::native::detail::parse_url("wss://relay.example.org/#top").has_value());
-    BOOST_TEST(!trystero::native::detail::parse_url("wss://relay.example.org:99999").has_value());
-    BOOST_TEST(!trystero::native::detail::parse_url("ws:relay.example.org").has_value());
-    BOOST_TEST(!trystero::native::detail::parse_url("ws://[v1.x]/").has_value());
+    BOOST_TEST(
+        !trystero::platform::detail::parse_url("wss://user:pw@relay.example.org").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("wss://relay.example.org/#top").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("wss://relay.example.org:99999").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("ws:relay.example.org").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("ws://[v1.x]/").has_value());
     // A name the resolver would read up to its first NUL.
-    BOOST_TEST(!trystero::native::detail::parse_url("ws://relay%00.example.org/").has_value());
+    BOOST_TEST(!trystero::platform::detail::parse_url("ws://relay%00.example.org/").has_value());
+}
+
+// The URL, or "refused" when parse_url refuses it, so that a failed check names the URL.
+std::string read_or_refused(std::string_view url) {
+    return trystero::platform::detail::parse_url(url).has_value() ? std::string(url) : "refused";
+}
+
+// What a page's URL parser reads otherwise than this one is refused, never read another way: a
+// host a page reads as an IPv4 address in another form than a dotted quad (a shorthand, octal or
+// hexadecimal parts, a final dot, a single number), or refuses (a last label of digits); a byte
+// beyond ASCII, escaped or not, of an international name, which a page turns into its A-label; and
+// a tab, a newline or a backslash, which a page drops or reads as a slash.
+void urls_refuse_what_a_page_reads_otherwise() {
+    for (const std::string_view url : {
+             "ws://127.1/",
+             "ws://0x7f.0.0.1/",
+             "ws://127.000.0.1/",
+             "ws://0177.0.0.1/",
+             "ws://127.0.0.1./",
+             "ws://2130706433/",
+             "ws://relay.123/",
+             "ws://relay.0x/",
+             "ws://relay.0x1f./",
+             "wss://b%C3%BCcher.example/",
+             "wss://b\303\274cher.example/",  // a u with diaeresis, its UTF-8 bytes not escaped
+             "ws://rel\tay.example.org/",
+             "ws://relay.example.org\n/",
+             R"(ws:\\relay.example.org\)",
+             R"(ws://relay.example.org\nostr)",
+         }) {
+        BOOST_TEST_EQ(read_or_refused(url), "refused");
+    }
+    // A last label that is not a number is a name's, a final dot included.
+    for (const std::string_view url : {
+             "ws://relay.example.org./",
+             "ws://relay.example.1a/",
+             "ws://relay.0xg/",
+             "ws://1.2.3.example/",
+         }) {
+        BOOST_TEST_EQ(read_or_refused(url), url);
+    }
 }
 
 // A relay at an IPv6 literal, here 127.0.0.1 written as an IPv4-mapped IPv6 address so that the
 // test stays on the loopback where IPv6 has no address: its brackets must not reach the resolver.
+// The connection is a socket of IPv6's family, which a kernel without IPv6 cannot open (one with
+// IPv6 disabled by sysctl opens it, and reaches the mapped address): there the case does not apply.
 void a_relay_at_an_ipv6_address_opens() {
     asio::io_context io;
+    tcp::socket probe(io);
+    if (boost::system::error_code ec; probe.open(tcp::v6(), ec)) {
+        std::cout
+            << "a_relay_at_an_ipv6_address_opens: not applicable, no socket of IPv6's family ("
+            << ec.message() << ")\n";
+        return;
+    }
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
     std::vector<std::string> received;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls,
         "ws://[::ffff:127.0.0.1]:" + std::to_string(server.acceptor.local_endpoint().port()) +
             "/relay",
@@ -462,12 +534,25 @@ struct reports {
 // The context of make_tls_context, the backend's own: a client of TLS 1.2 or newer that verifies
 // its peer.
 void the_tls_context_verifies_peers_from_tls_1_2() {
-    auto tls = trystero::native::make_tls_context();
+    auto tls = trystero::platform::make_tls_context();
     if (!BOOST_TEST(tls.has_value())) {
         return;
     }
     BOOST_TEST_EQ(SSL_CTX_get_verify_mode(tls->native_handle()), SSL_VERIFY_PEER);
     BOOST_TEST_EQ(SSL_CTX_get_min_proto_version(tls->native_handle()), TLS1_2_VERSION);
+}
+
+// OpenSSL's queue holds what earlier calls left in it: the error reported is the one queued last,
+// the failure's own, and the queue is emptied, so that a later failure is not reported with it.
+void the_openssl_error_reported_is_the_one_queued_last() {
+    ERR_clear_error();
+    ERR_raise(ERR_LIB_SSL, SSL_R_BAD_LENGTH);            // what an earlier call left behind
+    ERR_raise(ERR_LIB_SSL, SSL_R_NO_CIPHERS_AVAILABLE);  // the failure's own
+    const auto last = ERR_peek_last_error();
+    const auto error = trystero::platform::detail::openssl_error();
+    BOOST_TEST_EQ(error.value(), static_cast<int>(last));
+    BOOST_TEST(error.category() == asio::error::get_ssl_category());
+    BOOST_TEST_EQ(ERR_peek_error(), 0U);
 }
 
 // A relay over TLS whose certificate an authority the context trusts signed for the URL's name:
@@ -481,8 +566,8 @@ void a_relay_over_tls_opens_and_is_sent_its_name() {
     }
     reports seen;
     const auto socket =
-        trystero::native::connect_websocket(io.get_executor(), &*tls, server.url("localhost"),
-                                            seen.record(), std::pmr::get_default_resource());
+        trystero::platform::connect_websocket(io.get_executor(), &*tls, server.url("localhost"),
+                                              seen.record(), std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return seen.opened || seen.closes != 0; })) ||
         !BOOST_TEST(seen.opened)) {
         return;
@@ -507,8 +592,28 @@ void a_relay_whose_certificate_names_another_host_closes_without_opening() {
     }
     reports seen;
     const auto socket =
-        trystero::native::connect_websocket(io.get_executor(), &*tls, server.url("127.0.0.1"),
-                                            seen.record(), std::pmr::get_default_resource());
+        trystero::platform::connect_websocket(io.get_executor(), &*tls, server.url("127.0.0.1"),
+                                              seen.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
+    BOOST_TEST(!seen.opened);
+    const std::vector<std::string> names{""};
+    BOOST_TEST_ALL_EQ(server.server_names.begin(), server.server_names.end(), names.begin(),
+                      names.end());
+}
+
+// The same relay at its address written with escaped digits, which a page reads as the address:
+// the socket sends no name either, and refuses the certificate, which names localhost alone.
+void a_relay_at_an_escaped_address_is_sent_no_name() {
+    asio::io_context io;
+    tls_echo_server server(io);
+    auto tls = webcpp::asio::make_tls_client_context(test_authority);
+    if (!BOOST_TEST(tls.has_value())) {
+        return;
+    }
+    reports seen;
+    const auto socket = trystero::platform::connect_websocket(
+        io.get_executor(), &*tls, server.url("%31%32%37.0.0.1"), seen.record(),
+        std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
     BOOST_TEST(!seen.opened);
     const std::vector<std::string> names{""};
@@ -521,16 +626,53 @@ void a_relay_whose_certificate_names_another_host_closes_without_opening() {
 void a_relay_of_an_authority_not_trusted_closes_without_opening() {
     asio::io_context io;
     tls_echo_server server(io);
-    auto tls = trystero::native::make_tls_context();
+    auto tls = trystero::platform::make_tls_context();
     if (!BOOST_TEST(tls.has_value())) {
         return;
     }
     reports seen;
     const auto socket =
-        trystero::native::connect_websocket(io.get_executor(), &*tls, server.url("localhost"),
-                                            seen.record(), std::pmr::get_default_resource());
+        trystero::platform::connect_websocket(io.get_executor(), &*tls, server.url("localhost"),
+                                              seen.record(), std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return seen.closes == 1 && server.failed_handshakes == 1; }));
     BOOST_TEST(!seen.opened);
+}
+
+// A program's context made as Asio makes a client's, whose verify mode is verify_none, whether it
+// trusts the test's authority or nothing: the socket still verifies the relay, as a page's
+// WebSocket always does, so it refuses the relay's certificate at the address the certificate does
+// not name, and under its name when the context trusts nothing; the context itself is unchanged.
+void a_programs_context_that_verifies_nothing_still_refuses_a_relay() {
+    asio::io_context io;
+    tls_echo_server server(io);
+    asio::ssl::context trusting(asio::ssl::context::tls_client);
+    boost::system::error_code ec;
+    if (!BOOST_TEST(!trusting.add_certificate_authority(asio::buffer(test_authority), ec))) {
+        return;
+    }
+    asio::ssl::context trusting_nothing(asio::ssl::context::tls_client);
+    reports other_name;
+    const auto at_address = trystero::platform::connect_websocket(
+        io.get_executor(), &trusting, server.url("127.0.0.1"), other_name.record(),
+        std::pmr::get_default_resource());
+    reports untrusted;
+    const auto under_name = trystero::platform::connect_websocket(
+        io.get_executor(), &trusting_nothing, server.url("localhost"), untrusted.record(),
+        std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] {
+        return other_name.closes == 1 && untrusted.closes == 1 && server.failed_handshakes == 2;
+    }));
+    BOOST_TEST(!other_name.opened);
+    BOOST_TEST(!untrusted.opened);
+    // The relay under its name, which the trusted authority signed, is still reached.
+    reports named;
+    const auto reached =
+        trystero::platform::connect_websocket(io.get_executor(), &trusting, server.url("localhost"),
+                                              named.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return named.opened || named.closes != 0; }));
+    BOOST_TEST(named.opened);
+    BOOST_TEST_EQ(SSL_CTX_get_verify_mode(trusting.native_handle()), SSL_VERIFY_NONE);
+    BOOST_TEST_EQ(SSL_CTX_get_verify_mode(trusting_nothing.native_handle()), SSL_VERIFY_NONE);
 }
 
 // A backend given the authorities a program trusts reaches a relay they sign; one whose context
@@ -540,8 +682,8 @@ void a_backend_reaches_relays_with_the_tls_context_it_is_given() {
     const echo_server plain(io);
     const tls_echo_server secure(io);
     {
-        trystero::native::backend backend(io.get_executor(),
-                                          webcpp::asio::make_tls_client_context(test_authority));
+        trystero::platform::backend backend(io.get_executor(),
+                                            webcpp::asio::make_tls_client_context(test_authority));
         BOOST_TEST(backend.tls_context().has_value());
         reports seen;
         const auto socket = backend.connect(secure.url("localhost"), seen.record(),
@@ -549,7 +691,8 @@ void a_backend_reaches_relays_with_the_tls_context_it_is_given() {
         BOOST_TEST(run_until(io, [&] { return seen.opened || seen.closes != 0; }));
         BOOST_TEST(seen.opened);
     }
-    trystero::native::backend backend(io.get_executor(), webcpp::asio::make_tls_client_context(""));
+    trystero::platform::backend backend(io.get_executor(),
+                                        webcpp::asio::make_tls_client_context(""));
     const auto held = backend.tls_context();
     if (!BOOST_TEST(!held.has_value())) {
         return;
@@ -572,18 +715,18 @@ void a_backend_reaches_relays_with_the_tls_context_it_is_given() {
 // The backend made without a context of the program's makes its own, the system's authorities'.
 void a_backend_makes_its_own_tls_context() {
     asio::io_context io;
-    trystero::native::backend backend(io.get_executor());
+    trystero::platform::backend backend(io.get_executor());
     BOOST_TEST(backend.tls_context().has_value());
 }
 
 // A backend that trusts webcpp's embedded Mozilla roots in place of the system's, as the guide
-// shows it made (doc: #trystero-native-relays): the test's authority is not among them, so its
+// shows it made (doc: #trystero-platform-relays): the test's authority is not among them, so its
 // relay is unreachable.
 void a_backend_may_trust_webcpps_embedded_roots() {
     asio::io_context io;
     const tls_echo_server server(io);
     // tag::embedded-roots[]
-    trystero::native::backend backend(io.get_executor(), webcpp::asio::make_tls_client_context());
+    trystero::platform::backend backend(io.get_executor(), webcpp::asio::make_tls_client_context());
     // end::embedded-roots[]
     BOOST_TEST(backend.tls_context().has_value());
     reports seen;
@@ -600,7 +743,7 @@ void opens_sends_in_order_receives_and_closes_once() {
     bool opened = false;
     int closes = 0;
     std::vector<std::string> received;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
         {
             .open = [&] { opened = true; },
@@ -635,7 +778,7 @@ void a_message_longer_than_a_relay_sends_closes_the_socket() {
     bool opened = false;
     int closes = 0;
     std::vector<std::size_t> received;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
         {
             .open = [&] { opened = true; },
@@ -664,7 +807,7 @@ void an_unreachable_relay_closes_without_opening() {
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, "ws://127.0.0.1:" + std::to_string(port),
         {
             .open = [&] { opened = true; },
@@ -676,20 +819,36 @@ void an_unreachable_relay_closes_without_opening() {
     BOOST_TEST(!opened);
 }
 
+// A relay at 127.1, which a page reads as 127.0.0.1 and the system's resolver may too: the socket
+// refuses the URL and closes without opening, rather than reach the address under another name.
+void a_relay_at_an_ipv4_shorthand_closes_without_opening() {
+    asio::io_context io;
+    const echo_server server(io);
+    asio::ssl::context tls(asio::ssl::context::tls_client);
+    reports seen;
+    const auto socket = trystero::platform::connect_websocket(
+        io.get_executor(), &tls,
+        "ws://127.1:" + std::to_string(server.acceptor.local_endpoint().port()) + "/relay",
+        seen.record(), std::pmr::get_default_resource());
+    BOOST_TEST(run_until(io, [&] { return seen.opened || seen.closes != 0; }));
+    BOOST_TEST(!seen.opened);
+    BOOST_TEST_EQ(seen.closes, 1);
+}
+
 void a_dropped_socket_reports_nothing() {
     asio::io_context io;
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     int events = 0;
     {
-        const auto socket =
-            trystero::native::connect_websocket(io.get_executor(), &tls, server.url(),
-                                                {
-                                                    .open = [&] { ++events; },
-                                                    .message = [&](std::string_view) { ++events; },
-                                                    .close = [&] { ++events; },
-                                                },
-                                                std::pmr::get_default_resource());
+        const auto socket = trystero::platform::connect_websocket(
+            io.get_executor(), &tls, server.url(),
+            {
+                .open = [&] { ++events; },
+                .message = [&](std::string_view) { ++events; },
+                .close = [&] { ++events; },
+            },
+            std::pmr::get_default_resource());
     }
     run_until(io, [] { return false; }, 200ms);
     BOOST_TEST_EQ(events, 0);
@@ -701,13 +860,13 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    const auto socket = trystero::native::connect_websocket(io.get_executor(), &tls, server.url(),
-                                                            {
-                                                                .open = [&] { opened = true; },
-                                                                .message = {},
-                                                                .close = [&] { ++closes; },
-                                                            },
-                                                            std::pmr::get_default_resource());
+    const auto socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
+                                                              {
+                                                                  .open = [&] { opened = true; },
+                                                                  .message = {},
+                                                                  .close = [&] { ++closes; },
+                                                              },
+                                                              std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }
@@ -734,19 +893,19 @@ void a_connection_that_ends_during_a_write_closes_once(misbehaviour what) {
         bool opened = false;
         int closes = 0;
         std::shared_ptr<trystero::backend::websocket> socket;
-        socket = trystero::native::connect_websocket(io.get_executor(), &tls, server.url(),
-                                                     {
-                                                         .open =
-                                                             [&] {
-                                                                 opened = true;
-                                                                 for (int t = 0; t < texts; ++t) {
-                                                                     socket->send(text);
-                                                                 }
-                                                             },
-                                                         .message = {},
-                                                         .close = [&] { ++closes; },
-                                                     },
-                                                     std::pmr::get_default_resource());
+        socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
+                                                       {
+                                                           .open =
+                                                               [&] {
+                                                                   opened = true;
+                                                                   for (int t = 0; t < texts; ++t) {
+                                                                       socket->send(text);
+                                                                   }
+                                                               },
+                                                           .message = {},
+                                                           .close = [&] { ++closes; },
+                                                       },
+                                                       std::pmr::get_default_resource());
         if (!BOOST_TEST(run_until(io, [&] { return closes == 1; }))) {
             return;
         }
@@ -766,13 +925,13 @@ void a_relay_that_stops_reading_is_dropped_at_the_queue_bound() {
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    const auto socket = trystero::native::connect_websocket(io.get_executor(), &tls, server.url(),
-                                                            {
-                                                                .open = [&] { opened = true; },
-                                                                .message = {},
-                                                                .close = [&] { ++closes; },
-                                                            },
-                                                            std::pmr::get_default_resource());
+    const auto socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
+                                                              {
+                                                                  .open = [&] { opened = true; },
+                                                                  .message = {},
+                                                                  .close = [&] { ++closes; },
+                                                              },
+                                                              std::pmr::get_default_resource());
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }
@@ -794,7 +953,7 @@ void a_relay_that_stops_answering_times_out() {
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
     int closes = 0;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
         {
             .open = [&] { opened = true; },
@@ -803,7 +962,7 @@ void a_relay_that_stops_answering_times_out() {
         },
         std::pmr::get_default_resource(),
         {
-            .max_queued_bytes = trystero::native::websocket_limits{}.max_queued_bytes,
+            .max_queued_bytes = trystero::platform::websocket_limits{}.max_queued_bytes,
             .idle_timeout = 1s,
         });
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
@@ -821,7 +980,7 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
     bool opened = false;
     int closes = 0;
     std::vector<std::string> received;
-    const auto socket = trystero::native::connect_websocket(
+    const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
         {
             .open = [&] { opened = true; },
@@ -830,7 +989,7 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
         },
         std::pmr::get_default_resource(),
         {
-            .max_queued_bytes = trystero::native::websocket_limits{}.max_queued_bytes,
+            .max_queued_bytes = trystero::platform::websocket_limits{}.max_queued_bytes,
             .idle_timeout = 1s,
         });
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
@@ -846,18 +1005,24 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
 
 int main() {
     urls_name_a_scheme_host_port_and_path();
+    urls_read_an_escaped_address_as_an_address();
     urls_name_ipv6_hosts_and_refuse_what_a_page_refuses();
+    urls_refuse_what_a_page_reads_otherwise();
     a_relay_at_an_ipv6_address_opens();
     the_tls_context_verifies_peers_from_tls_1_2();
+    the_openssl_error_reported_is_the_one_queued_last();
     a_relay_over_tls_opens_and_is_sent_its_name();
     a_relay_whose_certificate_names_another_host_closes_without_opening();
+    a_relay_at_an_escaped_address_is_sent_no_name();
     a_relay_of_an_authority_not_trusted_closes_without_opening();
+    a_programs_context_that_verifies_nothing_still_refuses_a_relay();
     a_backend_reaches_relays_with_the_tls_context_it_is_given();
     a_backend_makes_its_own_tls_context();
     a_backend_may_trust_webcpps_embedded_roots();
     opens_sends_in_order_receives_and_closes_once();
     a_message_longer_than_a_relay_sends_closes_the_socket();
     an_unreachable_relay_closes_without_opening();
+    a_relay_at_an_ipv4_shorthand_closes_without_opening();
     a_dropped_socket_reports_nothing();
     closing_right_after_a_send_lets_the_write_finish_first();
     a_connection_that_ends_during_a_write_closes_once(misbehaviour::too_long_text);

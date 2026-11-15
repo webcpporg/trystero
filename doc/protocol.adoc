@@ -228,16 +228,16 @@ what each costs a room.
   place to a new peer, and a new peer beyond the bound is refused and logged
   once.
 * A room makes at most `max_connections_per_window` (64) connections in any
-  57 s, however soon they end, and a page at most 256
-  (<<trystero-browser-bounds>>); the native backend makes at most 256 a
-  minute (<<trystero-native-config>>).
+  57 s, however soon they end; the platform backend makes at most 256 a
+  minute on both targets (<<trystero-platform-config>>), and a page holds at
+  most 256 (<<trystero-platform-runtime>>).
 * A signal's fields are bounded in `protocol/signal.hpp`: the peer id (64
   bytes; Trystero's are 20), the offer id (64 bytes), a sealed offer or
   answer (64 KiB) and a sealed candidate (16 KiB, above the 8192 bytes of
   plaintext Trystero takes).
 * A relay is a third party too: its texts are bounded at 1 MiB, what the room
   holds unsent for it at 4 MiB, and, natively, its silence at 30 s
-  (<<trystero-native-relays>>).
+  (<<trystero-platform-relays>>).
 
 [cols="2,1,3",options="header"]
 |===

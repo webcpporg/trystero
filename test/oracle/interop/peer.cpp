@@ -7,7 +7,7 @@
 // The C++ side of the interop test: a page that joins a room with the library, built for the
 // browser. The driver (run.mjs) configures it through the URL and reads what happened from
 // `window.events`. Its main starts the peer and runs the io_context for the page's life, under a
-// work guard; the driver's one call, `window.leave`, a `browser::page_call`, only posts to it.
+// work guard; the driver's one call, `window.leave`, a `platform::page_call`, only posts to it.
 //
 // | Query parameter | Meaning                                                            |
 // | app, room       | the app id and room id                                             |
@@ -24,7 +24,8 @@
 // | ping2           | any value: ping each peer of room2 every second, optional          |
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
 #include <webcpp/trystero.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/platform/page.hpp>
 
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -66,7 +67,7 @@ struct extra_room {
  * actions. */
 struct page {
     webcpp::asio::io_context io;
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     std::unique_ptr<trystero::app> app;
     std::unique_ptr<trystero::room> room;
     std::unique_ptr<trystero::action<std::string>> chat;
@@ -185,8 +186,8 @@ void record_connection(std::string_view category, std::string_view text) {
 
 void log(std::string_view category, std::string_view text) {
     record_connection(category, text);
-    val::global("window").call<void>("trysteroLog", trystero::browser::js_string(category),
-                                     trystero::browser::js_string(text));
+    val::global("window").call<void>("trysteroLog", trystero::platform::js_string(category),
+                                     trystero::platform::js_string(text));
 }
 
 /** A checksum the driver can compare without moving the payload: sum of bytes times their position,
@@ -437,8 +438,8 @@ int main() {
     // Between the driver's calls the page may have no work: the guard keeps the run going.
     const auto guard = webcpp::asio::make_work_guard(app.io);
     // The driver's one call, a function of webcpp::asio's bridge that posts the leave.
-    const trystero::browser::page_call leave_call(app.io.get_executor(),
-                                                  [](const val& /*argument*/) { leave(); });
+    const trystero::platform::page_call leave_call(app.io.get_executor(),
+                                                   [](const val& /*argument*/) { leave(); });
     val::global("window").set("leave", leave_call.function());
     start();
     app.io.run();  // lint-run: the page's program, suspended into the browser's event loop

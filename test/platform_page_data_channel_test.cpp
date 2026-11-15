@@ -4,7 +4,8 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the browser backend's data channels, webcpp::webrtc's, under node, over plain objects in
+// Tests the platform backend's data channels in a page, webcpp::webrtc's, under node, over plain
+// objects in
 // place of the page's RTCPeerConnection and RTCDataChannel: what a peer can send that is no frame
 // is dropped. A text message "1e300" once threw a RangeError out of `new Uint8Array`, and
 // "300000000" made a 300 MB frame: webcpp::webrtc delivers a text as the few bytes it holds, which
@@ -14,7 +15,7 @@
 // main runs the io_context under a work guard, which the verdict releases when the last frame
 // arrives; a frame that does not come within 10 s fails by name.
 
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -63,7 +64,7 @@ struct state {
     watching_resource memory;
     asio::io_context io;
     asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::peer_connection> connection;
     std::shared_ptr<trystero::backend::data_channel> wrapper;
     int messages = 0;

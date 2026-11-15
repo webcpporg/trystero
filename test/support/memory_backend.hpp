@@ -78,7 +78,7 @@ struct virtual_clock_state {
     double now_ms = 0;
 };
 
-/** An Asio timer, as the native backend's: a wait cancelled, replaced or destroyed never fires,
+/** An Asio timer, as the platform backend's: a wait cancelled, replaced or destroyed never fires,
  * even when Asio had already queued its expiry. On the virtual clock, it waits there instead, until
  * the test moves the clock past its due time. */
 class memory_timer : public backend::timer {

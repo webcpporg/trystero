@@ -7,15 +7,16 @@ public Nostr relays and exchange messages directly, over WebRTC data channels.
 The wire is Trystero's: a room joined from C++ and the same room joined from
 Trystero's JavaScript are one room.
 
-A room runs on two targets, through a backend of each:
+A room runs on two targets, native and emscripten, through one platform
+backend:
 
-| Backend | Header | Target | Built on |
-| --- | --- | --- | --- |
-| the browser's | `<webcpp/trystero/browser/backend.hpp>` | emscripten | the page's `WebSocket` and `crypto.subtle`, through webcpp::asio's bridge, webcpp::asio's timers, and webcpp::webrtc over its `RTCPeerConnection` |
-| the native one | `<webcpp/trystero/native/backend.hpp>` | native | webcpp::webrtc over libdatachannel for WebRTC, webcpp::beast for the relays' WebSockets, natively Boost.Beast's, their URLs read with Boost.URL, OpenSSL for TLS and AES-GCM |
+| Header | Target | What it holds |
+| --- | --- | --- |
+| `<webcpp/trystero/platform/backend.hpp>` | native and emscripten | `platform::backend`: webcpp::webrtc for WebRTC, natively over libdatachannel and in a page over its `RTCPeerConnection`; webcpp::beast for the relays' WebSockets, natively Boost.Beast's and in a page its `WebSocket`, their URLs read with Boost.URL; webcpp::asio's timers; and per target the sealer and the randomness, natively OpenSSL's AES-GCM and `RAND_bytes`, in a page `crypto.subtle` and `getentropy` |
+| `<webcpp/trystero/platform/page.hpp>` | emscripten | `platform::page_call` and `platform::js_string`, what a page's program uses beside the backend |
 
 `<webcpp/trystero.hpp>` is the rooms themselves, which build on both targets
-and include neither backend. Both backends' WebRTC is
+and leave the platform backend out. The backend's WebRTC is
 [webcpp::webrtc](https://github.com/webcpporg/webrtc)'s, the same peer
 connection and data channel on both targets, and trystero's Asio is
 [webcpp::asio](https://github.com/webcpporg/asio), Boost.Asio itself
@@ -26,9 +27,9 @@ namespace `webcpp::trystero`. Messages, binary data and pings are ported;
 audio and video tracks are not yet.
 
 trystero raises no exception of its own: an operation that can fail completes
-with an error code. Every part of it, both backends included, compiles and
-works without exceptions: webcpp::webrtc calls libdatachannel's C API, where
-none crosses.
+with an error code. Every part of it, the platform backend included, compiles
+and works without exceptions: webcpp::webrtc calls libdatachannel's C API,
+where none crosses.
 
 An `app` represents this program in one application: one peer id and one
 connection per remote peer, shared by its rooms, with one immutable password
@@ -69,7 +70,7 @@ send a wrong room proof, reported by the lower id only.
 
 trystero is developed inside the webcpp superproject, as a Boost library is
 developed inside Boost. It builds on webcpp::asio, webcpp::webrtc and, for
-the native relays, webcpp::beast, three libraries of the superproject; its
+the relays, webcpp::beast, three libraries of the superproject; its
 TLS and WebRTC dependencies are built from pinned sources; only libsecp256k1
 needs an external installation:
 
@@ -77,11 +78,11 @@ needs an external installation:
 | --- | --- | --- |
 | libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `-sSECP256K1_ROOT=<dir>` natively, `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>` for its emscripten build, else `.local/secp256k1-native` and `.local/secp256k1-emscripten` |
 | webcpp::asio | every room | `/webcpp/asio//asio` |
-| webcpp::webrtc | both backends' WebRTC | `/webcpp/webrtc//webrtc` |
-| webcpp::beast | the native backend's relays: their WebSockets and TLS | `/webcpp/beast//tls`: natively Boost.Beast over the source-built OpenSSL |
-| Boost.URL | the native backend's relays: their URLs | `/webcpp//boost_url`, built from Boost's sources once per variant |
-| libdatachannel 0.24.6 | the native backend, through webcpp::webrtc | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
-| OpenSSL 3.5.9 | the native backend | `/webcpp/third_party//openssl`, also used by Asio and Beast |
+| webcpp::webrtc | the platform backend's WebRTC | `/webcpp/webrtc//webrtc` |
+| webcpp::beast | the platform backend's relays: their WebSockets, and natively their TLS | natively `/webcpp/beast//tls`, Boost.Beast over the source-built OpenSSL; in a page `/webcpp/beast//browser`, over the page's `WebSocket` |
+| Boost.URL | the platform backend's relays: their URLs | `/webcpp//boost_url`, built from Boost's sources once per variant |
+| libdatachannel 0.24.6 | the platform backend natively, through webcpp::webrtc | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
+| OpenSSL 3.5.9 | the platform backend natively: TLS, AES-GCM and randomness | `/webcpp/third_party//openssl`, also used by Asio and Beast |
 
 The libsecp256k1 `-s` option, on b2's command line, names a directory with the library's
 `include/` and `lib/`; the environment is never read. Without it, the library
@@ -100,16 +101,21 @@ instead. With them found,
 
 build the tests and the examples natively and on emscripten, with the
 emscripten toolset that `user-config.jam` registers against emsdk. A b2
-project uses the rooms and the browser backend through
-`/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
-webcpp::asio, libsecp256k1 and webcpp::document with Boost.JSON's and
-Boost.Charconv's definitions, compiled once per variant, and on emscripten webcpp::webrtc and embind; a program there is
-built in webcpp::asio's suspension variant, `webcpp-suspend=jspi` by default
-or `asyncify`. A native program uses `/webcpp/trystero//native` and
-declares `<threading>multi` itself, as `example/Jamfile` does; the target
-adds webcpp::webrtc, with libdatachannel and OpenSSL, webcpp::beast's TLS and
-Boost.URL for the relays, and webcpp::asio's `//tls`, whose embedded
-authorities a program may trust in place of the system's.
+program uses the rooms and the platform backend through
+`/webcpp/trystero//platform`, on both targets, as `example/Jamfile` does.
+The target adds `/webcpp/trystero//trystero`, the rooms alone: trystero's
+headers, Boost's, webcpp::asio, which links embind on emscripten,
+libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
+definitions, compiled once per variant. Beside
+them it adds webcpp::webrtc and Boost.URL on both targets; natively
+libdatachannel and OpenSSL, through webcpp::webrtc, webcpp::beast's `//tls`
+and webcpp::asio's `//tls`, whose embedded authorities a program may trust in
+place of the system's; and in a page webcpp::beast's `//browser`, with no
+OpenSSL. A native program declares `<threading>multi` itself; a program on
+emscripten is built in webcpp::asio's suspension variant,
+`webcpp-suspend=jspi` by default or `asyncify`. A project whose rooms run
+over a backend of its own, as the tests' memory relays do, uses
+`/webcpp/trystero//trystero` alone.
 
 ## The examples
 
@@ -127,7 +133,7 @@ The native quick start, whole:
 <!-- include::example/native_quick_start.cpp[tag=program] -->
 ```cpp
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <boost/asio/io_context.hpp>
@@ -140,7 +146,7 @@ namespace trystero = webcpp::trystero;
 
 int main() {
     boost::asio::io_context io;
-    trystero::native::backend backend(io.get_executor());
+    trystero::platform::backend backend(io.get_executor());
     trystero::app app(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"});
     auto joined = app.join("lobby");
     if (!joined) {
@@ -179,7 +185,7 @@ struct lobby {
 /** What the page keeps alive: its io_context, the backend, the app, and the room it joined. */
 struct application {
     asio::io_context io;
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     trystero::app app{io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
     std::optional<lobby> joined;
 
@@ -202,13 +208,14 @@ struct application {
 <!-- include::example/Jamfile[tag=native] -->
 ```
 webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//native <threading>multi : native ;
+  : <library>/webcpp/trystero//platform <threading>multi : native ;
 ```
 
 <!-- include::example/Jamfile[tag=browser] -->
 ```
 webcpp.link quick_start : quick_start.cpp
-  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+  : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
+    <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
 ```
 
 `b2 toolset=emscripten libs/trystero/example/chat//site` copies the chat page
@@ -285,9 +292,9 @@ git -C webcpp submodule update --init --recursive third_party/libs/openssl third
 ```
 
 B2 builds them with the selected compiler, runtime and C++ ABI when the
-native backend is first needed. Each upstream checkout remains unchanged.
-The generated headers and static archives are kept together by build
-configuration. Asio, Beast and Trystero share one OpenSSL provider in a
+platform backend is first needed natively. Each upstream checkout remains
+unchanged. The generated headers and static archives are kept together by
+build configuration. Asio, Beast and Trystero share one OpenSSL provider in a
 combined application; no system OpenSSL or installed libdatachannel is used.
 Native Trystero targets declare `<threading>multi` because WebRTC runs
 worker threads. The supplied examples and tests declare it already.
@@ -370,9 +377,9 @@ Every browser tab that joins the same app and room joins the same chat.
 ## The tests
 
 `test/` compiles every public header alone, on each target that builds it:
-the rooms, the protocol and their details on both targets, the native
-backend and the backend's WebRTC natively, against webcpp::webrtc's
-libdatachannel and OpenSSL, and the browser backend on emscripten. It also
+the rooms, the protocol and their details, the platform backend and the
+backend's WebRTC on both targets, natively against webcpp::webrtc's
+libdatachannel and OpenSSL, and `platform/page.hpp` on emscripten. It also
 checks that `<webcpp/trystero/config.hpp>` defines
 `WEBCPP_TRYSTERO_NO_EXCEPTIONS` exactly when webcpp has no exceptions, and
 when a program defines `WEBCPP_NO_EXCEPTIONS`.

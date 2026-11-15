@@ -8,15 +8,14 @@
                 "include/webcpp/trystero/detail/*.hpp"
             ],
             "must-not-include": [
-                "webcpp/trystero/native",
-                "webcpp/trystero/browser",
+                "webcpp/trystero/platform",
                 "webcpp/trystero/webrtc",
                 "webcpp/webrtc",
                 "rtc/",
                 "emscripten/",
                 "openssl/"
             ],
-            "why": "the core builds on both targets, without the backends' WebRTC (webcpp::webrtc, natively libdatachannel), OpenSSL or Emscripten"
+            "why": "the core builds on both targets, without the platform backend, its WebRTC (webcpp::webrtc, natively libdatachannel), OpenSSL or Emscripten"
         }
     ]
 }

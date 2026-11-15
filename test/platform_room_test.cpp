@@ -4,12 +4,13 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests whole rooms over the native backend: real WebRTC through libdatachannel, AES-GCM through
-// OpenSSL, Asio's timers. Only the relays are the memory ones of support/memory_backend.hpp, and
-// the backend binds every connection to 127.0.0.1, so the loopback is the only network needed.
+// Tests whole rooms over the platform backend natively: real WebRTC through libdatachannel, AES-GCM
+// through OpenSSL, webcpp::asio's timers. Only the relays are the memory ones of
+// support/memory_backend.hpp, and the backend binds every connection to 127.0.0.1, so the loopback
+// is the only network needed.
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -41,11 +42,11 @@ namespace {
 
 constexpr const char* relay_url = "wss://relay.test";
 
-/** The native backend bound to the loopback, with the memory relays instead of the network's. */
-class native_over_memory_relays : public trystero::native::backend {
+/** The platform backend bound to the loopback, with the memory relays instead of the network's. */
+class native_over_memory_relays : public trystero::platform::backend {
 public:
     native_over_memory_relays(asio::io_context& io, trystero::test::memory_network& relays)
-        : trystero::native::backend(io.get_executor(), {.bind_address = "127.0.0.1"}),
+        : trystero::platform::backend(io.get_executor(), {.bind_address = "127.0.0.1"}),
           relays_(relays) {}
 
     std::shared_ptr<trystero::backend::websocket> connect(

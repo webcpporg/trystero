@@ -9,7 +9,7 @@
 # site/ beside the program, under the build directory, out of the tree, and
 # prints that directory, for any static server on localhost.
 
-project : requirements <library>/webcpp/trystero//trystero ;
+project : requirements <library>/webcpp/trystero//platform ;
 
 import errors ;
 import notfile ;

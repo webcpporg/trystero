@@ -224,7 +224,7 @@ if (auto d = wd::parse(R"({"drink":"negroni"})")) {
 A message of another format than the action's type is not delivered to it.
 Several actions of different types may share a name: one receives as views,
 another sends by moving strings, as the chat does
-(<<trystero-browser-chat>>).
+(<<trystero-platform-chat>>).
 
 Messages arrive at the handler `on_message` sets, with a `message_info`: the
 sender's id and the metadata it passed. Without a handler they queue, up to

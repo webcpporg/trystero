@@ -5,12 +5,12 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // The native quick start of the documentation (doc: #trystero-quick-start), which includes the
-// tagged regions below: the browser quick start's app and room, as a native program. Trystero JS
-// and browser peers in the same room are its peers.
+// tagged regions below: the browser quick start's app and room, over the same platform backend, as
+// a native program. Trystero JS and browser peers in the same room are its peers.
 
 // tag::program[]
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <boost/asio/io_context.hpp>
@@ -23,7 +23,7 @@ namespace trystero = webcpp::trystero;
 
 int main() {
     boost::asio::io_context io;
-    trystero::native::backend backend(io.get_executor());
+    trystero::platform::backend backend(io.get_executor());
     trystero::app app(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"});
     auto joined = app.join("lobby");
     if (!joined) {

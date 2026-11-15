@@ -27,7 +27,7 @@
 // | --delayOpen     | defer native open delivery while transport messages arrive, optional |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -312,18 +312,18 @@ private:
     observer observe_;
 };
 
-/** The native backend, which records each peer connection it makes, for the scenarios that count
- * them. */
-class counting_backend : public trystero::native::backend {
+/** The platform backend, which records each peer connection it makes, for the scenarios that
+ * count them. */
+class counting_backend : public trystero::platform::backend {
 public:
     explicit counting_backend(boost::asio::any_io_executor ex,
-                              trystero::native::backend_config config)
-        : trystero::native::backend(ex, std::move(config)), ex_(std::move(ex)) {}
+                              const trystero::platform::backend_config& config)
+        : trystero::platform::backend(ex, config), ex_(std::move(ex)) {}
 
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        auto pc = trystero::native::backend::make_peer_connection(servers, memory);
+        auto pc = trystero::platform::backend::make_peer_connection(servers, memory);
         if (pc) {
             record("made-connection");
             if (delay_open) {

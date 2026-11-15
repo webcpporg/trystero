@@ -38,9 +38,7 @@ include::usage.adoc[]
 
 include::allocation.adoc[]
 
-include::browser.adoc[]
-
-include::native.adoc[]
+include::platform.adoc[]
 
 include::protocol.adoc[]
 

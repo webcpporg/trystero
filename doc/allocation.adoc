@@ -8,11 +8,12 @@
 == Allocation
 
 A webcpp library lets its user choose where its allocations come from.
-trystero does it through `std::pmr`, header-only, with an app resource and
-an optional resource for each room.
+trystero does it through `std::pmr`, header-only, with an app resource, an
+optional resource for each room, and a resource for the platform backend's
+own state.
 
 [#trystero-allocation-resource]
-=== The app's resource and the room's
+=== The app's resource, the room's and the backend's
 
 * `app_config::memory`, `std::pmr::get_default_resource()` by default,
   receives the app's state, configuration copy including its password, self id,
@@ -27,6 +28,12 @@ an optional resource for each room.
   counts and backoffs, sealed texts, relays, actions, queues, outgoing
   frames, transfers, the documents of the JSON texts it reads, and handlers. The signing context is
   made there with `secp256k1_context_preallocated_create`.
+* `platform::backend_config::memory`, `std::pmr::get_default_resource()` by
+  default, receives the platform backend's own state: its copy of
+  `bind_address`, its window of constructions and its own webcpp::webrtc
+  runtime. It must be non-null, and outlive the backend and every connection
+  of its runtime. What the backend makes for an app or a room is in the
+  resource given with that call instead (<<trystero-allocation-asio>>).
 * Adoption replaces negotiation handlers with the app's; ending a
   negotiation clears the room's handlers. Detachment fails and frees a
   binding's drain waiters and removes its registrations before returning.
@@ -60,10 +67,13 @@ The app's resource must outlive its state: the app handle, every room of
 it, retained values allocated there and every pending operation. A room's
 own resource must outlive that room, its retained `std::pmr::string`,
 `pmr_bytes` and `pmr_document` values, and its pending operations.
+The backend's resource must outlive the backend and every connection of its
+own runtime, which a handler the `io_context` still holds may keep alive.
 Destroying a handle closes its work but queued completions can still free
-memory. Declare both `app_config::memory` and `room_options::memory`
-resources before the `io_context`, then construct the backend, app and
-rooms. Drain or destroy the `io_context` before destroying either resource.
+memory. Declare the `backend_config::memory`, `app_config::memory` and
+`room_options::memory` resources before the `io_context`, then construct the
+backend, app and rooms. Drain or destroy the `io_context` before destroying
+any of these resources.
 In the browser, keep them until all pending promises settle: a pending
 `async_await` holds its handler, so in practice resources live for the page's
 life.
@@ -140,6 +150,15 @@ Shared objects are made with `std::allocate_shared` over
 `std::pmr::polymorphic_allocator<>`, never with `std::make_shared`,
 `std::make_unique` or `new`; a timer is a `std::shared_ptr` for that reason.
 
+No type of trystero is a data structure meant for a shared segment, one that
+a process builds there and another maps and uses in place: every type is a
+run-time object, an app, a room, an action, a socket, a handler or the
+backend, routed through the `std::pmr` resources above, or a value one takes
+or gives. A `std::pmr` container holds its resource and its storage at
+absolute addresses of its process, as a handler holds a callable, so none is
+shareable in the sense of Boost.Interprocess, and none takes an `Allocator`
+template parameter for it.
+
 [#trystero-allocation-handlers]
 === Handlers
 
@@ -164,11 +183,15 @@ A move assignment carries the source's allocator with its target.
 `webcpp::asio::any_io_executor` is wrapped by Asio in a function
 object allocated with `std::allocator`, from Asio's per-thread recycling
 cache, which calls `std::aligned_alloc` on a miss (measured: two per post,
-in every round of five posts, natively and on emscripten). So the room posts
-through the executor of an `io_context` when its executor is one, where Asio
-allocates the operation as the handler's allocator says; on another
-executor the wrapper stays Asio's. On both targets the room's executor is the
-executor of an `io_context`.
+in every round of five posts, natively and on emscripten). So the room, and
+the platform backend's sealer, post through the executor of an `io_context`
+when the executor they were given is one, where Asio allocates the operation
+as the handler's allocator says, and in a page the sealer awaits each Web
+Crypto promise through it too, so that its settlement is posted the same way.
+On another executor, a strand over the `io_context` for one, the wrapper
+stays Asio's (<<trystero-allocation-outside>>). The executor is the
+program's: the examples and the tests give the app and the backend the
+executor of their `io_context`.
 
 *The backends.* Each method of `backend::factory` that makes an object takes
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
@@ -178,7 +201,20 @@ through that supplied resource. The backend's WebRTC
 (<<trystero-design-backend-webrtc>>) gives webcpp::webrtc's connections and
 channels a `std::pmr::polymorphic_allocator` on the app's resource, which
 their state, their queues, their texts and their operations use: each
-operation's handler is bound to it.
+operation's handler is bound to it. The platform backend's relays are one
+session of webcpp::beast's on both targets, made in the room's resource with
+its handlers, its queued texts and its read buffer, and each of its
+operations' handlers carries the room's allocator, so that what Asio and
+Beast allocate for them is there too. Natively Boost.Beast's stream state
+stays Beast's (<<trystero-allocation-outside>>); in a page the WebSocket
+stream's own state is in the room's resource too, since the stream is made
+with `std::allocator_arg` and the room's allocator. The
+platform backend's own state, its copy of `bind_address`, its window of
+constructions and its own runtime, is in `backend_config::memory`
+(<<trystero-allocation-resource>>): the test `platform_backend`, on both
+targets, makes a backend while a counting resource is the default one, which
+sees none of it, and sees `backend_config::memory` given all of it back once
+the backend is destroyed.
 
 *webcpp::document* keeps a document's image in one buffer, and its external
 storage leaves that buffer to its user: every value, strings included, is
@@ -220,18 +256,39 @@ nothing.
 * webcpp::document's working state while it reads or writes a JSON text,
   freed before the call returns (above): its parser's stack, path and
   pending text, its tree's record of each change, its writer's stack;
-* Asio's own once-per-context allocations: its services and the scheduler's
-  first operation;
+* Asio's own once-per-context allocations: its services, in a page
+  webcpp::asio's bridge among them, and the scheduler's first operation;
 * the wrapper Asio puts around a post through an executor that is not the
-  executor of an `io_context`;
+  executor of an `io_context`, a strand for one, and, given such an
+  executor, around the settlement of each Web Crypto promise of a page's
+  sealer;
 * webcpp::webrtc's posts from libdatachannel's threads, which carry Asio's
   default allocator, since the resource is touched only on the room's
   executor; and the wrapper Asio puts around webcpp::webrtc's completions,
   which it posts through `webcpp::asio::any_io_executor`;
-* natively, Boost.Beast's state inside a relay's WebSocket, its stream's,
-  and the resolver's results; the WebSocket's operations, its read buffer
-  and its queued texts are in the room's resource, since each of its
-  handlers carries the room's allocator;
+* natively, for each relay connection, what Boost.Beast and Asio allocate of
+  their own, which takes no allocator from a handler: the state of the
+  WebSocket stream and of the TCP stream under it, the WebSocket's write
+  buffer, made at its first write, and, over TLS, the two 17 KiB buffers of
+  Asio's TLS stream; the resolver's state and its results, with what the C
+  library's `getaddrinfo` allocates on Asio's resolver thread; the WebSocket
+  handshake's request and response, the header fields of both and, for a
+  response that is not 101, its body, which Beast's own parser reads up to
+  Beast's default limit for a response, 8 MiB, that no option of its stream
+  lowers (measured: an 8 MiB body held about 18 MiB at its peak, as its
+  string grew); over TLS, the verify callback Asio's `set_verify_callback`
+  makes with `new`, with the copy of the host that `host_name_verification`
+  holds, a `std::string`; each wait of Beast's timers, from Asio's
+  per-thread recycling cache, which calls `std::aligned_alloc` on a miss:
+  the TCP stream's deadline over the connection and the TLS handshake, and
+  the WebSocket's handshake, idle and close timeouts; and each keep-alive
+  ping's frame, with `new`. The WebSocket's operations, its read buffer and
+  its queued texts are in the room's resource on both targets, since each of
+  its handlers carries the room's allocator, and a message allocates nothing
+  outside it (measured with a stack for each `operator new` on the room's
+  thread: a hundred texts sent and received made none but the write
+  buffer's, at the first); in a page the stream's own state is there too,
+  and the page's `WebSocket` makes the handshake;
 * the payload types `std::string`, `bytes`, `webcpp::document::document` and
   `payload`, with `std::allocator` or document's own `operator new`, the
   user's choice;
@@ -240,11 +297,17 @@ nothing.
   an array on every call;
 * on Emscripten under Asyncify, the unwind data Asyncify allocates whenever
   the browser program's `run` suspends;
-* in the browser, the entry of each pending Web Crypto promise in the map of
-  webcpp::asio's bridge, in the allocator of the `io_context`: the
-  registrations of a WebSocket and of a `page_call` are intrusive, the events
-  of a socket are posted in the room's resource, and the calls of a
-  `page_call` in the resource it is given.
+* in the browser, the storage of the map in which webcpp::asio's bridge finds
+  each pending Web Crypto promise, in the allocator of the `io_context`,
+  made for the first and grown when more are pending at once than it holds,
+  and kept until the `io_context` is destroyed. The rest of a page's seal or
+  open, the wait for its promise and the post of its settlement, is in the
+  room's resource when the backend's executor is that of an `io_context`: the
+  test `platform_page_sealer_allocation`, after a first seal and open, sees
+  neither `operator new` nor the C library allocate from the start of a seal
+  or an open to its completion. The registrations of a WebSocket and of a
+  `page_call` are intrusive, the events of a socket are posted in the room's
+  resource, and the calls of a `page_call` in the resource it is given.
 
 The test's memory relays are shared by every room of a test: they allocate
 their relays through the resource they are constructed with.
