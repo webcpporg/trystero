@@ -44,7 +44,8 @@ inline constexpr std::size_t nonce_size = 8;
  * `charSet` for each draw, so an id of `n` characters takes `n` random bytes.
  *
  * Tip: 256 is not a multiple of 62, so each of the first eight characters comes from 5 of the 256
- * bytes and each other from 4: the id is as unpredictable as its bytes, not uniform.
+ * bytes and each other from 4, where Trystero draws each of the 62 alike: a character carries
+ * about 5.95 bits of its byte's 8, a little less than log2(62).
  *
  * @param random The random bytes, one for each character.
  * @param memory The resource the id is allocated in.
@@ -182,6 +183,9 @@ inline std::pmr::string room_token(
 
 /**
  * Trystero's `strToNum`: the sum of the text's UTF-16 code units, modulo `limit`.
+ *
+ * Tip: it computes in doubles, JavaScript's Numbers, as `strToNum` does, so that every peer derives
+ * the same kinds and relays; the oracle's fixtures pin it.
  *
  * @param text The text, in UTF-8.
  * @param limit The modulus; the default is JavaScript's `Number.MAX_SAFE_INTEGER`.

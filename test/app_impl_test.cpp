@@ -577,7 +577,7 @@ void an_adoption_from_inside_an_end_under_way() {
         m);
     net.channel_capacity = 1;
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         webcpp::test::require(
             BOOST_TEST(b->send(trystero::protocol::room_frame("T9", payload, m))));
     }

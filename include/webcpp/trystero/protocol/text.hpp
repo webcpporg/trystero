@@ -65,28 +65,29 @@ inline std::optional<bytes> from_hex(
     if (text.size() % 2 != 0) {
         return std::nullopt;
     }
-    const auto nibble = [](char c) -> int {
+    // A digit's value, or `not_hex` for a character that is none.
+    constexpr std::uint32_t not_hex = 16;
+    const auto nibble = [](char c) -> std::uint32_t {
         if (c >= '0' && c <= '9') {
-            return c - '0';
+            return static_cast<std::uint32_t>(c - '0');
         }
         if (c >= 'a' && c <= 'f') {
-            return c - 'a' + 10;
+            return static_cast<std::uint32_t>(c - 'a' + 10);
         }
         if (c >= 'A' && c <= 'F') {
-            return c - 'A' + 10;
+            return static_cast<std::uint32_t>(c - 'A' + 10);
         }
-        return -1;
+        return not_hex;
     };
     bytes out(memory);
     out.reserve(text.size() / 2);
     for (std::size_t i = 0; i < text.size(); i += 2) {
-        const int high = nibble(text[i]);
-        const int low = nibble(text[i + 1]);
-        if (high < 0 || low < 0) {
+        const std::uint32_t high = nibble(text[i]);
+        const std::uint32_t low = nibble(text[i + 1]);
+        if (high == not_hex || low == not_hex) {
             return std::nullopt;
         }
-        out.push_back(static_cast<std::uint8_t>((static_cast<unsigned>(high) << 4U) |
-                                                static_cast<unsigned>(low)));
+        out.push_back(static_cast<std::uint8_t>((high << 4U) | low));
     }
     return out;
 }
@@ -148,15 +149,17 @@ inline std::pmr::string base64_encode(
  */
 inline std::optional<bytes> base64_decode(
     std::string_view in, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    const auto value = [](char c) -> int {
+    // A digit's value, or `not_base64` for a character that is none.
+    constexpr std::uint32_t not_base64 = 64;
+    const auto value = [](char c) -> std::uint32_t {
         if (c >= 'A' && c <= 'Z') {
-            return c - 'A';
+            return static_cast<std::uint32_t>(c - 'A');
         }
         if (c >= 'a' && c <= 'z') {
-            return c - 'a' + 26;
+            return static_cast<std::uint32_t>(c - 'a' + 26);
         }
         if (c >= '0' && c <= '9') {
-            return c - '0' + 52;
+            return static_cast<std::uint32_t>(c - '0' + 52);
         }
         if (c == '+') {
             return 62;
@@ -164,7 +167,7 @@ inline std::optional<bytes> base64_decode(
         if (c == '/') {
             return 63;
         }
-        return -1;
+        return not_base64;
     };
     while (!in.empty() && in.back() == '=') {
         in.remove_suffix(1);
@@ -175,13 +178,13 @@ inline std::optional<bytes> base64_decode(
     bytes out(memory);
     out.reserve(in.size() * 3 / 4);
     std::uint32_t buffer = 0;
-    unsigned bits = 0;
+    std::uint32_t bits = 0;
     for (const char c : in) {
-        const int v = value(c);
-        if (v < 0) {
+        const std::uint32_t v = value(c);
+        if (v == not_base64) {
             return std::nullopt;
         }
-        buffer = (buffer << 6U) | static_cast<std::uint32_t>(v);
+        buffer = (buffer << 6U) | v;
         bits += 6U;
         if (bits >= 8U) {
             bits -= 8U;
@@ -195,7 +198,8 @@ inline std::optional<bytes> base64_decode(
  * The sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
  *
  * Tip: Trystero derives Nostr kinds and the relay shuffle seed from it, so non-ASCII ids must count
- * as in JS.
+ * as in JS. The sum is a double, JavaScript's Number, as Trystero's is; the oracle's fixtures pin
+ * it.
  *
  * @param utf8 The text, in UTF-8.
  * @return The sum of the code units of its UTF-16 form, a character above U+FFFF counting as its
@@ -206,7 +210,7 @@ inline double utf16_code_unit_sum(std::string_view utf8) {
     for (std::size_t i = 0; i < utf8.size();) {
         // The bytes as unsigned values: a char may be signed.
         const auto byte = [utf8](std::size_t at) -> std::uint32_t {
-            return static_cast<unsigned char>(utf8[at]);
+            return static_cast<std::uint8_t>(utf8[at]);
         };
         const std::uint32_t c = byte(i);
         std::uint32_t point = c;

@@ -53,6 +53,12 @@ public:
     /** Keeps the bounded challenge history in the room resource. */
     explicit recent_challenges(std::pmr::polymorphic_allocator<> a) : values_(capacity, a) {}
 
+    /** Deleted: a boost::circular_buffer moves by swapping its allocator, which std::pmr's
+     * cannot. */
+    recent_challenges(recent_challenges&&) = delete;
+    /** Deleted, as the move constructor is. */
+    recent_challenges& operator=(recent_challenges&&) = delete;
+
     /** Remembers a challenge, in the oldest's place beyond capacity. */
     void push(std::pmr::string challenge) { values_.push_back(std::move(challenge)); }
 

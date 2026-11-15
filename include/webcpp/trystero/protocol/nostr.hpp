@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -44,10 +45,10 @@ inline constexpr std::string_view topic_tag = "x";
  * forward the events and keep none.
  *
  * @param topic The topic's name.
- * @return 20000 plus `str_to_num(topic, 10000)`.
+ * @return 20000 plus `str_to_num(topic, 10000)`, below 30000.
  */
-inline int topic_kind(std::string_view topic) {
-    return static_cast<int>(str_to_num(topic, 10000)) + 20000;
+inline std::uint32_t topic_kind(std::string_view topic) {
+    return static_cast<std::uint32_t>(str_to_num(topic, 10000)) + 20000;
 }
 
 namespace detail {
@@ -57,11 +58,13 @@ namespace detail {
  * canonical
  * `[0,"<pubkey>",<created_at>,<kind>,[["x",<topic>]],<content>]`, fed to the hash piece by piece.
  */
-inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey, std::int64_t created_at,
-                                             int kind, std::string_view quoted_topic,
+inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey,
+                                             std::chrono::sys_seconds created_at,
+                                             std::uint32_t kind, std::string_view quoted_topic,
                                              std::string_view quoted_content) {
     std::array<char, 48> buffer{};
-    char* end = std::to_chars(buffer.data(), buffer.data() + 24, created_at).ptr;
+    const auto seconds = created_at.time_since_epoch().count();
+    char* end = std::to_chars(buffer.data(), buffer.data() + 24, seconds).ptr;
     *end++ = ',';
     end = std::to_chars(end, buffer.data() + buffer.size(), kind).ptr;
     const std::string_view numbers(buffer.data(), static_cast<std::size_t>(end - buffer.data()));
@@ -100,7 +103,7 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
  * `[0, pubkey, created_at, kind, [["x", topic]], content]`.
  *
  * @param pubkey The signer's x-only public key, in hexadecimal.
- * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param created_at The event's time, in whole seconds since the Unix epoch.
  * @param kind The event's kind, @ref topic_kind of its topic.
  * @param topic The topic, the value of its tag "x".
  * @param content The content.
@@ -108,8 +111,8 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
  * @return The id.
  */
 inline std::array<std::uint8_t, 32> event_id(
-    std::string_view pubkey, std::int64_t created_at, int kind, std::string_view topic,
-    std::string_view content,
+    std::string_view pubkey, std::chrono::sys_seconds created_at, std::uint32_t kind,
+    std::string_view topic, std::string_view content,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     return detail::event_id(pubkey, created_at, kind, detail::quoted(topic, memory),
                             detail::quoted(content, memory));
@@ -228,7 +231,7 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * over those same bytes.
  *
  * @param key The signer.
- * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param created_at The event's time, in whole seconds since the Unix epoch.
  * @param topic The topic, the value of the event's tag "x".
  * @param content The content, a signal's JSON text.
  * @param aux 32 random bytes for the signature.
@@ -236,10 +239,10 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * @return The message's JSON text.
  */
 inline std::pmr::string event_message(
-    const signer& key, std::int64_t created_at, std::string_view topic, std::string_view content,
-    std::span<const std::uint8_t, 32> aux,
+    const signer& key, std::chrono::sys_seconds created_at, std::string_view topic,
+    std::string_view content, std::span<const std::uint8_t, 32> aux,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    const int kind = topic_kind(topic);
+    const auto kind = topic_kind(topic);
     const auto quoted_topic = detail::quoted(topic, memory);
     const auto quoted_content = detail::quoted(content, memory);
     const auto id = detail::event_id(key.pubkey(), created_at, kind, quoted_topic, quoted_content);
@@ -251,7 +254,7 @@ inline std::pmr::string event_message(
     out += R"(,"tags":[["x",)";
     out += quoted_topic;
     out += R"(]],"created_at":)";
-    json::append_integer(out, created_at);
+    json::append_integer(out, created_at.time_since_epoch().count());
     out += R"(,"content":)";
     out += quoted_content;
     out += R"(,"pubkey":")";
@@ -270,14 +273,16 @@ inline std::pmr::string event_message(
  *
  * @param subscription The subscription's id.
  * @param topics The topics, whose kinds the filter lists once each, in increasing order.
- * @param since The earliest `created_at` of the events wanted.
+ * @param since The earliest `created_at` of the events wanted, in whole seconds since the Unix
+ * epoch.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
  */
 inline std::pmr::string subscribe_message(
-    std::string_view subscription, std::span<const std::pmr::string> topics, std::int64_t since,
+    std::string_view subscription, std::span<const std::pmr::string> topics,
+    std::chrono::sys_seconds since,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::set<int> kinds(memory);
+    std::pmr::set<std::uint32_t> kinds(memory);
     for (const auto& t : topics) {
         kinds.insert(topic_kind(t));
     }
@@ -286,14 +291,14 @@ inline std::pmr::string subscribe_message(
     out += R"(["REQ",)";
     json::append_string(out, subscription);
     out += R"(,{"kinds":[)";
-    for (const int k : kinds) {
+    for (const std::uint32_t k : kinds) {
         if (out.back() != '[') {
             out += ',';
         }
         json::append_integer(out, k);
     }
     out += R"(],"since":)";
-    json::append_integer(out, since);
+    json::append_integer(out, since.time_since_epoch().count());
     out += R"(,"#x":[)";
     for (std::size_t i = 0; i < topics.size(); ++i) {
         if (i != 0) {
