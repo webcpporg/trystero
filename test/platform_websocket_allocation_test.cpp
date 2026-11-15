@@ -17,13 +17,22 @@
 // dispatched each completion through it in a function object of its own. Measured: six
 // `operator new` for a text sent and its echo received, and four of Asio's recycled blocks.
 //
-// main runs the io_context once; each echo sends the next text, and the last closes the socket.
+// A relay that refuses the upgrade with a body of 4 MiB has the handshake read its header alone:
+// from the call that makes the socket to its close, reported without an open, operator new gives
+// the room's thread less than 64 KiB. Without webcpp::beast's bounded handshake layer, Beast's own
+// parser read the body whole, up to its default limit for a response, 8 MiB, outside the room's
+// resource.
+//
+// main runs an io_context for each case: in the first each echo sends the next text, and the last
+// closes the socket; in the second the refusal ends the connection.
 
 #include <webcpp/trystero/platform/websocket.hpp>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/read_until.hpp>
 #include <boost/asio/ssl/context.hpp>
+#include <boost/asio/write.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/websocket.hpp>
 #include <boost/core/lightweight_test.hpp>
@@ -54,11 +63,14 @@ namespace {
 thread_local bool counting = false;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 thread_local std::size_t global_allocations = 0;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+thread_local std::size_t global_bytes = 0;
 
 /** What the replaced operator new does: counts, then takes the memory from the C library. */
 void* allocate(std::size_t size) {
     if (counting) {
         ++global_allocations;
+        global_bytes += size;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-no-malloc): the global operator new's own storage
     void* pointer = std::malloc(size == 0 ? 1 : size);
@@ -83,6 +95,7 @@ void* operator new(std::size_t size) {
 void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
     if (counting) {
         ++global_allocations;
+        global_bytes += size;
     }
     // NOLINTNEXTLINE(cppcoreguidelines-no-malloc): the global operator new's own storage
     return std::malloc(size == 0 ? 1 : size);
@@ -175,6 +188,57 @@ private:
     std::thread thread_;
 };
 
+/**
+ * A relay that refuses the upgrade, on a thread of its own: it reads the request's header and
+ * answers 403 with a body of `body` bytes, then closes.
+ */
+class refusing_relay {
+public:
+    explicit refusing_relay(std::size_t body)
+        : acceptor_(io_, {asio::ip::make_address("127.0.0.1"), 0}), body_(body) {
+        thread_ = std::thread([this] { serve(); });
+    }
+
+    refusing_relay(const refusing_relay&) = delete;
+    refusing_relay& operator=(const refusing_relay&) = delete;
+    refusing_relay(refusing_relay&&) = delete;
+    refusing_relay& operator=(refusing_relay&&) = delete;
+
+    ~refusing_relay() { thread_.join(); }
+
+    [[nodiscard]] std::string url() const {
+        return "ws://127.0.0.1:" + std::to_string(acceptor_.local_endpoint().port()) + "/";
+    }
+
+private:
+    void serve() {
+        boost::system::error_code ec;
+        tcp::socket socket(io_);
+        if (acceptor_.accept(socket, ec)) {
+            return;
+        }
+        std::string request;
+        asio::read_until(socket, asio::dynamic_buffer(request), "\r\n\r\n", ec);
+        if (ec) {
+            return;
+        }
+        const std::string response =
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: " + std::to_string(body_) + "\r\n\r\n" +
+            std::string(body_, 'r');
+        // The client may close once it has read what it reads: the write then fails, as it may,
+        // and the socket is closed all the same.
+        asio::write(socket, asio::buffer(response), ec);
+        if (socket.close(ec)) {
+            return;
+        }
+    }
+
+    asio::io_context io_;
+    tcp::acceptor acceptor_;
+    std::size_t body_;
+    std::thread thread_;
+};
+
 constexpr std::size_t warm_up = 3;
 constexpr std::size_t counted = 10;
 
@@ -210,9 +274,8 @@ void on_echo(state& s) {
     s.socket->send(s.text);
 }
 
-}  // namespace
-
-int main() {
+/** A text sent and its echo received, ten times, allocate nothing outside the room's resource. */
+void messages_allocate_nothing_outside_the_room() {
     const echo_relay relay;
     state s;
     s.socket = trystero::platform::connect_websocket(
@@ -226,11 +289,48 @@ int main() {
     s.io.run();  // lint-run: the session and its relay do loopback network I/O, until the close
     counting = false;
     if (!BOOST_TEST(s.done)) {
-        return boost::report_errors();
+        return;
     }
     BOOST_TEST_EQ(s.global_counted, 0U);
     // The session's texts and operations, at least one of each a message.
     BOOST_TEST_GE(s.room_counted, counted);
     s.socket.reset();
+}
+
+/**
+ * A relay that refuses the upgrade with a body of 4 MiB: the connection reports its close without
+ * opening, and the room's thread allocated less than 64 KiB with operator new meanwhile, its
+ * resolver's results and its streams' state among them, the refusal's body none of it.
+ */
+void a_refusals_body_is_not_read() {
+    constexpr std::size_t body = std::size_t{4} << 20U;
+    const refusing_relay relay(body);
+    asio::io_context io;
+    counting_resource room;
+    asio::ssl::context tls{asio::ssl::context::tls_client};
+    std::size_t opens = 0;
+    std::size_t closes = 0;
+    global_bytes = 0;
+    counting = true;
+    auto socket = trystero::platform::connect_websocket(io.get_executor(), &tls, relay.url(),
+                                                        {
+                                                            .open = [&opens] { ++opens; },
+                                                            .message = {},
+                                                            .close = [&closes] { ++closes; },
+                                                        },
+                                                        &room);
+    io.run();  // lint-run: the session and its relay do loopback network I/O, until the refusal
+    counting = false;
+    BOOST_TEST_EQ(opens, 0U);
+    BOOST_TEST_EQ(closes, 1U);
+    BOOST_TEST_LT(global_bytes, std::size_t{64} << 10U);
+    socket.reset();
+}
+
+}  // namespace
+
+int main() {
+    messages_allocate_nothing_outside_the_room();
+    a_refusals_body_is_not_read();
     return boost::report_errors();
 }
