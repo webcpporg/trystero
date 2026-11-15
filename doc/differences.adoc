@@ -532,7 +532,7 @@ its reason.
 | Not a difference: both keep the connection registered first.
 
 | A Nostr event a relay repeats, or that several relays carry
-| What an event changes when it comes twice is the signaling's work, which neither API reports: a program sees one join either way. The `room` test feeds the dedup.
+| What an event changes when it comes twice is the signaling's work, offers and answers made again, which neither API reports: a program sees one join either way, and over honest relays an event's id is always its own. The `protocol` and `room` tests hold the dedup, forged ids included.
 
 | A relay's text, a signal or a handshake message past its bound; a protocol text of thousands of values
 | No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` test holds the bounds.
