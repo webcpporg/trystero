@@ -115,8 +115,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | Multiple apps and rooms with one connection per remote peer, adoption
   races, presence and reuse, room isolation, departures, idle connections,
   password-domain isolation, invalid room proofs, transient handshake recovery,
-  fairness, bounds and
-  resource ownership. The suite also runs without exceptions and with
+  fairness, bounds, a handshake message read at its bound and failing one
+  byte past it, and resource ownership. The suite also runs without exceptions and with
   standard-library hardening; sanitizers check lifetimes and detachment.
 
 | `allocation`
@@ -167,7 +167,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
   handler replacement and destruction, the 64-frame and 10-second bounds,
   and allocation and release through the connection's resource; a peer of
   webcpp::webrtc's own sends a text, which is dropped between two frames;
-  malformed candidates and descriptions fail without throwing; the backend
+  malformed candidates and descriptions fail without throwing, and so does a
+  candidate one byte past its bound, which at the bound is added; the backend
   makes at most its budget in a minute, holds at most its runtime's cap at
   once, and leaves out a URL libdatachannel cannot parse. Both run once more
   without exceptions.
