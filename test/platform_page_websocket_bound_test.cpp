@@ -106,8 +106,14 @@ void verdict(state& s) {
     s.guard.reset();
 }
 
-/** Sends the next text, and posts the one after it, so that one text is sent a turn. */
-void send_next(state& s) {
+/**
+ * Sends the next text, and posts the one after it, so that one text is sent a turn.
+ *
+ * A loop of posted calls, not a recursion: each runs from the io_context once the one that posted
+ * it has returned, so the stack never grows; hence its exemption, and its lambda's, from
+ * misc-no-recursion, which sees the cycle through Asio's post.
+ */
+void send_next(state& s) {  // NOLINT(misc-no-recursion)
     if (s.sending == texts) {
         s.sent = true;
         verdict(s);
@@ -117,7 +123,7 @@ void send_next(state& s) {
     s.in_send = true;
     s.socket->send(s.text);
     s.in_send = false;
-    asio::post(s.io, [&s] { send_next(s); });
+    asio::post(s.io, [&s] { send_next(s); });  // NOLINT(misc-no-recursion)
 }
 
 }  // namespace
