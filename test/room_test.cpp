@@ -400,8 +400,14 @@ void a_refused_peer_connection_is_reported_and_tried_again() {
 // Announcements are not sealed: anyone who knows the app and the room ids can announce any number
 // of fresh ids. A room offers to at most max_unconnected_peers of them at once, its memory and the
 // page's connections stay bounded, the peer it is connected to keeps working, and once the offers
-// to the flooders expire their negotiations are gone and a new peer joins. The clock runs 100
-// times faster, so that offers expire in about 0.6 s.
+// to the flooders expire their negotiations are gone and a new peer joins.
+//
+// The case runs on the virtual clock, so that it sees the same on every machine: the clock stands
+// still while the rooms handle a thousand announcements, and moves a minute before the next. On
+// the wall clock, a thousand left several thousand relay texts queued ahead of the message that
+// must go through, which a loaded machine took longer to handle than the case could wait, and the
+// slower it ran, the more often the rooms' timers fired meanwhile, which changed the connections
+// and the memory the case compares.
 //
 // The memory is bounded by the room's own limits, not by the flood: the negotiations under way,
 // the event ids, offers and answers, and refused peers it remembers, each up to a count of its
@@ -412,9 +418,10 @@ void a_refused_peer_connection_is_reported_and_tried_again() {
 void a_flood_of_announcements_is_bounded() {
     constexpr std::size_t flood = trystero::detail::nostr_strategy::remembered_events + 1000;
     constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    // Longer than an offer lasts (57.3 s): a thousand finds the offers to the one before expired.
+    constexpr std::chrono::milliseconds minute = 1min;
     counting_resource memory;  // first: the io_context's pending operations free into it
-    fixture f;
-    f.net.time_scale = 100;
+    fixture f{true};
     auto c = app_config("00000000000000000000");  // lower than every flooder: it offers to each
     c.memory = &memory;
     trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
@@ -429,49 +436,54 @@ void a_flood_of_announcements_is_bounded() {
     chat_b.on_message([&](const std::string& text, const trystero::message_info& /*info*/) {
         heard.push_back(text);
     });
-    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; })));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return joined.size() == 1; })));
     const std::size_t joined_in_use = memory.in_use;
     const std::size_t joined_connections = f.net.live_connections();
 
-    // Announces `count` fresh ids, a thousand at a time, each thousand passed by the relay before
-    // the next, then has a message go through, and returns what the room holds then, beyond what
-    // it held once joined. The memory relay queues what it forwards in each room's resource, and
-    // a flood sent at once would hold it all there, more than Emscripten's 16 MiB. The page's
-    // connections are counted from those it holds when the flood starts, the late peer's among
-    // them in the second. The flood adds at most `2 * bound`: the offers of the negotiations under
-    // way, and those of the ones just expired, closed but held by the completions queued for them
-    // until the executor reaches them, behind the relays' messages on a loaded machine.
+    // Announces `count` fresh ids, a thousand a minute, each thousand handled by the relay and the
+    // rooms before the clock moves, then has a message go through, and returns what the room holds
+    // then, beyond what it held once joined. The memory relay queues what it forwards in each
+    // room's resource, and a flood sent at once would hold it all there, more than Emscripten's
+    // 16 MiB. The page's connections are counted from those it holds when the flood starts, the
+    // late peer's among them in the second. The flood adds at most `bound`, the offers of the
+    // negotiations under way: the clock moves only once every queued completion ran, so that the
+    // connection of an offer that expired is gone before the next thousand. Without the bound on
+    // negotiations, the room fills its window, 64 connections (measured).
     flooder attacker(f, "flood");
     const auto flooded = [&](std::size_t count, std::string_view prefix) {
         const std::size_t held = f.net.live_connections();
         f.net.peak_connections = held;
         constexpr std::size_t batch = 1000;
         for (std::size_t sent = 0; sent < count; sent += batch) {
+            if (sent > 0) {
+                advance(f, minute);
+            }
             const std::size_t now = std::min(batch, count - sent);
             const auto before = f.net.relay(relay_a).events_seen;
             attacker.announce(now, prefix);
             BOOST_TEST(
-                run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + now; }));
+                run_until(f, [&] { return f.net.relay(relay_a).events_seen >= before + now; }));
         }
         const std::size_t messages = heard.size() + 1;
         chat_a.async_send("after the flood", [](boost::system::error_code) {});
-        BOOST_TEST(run_until(f.io, [&] { return heard.size() == messages; }));
-        BOOST_TEST_LE(f.net.peak_connections, held + (2 * bound));
+        BOOST_TEST(run_until(f, [&] { return heard.size() == messages; }));
+        BOOST_TEST_LE(f.net.peak_connections, held + bound);
         return memory.in_use - joined_in_use;
     };
     const std::size_t first = flooded(flood, "1flood");
 
     // Once every offer to a flooder expired, its negotiation is gone, and a new peer joins.
-    BOOST_TEST(run_until(f.io, [&] { return f.net.live_connections() == joined_connections; }));
+    BOOST_TEST(
+        run_until(f, [&] { return f.net.live_connections() == joined_connections; }, minute));
     trystero::app late_app(f.io.get_executor(), f.net, app_config("CCCCCCCCCCCCCCCCCCCC"));
     const auto late = join(late_app, "flood");
-    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
+    BOOST_TEST(run_until(f, [&] { return joined.size() == 2; }));
     BOOST_TEST_EQ(heard.size(), 1U);
 
     // A flood twice as large keeps the room as bounded, and the room working. The half of
     // `first` allows for the late peer, joined since, and for the records not yet full after the
     // first flood; without the bound on negotiations, the second flood leaves 2.6 times as much,
-    // and 2.8 times without the one on the event ids remembered (measured).
+    // and 2.95 times without the one on the event ids remembered (measured).
     const std::size_t second = flooded(2 * flood, "1again");
     BOOST_TEST_EQ(heard.size(), 2U);
     BOOST_TEST_LE(second, first + (first / 2));
