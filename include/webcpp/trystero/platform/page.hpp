@@ -78,7 +78,7 @@ inline emscripten::val js_string(std::string_view utf8) {
  * Asyncify, while `main` is suspended in its run, returns a promise that never settles, and aborts
  * a debug build at its second call (measured with Emscripten 6.0.11). A call made once the
  * page_call is destroyed, or once its work is posted and the page_call destroyed before it runs,
- * reaches nothing.
+ * reaches nothing; so does one made once the io_context is destroyed.
  *
  * `f` is a handler of the run, and lets no JavaScript error out, webcpp::asio's rule for every
  * handler: an error that leaves `f` leaves `run` with it, and the program's run never resumes
@@ -86,7 +86,8 @@ inline emscripten::val js_string(std::string_view utf8) {
  * suspension variant). A page may pass any value, so `f` checks its type before it converts it,
  * with `isString()`, `isNumber()` or `typeOf()`, and reads a field only of what is neither null
  * nor undefined: embind's `as<std::string>()` of a number throws a `BindingError`, and a field of
- * undefined a `TypeError`.
+ * undefined a `TypeError`. `f` is given the page's value as it is when `f` runs, not when the page
+ * called: a JavaScript object the page changes meanwhile is seen changed.
  *
  * @tparam F A callable of one `const emscripten::val&`, the value the page passed.
  * @see "The program runs its io_context", in the guide, and webcpp::asio's guide, "A JavaScript
@@ -102,7 +103,9 @@ public:
      * @param ex The executor `f` is posted to, an io_context's of webcpp::asio, which must outlive
      * the page_call or be destroyed first, which ends it.
      * @param f What each call runs, on the executor; it lets no JavaScript error out.
-     * @param memory The resource `f` and each posted call are allocated in.
+     * @param memory The resource `f` and each posted call are allocated in. It holds each call the
+     * page made until the io_context runs it or is destroyed, so it must outlive the io_context, as
+     * well as the page_call.
      */
     page_call(webcpp::asio::any_io_executor ex, F f,
               std::pmr::memory_resource* memory = std::pmr::get_default_resource())

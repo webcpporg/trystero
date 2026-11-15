@@ -103,7 +103,12 @@ holds only what is specific to trystero.
   `platform::page_call` (`platform/page.hpp`), a bridge function that posts,
   never through embind. Under Asyncify an embind function called while
   `main` is suspended returns a promise that never settles, and its second
-  call aborts a debug build.
+  call aborts a debug build. A page_call's handler lets no JavaScript error
+  out, webcpp::asio's rule for every handler, since one leaves `run` for
+  good: it checks the page's value before converting it, and the chat and
+  `platform_page` do (`platform_page` passes a number and `undefined`). Its
+  resource holds each call until the io_context runs it or is destroyed, so
+  it outlives the io_context (`platform_page_call`).
   Every emscripten test that runs an io_context runs it from `main`, and
   ends with `webcpp::test::exit_status`, since under Asyncify a `main` that
   suspended loses what it returns; `platform_page` proves the program's

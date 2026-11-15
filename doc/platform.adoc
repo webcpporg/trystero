@@ -354,7 +354,14 @@ in either suspension variant).
   it converts it, with `isString()`, `isNumber()` or `typeOf()`, and reads a
   field only of what is neither `null` nor `undefined`: embind's
   `as<std::string>()` of a number throws a `BindingError`, and a field of
-  `undefined` a `TypeError`.
+  `undefined` a `TypeError`. The handler is given the page's value as it is
+  when the handler runs, not when the page called: a JavaScript object the
+  page changes meanwhile is seen changed.
+* A `page_call` posts each call in the resource it is given, which holds the
+  call until the `io_context` runs it or is destroyed: the resource outlives
+  the `io_context`. A call through a function the page kept after its
+  `page_call` was destroyed, or after the `io_context` was, reaches nothing,
+  and a `page_call` destroyed after its `io_context` is harmless.
 
 So nothing runs while nothing happens, a handler runs as soon as the run
 family resumes after its event, and a turn of `max_handlers_per_turn`
