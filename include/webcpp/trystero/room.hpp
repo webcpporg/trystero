@@ -173,12 +173,12 @@ struct decoding {
 /**
  * How an action's type travels. `encode` takes the value at the call and keeps it alive without
  * copying it when the type owns its storage; a view is copied once, there, into the room's
- * resource. `decode` reads a received message with the room's @ref decoding: a view type refers to
- * the message's buffer and is
- * valid for the duration of the handler, so only owning types can be awaited. The `std::pmr` types
- * are built in the receiving room's resource, `webcpp::document::pmr::document` too; the standard
- * types allocate with `std::allocator`, as the user chose, and so does
- * `webcpp::document::document`. A JSON text is parsed within @ref json_payload_limits.
+ * resource. `decode` reads a received message with the room's @ref decoding. A view type refers to
+ * the message's buffer and is valid for the duration of the handler, so only owning types can be
+ * awaited. The `std::pmr` types are built in the receiving room's resource,
+ * `webcpp::document::pmr::document` too; the standard types allocate with `std::allocator`, as the
+ * user chose, and so does `webcpp::document::document`. A JSON text is parsed
+ * within @ref json_payload_limits.
  *
  * | Type                             | Trystero format | Receiving                                |
  * | std::string                      | text            | a copy of the bytes                      |

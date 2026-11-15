@@ -131,8 +131,8 @@ class backend : public trystero::backend::factory {
 public:
     /**
      * A backend with a runtime of its own, made with `backend_config::runtime`, whose TLS context
-     * is @ref make_tls_context's: natively it verifies relays against the system's certificate
-     * authorities, and in a page the browser verifies them against its own.
+     * is @ref make_tls_context's, which natively verifies relays against the system's certificate
+     * authorities; in a page the browser verifies them against its own.
      *
      * It throws nothing: when OpenSSL cannot make the TLS context natively, `tls_context()` holds
      * the error, and every `wss://` relay reports a close, as an unreachable relay does.
