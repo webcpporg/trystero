@@ -168,15 +168,22 @@ holds only what is specific to trystero.
   in a page over webcpp::beast's page `WebSocket` (`/webcpp/beast//browser`).
   On both targets a write that fails ends the session at once, reporting one
   close, unless it is already closing, when its read ends it. A relay's URL
-  is read with Boost.URL on both targets, as a page's `WebSocket` reads it:
-  an IPv6 address in brackets reaches the resolver without them, the scheme
-  in any case, and userinfo, a fragment, a port beyond 65535 and an
-  IPvFuture host are refused, which reports a close; so are `http://` and
-  `https://`, in a page too, where a `WebSocket` alone would take them as
-  `ws://` and `wss://`. Natively, over TLS the connection sends the host
-  (SNI), through `webcpp::beast::set_server_name`, only when it is a name,
-  and checks the certificate against the URL's host, a name or an address,
-  with Asio's `host_name_verification`; in a page the browser does both. A
+  is read with Boost.URL on both targets, by the same rules, which the
+  guide's "The relays" lists: an IPv6 address in brackets reaches the
+  resolver without them, the scheme in any case, a host decoded and in
+  lower case, an escaped dotted quad an address; userinfo, a fragment, a
+  port beyond 65535, an IPvFuture host and `http://` and `https://` (which a
+  page's `WebSocket` alone would take as `ws://` and `wss://`) are refused,
+  and what a page's URL parser reads otherwise fails closed: IPv4 shorthands
+  (`127.1`) and any host whose last label is a number, international names
+  (no A-labels: webcpp::idna is not used yet), tabs, newlines and
+  backslashes. Each refusal reports a close. Natively, over TLS the
+  connection sets `verify_peer` on its stream whatever the program's context
+  says, sends the host (SNI), through `webcpp::beast::set_server_name`, only
+  when it is a name once decoded, and checks the certificate against the
+  URL's host, a name or an address, with Asio's `host_name_verification`; in
+  a page the browser does all three. On Windows the system's authorities are
+  none unless `SSL_CERT_FILE` or `SSL_CERT_DIR` names some. A
   backend trusts the system's authorities by default
   (`platform::make_tls_context()`, which in a page records only the policy
   the page's stream asks for), or the program's context through the
@@ -644,11 +651,18 @@ holds only what is specific to trystero.
     webcpp::webrtc's completions get, through `any_io_executor`;
     webcpp::webrtc's posts from libdatachannel's threads, with the copies of
     what they carry, in Asio's default allocator, since the resource is
-    touched only on the room's executor; natively, Boost.Beast's state
-    inside the relay WebSocket (its stream's) and the resolver's results,
-    while the WebSocket's operations, read buffer and queued texts are in
-    the room's resource (in a page the stream's own state is there too,
-    made with `std::allocator_arg` and the room's allocator); the payload
+    touched only on the room's executor; natively, for each relay
+    connection, what Boost.Beast, Asio and OpenSSL allocate of their own,
+    which takes no allocator: the streams' state, the WebSocket's write
+    buffer, Asio's two TLS buffers, the resolver's state and results, the
+    handshake's request and response with their fields, and a non-101
+    response's body up to Beast's default 8 MiB, which no option of its
+    stream lowers, the verify callback and its copy of the host, the timers'
+    waits and each keep-alive ping's frame, while the WebSocket's
+    operations, read buffer and queued texts are in the room's resource and
+    a message allocates nothing outside it (in a page the stream's own state
+    is there too, made with `std::allocator_arg` and the room's allocator);
+    the payload
     types `std::string`, `bytes` and `payload`, with `std::allocator`; on
     Emscripten, the C library's `select()`, which Asio's reactor calls on
     every wait of an io_context with a timer or a socket, and which callocs

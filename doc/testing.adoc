@@ -168,7 +168,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
 
 | `platform_page_websocket_bound`, `platform_page_websocket_late_events`,
   `platform_page_data_channel`, `platform_page_peer_connection`,
-  `platform_page`, and each `_no_exceptions`
+  `platform_page`, `platform_page_call`, `platform_page_handlers`,
+  `platform_page_sealer_allocation`, and each `_no_exceptions`
 | The platform backend in a page, on emscripten under node, each test's
   `main` running its `io_context` as a page's program does: the relays'
   WebSocket, its bound on what a relay holds unsent, both the session's own
@@ -181,7 +182,13 @@ include::{library-root}/test/Jamfile[tag=allocation]
   page's program, whose work guard keeps a page with no room yet running,
   and whose `platform::page_call` functions, called from JavaScript while
   `run` is suspended, return at once, only post, and reach the room, twice
-  in a row under Asyncify too.
+  in a row under Asyncify too, while a value of the wrong type is ignored
+  and breaks nothing; a call through a function the page kept after its
+  `page_call`, or its `io_context`, was destroyed reaches nothing, and the
+  handler reads the page's value as it is when it runs; the relay socket's
+  and the sealer's handlers run outside the page's events; and a seal and
+  an open allocate nothing outside the room's resource, neither with
+  `operator new` nor with the C library's functions.
 |===
 
 The platform backend's tests run on each target that builds them, and once

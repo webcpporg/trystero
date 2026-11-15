@@ -88,9 +88,10 @@ webcpp.run timer : timer_test.cpp ;
 # relays' WebSocket, built with the standard libraries' own checks, libc++'s
 # extensive hardening and libstdc++'s assertions, so that a completion that
 # touches a container its socket cleared fails at once, not one run in many;
-# the backend's WebRTC; and whole rooms over it. Each as the build asks and
-# without exceptions: webcpp::webrtc calls libdatachannel's C API, which
-# catches what libdatachannel throws, so the backend needs none.
+# the backend's WebRTC; and whole rooms over it. Each as the build asks and,
+# but the WebSocket's, which runs once with those checks, without exceptions
+# too: webcpp::webrtc calls libdatachannel's C API, which catches what
+# libdatachannel throws, so the backend needs none.
 # tag::platform[]
 webcpp.run platform_backend : platform_backend_test.cpp : $(platform) ;
 webcpp.run platform_sealer : platform_sealer_test.cpp

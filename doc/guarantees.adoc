@@ -46,7 +46,8 @@ file transfers of the `interop` lane.
 resources,* but what <<trystero-allocation-outside>> lists: from its
 construction until its `io_context` has drained, the global `operator new`
 sees only the room's JSON storage counter, and the C library nothing. _Held
-by_ `allocation`, natively and on emscripten.
+by_ `allocation`, natively and on emscripten, and, for a page's sealer,
+`platform_page_sealer_allocation`.
 . [[trystero-invariant-6]]*No unit test reaches beyond the loopback.* The
 rooms of the unit tests meet over the memory relays, the native tests' peer
 connections bind to 127.0.0.1 and gather their candidates there alone, and
