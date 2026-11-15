@@ -637,7 +637,7 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // A window in which the relay carries a text, an announcement the rooms read, sees that
     // parse too; such a window is opened again, five times at most.
     bool quiet = false;
-    for (int window = 0; window < 5 && !quiet; ++window) {
+    for (std::size_t window = 0; window < 5 && !quiet; ++window) {
         Payload value = make(&a_memory);
         const std::size_t expected = cost(value, &z_memory);
         const std::size_t texts = relay_state.texts;
