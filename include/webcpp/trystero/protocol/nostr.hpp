@@ -106,7 +106,7 @@ inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey,
 inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource* memory) {
     std::pmr::string out(memory);
     out.reserve(text.size() + 8);
-    json::append_string(out, text);
+    json::detail::append_utf8(out, text);
     return out;
 }
 
@@ -273,6 +273,8 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * @param aux 32 random bytes for the signature.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `topic` and `content` are UTF-8, as a room's are: a topic is ASCII, a content a signal's
+ * text.
  */
 inline std::pmr::string event_message(
     const signer& key, std::chrono::sys_seconds created_at, std::string_view topic,
@@ -313,6 +315,7 @@ inline std::pmr::string event_message(
  * epoch.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `subscription` and the topics are UTF-8, as a room's, which are ASCII, are.
  */
 inline std::pmr::string subscribe_message(
     std::string_view subscription, std::span<const std::pmr::string> topics,
@@ -325,7 +328,7 @@ inline std::pmr::string subscribe_message(
     std::pmr::string out(memory);
     out.reserve(96 + subscription.size() + (topics.size() * 48));
     out += R"(["REQ",)";
-    json::append_string(out, subscription);
+    json::detail::append_utf8(out, subscription);
     out += R"(,{"kinds":[)";
     for (const std::uint32_t k : kinds) {
         if (out.back() != '[') {
@@ -340,7 +343,7 @@ inline std::pmr::string subscribe_message(
         if (i != 0) {
             out += ',';
         }
-        json::append_string(out, topics[i]);
+        json::detail::append_utf8(out, topics[i]);
     }
     out += "]}]";
     return out;
@@ -352,12 +355,13 @@ inline std::pmr::string subscribe_message(
  * @param subscription The subscription's id.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `subscription` is UTF-8, as a room's, which is ASCII, is.
  */
 inline std::pmr::string close_message(
     std::string_view subscription,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::string out(R"(["CLOSE",)", memory);
-    json::append_string(out, subscription);
+    json::detail::append_utf8(out, subscription);
     out += ']';
     return out;
 }

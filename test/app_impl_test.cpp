@@ -278,6 +278,33 @@ void what_no_peer_could_use_is_set_aside() {
     BOOST_TEST(log == logged);
 }
 
+// A self id that is not UTF-8, which a signal could not write as a JSON string, is set aside for a
+// random one, reported and logged; one in UTF-8 past ASCII is kept as it is.
+void a_self_id_that_is_not_utf8_is_set_aside() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    for (const std::string_view id :
+         {std::string_view("peer\xff"), std::string_view("\xc3\xa9t\xc3\xa9")}) {
+        lines log;
+        const auto app = make_app(io, net, log, [&](trystero::app_config& c) { c.self_id = id; });
+        const auto reports = app->setup_reports();
+        if (id == "peer\xff") {
+            BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
+            BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::id_alphabet),
+                          std::string_view::npos);
+            const std::vector<std::string> expected{
+                "self_id is not UTF-8, which no peer reads, so the app uses a random one",
+            };
+            BOOST_TEST(std::vector<std::string>(reports.begin(), reports.end()) == expected);
+            BOOST_TEST(log == lines{"app: " + expected[0]});
+        } else {
+            BOOST_TEST_EQ(app->self_id(), id);
+            BOOST_TEST(reports.empty());
+            BOOST_TEST(log.empty());
+        }
+    }
+}
+
 // Every allocation of the app's construction, of its registry, of an adoption, of a stale
 // connection's replacement and end, of the list of live connections and of the last user's release
 // goes through its resource: the default resource refuses every request meanwhile.
@@ -682,6 +709,7 @@ int main() {
     the_configuration_is_copied_and_completed();
     what_the_configuration_names_is_kept();
     what_no_peer_could_use_is_set_aside();
+    a_self_id_that_is_not_utf8_is_set_aside();
     every_allocation_goes_through_the_apps_resource();
     the_registry_holds_rooms_by_a_weak_reference();
     adopt_starts_one_connection_per_peer();

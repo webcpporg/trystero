@@ -110,5 +110,34 @@
                 ]
             ]
         }
-    }
+    },
+    "answerer": {
+        "app_id": "my-app",
+        "room_id": "room-1",
+        "password": "secret",
+        "self_id_random": {"multiplier": 23, "offset": 5},
+        "random": {"multiplier": 31, "offset": 7},
+        "offer_sdp": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=offer\r\n",
+        "answer_sdp": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n",
+        "candidate": {
+            "candidate": "candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host",
+            "sdpMid": "0",
+            "sdpMLineIndex": 0,
+            "usernameFragment": "uf"
+        },
+        "offers": [
+            {"peerId": "zzzzzzzzzzzzzzzzzzz1", "offerId": "o\"\\   é"},
+            {"peerId": "zzzzzzzzzzzzzzzzzzz2"}
+        ]
+    },
+    "payload_texts": [
+        "{\"b\":1,\"a\":2,\"10\":3,\"2\":4,\"-1\":5,\"01\":6,\"1.5\":7,\"4294967294\":8,\"4294967295\":9,\"0\":10}",
+        "{\"z\":{\"y\":[1,{\"3\":true,\"x\":null,\"1\":false}],\"0\":\"\"},\"a\":[]}",
+        "[0,-0,1,-1,100,1E3,1e+2,12e-1,0.1,1.5,123.45,0.30000000000000004,1e20,1e21,123e19,0.000001,1e-6,1e-7,2.5e-8]",
+        "[1.5e300,-1.5e-300,5e-324,1.7976931348623157e308,9007199254740991,-9007199254740991,4294967296]",
+        "[\"\\u2028\\u0000\\u007f é 🎉\\\"\\\\/\",true,false,null,{}]"
+    ],
+    "payload_beyond_doubles": [
+        "[9007199254740993,-9223372036854775808,0.1000000000000000055511151231257827,1e400]"
+    ]
 }

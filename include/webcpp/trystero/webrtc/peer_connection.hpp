@@ -36,11 +36,52 @@
 #include <memory_resource>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 namespace webcpp::trystero::webrtc {
+
+namespace detail {
+
+/**
+ * The JSON of an `RTCIceCandidateInit`, as a browser's `RTCIceCandidate` gives it to
+ * `JSON.stringify`: `candidate`, `sdpMid`, null when empty, `sdpMLineIndex`, null when unknown,
+ * then `usernameFragment` when there is one; `errc::type` when a text is not UTF-8, which no
+ * browser's is and JSON cannot carry.
+ */
+inline webcpp::document::result<std::pmr::string> candidate_json(
+    std::string_view candidate, std::string_view sdp_mid,
+    std::optional<std::uint16_t> sdp_m_line_index, std::string_view username_fragment,
+    std::pmr::memory_resource* memory) {
+    std::pmr::string json(R"({"candidate":)", memory);
+    if (const auto quoted = protocol::json::append_string(json, candidate); !quoted) {
+        return quoted.error();
+    }
+    json += R"(,"sdpMid":)";
+    if (sdp_mid.empty()) {
+        json += "null";
+    } else if (const auto quoted = protocol::json::append_string(json, sdp_mid); !quoted) {
+        return quoted.error();
+    }
+    json += R"(,"sdpMLineIndex":)";
+    if (sdp_m_line_index) {
+        protocol::json::append_integer(json, *sdp_m_line_index);
+    } else {
+        json += "null";
+    }
+    if (!username_fragment.empty()) {
+        json += R"(,"usernameFragment":)";
+        if (const auto quoted = protocol::json::append_string(json, username_fragment); !quoted) {
+            return quoted.error();
+        }
+    }
+    json += '}';
+    return json;
+}
+
+}  // namespace detail
 
 /**
  * A peer connection over webcpp::webrtc's, the backend's `RTCPeerConnection`, with its
@@ -418,31 +459,13 @@ private:
         if (!h || !h->ice_candidate) {
             return;
         }
-        if (!protocol::json::quotable(candidate.candidate) ||
-            !protocol::json::quotable(candidate.sdp_mid) ||
-            !protocol::json::quotable(candidate.username_fragment)) {
+        const auto json = detail::candidate_json(candidate.candidate, candidate.sdp_mid,
+                                                 candidate.sdp_m_line_index,
+                                                 candidate.username_fragment, memory_);
+        if (!json.has_value()) {
             return;
         }
-        std::pmr::string json(R"({"candidate":)", memory_);
-        protocol::json::append_string(json, candidate.candidate);
-        json += R"(,"sdpMid":)";
-        if (candidate.sdp_mid.empty()) {
-            json += "null";
-        } else {
-            protocol::json::append_string(json, candidate.sdp_mid);
-        }
-        json += R"(,"sdpMLineIndex":)";
-        if (candidate.sdp_m_line_index) {
-            protocol::json::append_integer(json, *candidate.sdp_m_line_index);
-        } else {
-            json += "null";
-        }
-        if (!candidate.username_fragment.empty()) {
-            json += R"(,"usernameFragment":)";
-            protocol::json::append_string(json, candidate.username_fragment);
-        }
-        json += '}';
-        h->ice_candidate(json);
+        h->ice_candidate(*json);
     }
 
     void on_channel(data_channel::channel_type channel) {

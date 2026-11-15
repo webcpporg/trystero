@@ -205,10 +205,23 @@ messages travel and how they are received:
 
 A JSON payload is webcpp::document's: a `webcpp::document::document` the
 program builds or parses, or a `pmr_document`, whose image is a buffer of a
-memory resource, the room's when it is received. A text that does not parse
-is not delivered. A {cpp} peer sends what `JSON.stringify` writes of the
-document, the bytes Trystero JS sends of the same value. The room test sends
-one:
+memory resource, the room's when it is received. A {cpp} peer sends the
+bytes `JSON.stringify` writes of the same value, which Trystero JS sends,
+for every value JavaScript can hold: its strings, booleans and nulls,
+its keys in JavaScript's order, array indices first, and every number a
+double holds, written as JavaScript writes it. A number a double cannot
+hold, an integer past 2^53^ or a decimal of more digits, is sent exact, as
+webcpp::document holds it: a Trystero JS peer reads the nearest double, or
+`Infinity` past a double's range. A text that does not parse is not
+delivered, nor one nested deeper than 256 or holding a lone surrogate,
+which `JSON.parse` takes (<<trystero-protocol-json>>).
+
+A document is moved, never copied: so `payload`, which may hold one, has no
+copy assignment, and in a build without exceptions no copy constructor
+either; nor has `webcpp::document::document` a default constructor there,
+where a program makes one with `webcpp::document::document::create()` or
+`webcpp::document::parse`, each of which returns a result. The room test
+sends one:
 
 [source]
 ----
@@ -266,9 +279,9 @@ tokens are the same there; on emscripten they are webcpp::asio's.
 Because a deferred operation starts after the call, the arguments of an
 asynchronous operation are owned: `async_send` takes its value by value,
 moved when the type owns its storage, copied once at the call into the room's
-resource when it is a view, and written at once, as `JSON.stringify`
-writes it, when it is a JSON document; `send_options` owns its strings; and `async_ping`
-copies the peer id at the call. Everything else that only reads text takes a
+resource when it is a view, and written at once, into the room's resource,
+when it is a JSON document; `send_options` owns its strings; and
+`async_ping` copies the peer id at the call. Everything else that only reads text takes a
 `std::string_view`.
 
 [#trystero-usage-errors]

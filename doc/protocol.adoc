@@ -110,14 +110,18 @@ hundred times its length, is refused once the parse has filled that bound. A
 document keeps no hashed index, so no key read twice, or chosen to collide,
 makes a parse slower than the logarithm of its object's size: no text costs a
 room more than a multiple of its bound to read. A JSON payload has no bound of
-its own but the room's `max_receive_bytes` and document's 64 MiB of image.
+its own but the room's `max_receive_bytes` and document's defaults: 64 MiB of
+image and values nested at most 256 deep; and document refuses a lone
+surrogate, `"\ud800"`, which `JSON.parse` takes. A payload past any of them
+is not delivered.
 
 A text the protocol writes is a fixed shape of a few strings and numbers,
 appended field by field, its strings quoted by `webcpp::document::quote`, the
-bytes `JSON.stringify` writes. A string that is not UTF-8 cannot be quoted: the
-only such string a program gives that is ever written, its self id, is set
-aside for a random one when the app is made, with a configuration report to
-`app::on_error`.
+bytes `JSON.stringify` writes. A string that is not UTF-8 cannot be quoted, and
+the writer returns that error: the only such string a program gives that is
+ever written, its self id, is set aside for a random one when the app is
+made, with a configuration report to `app::on_error`, and a local candidate
+whose text is not UTF-8, which no browser's is, is not sent.
 
 [#trystero-protocol-channel]
 === The data channel

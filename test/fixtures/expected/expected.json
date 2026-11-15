@@ -585,5 +585,82 @@
                 "acted": null
             }
         ]
-    }
+    },
+    "answerer": {
+        "self_id": "5JuBmYeQ3ItAlXdP1Hs8",
+        "app_id": "my-app",
+        "room_id": "room-1",
+        "answer_sdp": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n",
+        "candidate": "{\"candidate\":\"candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\"}",
+        "sealed": [
+            {
+                "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=offer\r\n",
+                "text": "7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cYdiY235agss4Yz6zXoOPHcepm9bcphyewQqvfpvvs2gwPQJETj4gYc719bGYIKY="
+            },
+            {
+                "plaintext": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n",
+                "text": "7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cY9ie235agss4Yz6zXoOPHcepm9bcphyezwK6bIyQtMvVseJhAyE4HRH0kfRvD/5a"
+            },
+            {
+                "plaintext": "{\"candidate\":\"candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\"}",
+                "text": "7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$UNhTroc6OtcdJJ2IwRV3w+wMPnrjGNGbHMmolZK13E+Rn177Kd/Si/PNl4WOZYZxegGCVXXhJjfEgqGQo8VwP4iA3AS52+5RcDzVW8PyGn+zNeJwpRALn6lQTPLPLn8oYaes+TjSqjTGct1fs70+l7hPk8xZdRG0HBGROwxx2cUwNhUmqm1ywDYfDwM="
+            }
+        ],
+        "cases": [
+            {
+                "offer": "{\"peerId\":\"zzzzzzzzzzzzzzzzzzz1\",\"offerId\":\"o\\\"\\\\   é\",\"offer\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cYdiY235agss4Yz6zXoOPHcepm9bcphyewQqvfpvvs2gwPQJETj4gYc719bGYIKY=\"}",
+                "published": [
+                    {
+                        "topic": "u1l2v1r6s2h4j64g721v372v194qs5g3w3b2y",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"answer\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cY9ie235agss4Yz6zXoOPHcepm9bcphyezwK6bIyQtMvVseJhAyE4HRH0kfRvD/5a\",\"offerId\":\"o\\\"\\\\   é\"}"
+                    },
+                    {
+                        "topic": "u1l2v1r6s2h4j64g721v372v194qs5g3w3b2y",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"candidate\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$UNhTroc6OtcdJJ2IwRV3w+wMPnrjGNGbHMmolZK13E+Rn177Kd/Si/PNl4WOZYZxegGCVXXhJjfEgqGQo8VwP4iA3AS52+5RcDzVW8PyGn+zNeJwpRALn6lQTPLPLn8oYaes+TjSqjTGct1fs70+l7hPk8xZdRG0HBGROwxx2cUwNhUmqm1ywDYfDwM=\",\"offerId\":\"o\\\"\\\\   é\"}"
+                    }
+                ]
+            },
+            {
+                "offer": "{\"peerId\":\"zzzzzzzzzzzzzzzzzzz2\",\"offer\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cYdiY235agss4Yz6zXoOPHcepm9bcphyewQqvfpvvs2gwPQJETj4gYc719bGYIKY=\"}",
+                "published": [
+                    {
+                        "topic": "18705o161g2q2q714y46684f4710141d4x2y3n22",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"answer\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$XccAwuMxbp5cY9ie235agss4Yz6zXoOPHcepm9bcphyezwK6bIyQtMvVseJhAyE4HRH0kfRvD/5a\"}"
+                    },
+                    {
+                        "topic": "18705o161g2q2q714y46684f4710141d4x2y3n22",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"candidate\":\"7,38,69,100,131,162,193,224,255,30,61,92,123,154,185,216$UNhTroc6OtcdJJ2IwRV3w+wMPnrjGNGbHMmolZK13E+Rn177Kd/Si/PNl4WOZYZxegGCVXXhJjfEgqGQo8VwP4iA3AS52+5RcDzVW8PyGn+zNeJwpRALn6lQTPLPLn8oYaes+TjSqjTGct1fs70+l7hPk8xZdRG0HBGROwxx2cUwNhUmqm1ywDYfDwM=\"}"
+                    }
+                ]
+            }
+        ]
+    },
+    "payload_texts": [
+        {
+            "text": "{\"b\":1,\"a\":2,\"10\":3,\"2\":4,\"-1\":5,\"01\":6,\"1.5\":7,\"4294967294\":8,\"4294967295\":9,\"0\":10}",
+            "written": "{\"0\":10,\"2\":4,\"10\":3,\"4294967294\":8,\"b\":1,\"a\":2,\"-1\":5,\"01\":6,\"1.5\":7,\"4294967295\":9}"
+        },
+        {
+            "text": "{\"z\":{\"y\":[1,{\"3\":true,\"x\":null,\"1\":false}],\"0\":\"\"},\"a\":[]}",
+            "written": "{\"z\":{\"0\":\"\",\"y\":[1,{\"1\":false,\"3\":true,\"x\":null}]},\"a\":[]}"
+        },
+        {
+            "text": "[0,-0,1,-1,100,1E3,1e+2,12e-1,0.1,1.5,123.45,0.30000000000000004,1e20,1e21,123e19,0.000001,1e-6,1e-7,2.5e-8]",
+            "written": "[0,0,1,-1,100,1000,100,1.2,0.1,1.5,123.45,0.30000000000000004,100000000000000000000,1e+21,1.23e+21,0.000001,0.000001,1e-7,2.5e-8]"
+        },
+        {
+            "text": "[1.5e300,-1.5e-300,5e-324,1.7976931348623157e308,9007199254740991,-9007199254740991,4294967296]",
+            "written": "[1.5e+300,-1.5e-300,5e-324,1.7976931348623157e+308,9007199254740991,-9007199254740991,4294967296]"
+        },
+        {
+            "text": "[\"\\u2028\\u0000\\u007f é 🎉\\\"\\\\/\",true,false,null,{}]",
+            "written": "[\" \\u0000 é 🎉\\\"\\\\/\",true,false,null,{}]"
+        }
+    ],
+    "payload_beyond_doubles": [
+        {
+            "text": "[9007199254740993,-9223372036854775808,0.1000000000000000055511151231257827,1e400]",
+            "written": "[9007199254740992,-9223372036854776000,0.1,null]"
+        }
+    ]
 }

@@ -275,8 +275,8 @@ struct payload_traits<webcpp::document::document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
-    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
-     * resource. */
+    /** Writes the value once, as `JSON.stringify` writes what JavaScript can hold, into a shared
+     * string of the room's resource. */
     static encoded_payload encode(const webcpp::document::document& v,
                                   std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
@@ -309,8 +309,8 @@ struct payload_traits<webcpp::document::pmr::document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
-    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
-     * resource. */
+    /** Writes the value once, as `JSON.stringify` writes what JavaScript can hold, into a shared
+     * string of the room's resource. */
     static encoded_payload encode(const webcpp::document::pmr::document& v,
                                   std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
@@ -1277,7 +1277,7 @@ private:
                 history->second.challenges.push(std::pmr::string(state.challenge, memory_));
             }
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
-            protocol::json::append_string(text, state.challenge);
+            protocol::json::detail::append_utf8(text, state.challenge);  // drawn from id_alphabet
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
             state.challenge_sent = true;
@@ -1321,7 +1321,7 @@ private:
             return;
         }
         std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
-        protocol::json::append_string(
+        protocol::json::detail::append_utf8(
             text, protocol::handshake_proof(field("c"), app_->password(), app_->app_id(), room_id_,
                                             memory_));
         text += '}';
