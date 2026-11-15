@@ -9,10 +9,12 @@
 // which the original's oracle wrote into fixtures/expected/expected.json, the test's one argument:
 // it opens what Trystero JS sealed, a text it seals opens again in Trystero's form, a text sealed
 // under another key or that is no sealed text is a wrong password, and every completion runs after
-// the call that started it, never inside it, as the backend interface says. On emscripten, without
-// crypto.subtle, as on a page that is not a secure context, the key cannot be imported: the first
-// operation and one after the failure complete after their calls with a backend failure. Before
-// the fix, three of the page's completions ran inside the call.
+// the call that started it, never inside it, as the backend interface says; a fresh sealer given
+// two seals and two opens in one call, which in a page wait while it imports its key, completes
+// each with its own result. On emscripten, without crypto.subtle, as on a page that is not a secure
+// context, the key cannot be imported: the first operation and one after the failure complete
+// after their calls with a backend failure. Before the fix, three of the page's completions ran
+// inside the call.
 //
 // main starts the first step and runs the io_context, which each completion the sealer posts, or
 // each Web Crypto promise it awaits, holds; each step starts from the completion of the one before,
@@ -34,6 +36,7 @@
 #include <boost/system/error_code.hpp>
 #include <webcpp/test/exit_status.hpp>
 
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <memory>
@@ -101,6 +104,9 @@ struct state {
     std::optional<outcome> garbage;
     std::optional<outcome> without_subtle;
     std::optional<outcome> after_failure;
+    // A sealer given four operations in one call, while it imports its key in a page.
+    std::shared_ptr<trystero::backend::sealer> queued;
+    std::array<std::optional<outcome>, 4> queued_outcomes;
 };
 
 /** The plaintext sealed and opened again: a candidate's JSON, as a room seals it. */
@@ -152,6 +158,21 @@ void verdict(state& s) {
     }
     expect(s.wrong_key, trystero::error::wrong_password);
     expect(s.garbage, trystero::error::wrong_password);
+    const auto& queued = s.queued_outcomes;
+    expect(queued[0], {});
+    expect(queued[1], {});
+    if (queued[0] && queued[1]) {
+        const auto first = tp::parse_sealed(queued[0]->text);
+        const auto second = tp::parse_sealed(queued[1]->text);
+        if (BOOST_TEST(first.has_value() && second.has_value())) {
+            BOOST_TEST(first->iv != second->iv);  // a fresh IV each
+        }
+    }
+    expect(queued[2], {});
+    if (queued[2]) {
+        BOOST_TEST_EQ(queued[2]->text, s.sealed_by_js("plaintext"));
+    }
+    expect(queued[3], trystero::error::wrong_password);
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
     expect(s.without_subtle, trystero::error::backend_failure);
     expect(s.after_failure, trystero::error::backend_failure);
@@ -180,16 +201,40 @@ void seal_without_subtle(state& s) {
 }
 #endif
 
-/** Once the wrong key and the garbage are refused: on emscripten, a page without crypto.subtle. */
-void refused(state& s) {
-    if (!s.wrong_key || !s.garbage) {
-        return;
+/** Once every queued operation completed: on emscripten, a page without crypto.subtle. */
+void queued_completed(state& s) {
+    for (const auto& got : s.queued_outcomes) {
+        if (!got) {
+            return;
+        }
     }
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
     seal_without_subtle(s);
 #else
     verdict(s);
 #endif
+}
+
+/**
+ * A fresh sealer given two seals and two opens in one call, which in a page wait while it imports
+ * its key, started by the first: each completes, after the call, with its own result.
+ */
+void queue_during_import(state& s) {
+    s.queued = s.backend.make_sealer(tp::seal_key("secret", "my-app", "room-1"), memory());
+    call(s, [&s] {
+        s.queued->seal(plaintext, record(s, s.queued_outcomes[0], queued_completed));
+        s.queued->seal(plaintext, record(s, s.queued_outcomes[1], queued_completed));
+        s.queued->open(s.sealed_by_js("text"), record(s, s.queued_outcomes[2], queued_completed));
+        s.queued->open("not a sealed text", record(s, s.queued_outcomes[3], queued_completed));
+    });
+}
+
+/** Once the wrong key and the garbage are refused. */
+void refused(state& s) {
+    if (!s.wrong_key || !s.garbage) {
+        return;
+    }
+    queue_during_import(s);
 }
 
 /**

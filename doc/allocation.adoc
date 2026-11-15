@@ -275,23 +275,49 @@ nothing.
   buffer, made at its first write, and, over TLS, the two 17 KiB buffers of
   Asio's TLS stream; the resolver's state and its results, with what the C
   library's `getaddrinfo` allocates on Asio's resolver thread; the WebSocket
-  handshake's request and response, the header fields of both and, for a
-  response that is not 101, its body, which Beast's own parser reads up to
-  Beast's default limit for a response, 8 MiB, that no option of its stream
-  lowers (measured: an 8 MiB body held about 18 MiB at its peak, as its
-  string grew); over TLS, the verify callback Asio's `set_verify_callback`
+  handshake's request and response and the header fields of both, the
+  response's header at most 8 KiB, which webcpp::beast's bounded handshake
+  layer reads through Beast's own parser, reading no byte of the body of a
+  response that refuses the upgrade (before it, Beast read such a body up to
+  its default 8 MiB: an 8 MiB body held about 18 MiB at its peak), and
+  keeping a header line split between two reads in the room's resource;
+  over TLS, the verify callback Asio's `set_verify_callback`
   makes with `new`, with the copy of the host that `host_name_verification`
   holds, a `std::string`; each wait of Beast's timers, from Asio's
   per-thread recycling cache, which calls `std::aligned_alloc` on a miss:
   the TCP stream's deadline over the connection and the TLS handshake, and
-  the WebSocket's handshake, idle and close timeouts; and each keep-alive
-  ping's frame, with `new`. The WebSocket's operations, its read buffer and
-  its queued texts are in the room's resource on both targets, since each of
-  its handlers carries the room's allocator, and a message allocates nothing
-  outside it (measured with a stack for each `operator new` on the room's
-  thread: a hundred texts sent and received made none but the write
-  buffer's, at the first); in a page the stream's own state is there too,
-  and the page's `WebSocket` makes the handshake;
+  the WebSocket's handshake, idle and close timeouts, the idle one started
+  again at each read, so a wait of a message's; and each keep-alive ping's
+  frame, with `new`. The WebSocket's operations, its read buffer and its
+  queued texts are in the room's resource on both targets, since each of its
+  handlers carries the room's allocator, and natively a message allocates
+  nothing else outside it: `operator new` sees none from the send of a text
+  to the receipt of its echo (the test `platform_websocket_allocation`). The
+  reads' and the writes' completions are a handler of the session's own,
+  with no executor of its own: Asio's `any_completion_handler`, whose
+  executor is of another type than the stream's, had Asio make an
+  `any_completion_executor` with `new` for each operation and wrap each
+  completion in a function object of its recycling cache (measured: six
+  `operator new` and four of its blocks for a text sent and its echo
+  received);
+* in a page, for each relay connection, the results webcpp::asio's page
+  resolver makes with `new`, which takes no allocator: Asio's list of one
+  entry, its shared count and the entry's storage, three allocations, and two
+  copies of the host when it is longer than a short string holds (10 bytes
+  in a page: `relay.damus.io`, of 14, is longer); and, for each event of the page's
+  `WebSocket`, its open, each message and its close, the C library's
+  allocation embind makes for the `std::string` into which webcpp::beast's
+  page stream reads the event's type (`event["type"].as<std::string>()` in
+  its `deliver`), and for a message a second, for the type of its data
+  (`data.typeOf().as<std::string>()` in its `receive_message`), each freed
+  before the call that made it returns: two for each message a relay sends.
+  The test `platform_page_relay_allocation` counts exactly these, no more
+  and no fewer, from a connection's call to its open, for one message and
+  for ten, and from its close to the page's close event. The stream's own
+  state, its operations, the messages it holds and the read buffer are in
+  the room's resource, and the page's `WebSocket` makes the handshake;
+  avoiding embind's strings, and the resolver's results, needs a change to
+  webcpp::beast's page stream and to webcpp::asio's page resolver;
 * the payload types `std::string`, `bytes`, `webcpp::document::document` and
   `payload`, with `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on

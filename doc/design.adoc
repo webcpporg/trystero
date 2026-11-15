@@ -40,8 +40,8 @@
 | `platform/*.hpp`
 | webcpp::webrtc, webcpp::beast (natively Boost.Beast, in a page its
   `WebSocket`), Boost.URL, webcpp::asio's timers, and per target the sealer
-  and the randomness: OpenSSL natively, Web Crypto and `getentropy` in a
-  page; and, in a page, `page_call` and `js_string`
+  and the randomness: OpenSSL natively, Web Crypto and
+  `crypto.getRandomValues` in a page; and, in a page, `page_call` and `js_string`
 |===
 
 Everything above the backend interface is the core, which builds on both

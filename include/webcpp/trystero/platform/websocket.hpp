@@ -14,18 +14,19 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 
-#include <webcpp/asio/any_completion_handler.hpp>  // lint-world: erases a handler's type only
-#include <webcpp/asio/any_io_executor.hpp>         // lint-world: the relays' WebSockets
-#include <webcpp/asio/bind_allocator.hpp>          // lint-world: binds an allocator only
-#include <webcpp/asio/buffer.hpp>                  // lint-world: a text's buffer only
-#include <webcpp/asio/ip/tcp.hpp>                  // lint-world: the relays' WebSockets
-#include <webcpp/asio/ssl.hpp>                     // lint-world: the relays' TLS
-#include <webcpp/beast/core/flat_buffer.hpp>       // lint-world: the relays' WebSockets
-#include <webcpp/beast/ssl.hpp>                    // lint-world: the relays' TLS
-#include <webcpp/beast/tcp_stream.hpp>             // lint-world: the relays' WebSockets
-#include <webcpp/beast/websocket.hpp>              // lint-world: the relays' WebSockets
+#include <webcpp/asio/any_io_executor.hpp>    // lint-world: the relays' WebSockets
+#include <webcpp/asio/bind_allocator.hpp>     // lint-world: binds an allocator only
+#include <webcpp/asio/buffer.hpp>             // lint-world: a text's buffer only
+#include <webcpp/asio/ip/tcp.hpp>             // lint-world: the relays' WebSockets
+#include <webcpp/asio/ssl.hpp>                // lint-world: the relays' TLS
+#include <webcpp/beast/core/flat_buffer.hpp>  // lint-world: the relays' WebSockets
+#include <webcpp/beast/ssl.hpp>               // lint-world: the relays' TLS
+#include <webcpp/beast/tcp_stream.hpp>        // lint-world: the relays' WebSockets
+#include <webcpp/beast/websocket.hpp>         // lint-world: the relays' WebSockets
 
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+#include <webcpp/beast/websocket/bounded_handshake_stream.hpp>  // lint-world: the relays' WebSockets
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #endif
@@ -305,18 +306,26 @@ inline std::optional<url_parts> parse_url(
  *
  * Tip: every operation's handler carries the room's allocator, so that what Asio and Beast
  * allocate for it, and the read buffer, are in the room's resource beside the session, its
- * handlers and its queued texts, with nothing in the default allocator for a message. On
- * Emscripten the page's stream keeps its state in the room's resource too, and its `WebSocket`
- * makes the handshake. Natively what Beast, Asio and OpenSSL allocate of their own takes no
- * allocator and stays outside the room's resource, for each connection: the WebSocket stream's
- * state and the TCP stream's, the WebSocket's write buffer and, over TLS, Asio's two TLS buffers
- * and OpenSSL's state; the resolver's state and results; the handshake's request and response,
- * the header fields of both and, for a response that is not 101, its body, which Beast's own
- * parser reads up to Beast's default limit for a response, 8 MiB, that no option of its stream
- * lowers; the verify callback Asio's `set_verify_callback` makes with `new`, with its copy of the
- * host; each wait of Beast's timers, from Asio's per-thread recycling cache (the TCP stream's
- * deadline over the connection and the TLS handshake, the WebSocket's handshake, idle and close
- * timeouts); and each keep-alive ping's frame.
+ * handlers and its queued texts; the reads' and the writes' handlers have no executor of their own
+ * (`transfer_handler`), so that Asio wraps none of their completions. Natively what Beast, Asio
+ * and OpenSSL allocate of their own takes no allocator and stays outside the room's resource, for
+ * each connection: the WebSocket stream's state and the TCP stream's, the WebSocket's write buffer
+ * and, over TLS, Asio's two TLS buffers and OpenSSL's state; the resolver's state and results; the
+ * handshake's request and response and the header fields of both, the response's header at most
+ * 8 KiB, which webcpp::beast's bounded handshake layer reads through Beast's own parser, keeping a
+ * header line split between two reads in the room's resource, and reading no byte of the body of a
+ * response that refuses the upgrade; the verify callback Asio's `set_verify_callback` makes with
+ * `new`, with its copy of the host; each wait of Beast's timers, from Asio's per-thread recycling
+ * cache (the TCP stream's deadline over the connection and the TLS handshake, the WebSocket's
+ * handshake, idle and close timeouts, the idle one started again at each read); and each
+ * keep-alive ping's frame. On Emscripten the page's stream keeps its state in the room's resource
+ * too, and its `WebSocket` makes the handshake; what stays outside is, for each connection, the
+ * results webcpp::asio's page resolver makes with `new` (Asio's list of one entry, its shared count
+ * and the entry's storage, and two copies of the host when it is longer than a short string holds,
+ * 10 bytes in a page), and, for each event of the page's `WebSocket` (its open, each message and
+ * its close), the C library's allocation embind makes for the `std::string` into which
+ * webcpp::beast's page stream reads the event's type, and for a message a second, for the type of
+ * its data, each freed before the call that made it returns.
  */
 template <bool Secure>
 class websocket_session : public std::enable_shared_from_this<websocket_session<Secure>> {
@@ -325,10 +334,24 @@ public:
     using executor_type = webcpp::asio::any_io_executor;
     /** Asio's TCP. */
     using tcp = webcpp::asio::ip::tcp;
-    /** The stream the WebSocket runs over: TLS over TCP for `wss`, TCP for `ws`. */
-    using next_layer =
+    /** The transport the WebSocket runs over: TLS over TCP for `wss`, TCP for `ws`. */
+    using transport =
         std::conditional_t<Secure, webcpp::beast::ssl_stream<webcpp::beast::tcp_stream>,
                            webcpp::beast::tcp_stream>;
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+    /** The stream the WebSocket runs over: in a page the transport, whose WebSocket reads its own
+     * handshake response. */
+    using next_layer = transport;
+#else
+    /**
+     * The stream the WebSocket runs over: natively the transport under webcpp::beast's bounded
+     * handshake layer, which reads a refusal's header alone, a split header line kept in the room's
+     * resource.
+     */
+    using next_layer =
+        webcpp::beast::websocket::bounded_handshake_stream<transport,
+                                                           std::pmr::polymorphic_allocator<char>>;
+#endif
     /** Beast's WebSocket stream. */
     using stream_type = webcpp::beast::websocket::stream<next_layer>;
 
@@ -428,13 +451,22 @@ private:
             return stream_type(std::allocator_arg, allocator, ex);
         }
 #else
-        (void)memory;
+        const std::pmr::polymorphic_allocator<char> allocator(memory);
         if constexpr (Secure) {
-            return stream_type(ex, *tls);
+            return stream_type(std::allocator_arg, allocator, ex, *tls);
         } else {
             (void)tls;
-            return stream_type(ex);
+            return stream_type(std::allocator_arg, allocator, ex);
         }
+#endif
+    }
+
+    /** The TLS stream, natively under the bounded handshake layer, in a page the next layer. */
+    transport& tls_stream() {
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        return ws_.next_layer();
+#else
+        return ws_.next_layer().next_layer();
 #endif
     }
 
@@ -466,17 +498,19 @@ private:
             return;
         }
         if constexpr (Secure) {
-#ifndef WEBCPP_TARGET_EMSCRIPTEN
-            auto& tls = ws_.next_layer();
+            auto& tls = tls_stream();
             // The relay is verified whatever the context's own mode, which a program's context
-            // made as Asio makes a client's leaves at verify_none, so that a certificate that does
-            // not verify fails the handshake, as a page's WebSocket always fails it.
+            // made as Asio makes a client's leaves at verify_none: natively a certificate that does
+            // not verify fails the handshake; a page's WebSocket always verifies, and its stream
+            // refuses a mode other than verify_peer, which it reads from the stream before the
+            // context.
             boost::system::error_code verify;
             tls.set_verify_mode(webcpp::asio::ssl::verify_peer, verify);
             if (verify) {
                 end();
                 return;
             }
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
             // SNI names a host name only, never an address (RFC 6066).
             if (url_.named && !webcpp::beast::set_server_name(tls, url_.host)) {
                 end();
@@ -486,8 +520,8 @@ private:
             tls.set_verify_callback(
                 webcpp::asio::ssl::host_name_verification(std::string(url_.host)));
 #endif
-            // In a page its WebSocket sends the name and verifies the certificate.
-            ws_.next_layer().async_handshake(
+            // In a page its WebSocket sends the name and checks the certificate against the host.
+            tls.async_handshake(
                 webcpp::asio::ssl::stream_base::client,
                 bound([self = this->shared_from_this()](const boost::system::error_code& error) {
                     self->on_tls(error);
@@ -524,6 +558,18 @@ private:
             .receive = webcpp::beast::websocket::queue_limits{}.receive,
         });
 #endif
+        ws_.text(true);
+        // A longer message fails the read, which closes the connection. It is set before the
+        // handshake: a page's stream checks each message as its event arrives, and a relay's first
+        // ones can arrive in the same task of the page as its open, before the handshake's
+        // completion runs on the executor.
+        ws_.read_message_max(protocol::max_relay_message_bytes);
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+        // A relay that refuses the upgrade has its response's header read, at most 8 KiB, and no
+        // byte of its body: Beast's own parser would read a body of up to 8 MiB outside the room's
+        // resource. A page's WebSocket reads its own response.
+        ws_.next_layer().limits({.body = 0});
+#endif
         ws_.async_handshake(
             url_.handshake_host, url_.target,
             bound([self = this->shared_from_this()](const boost::system::error_code& ec) {
@@ -537,9 +583,6 @@ private:
             return;
         }
         open_ = true;
-        ws_.text(true);
-        // A longer message fails the read, which closes the connection, as a page's does.
-        ws_.read_message_max(protocol::max_relay_message_bytes);
         if (const auto h = h_; h && h->open) {
             h->open();
         }
@@ -547,24 +590,45 @@ private:
     }
 
     /**
-     * A read's or a write's completion, its type erased.
+     * A read's or a write's completion: the session, and the member it calls, through a pointer.
      *
      * Tip: the reads, and the writes, are a loop of asynchronous operations, not a recursion: each
      * handler runs from the executor once the call that started its operation has returned, so the
-     * stack never grows. Its type is erased, the call made through a pointer, so that the analysis
-     * of calls (misc-no-recursion) sees no cycle through Asio's post on either target, natively in
-     * Boost's headers and on Emscripten in webcpp::asio's and webcpp::beast's own, where the
-     * reports would land. It is allocated with the handler's allocator, in the room's resource.
+     * stack never grows. The member is called through a pointer, so that the analysis of calls
+     * (misc-no-recursion) sees no cycle through Asio's post on either target, natively in Boost's
+     * headers and on Emscripten in webcpp::asio's and webcpp::beast's own, where the reports would
+     * land. Its allocator is the room's, and it has no executor of its own, so that Asio completes
+     * it on the stream's executor, which it finds is an io_context's. Asio's type-erased handler,
+     * `any_completion_handler`, which the session used before, has an executor of another type,
+     * `any_completion_executor`: Asio made one around the stream's with `new` for each operation,
+     * and dispatched each completion through it in a function object of its own (measured natively:
+     * six `operator new` and four of Asio's recycled blocks for a text sent and its echo received).
      */
-    using transfer_handler =
-        webcpp::asio::any_completion_handler<void(boost::system::error_code, std::size_t)>;
+    struct transfer_handler {
+        /** The room's allocator, which Asio and Beast allocate the operation with. */
+        using allocator_type = std::pmr::polymorphic_allocator<>;
+
+        /** The session, held until the operation completes. */
+        std::shared_ptr<websocket_session> self;
+        /** What the completion calls. */
+        void (websocket_session::*member)(const boost::system::error_code&, std::size_t);
+
+        /** The room's allocator. */
+        [[nodiscard]] allocator_type get_allocator() const noexcept {
+            return allocator_type(self->memory_);
+        }
+
+        /** Calls the member with the operation's result. */
+        void operator()(const boost::system::error_code& ec, std::size_t size) const {
+            ((*self).*member)(ec, size);
+        }
+    };
 
     void read() {
-        auto handler = [self = this->shared_from_this()](const boost::system::error_code& ec,
-                                                         std::size_t size) {
-            self->on_read(ec, size);
-        };
-        ws_.async_read(buffer_, transfer_handler(bound(std::move(handler))));
+        ws_.async_read(buffer_, transfer_handler{
+                                    .self = this->shared_from_this(),
+                                    .member = &websocket_session::on_read,
+                                });
     }
 
     void on_read(const boost::system::error_code& ec, std::size_t size) {
@@ -572,7 +636,9 @@ private:
             end();
             return;
         }
-        if (const auto h = h_; h && h->message) {
+        // A relay's messages are texts (NIP-01): a binary one is dropped, as the room would drop a
+        // text that is no Nostr message.
+        if (const auto h = h_; h && h->message && ws_.got_text()) {
             const auto data = buffer_.cdata();
             h->message(std::string_view(static_cast<const char*>(data.data()), size));
         }
@@ -590,8 +656,8 @@ private:
      *
      * Tip: the connection can end while a write is in flight, and `end` then clears the queue; the
      * text being written is no longer in it, so the write reads a text the session owns, and its
-     * completion touches only that text. Its handler calls it again from the executor, a loop and
-     * not a recursion, as the reads' (`transfer_handler`).
+     * completion touches only that text. Its completion calls it again from the executor, a loop
+     * and not a recursion, as the reads' (`transfer_handler`).
      */
     void write_next() {
         if (queue_.empty() || !open_ || ended_) {
@@ -601,16 +667,19 @@ private:
         writing_text_ = std::move(queue_.front());
         queue_.pop_front();
         queued_bytes_ -= writing_text_.size();
-        auto handler = [self = this->shared_from_this()](const boost::system::error_code& ec,
-                                                         std::size_t) {
-            if (ec) {
-                self->fail();
-                return;
-            }
-            self->write_next();
-        };
         ws_.async_write(webcpp::asio::buffer(writing_text_),
-                        transfer_handler(bound(std::move(handler))));
+                        transfer_handler{
+                            .self = this->shared_from_this(),
+                            .member = &websocket_session::on_write,
+                        });
+    }
+
+    void on_write(const boost::system::error_code& ec, std::size_t /*size*/) {
+        if (ec) {
+            fail();
+            return;
+        }
+        write_next();
     }
 
     /**
@@ -689,32 +758,41 @@ private:
  * Connects to a Nostr relay over webcpp::beast, on both targets: `ws://` in the clear, `wss://`
  * over TLS with `tls`; natively over Boost.Beast's own stream, in a page over its `WebSocket`.
  *
- * Writes are queued, one in flight at a time; a received message is handed over as a view of the
- * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection, a
- * page's before it is copied into WebAssembly. A relay that stops reading is dropped once the
+ * Writes are queued, one in flight at a time; a received text is handed over as a view of the
+ * read buffer, a binary message is dropped, and a message longer than
+ * `protocol::max_relay_message_bytes` closes the connection, a page's before it is copied into
+ * WebAssembly, the relay's first ones too. A relay that stops reading is dropped once the
  * queue, or a page's `bufferedAmount`, would pass `limits.max_queued_bytes`, and, natively, one
  * that stops answering once `limits.idle_timeout` passes with its keep-alive ping unanswered; each
  * reports one close. The URL is read with Boost.URL: `ws://` or `wss://` in any case, a host name
  * with its escapes decoded, an IPv4 address as a dotted quad or an IPv6 address in brackets, and a
  * port up to 65535. A URL it refuses, which includes what a page's URL parser reads otherwise (an
  * IPv4 shorthand such as `127.1`, an international name, a tab or a backslash), and a `wss://` URL
- * without `tls`, report a close, as an unreachable relay does. Natively a `wss://` connection names
- * the host to the server (SNI) when it is a name, verifies the relay's certificate whatever the
- * verify mode of `tls`, and checks it against the URL's host, a name or an address; in a page the
- * browser does all three. It needs no exceptions.
+ * without `tls`, report a close, as an unreachable relay does. A `wss://` connection asks for the
+ * relay's verification whatever the verify mode of `tls`, on both targets. Natively it names the
+ * host to the server (SNI) when it is a name, verifies the relay's certificate against the
+ * authorities of `tls`, and checks it against the URL's host, a name or an address; in a page the
+ * browser does all three, against its own authorities, and the connection reports a close, making
+ * no `WebSocket`, when `tls` asks for what a page cannot honour: authorities added, a client
+ * certificate or key, options, a method other than `tls_client` or `sslv23_client`, or a verify
+ * callback other than `host_name_verification` of the relay's host. It needs no exceptions.
  *
  * The connection, its handlers, its queued texts, its read buffer and its operations are in
- * `memory`, and a message allocates nothing in the default allocator. Natively what Boost.Beast,
- * Asio and OpenSSL allocate of their own stays outside it, for each connection: their streams'
- * state, the resolver's, the handshake's request and response, the verify callback, their timers'
- * waits and each keep-alive ping's frame. Among it, a relay that answers the handshake with a
- * status other than 101 can have Beast read a body of up to 8 MiB, Beast's default limit for a
- * response, which no option of its stream lowers, before the connection reports its close.
+ * `memory`. What stays outside it, for each connection: natively what Boost.Beast, Asio and OpenSSL
+ * allocate of their own, their streams' state, the resolver's, the handshake's request and
+ * response, the verify callback, their timers' waits, the idle timer's again at each read, and
+ * each keep-alive ping's frame; a relay that answers the handshake with a status other than 101
+ * has its response's header read, at most 8 KiB, and no byte of its body, through webcpp::beast's
+ * bounded handshake layer, before the connection reports its close. In a page, the page
+ * resolver's results, made with `new`, and, for each event of the page's `WebSocket`, the open,
+ * each message and the close, the C library's allocation embind makes for its type, and for a
+ * message a second, for the type of its data, each freed before the call that made it returns.
  *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection, or null when the
- * program has none; natively the connection verifies the relay against its authorities even when
- * its verify mode is `verify_none`, as Asio makes a client's context.
+ * program has none; the connection verifies the relay even when its verify mode is `verify_none`,
+ * as Asio makes a client's context, natively against its authorities and in a page against the
+ * browser's.
  * @param url The relay's URL, read during the call.
  * @param h What the WebSocket reports.
  * @param memory The room's resource, which the connection's own allocations are in.

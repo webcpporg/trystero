@@ -60,7 +60,7 @@ out. The backend is a header of its own, beside a page's:
   Boost.Beast's and in a page its `WebSocket`, their URLs read with
   Boost.URL; webcpp::asio's timers; and per target the sealer and the
   randomness, natively OpenSSL's AES-GCM and `RAND_bytes`, in a page
-  `crypto.subtle` and `getentropy` (<<trystero-platform>>)
+  `crypto.subtle` and `crypto.getRandomValues` (<<trystero-platform>>)
 
 | `<webcpp/trystero/platform/page.hpp>`
 | emscripten

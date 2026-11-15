@@ -133,33 +133,50 @@ include::{library-root}/test/Jamfile[tag=allocation]
   already queued.
 
 | `platform_backend`, `platform_sealer`, `platform_websocket_unreachable`,
-  and each `_no_exceptions`
+  `platform_websocket_url`, and each `_no_exceptions`
 | The platform backend on both targets, natively and on emscripten under
   node, which has the page's WebSocket and Web Crypto but no WebRTC. The
   backend itself keeps its own state, its copy of `bind_address`, its window
   of constructions and its own runtime, in `backend_config::memory`, none of
   it in the default resource, and gives it all back when it is destroyed
   (<<trystero-allocation-resource>>); its clocks are the standard library's,
-  its randomness fills what it is given, differently each time, its executor
-  is the one it was given and its TLS context is made. The sealer opens what
-  Trystero JS sealed with Web Crypto, seals a text that opens again in
-  Trystero's form, takes a text sealed under another key, or no sealed text,
-  for a wrong password, and completes after the call that started it, never
-  inside it; in a page without `crypto.subtle` it fails with
-  `error::backend_failure`. A relay it cannot reach, of a URL the session
-  refuses, `http://` and `https://` among them, or of a port on 127.0.0.1 or
-  `::1` where nothing listens, reports exactly one close, after the call
-  that made it.
+  its randomness fills what it is given, differently each time, beyond a
+  piece of its source too (65536 bytes in a page), its executor is the one
+  it was given and its TLS context is made. The sealer opens what Trystero JS
+  sealed with Web Crypto, seals a text that opens again in Trystero's form,
+  takes a text sealed under another key, or no sealed text, for a wrong
+  password, completes after the call that started it, never inside it, and
+  completes each of two seals and two opens given in one call, which in a
+  page wait while it imports its key; in a page without `crypto.subtle` it
+  fails with `error::backend_failure`. A relay it cannot reach, of a URL the
+  session refuses, `http://` and `https://` among them, reports exactly one
+  close, after the call that made it, and so does one of a port on 127.0.0.1
+  or `::1` where nothing listens, which is attempted: natively its TCP
+  connection fails, and in a page node's `WebSocket` is made and closes
+  before it opens. A relay's URL is read as a page reads it, and what a
+  page's URL parser reads otherwise is refused, by the same rules on both
+  targets.
 
 | `platform_websocket`
 | The relays' WebSocket natively, built with the standard libraries' checks,
   against Beast servers in the same process: it opens, sends in order,
-  closes once, reaches a relay at an IPv6 address, reads URLs as a page
-  does, opens over TLS with the relay's name sent (SNI) against a test
-  authority, refuses a certificate for another name or of an authority not
-  trusted, keeps a TLS context's error in the backend, closes once when the
-  connection ends during a write, and drops a relay that sends too much,
-  stops reading or stops answering, while one that answers its pings stays.
+  closes once, reaches a relay at an IPv6 address (where the kernel opens a
+  socket of IPv6's family; elsewhere the case prints that it does not apply
+  and checks nothing), opens over TLS with the relay's name sent (SNI)
+  against a test authority, refuses a certificate for another name or of an
+  authority not trusted, also with a program's context whose verify mode is
+  `verify_none`, keeps a TLS context's error in the backend, drops a binary
+  message, closes once when the connection ends during a write, and drops a
+  relay that sends too much, stops reading or stops answering, while one
+  that answers its pings stays.
+
+| `platform_websocket_allocation`, `platform_websocket_allocation_no_exceptions`
+| Natively, a relay's message allocates nothing outside the room's resource:
+  from the send of a text to the receipt of its echo, ten times, the global
+  `operator new` counts none on the room's thread
+  (<<trystero-allocation-outside>>); and a relay that refuses the upgrade
+  with a body of 4 MiB has its response's header read alone, the room's
+  thread allocating less than 64 KiB until the close.
 
 | `platform_peer_connection`, `platform_room`, and each `_no_exceptions`
 | Natively, two connections of the backend's WebRTC, over webcpp::webrtc's
@@ -178,14 +195,21 @@ include::{library-root}/test/Jamfile[tag=allocation]
   without exceptions.
 
 | `platform_page_websocket_bound`, `platform_page_websocket_late_events`,
+  `platform_page_websocket_ingress`, `platform_page_websocket_tls`,
   `platform_page_data_channel`, `platform_page_peer_connection`,
   `platform_page`, `platform_page_call`, `platform_page_handlers`,
-  `platform_page_sealer_allocation`, and each `_no_exceptions`
+  `platform_page_sealer`, `platform_page_sealer_allocation`,
+  `platform_page_relay_allocation`, and each `_no_exceptions`
 | The platform backend in a page, on emscripten under node, each test's
   `main` running its `io_context` as a page's program does: the relays'
   WebSocket, its bound on what a relay holds unsent, both the session's own
   queue and the page's `bufferedAmount`, which webcpp::beast's send limit
-  bounds, and its silence once dropped; over webcpp::webrtc's browser
+  bounds, and its silence once dropped; its refusal of a text past 1 MiB that
+  a relay sends in the same task as its open, and of a binary message; a
+  program's context of `tls_client`, whose verify mode is `verify_none`,
+  reaching a `wss://` relay, and the contexts a page cannot honour refused;
+  what a relay's connection and each of its messages allocate outside the
+  room's resource, exactly; over webcpp::webrtc's browser
   objects and a page's `RTCPeerConnection` of the test's, a data channel's
   refusal of what is no frame, and the page's peer connections, made or
   refused, webcpp::webrtc's census of them and the backend's window of
@@ -196,10 +220,14 @@ include::{library-root}/test/Jamfile[tag=allocation]
   in a row under Asyncify too, while a value of the wrong type is ignored
   and breaks nothing; a call through a function the page kept after its
   `page_call`, or its `io_context`, was destroyed reaches nothing, and the
-  handler reads the page's value as it is when it runs; the relay socket's
-  and the sealer's handlers run outside the page's events; and a seal and
-  an open allocate nothing outside the room's resource, neither with
-  `operator new` nor with the C library's functions.
+  handler reads the page's value as it is when it runs, and a number within
+  its range; the relay socket's and the sealer's handlers run outside the
+  page's events; a page whose `crypto.getRandomValues` throws or is missing
+  has no randomness and fails a seal, and one whose `crypto.subtle` settles
+  with something other than an `ArrayBuffer` fails a seal and an open, with
+  `error::backend_failure`, no JavaScript exception entering WebAssembly; and
+  a seal and an open allocate nothing outside the room's resource, neither
+  with `operator new` nor with the C library's functions.
 |===
 
 The platform backend's tests run on each target that builds them, and once

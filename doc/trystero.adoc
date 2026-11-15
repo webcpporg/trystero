@@ -21,7 +21,7 @@ joined from Trystero's JavaScript are one room.
 
 This page teaches trystero section by section: what a room is, how a program
 joins one in the browser and natively, how its actions carry messages, where
-its memory comes from, what each backend asks of its platform, the wire it
+its memory comes from, what the platform backend asks of each target, the wire it
 speaks, and what it guarantees. Every program it shows is one of the
 library's examples, which the build compiles and links on its target. The
 build runs each that needs no browser over a Nostr relay of its own, and the
