@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "cases.hpp"
 #include "require.hpp"
 
 namespace asio = webcpp::asio;
@@ -706,22 +707,24 @@ void the_apps_destruction_is_quiet() {
 }  // namespace
 
 int main() {
-    the_configuration_is_copied_and_completed();
-    what_the_configuration_names_is_kept();
-    what_no_peer_could_use_is_set_aside();
-    a_self_id_that_is_not_utf8_is_set_aside();
-    every_allocation_goes_through_the_apps_resource();
-    the_registry_holds_rooms_by_a_weak_reference();
-    adopt_starts_one_connection_per_peer();
-    the_connections_events_reach_the_rooms();
-    the_last_user_ends_every_connection();
-    a_stale_connection_ends_before_its_replacement();
-    an_adoption_from_inside_a_stale_end_is_the_one_kept();
-    a_nested_adoption_gone_stale_ends_before_the_outer_one();
-    an_adoption_from_inside_an_end_under_way();
-    an_end_takes_only_its_own_entry();
-    a_view_into_the_stale_connection_names_its_replacement();
-    the_apps_destruction_is_quiet();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(the_configuration_is_copied_and_completed);
+    run_case(what_the_configuration_names_is_kept);
+    run_case(what_no_peer_could_use_is_set_aside);
+    run_case(a_self_id_that_is_not_utf8_is_set_aside);
+    run_case(every_allocation_goes_through_the_apps_resource);
+    run_case(the_registry_holds_rooms_by_a_weak_reference);
+    run_case(adopt_starts_one_connection_per_peer);
+    run_case(the_connections_events_reach_the_rooms);
+    run_case(the_last_user_ends_every_connection);
+    run_case(a_stale_connection_ends_before_its_replacement);
+    run_case(an_adoption_from_inside_a_stale_end_is_the_one_kept);
+    run_case(a_nested_adoption_gone_stale_ends_before_the_outer_one);
+    run_case(an_adoption_from_inside_an_end_under_way);
+    run_case(an_end_takes_only_its_own_entry);
+    run_case(a_view_into_the_stale_connection_names_its_replacement);
+    run_case(the_apps_destruction_is_quiet);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }

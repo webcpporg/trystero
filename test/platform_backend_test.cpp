@@ -37,6 +37,8 @@
 #include <span>
 #include <vector>
 
+#include "cases.hpp"
+
 namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using namespace std::chrono_literals;
@@ -165,10 +167,12 @@ void its_executor_and_tls_context_are_there() {
 }  // namespace
 
 int main() {
-    its_own_state_is_in_its_memory();
-    its_clocks_are_the_standard_librarys();
-    its_randomness_fills_and_differs();
-    its_randomness_fills_more_than_a_piece();
-    its_executor_and_tls_context_are_there();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(its_own_state_is_in_its_memory);
+    run_case(its_clocks_are_the_standard_librarys);
+    run_case(its_randomness_fills_and_differs);
+    run_case(its_randomness_fills_more_than_a_piece);
+    run_case(its_executor_and_tls_context_are_there);
     return webcpp::test::exit_status(boost::report_errors());
 }

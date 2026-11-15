@@ -22,6 +22,8 @@
 #include <memory>
 #include <memory_resource>
 
+#include "cases.hpp"
+
 namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using namespace std::chrono_literals;
@@ -123,9 +125,11 @@ void a_restarted_timer_fires_only_its_new_wait() {
 }  // namespace
 
 int main() {
-    an_uncancelled_wait_fires_once();
-    a_cancelled_wait_never_fires();
-    a_destroyed_timer_never_fires();
-    a_restarted_timer_fires_only_its_new_wait();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(an_uncancelled_wait_fires_once);
+    run_case(a_cancelled_wait_never_fires);
+    run_case(a_destroyed_timer_never_fires);
+    run_case(a_restarted_timer_fires_only_its_new_wait);
     return webcpp::test::exit_status(boost::report_errors());
 }

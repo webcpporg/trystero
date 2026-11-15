@@ -120,8 +120,21 @@ holds only what is specific to trystero.
   Every emscripten test that runs an io_context runs it from `main`, and
   ends with `webcpp::test::exit_status`, since under Asyncify a `main` that
   suspended loses what it returns; `platform_page` proves the program's
-  shape. There is one timer, the core's `detail::timer` over webcpp::asio's
-  `steady_timer`, on both targets, which `timer` tests on both.
+  shape. Under Asyncify a room needs no more of its stack than
+  webcpp::asio's 8,192 bytes: its work runs in handlers, between the run's
+  waits, never on the stack when `run` suspends (in release, the deepest
+  build, the chat's pages measured 1,292 bytes, the interop page 2,344, the
+  page tests 1,660 at most). A test's cases are on that stack, since each
+  calls the run family itself, and a release build, linked without
+  optimization, saves every local of every frame there: a test whose cases
+  suspend runs each through `webcpp::test::run_case` (`test/cases.hpp`), in
+  a frame of its own, which `main`'s never holds, or `-O3` inlines every
+  case into `main`, whose frame the room test saw at 29,776 bytes, past the
+  8,192, at its first suspension. `room_asyncify_release`,
+  `app_impl_asyncify_release` and `allocation_asyncify_release` run the
+  deepest of them in that build. There is one timer, the core's
+  `detail::timer` over webcpp::asio's `steady_timer`, on both targets, which
+  `timer` tests on both.
 - **The dependencies.** libsecp256k1 (every room) remains an external
   installation, found through `webcpp.external` and `webcpp.external-found`
   at `-sSECP256K1_ROOT=<dir>` or `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, then

@@ -43,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+#include "cases.hpp"
 #include "require.hpp"
 #include "support/memory_backend.hpp"
 #include "support/rooms.hpp"
@@ -1913,60 +1914,64 @@ void the_errors_have_their_values() {
 }  // namespace
 
 int main() {
-    // Some forty cases of two or three apps each: under Asyncify a debug build runs them in about
-    // 115 s alone (measured), near node's default bound of 120 s, and past it on a loaded machine.
+    // Some forty cases of two or three apps each: under Asyncify a debug build takes 54 s of the
+    // processor, more than a third of node's default bound of 120 s, and 74 to 168 s on a loaded
+    // machine, past it (measured on 2026-11-15 with 18 cores at load averages of 50 to 230; under
+    // JSPI 34 s, and 44 to 51 s).
     webcpp::test::bound(std::chrono::seconds(300));
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
     // First, while the parser has run least: a WebAssembly engine compiles a function with its
     // baseline tier first, whose frames are the largest, and a peer's first payload meets it so.
-    a_json_payload_nested_256_deep_is_delivered();
-    two_peers_join_and_exchange_every_payload_format();
-    large_payloads_travel_in_chunks_both_ways();
-    ping_measures_a_round_trip();
-    the_same_password_joins_and_another_does_not();
-    leaving_is_seen_by_the_others_and_a_return_reconnects();
-    moving_a_room_over_a_joined_one_leaves_it();
-    ice_urls_are_checked_as_webrtc_checks_them();
-    unusable_ice_servers_are_dropped_and_reported();
-    a_refused_peer_connection_is_reported_and_tried_again();
-    a_flood_of_announcements_is_bounded();
-    long_peer_ids_are_bounded();
-    a_refused_peer_is_logged_once();
-    a_forged_answer_changes_nothing();
-    forged_offers_make_no_connection();
-    an_offer_being_opened_keeps_its_place();
-    a_flood_of_offers_at_one_instant_is_bounded();
-    offers_in_one_name_are_opened_one_at_a_time();
-    signals_that_do_not_open_are_reported_once_per_interval();
-    sealed_offers_that_fail_at_once_are_bounded();
-    announcements_with_forged_answers_are_bounded();
-    the_replay_cache_remembers_the_last_ones();
-    recent_event_ids_drop_a_repeat_and_forget_the_oldest();
-    event_ids_other_than_nip01_ones_are_never_remembered();
-    the_event_id_hash_is_keyed();
-    a_strategy_draws_the_key_of_its_event_ids();
-    a_forged_event_under_a_genuine_id_hides_nothing();
-    classes_over_a_pmr_circular_buffer_do_not_move();
-    a_replayed_answer_is_refused();
-    a_replayed_offer_is_refused();
-    a_reflected_offer_is_refused_as_an_answer();
-    a_reflected_offer_is_refused_as_an_offer();
-    a_reflected_answer_is_refused_as_an_answer();
-    a_relay_that_closes_at_once_is_tried_less_and_less_often();
-    counter_announcements_are_paced();
-    three_peers_form_a_mesh();
-    async_receive_works_in_a_coroutine();
-    json_payloads_are_read_in_the_rooms_resource_up_to_its_bound();
-    a_rejected_document_receive_holds_nothing();
-    view_handlers_read_the_frame_without_copying();
-    a_rate_limited_relay_does_not_stop_discovery();
-    a_connections_end_is_seen_and_the_peers_meet_again();
-    a_frame_of_an_unknown_token_is_dropped();
-    malformed_envelopes_end_the_connection();
-    a_late_end_of_another_connection_keeps_the_peer();
-    a_withdrawn_presence_is_a_departure();
-    a_kick_by_the_last_room_ends_the_connection();
-    a_room_left_with_no_idle_time_sends_its_presence();
-    the_errors_have_their_values();
+    run_case(a_json_payload_nested_256_deep_is_delivered);
+    run_case(two_peers_join_and_exchange_every_payload_format);
+    run_case(large_payloads_travel_in_chunks_both_ways);
+    run_case(ping_measures_a_round_trip);
+    run_case(the_same_password_joins_and_another_does_not);
+    run_case(leaving_is_seen_by_the_others_and_a_return_reconnects);
+    run_case(moving_a_room_over_a_joined_one_leaves_it);
+    run_case(ice_urls_are_checked_as_webrtc_checks_them);
+    run_case(unusable_ice_servers_are_dropped_and_reported);
+    run_case(a_refused_peer_connection_is_reported_and_tried_again);
+    run_case(a_flood_of_announcements_is_bounded);
+    run_case(long_peer_ids_are_bounded);
+    run_case(a_refused_peer_is_logged_once);
+    run_case(a_forged_answer_changes_nothing);
+    run_case(forged_offers_make_no_connection);
+    run_case(an_offer_being_opened_keeps_its_place);
+    run_case(a_flood_of_offers_at_one_instant_is_bounded);
+    run_case(offers_in_one_name_are_opened_one_at_a_time);
+    run_case(signals_that_do_not_open_are_reported_once_per_interval);
+    run_case(sealed_offers_that_fail_at_once_are_bounded);
+    run_case(announcements_with_forged_answers_are_bounded);
+    run_case(the_replay_cache_remembers_the_last_ones);
+    run_case(recent_event_ids_drop_a_repeat_and_forget_the_oldest);
+    run_case(event_ids_other_than_nip01_ones_are_never_remembered);
+    run_case(the_event_id_hash_is_keyed);
+    run_case(a_strategy_draws_the_key_of_its_event_ids);
+    run_case(a_forged_event_under_a_genuine_id_hides_nothing);
+    run_case(classes_over_a_pmr_circular_buffer_do_not_move);
+    run_case(a_replayed_answer_is_refused);
+    run_case(a_replayed_offer_is_refused);
+    run_case(a_reflected_offer_is_refused_as_an_answer);
+    run_case(a_reflected_offer_is_refused_as_an_offer);
+    run_case(a_reflected_answer_is_refused_as_an_answer);
+    run_case(a_relay_that_closes_at_once_is_tried_less_and_less_often);
+    run_case(counter_announcements_are_paced);
+    run_case(three_peers_form_a_mesh);
+    run_case(async_receive_works_in_a_coroutine);
+    run_case(json_payloads_are_read_in_the_rooms_resource_up_to_its_bound);
+    run_case(a_rejected_document_receive_holds_nothing);
+    run_case(view_handlers_read_the_frame_without_copying);
+    run_case(a_rate_limited_relay_does_not_stop_discovery);
+    run_case(a_connections_end_is_seen_and_the_peers_meet_again);
+    run_case(a_frame_of_an_unknown_token_is_dropped);
+    run_case(malformed_envelopes_end_the_connection);
+    run_case(a_late_end_of_another_connection_keeps_the_peer);
+    run_case(a_withdrawn_presence_is_a_departure);
+    run_case(a_kick_by_the_last_room_ends_the_connection);
+    run_case(a_room_left_with_no_idle_time_sends_its_presence);
+    run_case(the_errors_have_their_values);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }
