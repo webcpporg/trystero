@@ -131,8 +131,8 @@ surrogate, `"\ud800"`, which `JSON.parse` takes. A payload past any of them
 is not delivered.
 
 A parse recurses once a level of nesting. Under Asyncify, the build leaves
-Boost.JSON's recursive descent, `basic_parser`'s `parse_*` functions, out of
-Asyncify's instrumentation (`asyncify-remove.json`, which
+Boost.JSON's recursive descent, the `+parse_*+` functions of its
+`basic_parser`, out of Asyncify's instrumentation (`asyncify-remove.json`, which
 `/webcpp/trystero//trystero` links), since none of them suspends: instrumented,
 a level took some 6.5 KB of the engine's stack in a debug build before the
 engine optimized the code, so a peer's first payload nested 256 deep
