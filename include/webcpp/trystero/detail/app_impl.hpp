@@ -18,6 +18,7 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
@@ -104,6 +105,12 @@ public:
         if (self_id_.size() > protocol::max_peer_id_bytes) {
             self_id_.clear();
             set_aside("self_id is longer than any peer accepts, so the app uses a random one");
+        }
+        // A signal writes the id as a JSON string, which holds UTF-8 alone, as any JavaScript
+        // string is once encoded.
+        if (!protocol::json::quotable(self_id_)) {
+            self_id_.clear();
+            set_aside("self_id is not UTF-8, which no peer reads, so the app uses a random one");
         }
         if (self_id_.empty()) {
             self_id_ = detail::random_id(factory_, protocol::peer_id_size, memory_);

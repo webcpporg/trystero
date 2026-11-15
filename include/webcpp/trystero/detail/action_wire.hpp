@@ -16,8 +16,6 @@
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 
-#include <boost/json/storage_ptr.hpp>
-
 #include <chrono>
 #include <deque>
 #include <functional>
@@ -38,8 +36,7 @@ namespace webcpp::trystero::detail {
 /**
  * A received action message. It owns one buffer, the data channel frame it arrived in or the
  * payload a transfer assembled, and names its parts as ranges of it: moving a message moves the
- * buffer and copies nothing. It carries the JSON storage of the room that received it, in which a
- * JSON payload is decoded.
+ * buffer and copies nothing.
  */
 struct incoming {  // NOLINT(bugprone-exception-escape)
 
@@ -63,8 +60,6 @@ struct incoming {  // NOLINT(bugprone-exception-escape)
     range payload_at = {};
     /** Where the metadata, JSON text or empty, is in the buffer. */
     range metadata_at = {};
-    /** The receiving room's JSON storage, which a JSON payload is parsed into. */
-    boost::json::storage_ptr json = {};
 
     /** The action's name, a view into the buffer. */
     [[nodiscard]] std::string_view name() const { return text(name_at); }
@@ -181,14 +176,11 @@ public:
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
     };
 
-    /** Every allocation goes through `memory`; a received message carries `json`, a storage of that
-     * resource. */
+    /** Every allocation goes through `memory`. */
     action_wire(backend::factory& factory, std::string_view room_token,
-                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory,
-                boost::json::storage_ptr json)
+                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          json_(std::move(json)),
           token_(room_token, memory),
           max_receive_bytes_(max_receive_bytes),
           cb_(std::move(cb)),
@@ -564,7 +556,6 @@ private:
             .name_at = {.offset = offset_of(p.name.data()), .size = p.name.size()},
             .payload_at = {.offset = offset_of(p.payload.data()), .size = p.payload.size()},
             .metadata_at = {.offset = offset_of(p.metadata.data()), .size = p.metadata.size()},
-            .json = json_,
         };
         if (cb_.has_receiver(p.name)) {
             cb_.deliver(std::move(message));
@@ -678,7 +669,6 @@ private:
             .name_at = name_at,
             .payload_at = payload_at,
             .metadata_at = metadata_at,
-            .json = json_,
         };
         release_bulk(it->second, b);
         cb_.deliver(std::move(message));
@@ -732,7 +722,6 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    boost::json::storage_ptr json_;
     std::pmr::string token_;
     std::size_t max_receive_bytes_;
     callbacks cb_;

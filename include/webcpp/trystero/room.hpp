@@ -22,7 +22,6 @@
 #include <webcpp/trystero/detail/signaling.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
@@ -38,9 +37,10 @@
 #include <webcpp/asio/async_result.hpp>            // lint-world: posts handlers only
 #include <webcpp/asio/bind_allocator.hpp>          // lint-world: posts handlers only
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+
 #include <boost/assert.hpp>
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
 
 #include <array>
 #include <chrono>
@@ -90,12 +90,24 @@ using bytes = std::vector<std::uint8_t>;
 using pmr_bytes = std::pmr::vector<std::uint8_t>;
 
 /**
+ * A JSON document in a memory resource, an action's JSON payload in the room's resource.
+ *
+ * A message received as `pmr_document` is parsed into a buffer of the room's effective
+ * `room_options::memory`, which must outlive the value, with every value of the document in that
+ * buffer. One sent is written once, as `JSON.stringify` writes it, into the room's resource.
+ *
+ * @see "Allocation", in the guide.
+ */
+using pmr_document = protocol::json::document;
+
+/**
  * What an action carries when its type is not fixed: Trystero's text, JSON or binary payload.
  *
  * A message received as `payload` holds the alternative of its format: a `std::string` for text,
- * a `boost::json::value` for JSON, in the room's JSON storage, and `bytes` for binary data.
+ * a `webcpp::document::document` for JSON, and `bytes` for binary data, each with the standard
+ * allocator.
  */
-using payload = std::variant<std::string, boost::json::value, bytes>;
+using payload = std::variant<std::string, webcpp::document::document, bytes>;
 
 /**
  * Who sent a message, and the metadata it carried, the second and third arguments of Trystero's
@@ -158,14 +170,15 @@ inline std::string_view as_text(std::span<const std::uint8_t> data) {
  * copying it when the type owns its storage; a view is copied once, there, into the room's
  * resource. `decode` reads a received message: a view type refers to the message's buffer and is
  * valid for the duration of the handler, so only owning types can be awaited. The `std::pmr` types
- * are built in the receiving room's resource, and JSON in its JSON storage; the standard types
- * allocate with `std::allocator`, as the user chose.
+ * are built in the receiving room's resource, `pmr_document` in a buffer of it; the standard
+ * types allocate with `std::allocator`, as the user chose, and so does an owned document.
  *
  * | Type                          | Trystero format | Receiving                                   |
  * | std::string                   | text            | a copy of the bytes                         |
  * | std::pmr::string              | text            | a copy of the bytes, in the room's resource |
  * | std::string_view              | text            | a view of the frame, in a handler           |
- * | boost::json::value            | JSON            | parsed, in the room's JSON storage          |
+ * | webcpp::document::document    | JSON            | parsed, in an image of its own              |
+ * | trystero::pmr_document        | JSON            | parsed, in a buffer of the room's resource  |
  * | trystero::bytes               | binary          | a copy of the bytes                         |
  * | trystero::pmr_bytes           | binary          | moved or copied once into the room's       |
  * |                               |                 | resource                                    |
@@ -249,34 +262,68 @@ struct payload_traits<std::string_view> {
     }
 };
 
-/** How an action of `boost::json::value`, Trystero's JSON payload, travels. */
+/** How an action of `webcpp::document::document`, Trystero's JSON payload, travels. */
 template <>
-struct payload_traits<boost::json::value> {
+struct payload_traits<webcpp::document::document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
-    /** Serializes the value once, into a shared string of the room's resource. */
-    static encoded_payload encode(const boost::json::value& v, std::pmr::memory_resource* memory) {
+    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
+     * resource. */
+    static encoded_payload encode(const webcpp::document::document& v,
+                                  std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
-        protocol::json::append_value(text, v);
+        protocol::json::append_value(text, v.root());
         return own(protocol::payload_format::json, keep<std::pmr::string>(memory, std::move(text)));
     }
 
     /**
-     * The message's payload as this type: the parsed text, in the room's JSON storage; nothing for
-     * another format or a text that does not parse.
+     * The message's payload as this type: the parsed text, an owned document, whose image comes
+     * from the global `operator new` as document's own does; nothing for another format or a text
+     * that does not parse.
      */
-    static std::optional<boost::json::value> decode(incoming& m,
-                                                    std::pmr::memory_resource* /*memory*/) {
+    static std::optional<webcpp::document::document> decode(incoming& m,
+                                                            std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::json) {
             return std::nullopt;
         }
-        boost::system::error_code ec;
-        auto v = protocol::json::parse(as_text(m.payload()), m.json, ec);
-        if (ec) {
+        auto v = webcpp::document::parse(as_text(m.payload()));
+        if (!v.has_value()) {
             return std::nullopt;
         }
-        return v;
+        return std::move(v).unsafe_value();
+    }
+};
+
+/** How an action of `trystero::pmr_document`, Trystero's JSON payload, travels. */
+template <>
+struct payload_traits<pmr_document> {
+    /** Whether a decoded value owns its storage, so that it may be awaited. */
+    static constexpr bool owning = true;
+
+    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
+     * resource. */
+    static encoded_payload encode(const pmr_document& v, std::pmr::memory_resource* memory) {
+        std::pmr::string text(memory);
+        protocol::json::append_value(text, v.root());
+        return own(protocol::payload_format::json, keep<std::pmr::string>(memory, std::move(text)));
+    }
+
+    /**
+     * The message's payload as this type: the parsed text, in a buffer of the room's resource, as
+     * large as document's limits let a parse grow (`parse_options::max_document_bytes`); nothing
+     * for another format or a text that does not parse.
+     */
+    static std::optional<pmr_document> decode(incoming& m, std::pmr::memory_resource* memory) {
+        if (m.format != protocol::payload_format::json) {
+            return std::nullopt;
+        }
+        auto v =
+            protocol::json::parse(as_text(m.payload()), webcpp::document::parse_options{}, memory);
+        if (!v.has_value()) {
+            return std::nullopt;
+        }
+        return std::move(v).unsafe_value();
     }
 };
 
@@ -388,7 +435,7 @@ struct payload_traits<payload> {
                 }
                 return std::nullopt;
             case protocol::payload_format::json:
-                if (auto v = payload_traits<boost::json::value>::decode(m, memory)) {
+                if (auto v = payload_traits<webcpp::document::document>::decode(m, memory)) {
                     return payload(std::move(*v));
                 }
                 return std::nullopt;
@@ -449,17 +496,10 @@ public:
     /** What an action's `on_message` becomes: a handler of each received message. */
     using message_handler = handler<void(incoming&)>;
 
-    /**
-     * A room of `app`, with its own options copied into `memory`, where it makes its JSON storage
-     * too.
-     *
-     * Tip: the storage is counted, since a value a handler keeps may outlive the room; Boost.JSON
-     * allocates its counter with `operator new`, once, here.
-     */
+    /** A room of `app`, with its own options copied into `memory`. */
     room_impl(std::shared_ptr<app_impl> app, room_options options, std::string_view room_id,
               std::pmr::memory_resource* memory)
         : memory_(memory),
-          json_(boost::json::make_shared_resource<json_resource>(memory_)),
           app_(std::move(app)),
           ex_(app_->get_executor()),
           factory_(app_->factory()),
@@ -545,7 +585,7 @@ public:
                         }
                     }),
             },
-            memory_, json_);
+            memory_);
         signaling_ = std::allocate_shared<signaling>(
             allocator(), factory_, sealer_, app_->app_id(), room_id_, app_->self_id(),
             app_->ice_servers(),
@@ -579,7 +619,7 @@ public:
                         }
                     }),
             },
-            log_, memory_, app_->memory(), json_);
+            log_, memory_, app_->memory());
         std::pmr::vector<std::pmr::string> topics(memory_);
         topics.push_back(root_topic_);
         topics.push_back(self_topic_);
@@ -599,7 +639,7 @@ public:
                         self->signaling_->handle(relay, content);
                     }
                 }),
-            log_, memory_, json_);
+            log_, memory_);
         register_and_advertise();
     }
 
@@ -1208,14 +1248,13 @@ private:
         if (it == peers_.end() || it->second.active || it->second.local_passed) {
             return;
         }
-        boost::system::error_code ec;
-        const auto value = protocol::json::parse(data, json_, ec);
-        const auto* o = ec ? nullptr : value.if_object();
-        const auto field = [o](std::string_view key) -> std::string_view {
-            const auto* v = o != nullptr ? o->if_contains(key) : nullptr;
-            const auto* s = v != nullptr ? v->if_string() : nullptr;
-            return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
-        };
+        // A message past its bound fails the handshake as one of the wrong shape does.
+        const auto value = protocol::json::parse(
+            data, protocol::json::protocol_limits(protocol::max_handshake_bytes), memory_);
+        const protocol::json::const_value o = value.has_value() && value->root().is_object()
+                                                  ? value->root()
+                                                  : protocol::json::const_value();
+        const auto field = [&o](std::string_view key) { return protocol::json::text_of(o[key]); };
         if (app_->self_id() < peer) {
             const auto h = field("h");
             const auto r = rebinds_.find(peer);
@@ -1235,9 +1274,7 @@ private:
             fail_handshake(peer);
             return;
         }
-        const auto* challenge = o != nullptr ? o->if_contains("c") : nullptr;
-        if (field("__trystero_pw") != "challenge" || challenge == nullptr ||
-            !challenge->is_string()) {
+        if (field("__trystero_pw") != "challenge" || !o["c"].is_string()) {
             fail_handshake(peer);
             return;
         }
@@ -1482,7 +1519,6 @@ private:
     }
 
     std::pmr::memory_resource* memory_;
-    boost::json::storage_ptr json_;
     std::shared_ptr<app_impl> app_;
     executor_type ex_;
     backend::factory& factory_;
@@ -1675,7 +1711,8 @@ public:
      * per peer, for 120 s), are delivered to it.
      *
      * @tparam T The type of its messages: `std::string`, `std::pmr::string`, `std::string_view`,
-     * `boost::json::value`, @ref bytes, @ref pmr_bytes, `std::span<const std::uint8_t>`, or
+     * `webcpp::document::document`, @ref pmr_document, @ref bytes, @ref pmr_bytes,
+     * `std::span<const std::uint8_t>`, or
      * @ref payload for any of Trystero's formats.
      * @param name The action's name, 1 to 32 UTF-8 bytes without NUL; with another, every send
      * fails with `error::invalid_action_name`.
@@ -1791,7 +1828,7 @@ public:
     }
 
     // T is the action's type, taken by value and moved into its encoding, which keeps a value
-    // that owns its storage; a boost::json::value is serialized there at once, from a reference.
+    // that owns its storage; a JSON document is written there at once, from a reference.
     /**
      * Sends a message to `options.targets`, or every active peer, Trystero's `send`.
      *
@@ -1806,7 +1843,7 @@ public:
      * @tparam CompletionToken An Asio completion token for `void(error_code)`.
      * @param value The message, taken at the call: moved when `T` owns its storage, copied once
      * into the room's resource when it is a view, and serialized at once into the room's resource
-     * when it is a `boost::json::value`, or a @ref payload that holds one.
+     * when it is a JSON document, or a @ref payload that holds one.
      * @param options The targets and the metadata.
      * @param token The completion token.
      * @return What the token's initiation returns.

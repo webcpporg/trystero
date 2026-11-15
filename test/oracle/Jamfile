@@ -26,18 +26,19 @@ webcpp.lane oracle : twins cases-protocol ;
 
 # Trystero JS meets each C++ peer over a relay of its own on 127.0.0.1: the
 # browser's peer in headless Chrome, and the native peer as a process, both
-# over webcpp::webrtc. The native peer is built with the standard libraries'
-# own checks, so that a completion that touches a container its socket
-# cleared fails at once. Each driver has
+# over the platform backend. The native peer is built with the standard
+# libraries' own checks, so that a completion that touches a container its
+# socket cleared fails at once. Each driver has
 # 2400 s for its bounded scenarios and Chrome's start, including the
 # wrong-password observation windows and transient-handshake recovery. The
 # scenarios report their peer events on failure before this outer bound.
 # tag::interop[]
 webcpp.drive interop_browser : interop/peer.cpp
-  : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>2400
+  : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
+    <linkflags>-sALLOW_MEMORY_GROWTH <webcpp-drive-timeout>2400
   : interop/run.mjs : --browser : emscripten ;
 webcpp.drive interop_native : interop/native_peer.cpp
-  : <library>/webcpp/trystero//native <threading>multi <webcpp-drive-timeout>2400
+  : <library>/webcpp/trystero//platform <threading>multi <webcpp-drive-timeout>2400
     <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
     <define>_GLIBCXX_ASSERTIONS
   : interop/run.mjs : --native : native ;

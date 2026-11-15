@@ -4,13 +4,17 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests whole rooms over the native backend: real WebRTC through libdatachannel, AES-GCM through
-// OpenSSL, Asio's timers. Only the relays are the memory ones of support/memory_backend.hpp, and
-// the backend binds every connection to 127.0.0.1, so the loopback is the only network needed.
+// Tests whole rooms over the platform backend natively: real WebRTC through libdatachannel, AES-GCM
+// through OpenSSL, webcpp::asio's timers. Only the relays are the memory ones of
+// support/memory_backend.hpp, and the backend binds every connection to 127.0.0.1, so the loopback
+// is the only network needed.
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
+
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
 
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
@@ -38,11 +42,11 @@ namespace {
 
 constexpr const char* relay_url = "wss://relay.test";
 
-/** The native backend bound to the loopback, with the memory relays instead of the network's. */
-class native_over_memory_relays : public trystero::native::backend {
+/** The platform backend bound to the loopback, with the memory relays instead of the network's. */
+class native_over_memory_relays : public trystero::platform::backend {
 public:
     native_over_memory_relays(asio::io_context& io, trystero::test::memory_network& relays)
-        : trystero::native::backend(io.get_executor(), {.bind_address = "127.0.0.1"}),
+        : trystero::platform::backend(io.get_executor(), {.bind_address = "127.0.0.1"}),
           relays_(relays) {}
 
     std::shared_ptr<trystero::backend::websocket> connect(
@@ -104,13 +108,13 @@ void native_rooms_join_and_exchange_every_format() {
                         app_config("zzzzzzzzzzzzzzzzzzzz", "s3cret"));
     auto z = join(z_app, "lobby");
     std::string text;
-    boost::json::value json;
+    std::optional<webcpp::document::document> json;
     trystero::bytes file;
     std::string metadata;
     z.make_action<std::string>("chat").on_message(
         [&](std::string v, const trystero::message_info&) { text = std::move(v); });
-    z.make_action<boost::json::value>("drink").on_message(
-        [&](boost::json::value v, const trystero::message_info&) { json = std::move(v); });
+    z.make_action<webcpp::document::document>("drink").on_message(
+        [&](webcpp::document::document v, const trystero::message_info&) { json = std::move(v); });
     z.make_action<trystero::bytes>("file").on_message(
         [&](trystero::bytes v, const trystero::message_info& info) {
             file = std::move(v);
@@ -127,18 +131,21 @@ void native_rooms_join_and_exchange_every_format() {
     }
     a.make_action<std::string>("chat").async_send(
         "hello over libdatachannel", [](boost::system::error_code ec) { BOOST_TEST(!ec); });
-    a.make_action<boost::json::value>("drink").async_send(
-        boost::json::object{{"drink", "negroni"}},
-        [](boost::system::error_code ec) { BOOST_TEST(!ec); });
+    auto negroni = webcpp::document::parse(R"({"drink":"negroni"})");
+    if (!BOOST_TEST(negroni.has_value())) {
+        return;
+    }
+    a.make_action<webcpp::document::document>("drink").async_send(
+        std::move(*negroni), [](boost::system::error_code ec) { BOOST_TEST(!ec); });
     a.make_action<trystero::bytes>("file").async_send(
         big, trystero::send_options{.targets = {}, .metadata = R"({"name":"big.bin"})"},
         [](boost::system::error_code ec) { BOOST_TEST(!ec); });
     if (!BOOST_TEST(
-            run_until(f.io, [&] { return !text.empty() && !json.is_null() && !file.empty(); }))) {
+            run_until(f.io, [&] { return !text.empty() && json.has_value() && !file.empty(); }))) {
         return;
     }
     BOOST_TEST_EQ(text, "hello over libdatachannel");
-    BOOST_TEST_EQ(json.at("drink").as_string(), "negroni");
+    BOOST_TEST_EQ((*json)["drink"].value_or(std::string_view()), "negroni");
     BOOST_TEST_ALL_EQ(file.begin(), file.end(), big.begin(), big.end());
     BOOST_TEST_EQ(metadata, R"({"name":"big.bin"})");
 

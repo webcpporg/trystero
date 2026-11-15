@@ -4,19 +4,22 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests that a relay's WebSocket the browser backend dropped at protocol::max_queued_relay_bytes
-// runs none of its handlers again, under node, over a stand-in for the page's WebSocket that, as a
-// browser does, has a message event queued for every text sent (a relay message already in the
-// page's event loop) and, after close(), a close event, each dispatched to whatever its handler
-// property holds when it runs. Without the detach, the 64 messages queued before the drop reached
-// the room after its close was reported. A second socket sends one text larger than the bound
-// alone: it is dropped at once, and reports one close.
+// Tests that a relay's WebSocket the platform backend dropped at protocol::max_queued_relay_bytes
+// in a page runs none of its handlers again, under node, over a stand-in for the page's WebSocket
+// that, as a browser does, has a message event queued for every text sent (a relay message already
+// in the page's event loop) and, after close(), a close event, each dispatched to whatever its
+// handler property holds when it runs. The room sends 100 texts of 64 KiB in one call: the first
+// reaches the page and the rest wait in the session's queue, which drops the socket past the bound;
+// the message the page queued for the first finds no handler. In the page's own backend that this
+// replaced, before its socket was detached, the 64 messages queued before the drop reached the room
+// after its close was reported. A second socket sends one text larger than the bound alone: it is
+// dropped at once, and reports one close.
 //
 // main runs the io_context under a work guard. Once both closes are reported, the verdict waits
 // for a promise that a JavaScript timer settles, behind every event the stand-in had queued by
 // then, and releases the guard; a step that does not come within 10 s fails by name.
 
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 
 #include <webcpp/asio/browser/async_await.hpp>
@@ -43,25 +46,30 @@ using emscripten::val;
 using namespace std::chrono_literals;
 
 // The stand-in: it opens on the next turn, adds each text's UTF-8 length to bufferedAmount and
-// never drains it, queues a message event for each text sent and a close event after close().
+// never drains it, queues a message event for each text sent and a close event after close(). Its
+// events are a page's: each names its type, and a close its code and reason.
 // clang-format off
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables,modernize-use-trailing-return-type)
 EM_JS(void, install_late_websocket, (), {
     globalThis.lateCloses = 0;
     globalThis.WebSocket = class {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
         constructor(url) {
             this.url = url;
             this.readyState = 0;
             this.bufferedAmount = 0;
             setTimeout(() => {
                 this.readyState = 1;
-                if (this.onopen) this.onopen({});
+                if (this.onopen) this.onopen({type: "open"});
             }, 0);
         }
         send(text) {
             this.bufferedAmount += new TextEncoder().encode(text).length;
             setTimeout(() => {
-                if (this.onmessage) this.onmessage({data: "late"});
+                if (this.onmessage) this.onmessage({type: "message", data: "late"});
             }, 0);
         }
         close() {
@@ -69,7 +77,7 @@ EM_JS(void, install_late_websocket, (), {
             ++globalThis.lateCloses;
             setTimeout(() => {
                 this.readyState = 3;
-                if (this.onclose) this.onclose({code: 1006});
+                if (this.onclose) this.onclose({type: "close", code: 1006, reason: ""});
             }, 0);
         }
     };
@@ -81,7 +89,7 @@ namespace {
 struct state {
     asio::io_context io;
     asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::websocket> stalled;
     std::shared_ptr<trystero::backend::websocket> big;
     int stalled_closes = 0;

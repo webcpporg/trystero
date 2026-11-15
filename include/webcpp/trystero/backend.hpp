@@ -25,9 +25,9 @@
 
 /**
  * The seam between the room and a platform: what a target must provide for a room to run on it. The
- * browser provides it over `emscripten::val` (webcpp/trystero/browser), a native target over
- * libdatachannel, Boost.Beast and OpenSSL (webcpp/trystero/native), and the tests over memory
- * (test/support).
+ * platform backend provides it on both targets (webcpp/trystero/platform), over webcpp::webrtc,
+ * webcpp::beast and webcpp::asio, natively libdatachannel, Boost.Beast and OpenSSL, in a page its
+ * own WebRTC, WebSocket and Web Crypto; the tests provide it over memory (test/support).
  *
  * Tip: every handler a backend invokes runs on the room's executor, one at a time, and may destroy
  * the object that invoked it. A backend whose events arrive on other threads (libdatachannel) posts

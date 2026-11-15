@@ -21,7 +21,6 @@
 #include <boost/endian/conversion.hpp>
 #include <boost/hash2/get_integral_result.hpp>
 #include <boost/hash2/siphash.hpp>
-#include <boost/json/storage_ptr.hpp>
 #include <boost/unordered/unordered_flat_set.hpp>
 
 #include <algorithm>
@@ -157,15 +156,13 @@ public:
     using message_handler =
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)>;
 
-    /** Every allocation goes through `memory`, the parsed relay messages through `json`, a storage
-     * of that resource. */
+    /** Every allocation goes through `memory`, the parsed relay messages' documents included. */
     nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls,
                    std::pmr::vector<std::pmr::string> topics, std::string_view announce_topic,
                    handler<std::pmr::string()> announcement, message_handler on_message, logger log,
-                   std::pmr::memory_resource* memory, boost::json::storage_ptr json)
+                   std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          json_(std::move(json)),
           topics_(std::move(topics), memory),
           announce_topic_(announce_topic, memory),
           announcement_(std::move(announcement)),
@@ -458,12 +455,14 @@ private:
     }
 
     void on_relay_message(std::size_t index, std::string_view text) {
-        boost::system::error_code ec;
-        const auto document = protocol::json::parse(text, json_, ec);
-        if (ec) {
+        // A text past its bound is dropped as a malformed one is, before it is read.
+        const auto document = protocol::json::parse(
+            text, protocol::json::protocol_limits(protocol::nostr::max_parsed_relay_text_bytes),
+            memory_);
+        if (!document.has_value()) {
             return;
         }
-        const auto message = protocol::nostr::read_relay_message(document);
+        const auto message = protocol::nostr::read_relay_message(document->root());
         if (!message) {
             return;
         }
@@ -529,7 +528,6 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    boost::json::storage_ptr json_;
     std::pmr::vector<std::pmr::string> topics_;
     std::pmr::string announce_topic_;
     handler<std::pmr::string()> announcement_;

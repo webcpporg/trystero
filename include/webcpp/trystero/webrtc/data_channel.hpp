@@ -39,8 +39,8 @@
 
 /**
  * The backend's WebRTC over webcpp::webrtc, the same on both targets: natively libdatachannel's,
- * in the browser the page's own. The native and the browser backends make their peer connections
- * here, and what remains of the platform is webcpp::webrtc's.
+ * in the browser the page's own. The platform backend makes its peer connections here, and what
+ * remains of the platform is webcpp::webrtc's.
  */
 namespace webcpp::trystero::webrtc {
 

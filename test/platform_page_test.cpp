@@ -5,7 +5,7 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the shape of a page's program, under node: main runs the io_context from the start, under
-// a work guard, and the page calls into C++ through `browser::page_call`, functions of
+// a work guard, and the page calls into C++ through `platform::page_call`, functions of
 // webcpp::asio's bridge that only post to it (nothing runs the io_context from a JavaScript event).
 //
 // - A page with no room yet keeps running: nothing but the work guard holds the io_context until
@@ -13,11 +13,17 @@
 //   two apps over the memory relays. Without the guard, the run returns at once, having run
 //   nothing, and no room is ever joined.
 // - A page's call made while the run is suspended reaches the room: once the two rooms meet, the
-//   page calls the second function twice from a JavaScript timer, and its posted work sends each
-//   text on the first room's action, which the second room receives. A call returns undefined at
-//   once, and its work runs from the run, never inside the call. Under Asyncify an embind
-//   function called while main is suspended returns a promise that never settles, and its second
-//   call aborts a debug build (measured with Emscripten 6.0.11): page_call is no embind function.
+//   page calls the second function with two texts from a JavaScript timer, and its posted work
+//   sends each text on the first room's action, which the second room receives. A call returns
+//   undefined at once, and its work runs from the run, never inside the call. Under Asyncify an
+//   embind function called while main is suspended returns a promise that never settles, and its
+//   second call aborts a debug build (measured with Emscripten 6.0.11): page_call is no embind
+//   function.
+// - A page's call with a value its handler does not expect breaks nothing: before its texts, the
+//   page calls the second function with a number and with undefined, which the handler checks
+//   for a string and ignores, and the texts that follow still reach the other room. Before the
+//   handler checked, `as<std::string>()` threw embind's BindingError out of the run, which ended
+//   the program.
 // - A call of a page_call destroyed meanwhile reaches nothing.
 //
 // main ends with the errors counted once the run returns; a step that does not come within 10 s
@@ -26,7 +32,7 @@
 #include "support/rooms.hpp"
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/page.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/asio/browser/bridge.hpp>
@@ -68,6 +74,7 @@ struct page {
     bool joined = false;
     int met = 0;
     std::vector<std::string> received;
+    int ignored = 0;
     int late = 0;
 };
 
@@ -78,7 +85,10 @@ void handling(page& p) {
     }
 }
 
-/** Calls the page's second function twice from a JavaScript timer, once both rooms met. */
+/**
+ * Calls the page's second function from a JavaScript timer, once both rooms met: with a number and
+ * with undefined, then twice with a text.
+ */
 void met(page& p) {
     if (++p.met != 2) {
         return;
@@ -87,6 +97,8 @@ void met(page& p) {
     EM_ASM({
         setTimeout(
             function() {
+                globalThis.pageSend(42);
+                globalThis.pageSend(undefined);
                 globalThis.pageReturned = globalThis.pageSend("from the page");
                 globalThis.pageSend("again");
             },
@@ -114,9 +126,16 @@ void join(page& p) {
     });
 }
 
-/** Sends the page's text on the first room's action. */
+/**
+ * Sends the page's text on the first room's action, and ignores a value that is not a string:
+ * converting it would throw embind's BindingError out of the run.
+ */
 void send(page& p, const val& text) {
     handling(p);
+    if (!text.isString()) {
+        ++p.ignored;
+        return;
+    }
     p.chat_a->async_send(text.as<std::string>(),
                          [](boost::system::error_code ec) { BOOST_TEST(!ec); });
 }
@@ -125,14 +144,14 @@ void send(page& p, const val& text) {
 
 int main() {
     page p;
-    const trystero::browser::page_call join_call(p.f.io.get_executor(),
-                                                 [&p](const val& /*argument*/) { join(p); });
-    const trystero::browser::page_call send_call(p.f.io.get_executor(),
-                                                 [&p](const val& text) { send(p, text); });
+    const trystero::platform::page_call join_call(p.f.io.get_executor(),
+                                                  [&p](const val& /*argument*/) { join(p); });
+    const trystero::platform::page_call send_call(p.f.io.get_executor(),
+                                                  [&p](const val& text) { send(p, text); });
     {
         // A call of a page_call destroyed before its work runs reaches nothing.
-        const trystero::browser::page_call gone(p.f.io.get_executor(),
-                                                [&p](const val& /*argument*/) { ++p.late; });
+        const trystero::platform::page_call gone(p.f.io.get_executor(),
+                                                 [&p](const val& /*argument*/) { ++p.late; });
         gone.function()(val(1));
     }
     // clang-format off
@@ -152,6 +171,7 @@ int main() {
     const std::vector<std::string> expected{"from the page", "again"};
     BOOST_TEST_ALL_EQ(p.received.begin(), p.received.end(), expected.begin(), expected.end());
     BOOST_TEST(val::global("pageReturned").isUndefined());
+    BOOST_TEST_EQ(p.ignored, 2);
     BOOST_TEST(!p.ran_inside_a_call);
     BOOST_TEST_EQ(p.late, 0);
     return webcpp::test::exit_status(boost::report_errors());

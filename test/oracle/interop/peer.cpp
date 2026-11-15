@@ -7,7 +7,7 @@
 // The C++ side of the interop test: a page that joins a room with the library, built for the
 // browser. The driver (run.mjs) configures it through the URL and reads what happened from
 // `window.events`. Its main starts the peer and runs the io_context for the page's life, under a
-// work guard; the driver's one call, `window.leave`, a `browser::page_call`, only posts to it.
+// work guard; the driver's one call, `window.leave`, a `platform::page_call`, only posts to it.
 //
 // | Query parameter | Meaning                                                            |
 // | app, room       | the app id and room id                                             |
@@ -24,21 +24,30 @@
 // | ping2           | any value: ping each peer of room2 every second, optional          |
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
 #include <webcpp/trystero.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/platform/page.hpp>
 
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
 
-#include <emscripten/val.h>
-#include <boost/json/object.hpp>
-#include <boost/json/serialize.hpp>
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/quote.hpp>
+#include <webcpp/document/stringify.hpp>
 
+#include <emscripten/val.h>
+
+#include <array>
 #include <charconv>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
+#include <initializer_list>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 using emscripten::val;
@@ -58,11 +67,11 @@ struct extra_room {
  * actions. */
 struct page {
     webcpp::asio::io_context io;
-    trystero::browser::backend backend{io.get_executor()};
+    trystero::platform::backend backend{io.get_executor()};
     std::unique_ptr<trystero::app> app;
     std::unique_ptr<trystero::room> room;
     std::unique_ptr<trystero::action<std::string>> chat;
-    std::unique_ptr<trystero::action<boost::json::value>> drink;
+    std::unique_ptr<trystero::action<webcpp::document::document>> drink;
     std::unique_ptr<trystero::action<trystero::bytes>> file;
     extra_room second{.which = "second", .room = {}, .chat = {}, .file = {}};
     extra_room third{.which = "third", .room = {}, .chat = {}, .file = {}};
@@ -86,11 +95,65 @@ std::string param(std::string_view name) {
     return value.isNull() ? std::string() : value.as<std::string>();
 }
 
-/** An event for the driver: a kind and fields, pushed to `window.events`. */
-void record(std::string_view kind, boost::json::object fields = {}) {
-    fields["kind"] = kind;
-    val::global("window")["events"].call<void>(
-        "push", val::global("JSON").call<val>("parse", val(boost::json::serialize(fields))));
+/** Appends `text` as `JSON.stringify` writes a string; a text that is not UTF-8, which no
+ * JavaScript string is, as `null`. */
+void append_string(std::string& out, std::string_view text) {
+    if (!webcpp::document::quote(text, out).has_value()) {
+        out += "null";
+    }
+}
+
+/** A field of an event for the driver: its key, and its value as JSON text. */
+struct field {
+    /** A string. */
+    field(std::string_view name, std::string_view text) : key(name) { append_string(json, text); }
+
+    /** An integer, in decimal. */
+    template <std::integral I>
+        requires(!std::same_as<I, bool>)
+    field(std::string_view name, I number) : key(name) {
+        std::array<char, 24> digits{};
+        const auto written = std::to_chars(digits.data(), digits.data() + digits.size(), number);
+        json.assign(digits.data(), written.ptr);
+    }
+
+    /** Strings, as an array of them. */
+    field(std::string_view name, std::span<const std::pmr::string> texts) : key(name) {
+        json += '[';
+        for (const auto& text : texts) {
+            if (json.size() > 1) {
+                json += ',';
+            }
+            append_string(json, text);
+        }
+        json += ']';
+    }
+
+    /** A JSON value, as `JSON.stringify` writes it. */
+    field(std::string_view name, const webcpp::document::document& value)
+        : key(name), json(value.stringify()) {}
+
+    /** The key. */
+    std::string_view key;
+    /** The value, as JSON text. */
+    std::string json;
+};
+
+/** An event for the driver: a kind and fields, pushed to `window.events`, the kind last. */
+void record(std::string_view kind, std::initializer_list<field> fields = {}) {
+    std::string text = "{";
+    for (const field& f : fields) {
+        append_string(text, f.key);
+        text += ':';
+        text += f.json;
+        text += ',';
+    }
+    append_string(text, "kind");
+    text += ':';
+    append_string(text, kind);
+    text += '}';
+    val::global("window")["events"].call<void>("push",
+                                               val::global("JSON").call<val>("parse", val(text)));
 }
 
 /** Milliseconds from a parameter's digits, or `fallback` when it has none. */
@@ -123,8 +186,8 @@ void record_connection(std::string_view category, std::string_view text) {
 
 void log(std::string_view category, std::string_view text) {
     record_connection(category, text);
-    val::global("window").call<void>("trysteroLog", trystero::browser::js_string(category),
-                                     trystero::browser::js_string(text));
+    val::global("window").call<void>("trysteroLog", trystero::platform::js_string(category),
+                                     trystero::platform::js_string(text));
 }
 
 /** A checksum the driver can compare without moving the payload: sum of bytes times their position,
@@ -274,16 +337,12 @@ void start() {
         return;
     }
     auto& room = *app.room;
-    boost::json::array relays;
-    for (const auto& url : room.relay_urls()) {
-        relays.emplace_back(url);
-    }
-    record("joined", {{"self", room.self_id()}, {"relays", relays}});
+    record("joined", {{"self", room.self_id()}, {"relays", room.relay_urls()}});
 
     app.chat =
         std::make_unique<trystero::action<std::string>>(room.make_action<std::string>("chat"));
-    app.drink = std::make_unique<trystero::action<boost::json::value>>(
-        room.make_action<boost::json::value>("drink"));
+    app.drink = std::make_unique<trystero::action<webcpp::document::document>>(
+        room.make_action<webcpp::document::document>("drink"));
     app.file = std::make_unique<trystero::action<trystero::bytes>>(
         room.make_action<trystero::bytes>("file"));
 
@@ -298,9 +357,13 @@ void start() {
         };
         const trystero::send_options to_peer{.targets = {peer}, .metadata = {}};
         the_page().chat->async_send("hello from C++", to_peer, done("chat"));
-        the_page().drink->async_send(
-            boost::json::object{{"drink", "cafezinho"}, {"withIce", false}, {"from", "c++"}},
-            to_peer, done("drink"));
+        auto cafezinho =
+            webcpp::document::parse(R"({"drink":"cafezinho","withIce":false,"from":"c++"})");
+        if (cafezinho.has_value()) {
+            the_page().drink->async_send(std::move(*cafezinho), to_peer, done("drink"));
+        } else {
+            done("drink")(cafezinho.error());
+        }
         trystero::bytes big(100'000);
         for (std::size_t i = 0; i < big.size(); ++i) {
             big[i] = static_cast<std::uint8_t>((i * 13) % 256);
@@ -331,9 +394,10 @@ void start() {
                 [](boost::system::error_code) {});
         }
     });
-    app.drink->on_message([](boost::json::value v, const trystero::message_info& info) {
-        record("drink", {{"from", info.from}, {"value", v}});
-    });
+    app.drink->on_message(
+        [](const webcpp::document::document& v, const trystero::message_info& info) {
+            record("drink", {{"from", info.from}, {"value", v}});
+        });
     app.file->on_message([](const trystero::bytes& data, const trystero::message_info& info) {
         record("file", {
                            {"from", info.from},
@@ -374,8 +438,8 @@ int main() {
     // Between the driver's calls the page may have no work: the guard keeps the run going.
     const auto guard = webcpp::asio::make_work_guard(app.io);
     // The driver's one call, a function of webcpp::asio's bridge that posts the leave.
-    const trystero::browser::page_call leave_call(app.io.get_executor(),
-                                                  [](const val& /*argument*/) { leave(); });
+    const trystero::platform::page_call leave_call(app.io.get_executor(),
+                                                   [](const val& /*argument*/) { leave(); });
     val::global("window").set("leave", leave_call.function());
     start();
     app.io.run();  // lint-run: the page's program, suspended into the browser's event loop

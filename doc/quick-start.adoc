@@ -18,8 +18,8 @@ both. <<trystero-building-examples>> builds and runs them.
 === In the browser
 
 A browser program keeps four things alive for as long as its page: an
-`io_context`, the `browser::backend` that implements the platform over the
-browser's APIs on the executor of that `io_context`, the app that owns its
+`io_context`, the `platform::backend` that implements the platform over the
+page's own objects on the executor of that `io_context`, the app that owns its
 identity and shared connections, and the room joined through that app.
 Actions are made from the room by name and payload type:
 
@@ -53,14 +53,14 @@ program does, under a work guard, since a page that waits for its peers may
 have no work of its own. Nothing blocks the browser: whenever nothing is
 ready, `run` suspends into the browser's event loop, and every JavaScript
 event that reaches the library is posted to the `io_context`, whose handlers
-run when `run` resumes (<<trystero-browser>>).
+run when `run` resumes (<<trystero-platform-page>>).
 
 [#trystero-quick-start-native]
 === Natively
 
 The same app and its joined room, natively, whole: a program that greets every peer that joins
-and prints what it receives on `chat`. A native program runs its
-`io_context` as the browser's does, and webcpp::webrtc posts what
+and prints what it receives on `chat`, over the same `platform::backend`. A native program runs
+its `io_context` as the browser's does, and webcpp::webrtc posts what
 libdatachannel's threads report to it:
 
 [source]

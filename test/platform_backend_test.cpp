@@ -1,0 +1,147 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+// Tests the platform backend itself, on both targets, natively and in a page under node:
+//
+// - Its own state, its copy of the bind address, its window of constructions and its own
+//   webcpp::webrtc runtime, is in `backend_config::memory`, and the default resource sees none of
+//   it; all of it is given back when the backend is destroyed. Before, the backend made its window
+//   and its runtime in the default resource.
+// - Its clocks are the standard library's: the wall clock's whole seconds, as the test reads them,
+//   and a steady clock in milliseconds that a 20 ms wait moves forward.
+// - Its randomness fills what it is given, differently each time.
+// - Its executor is the one it was given, and its relays' TLS context was made.
+//
+// main runs the io_context for the wait; a wait that does not come within 10 s fails by name.
+
+#include <webcpp/trystero/platform/backend.hpp>
+
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/steady_timer.hpp>
+
+#include <boost/core/lightweight_test.hpp>
+#include <boost/system/error_code.hpp>
+#include <webcpp/test/exit_status.hpp>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <memory_resource>
+#include <optional>
+
+namespace asio = webcpp::asio;
+namespace trystero = webcpp::trystero;
+using namespace std::chrono_literals;
+
+namespace {
+
+/** A resource that counts what it gives, and what is still out. */
+class counting_resource final : public std::pmr::memory_resource {
+public:
+    /** How many allocations it made. */
+    std::size_t allocations = 0;
+    /** How many of them are not yet returned. */
+    std::size_t outstanding = 0;
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        ++allocations;
+        ++outstanding;
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        --outstanding;
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+
+/** The default resource, replaced by `with` for the life of the object. */
+class default_resource {
+public:
+    explicit default_resource(std::pmr::memory_resource* with)
+        : previous_(std::pmr::set_default_resource(with)) {}
+
+    default_resource(const default_resource&) = delete;
+    default_resource& operator=(const default_resource&) = delete;
+
+    ~default_resource() { std::pmr::set_default_resource(previous_); }
+
+private:
+    std::pmr::memory_resource* previous_;
+};
+
+void its_own_state_is_in_its_memory() {
+    asio::io_context io;
+    counting_resource memory;
+    counting_resource elsewhere;
+    {
+        // An address longer than a string holds in place, which the backend copies.
+        std::pmr::string address("0000:0000:0000:0000:0000:0000:0000:0001", &elsewhere);
+        const default_resource guard(&elsewhere);
+        const std::size_t before = elsewhere.allocations;
+        const trystero::platform::backend backend(
+            io.get_executor(), {.bind_address = std::move(address), .memory = &memory});
+        BOOST_TEST_EQ(elsewhere.allocations, before);
+        // The address, the window and the runtime.
+        BOOST_TEST_GE(memory.allocations, 3U);
+    }
+    BOOST_TEST_EQ(memory.outstanding, 0U);
+}
+
+void its_clocks_are_the_standard_librarys() {
+    asio::io_context io;
+    trystero::platform::backend backend(io.get_executor());
+    const auto seconds = std::chrono::floor<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+    const std::int64_t read = backend.unix_seconds();
+    BOOST_TEST_LE(seconds, read);
+    BOOST_TEST_LE(read, seconds + 1);
+
+    const double start = backend.now_ms();
+    asio::steady_timer wait(io, 20ms);
+    std::optional<double> waited;
+    wait.async_wait([&](boost::system::error_code) { waited = backend.now_ms() - start; });
+    io.run_for(10s);  // lint-run: the test's 20 ms wait
+    if (BOOST_TEST(waited.has_value())) {
+        BOOST_TEST_GE(*waited, 19.0);  // a whole millisecond of the steady clock's rounding
+    }
+}
+
+void its_randomness_fills_and_differs() {
+    asio::io_context io;
+    trystero::platform::backend backend(io.get_executor());
+    std::array<std::uint8_t, 64> first{};
+    std::array<std::uint8_t, 64> second{};
+    backend.random(first);
+    backend.random(second);
+    BOOST_TEST(first != second);
+    BOOST_TEST(std::ranges::any_of(first, [](std::uint8_t b) { return b != 0; }));
+}
+
+void its_executor_and_tls_context_are_there() {
+    asio::io_context io;
+    trystero::platform::backend backend(io.get_executor());
+    BOOST_TEST(backend.get_executor() == asio::any_io_executor(io.get_executor()));
+    BOOST_TEST(backend.tls_context().has_value());
+}
+
+}  // namespace
+
+int main() {
+    its_own_state_is_in_its_memory();
+    its_clocks_are_the_standard_librarys();
+    its_randomness_fills_and_differs();
+    its_executor_and_tls_context_are_there();
+    return webcpp::test::exit_status(boost::report_errors());
+}

@@ -4,14 +4,15 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the native backend's peer connection, webcpp::webrtc's over libdatachannel, between two
+// Tests the platform backend's peer connection natively, webcpp::webrtc's over libdatachannel,
+// between two
 // connections in one process, wired to each other directly: what the signaling would carry over
 // the relays is handed across here. Each connection is bound to 127.0.0.1, so that its one host
 // candidate is the loopback's and no other interface is needed. The backend makes at most
 // `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them,
 // and holds at most its runtime's `max_peer_connections` at once.
 
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/webrtc/data_channel.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
@@ -19,10 +20,14 @@
 #include <webcpp/webrtc/peer_connection.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/literal.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/stringify.hpp>
+
 #include <boost/asio/execution.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -74,7 +79,7 @@ std::shared_ptr<webcpp::webrtc::runtime> program_runtime(webcpp::webrtc::runtime
 struct pair {
     webcpp::webrtc::runtime runtime;
     asio::io_context io;
-    trystero::native::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
+    trystero::platform::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
     std::thread::id io_thread = std::this_thread::get_id();
     std::shared_ptr<backend::peer_connection> offerer;
     std::shared_ptr<backend::peer_connection> answerer;
@@ -571,7 +576,7 @@ void pending_frames_and_delivery_use_the_channels_resource() {
 
 void a_malformed_candidate_fails_without_throwing() {
     asio::io_context io;
-    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    trystero::platform::backend factory(io.get_executor(), {.bind_address = loopback});
     const auto pc = factory.make_peer_connection({}, std::pmr::get_default_resource());
     require(BOOST_TEST(pc != nullptr));
     std::vector<backend::error_code> results;
@@ -594,7 +599,7 @@ void a_malformed_candidate_fails_without_throwing() {
 
 void the_backend_makes_at_most_its_budget_in_a_minute() {
     asio::io_context io;
-    trystero::native::backend factory(
+    trystero::platform::backend factory(
         io.get_executor(),
         {.bind_address = std::pmr::string(loopback), .max_peer_connections_per_minute = 3});
     std::vector<std::shared_ptr<backend::peer_connection>> made;
@@ -613,7 +618,7 @@ void the_backend_makes_at_most_its_budget_in_a_minute() {
 
 void the_runtime_holds_at_most_its_cap_at_once() {
     asio::io_context io;
-    trystero::native::backend factory(
+    trystero::platform::backend factory(
         io.get_executor(),
         {.bind_address = std::pmr::string(loopback), .runtime = {.max_peer_connections = 2}});
     auto first = factory.make_peer_connection({}, std::pmr::get_default_resource());
@@ -630,7 +635,7 @@ void the_runtime_holds_at_most_its_cap_at_once() {
 
 void a_url_libdatachannel_cannot_parse_is_left_out() {
     asio::io_context io;
-    trystero::native::backend factory(io.get_executor(), {.bind_address = loopback});
+    trystero::platform::backend factory(io.get_executor(), {.bind_address = loopback});
     // stuns:, which WebRTC admits and libdatachannel does not know, beside a server it parses.
     std::vector<backend::ice_server> servers;
     servers.push_back({
@@ -647,22 +652,26 @@ void a_url_libdatachannel_cannot_parse_is_left_out() {
 
 /** The JSON of a candidate of webcpp::webrtc, as a peer sends it. */
 std::string json_of(const webcpp::webrtc::ice_candidate& c) {
-    return boost::json::serialize(boost::json::object{
-        {"candidate", c.candidate},
-        {"sdpMid", c.sdp_mid},
+    auto made = webcpp::document::document::create();
+    require(BOOST_TEST(made.has_value()));
+    const auto set = made->root().set(webcpp::document::object{
+        {"candidate", std::string_view(c.candidate)},
+        {"sdpMid", std::string_view(c.sdp_mid)},
         {"sdpMLineIndex", c.sdp_m_line_index.value_or(0)},
     });
+    require(BOOST_TEST(set.has_value()));
+    return made->stringify();
 }
 
 /**
- * The native backend's connection, offering, and a peer connection of webcpp::webrtc's own,
+ * The platform backend's connection, offering, and a peer connection of webcpp::webrtc's own,
  * answering, in one process: what the signaling would carry is handed across, each candidate held
  * until the side it goes to has both descriptions.
  */
 struct mixed_pair {
     webcpp::webrtc::runtime runtime;
     asio::io_context io;
-    trystero::native::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
+    trystero::platform::backend factory{io.get_executor(), runtime, {.bind_address = loopback}};
     std::shared_ptr<backend::peer_connection> local =
         factory.make_peer_connection({}, std::pmr::get_default_resource());
     std::optional<webcpp::webrtc::peer_connection> remote;
@@ -694,10 +703,12 @@ struct mixed_pair {
     }
 
     void add_to_remote(std::string_view json) {
-        const auto v = boost::json::parse(json).as_object();
-        const std::string_view text = v.at("candidate").as_string();
-        const std::string_view mid = v.at("sdpMid").as_string();
-        remote->async_add_ice_candidate({.candidate = text, .sdp_mid = mid},
+        const auto parsed = webcpp::document::parse(json);
+        require(BOOST_TEST(parsed.has_value()));
+        const auto text = parsed->root()["candidate"].get<std::string_view>();
+        const auto mid = parsed->root()["sdpMid"].get<std::string_view>();
+        require(BOOST_TEST(text.has_value() && mid.has_value()));
+        remote->async_add_ice_candidate({.candidate = *text, .sdp_mid = *mid},
                                         [](webcpp::webrtc::detail::error_code) {});
     }
 

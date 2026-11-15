@@ -12,8 +12,8 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/webrtc/data_channel.hpp>
 
 #include <webcpp/webrtc/error.hpp>
@@ -25,8 +25,6 @@
 #include <webcpp/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
 #include <webcpp/asio/post.hpp>            // lint-world: posts handlers only
 
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
 
@@ -185,11 +183,7 @@ public:
     peer_connection(private_tag /*tag*/, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
                     connection_type pc, backend::factory& factory,
                     std::pmr::memory_resource* memory)
-        : runtime_(std::move(runtime)),
-          factory_(factory),
-          memory_(memory),
-          json_(memory),
-          pc_(std::move(pc)) {}
+        : runtime_(std::move(runtime)), factory_(factory), memory_(memory), pc_(std::move(pc)) {}
 
     /** Not copyable: its operations reach it by its address. */
     peer_connection(const peer_connection&) = delete;
@@ -272,36 +266,38 @@ public:
     /**
      * Adds a remote ICE candidate; the empty candidate that ends the remote gathering adds none.
      *
-     * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call.
+     * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call, at most
+     * `protocol::max_sealed_candidate_bytes`, the bound of a sealed candidate, which its opened
+     * JSON never passes.
      * @param done Called on the executor once it is added, or with `error::backend_failure` when
      * the JSON has no candidate or the platform refuses it.
      */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
-        boost::system::error_code parse_error;
-        const auto document =
-            protocol::json::parse(candidate_json, boost::json::storage_ptr(&json_), parse_error);
-        const auto* object = parse_error ? nullptr : document.if_object();
-        const auto* text = object != nullptr ? object->if_contains("candidate") : nullptr;
-        if (text == nullptr || !text->is_string()) {
+        // The document lives in the app's resource for the call: the platform copies the views.
+        const auto document = protocol::json::parse(
+            candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_bytes),
+            memory_);
+        const protocol::json::const_value object =
+            document.has_value() ? document->root() : protocol::json::const_value();
+        const protocol::json::const_value text = object["candidate"];
+        if (!object.is_object() || !text.is_string()) {
             post([done = std::move(done)]() mutable {
                 done(make_error_code(error::backend_failure));
             });
             return;
         }
-        ::webcpp::webrtc::ice_candidate_view candidate{.candidate = text->get_string()};
-        if (const auto* mid = object->if_contains("sdpMid"); mid != nullptr && mid->is_string()) {
-            candidate.sdp_mid = std::string_view(mid->get_string());
+        ::webcpp::webrtc::ice_candidate_view candidate{.candidate = protocol::json::text_of(text)};
+        if (const protocol::json::const_value mid = object["sdpMid"]; mid.is_string()) {
+            candidate.sdp_mid = protocol::json::text_of(mid);
         }
-        if (const auto* index = object->if_contains("sdpMLineIndex"); index != nullptr) {
-            if (const auto value = index->to_number<std::int64_t>(parse_error);
-                !parse_error && value >= 0 && value <= 65535) {
-                candidate.sdp_m_line_index = static_cast<std::uint16_t>(value);
-            }
+        if (const auto index = object["sdpMLineIndex"].get<std::int64_t>();
+            index.has_value() && *index >= 0 && *index <= 65535) {
+            candidate.sdp_m_line_index = static_cast<std::uint16_t>(*index);
         }
-        if (const auto* fragment = object->if_contains("usernameFragment");
-            fragment != nullptr && fragment->is_string()) {
-            candidate.username_fragment = fragment->get_string();
+        if (const protocol::json::const_value fragment = object["usernameFragment"];
+            fragment.is_string()) {
+            candidate.username_fragment = protocol::json::text_of(fragment);
         }
         pc_.async_add_ice_candidate(
             candidate, bound([done = std::move(done)](boost::system::error_code ec) mutable {
@@ -411,10 +407,18 @@ private:
 
     // The handlers run from a copy of the shared object, which a handler may replace.
 
-    /** Reports `candidate` as the JSON of an `RTCIceCandidateInit`, as the browser writes it. */
+    /**
+     * Reports `candidate` as the JSON of an `RTCIceCandidateInit`, as the browser writes it; one
+     * whose text is not UTF-8, which no browser's is and JSON cannot carry, is not reported.
+     */
     void on_candidate(const connection_type::ice_candidate& candidate) {
         const auto h = h_;
         if (!h || !h->ice_candidate) {
+            return;
+        }
+        if (!protocol::json::quotable(candidate.candidate) ||
+            !protocol::json::quotable(candidate.sdp_mid) ||
+            !protocol::json::quotable(candidate.username_fragment)) {
             return;
         }
         std::pmr::string json(R"({"candidate":)", memory_);
@@ -478,7 +482,6 @@ private:
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    json_resource json_;
     std::shared_ptr<handlers> h_;
     state state_ = state::new_;
     ice_state ice_state_ = ice_state::new_;

@@ -108,6 +108,12 @@ These features of Trystero are not ported, each for its reason:
 
 | A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is NIP-01's, 64 lowercase hexadecimal digits; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id of another form would let a relay fill the room's resource with the ids kept
 
+| A relay's text, a signal or a handshake message past its bound | parsed with `JSON.parse` whatever its length, under the relay's own limit | dropped before it is read: 68,608 bytes for a relay's text, 66,560 for a signal, 1,024 for a handshake message (<<trystero-protocol-json>>) | the bounds are those of the fields Trystero sends, so no text a Trystero peer writes is refused; a longer one would cost the room its length to read
+
+| A protocol text of thousands of values | parsed | refused once its image passes twice its bound and 64 KiB | no Trystero message holds more than a few dozen values, and a document's value takes some 200 bytes of image
+
+| A self id that is not UTF-8 | impossible: a JavaScript string | set aside for a random one, with a configuration report | JSON carries UTF-8 alone, and a signal writes the id as a JSON string
+
 | The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
 
 |===

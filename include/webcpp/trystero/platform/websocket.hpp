@@ -4,8 +4,8 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-#ifndef WEBCPP_TRYSTERO_NATIVE_WEBSOCKET_HPP
-#define WEBCPP_TRYSTERO_NATIVE_WEBSOCKET_HPP
+#ifndef WEBCPP_TRYSTERO_PLATFORM_WEBSOCKET_HPP
+#define WEBCPP_TRYSTERO_PLATFORM_WEBSOCKET_HPP
 
 #include <webcpp/trystero/config.hpp>
 
@@ -32,6 +32,9 @@
 #include <boost/system/errc.hpp>
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
+#include <boost/url/grammar/digit_chars.hpp>
+#include <boost/url/grammar/hexdig_chars.hpp>
+#include <boost/url/ipv4_address.hpp>
 #include <boost/url/parse.hpp>
 #include <boost/url/scheme.hpp>
 #include <boost/url/url_view.hpp>
@@ -52,18 +55,21 @@
 #include <type_traits>
 #include <utility>
 
-namespace webcpp::trystero::native {
+namespace webcpp::trystero::platform {
 
 /**
- * What a native WebSocket tolerates of a relay that stops reading or answering.
+ * What a relay's WebSocket tolerates of a relay that stops reading or answering.
  *
- * @see "The native backend", in the guide.
+ * @see "The platform backend", in the guide.
  */
 struct websocket_limits {
     /**
      * The most bytes of text queued to write: a relay that stops reading lets them pile up, and a
      * text beyond this drops the connection, which reports a close, so that the room reconnects
      * with its backoff.
+     *
+     * It bounds the session's own queue on both targets, and in a page also what the page's
+     * `WebSocket` holds unsent, its `bufferedAmount`, through webcpp::beast's `queue_limits::send`.
      */
     std::size_t max_queued_bytes = protocol::max_queued_relay_bytes;
 
@@ -79,11 +85,14 @@ struct websocket_limits {
 
 namespace detail {
 
-/** The error OpenSSL queued last, or `not_enough_memory` when it queued none. */
+/** The error OpenSSL queued last, or `not_enough_memory` when none; the queue is emptied. */
 inline boost::system::error_code openssl_error() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // The queue's first error may be one an earlier call left behind; the last is the failure's.
+    const auto code = ERR_peek_last_error();
+    ERR_clear_error();
     // Asio's own TLS errors are OpenSSL's codes, in its category, as an int.
-    if (const auto code = ERR_get_error(); code != 0) {
+    if (code != 0) {
         return {static_cast<int>(code), webcpp::asio::error::get_ssl_category()};
     }
 #endif
@@ -98,11 +107,14 @@ inline boost::system::error_code openssl_error() {
  * verifies each relay against the system's certificate authorities.
  *
  * Natively the authorities are those OpenSSL's default verify paths name, the system's own; a
- * relay whose certificate does not verify is unreachable. A program that trusts other authorities,
- * as webcpp's embedded Mozilla roots (`webcpp::asio::make_tls_client_context()`) or a private one,
- * makes its context itself and gives it to the backend. In the browser the page's `WebSocket`
- * verifies the relay against the browser's authorities, and the context records only the policy
- * its stream asks for: a client that verifies its peer.
+ * relay whose certificate does not verify is unreachable. On Windows those paths are in OpenSSL's
+ * build-time directory, which neither Windows nor webcpp fills, and OpenSSL reads no Windows
+ * certificate store by default, so there are none there unless `SSL_CERT_FILE` or `SSL_CERT_DIR`
+ * names some: a Windows program gives the backend its own context. A program that trusts other
+ * authorities, as webcpp's embedded Mozilla roots (`webcpp::asio::make_tls_client_context()`) or a
+ * private one, makes its context itself and gives it to the backend. In the browser the page's
+ * `WebSocket` verifies the relay against the browser's authorities, and the context records only
+ * the policy its stream asks for: a client that verifies its peer.
  *
  * @return The context, or the error that kept OpenSSL from making it or from finding the system's
  * authorities.
@@ -110,6 +122,8 @@ inline boost::system::error_code openssl_error() {
  */
 inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // What an earlier call left in OpenSSL's queue is not this one's error.
+    ERR_clear_error();
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> raw(SSL_CTX_new(TLS_client_method()),
                                                           &SSL_CTX_free);
     if (!raw) {
@@ -163,19 +177,41 @@ struct url_parts {  // NOLINT(bugprone-exception-escape)
     std::pmr::string target;
 };
 
-/** Whether a decoded host name holds a byte that a page's URL parser refuses in a host. */
+/**
+ * Whether a decoded host name holds a byte that a page's URL parser refuses in a host, or a byte
+ * beyond ASCII, of an international name that a page turns into its A-label and this parser does
+ * not.
+ */
 inline bool forbidden_in_host(std::string_view name) {
     constexpr std::string_view forbidden = "#%/:<>?@[\\]^|";
     return std::ranges::any_of(name, [forbidden](char c) {
         const auto byte = static_cast<unsigned char>(c);
-        return byte <= 0x20U || byte == 0x7FU || forbidden.find(c) != std::string_view::npos;
+        return byte <= 0x20U || byte >= 0x7FU || forbidden.find(c) != std::string_view::npos;
     });
+}
+
+/**
+ * Whether a decoded host name in lower case ends in a number, as a page's URL parser asks before it
+ * reads the host as an IPv4 address: its last label, a final empty one left out, is decimal digits,
+ * or `0x` and hexadecimal digits.
+ */
+inline bool ends_in_a_number(std::string_view name) {
+    if (name.ends_with('.')) {
+        name.remove_suffix(1);
+    }
+    const auto dot = name.rfind('.');
+    const auto last = dot == std::string_view::npos ? name : name.substr(dot + 1);
+    if (last.starts_with("0x")) {
+        return std::ranges::all_of(last.substr(2), boost::urls::grammar::hexdig_chars);
+    }
+    return !last.empty() && std::ranges::all_of(last, boost::urls::grammar::digit_chars);
 }
 
 /**
  * The parts of a `ws://` or `wss://` URL, in `memory`, read with Boost.URL; nothing for another
  * scheme, for a URL without a host, with userinfo or a fragment, which a page's `WebSocket` refuses
- * too, or with a port beyond 65535.
+ * too, with a port beyond 65535, or with a host that a page's URL parser refuses or reads
+ * otherwise.
  */
 inline std::optional<url_parts> parse_url(
     std::string_view url, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -201,7 +237,7 @@ inline std::optional<url_parts> parse_url(
     }
     url_parts out{
         .secure = secure,
-        .named = view.host_type() == boost::urls::host_type::name,
+        .named = false,
         .host = std::pmr::string(memory),
         .port = std::pmr::string(memory),
         .handshake_host = std::pmr::string(memory),
@@ -217,6 +253,16 @@ inline std::optional<url_parts> parse_url(
                 return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
             });
             if (out.host.empty() || forbidden_in_host(out.host)) {
+                return std::nullopt;
+            }
+            // Escaped digits make Boost.URL read an address as a name; decoded, it is an address,
+            // as a page reads it, and TLS names no address to the server. A decoded name holds no
+            // ':', refused above, so it is never an IPv6 address.
+            out.named = !boost::urls::parse_ipv4_address(out.host).has_value();
+            // A page reads a host that ends in a number as an IPv4 address in any of its forms
+            // (127.1, octal and hexadecimal parts, a single number), or refuses it: a form other
+            // than a dotted quad is refused here, never resolved as a name.
+            if (out.named && ends_in_a_number(out.host)) {
                 return std::nullopt;
             }
             out.handshake_host = out.host;
@@ -251,16 +297,26 @@ inline std::optional<url_parts> parse_url(
 }
 
 /**
- * One WebSocket connection over webcpp::beast, composed of Asio operations on the room's executor,
- * each a callback that holds the session until it completes: resolve, connect, TLS for `wss`, the
- * handshake, then a read loop handing each message to the handler as a view of the read buffer.
- * Writes are queued, one in flight at a time, as Beast requires.
+ * One WebSocket connection over webcpp::beast, on both targets, composed of Asio operations on the
+ * room's executor, each a callback that holds the session until it completes: resolve, connect, TLS
+ * for `wss`, the handshake, then a read loop handing each message to the handler as a view of the
+ * read buffer. Writes are queued, one in flight at a time, as Beast requires; a write that fails
+ * ends the connection, which reports its close once.
  *
  * Tip: every operation's handler carries the room's allocator, so that what Asio and Beast
  * allocate for it, and the read buffer, are in the room's resource beside the session, its
- * handlers and its queued texts; natively Boost.Beast's stream state, the resolver's results and
- * OpenSSL's state are theirs. On Emscripten the page's stream keeps its state in the room's
- * resource too.
+ * handlers and its queued texts, with nothing in the default allocator for a message. On
+ * Emscripten the page's stream keeps its state in the room's resource too, and its `WebSocket`
+ * makes the handshake. Natively what Beast, Asio and OpenSSL allocate of their own takes no
+ * allocator and stays outside the room's resource, for each connection: the WebSocket stream's
+ * state and the TCP stream's, the WebSocket's write buffer and, over TLS, Asio's two TLS buffers
+ * and OpenSSL's state; the resolver's state and results; the handshake's request and response,
+ * the header fields of both and, for a response that is not 101, its body, which Beast's own
+ * parser reads up to Beast's default limit for a response, 8 MiB, that no option of its stream
+ * lowers; the verify callback Asio's `set_verify_callback` makes with `new`, with its copy of the
+ * host; each wait of Beast's timers, from Asio's per-thread recycling cache (the TCP stream's
+ * deadline over the connection and the TLS handshake, the WebSocket's handshake, idle and close
+ * timeouts); and each keep-alive ping's frame.
  */
 template <bool Secure>
 class websocket_session : public std::enable_shared_from_this<websocket_session<Secure>> {
@@ -412,6 +468,15 @@ private:
         if constexpr (Secure) {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
             auto& tls = ws_.next_layer();
+            // The relay is verified whatever the context's own mode, which a program's context
+            // made as Asio makes a client's leaves at verify_none, so that a certificate that does
+            // not verify fails the handshake, as a page's WebSocket always fails it.
+            boost::system::error_code verify;
+            tls.set_verify_mode(webcpp::asio::ssl::verify_peer, verify);
+            if (verify) {
+                end();
+                return;
+            }
             // SNI names a host name only, never an address (RFC 6066).
             if (url_.named && !webcpp::beast::set_server_name(tls, url_.host)) {
                 end();
@@ -421,7 +486,7 @@ private:
             tls.set_verify_callback(
                 webcpp::asio::ssl::host_name_verification(std::string(url_.host)));
 #endif
-            // In the browser the page's WebSocket sends the name and verifies the certificate.
+            // In a page its WebSocket sends the name and verifies the certificate.
             ws_.next_layer().async_handshake(
                 webcpp::asio::ssl::stream_base::client,
                 bound([self = this->shared_from_this()](const boost::system::error_code& error) {
@@ -451,6 +516,14 @@ private:
 #endif
         // A page's WebSocket cannot ping, and its stream refuses keep-alive pings: no idle timeout.
         ws_.set_option(timeouts);
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        // The page's WebSocket writes at once: what a relay does not read piles up in its
+        // bufferedAmount, which the stream bounds as the session bounds its queue, and closes past.
+        ws_.set_option(webcpp::beast::websocket::queue_limits{
+            .send = limits_.max_queued_bytes,
+            .receive = webcpp::beast::websocket::queue_limits{}.receive,
+        });
+#endif
         ws_.async_handshake(
             url_.handshake_host, url_.target,
             bound([self = this->shared_from_this()](const boost::system::error_code& ec) {
@@ -495,7 +568,7 @@ private:
     }
 
     void on_read(const boost::system::error_code& ec, std::size_t size) {
-        if (ec) {
+        if (ec || ended_) {  // a failed write ended it: nothing is reported after its close
             end();
             return;
         }
@@ -531,13 +604,28 @@ private:
         auto handler = [self = this->shared_from_this()](const boost::system::error_code& ec,
                                                          std::size_t) {
             if (ec) {
-                self->writing_ = false;
+                self->fail();
                 return;
             }
             self->write_next();
         };
         ws_.async_write(webcpp::asio::buffer(writing_text_),
                         transfer_handler(bound(std::move(handler))));
+    }
+
+    /**
+     * A write failed: the relay is unreachable, or, in a page, its `WebSocket` held more than the
+     * bound unsent, whose close event may never come. The connection is dropped and its close
+     * reported at once, without waiting for the read to fail; one already closing, whose writes
+     * fail as it closes, ends as its read does.
+     */
+    void fail() {
+        writing_ = false;
+        if (std::exchange(closing_, true)) {
+            return;
+        }
+        webcpp::beast::get_lowest_layer(ws_).close();
+        end();
     }
 
     void end() {
@@ -598,29 +686,42 @@ private:
 }  // namespace detail
 
 /**
- * Connects to a Nostr relay over webcpp::beast: `ws://` in the clear, `wss://` over TLS with `tls`.
+ * Connects to a Nostr relay over webcpp::beast, on both targets: `ws://` in the clear, `wss://`
+ * over TLS with `tls`; natively over Boost.Beast's own stream, in a page over its `WebSocket`.
  *
  * Writes are queued, one in flight at a time; a received message is handed over as a view of the
- * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection. A
- * relay that stops reading is dropped once the queue would pass `limits.max_queued_bytes`, and,
- * natively, one that stops answering once `limits.idle_timeout` passes with its keep-alive ping
- * unanswered; both report a close. The URL is read with Boost.URL: an IPv6 address in brackets, a
- * scheme in any case. A URL it cannot parse, one with userinfo or a fragment, and a `wss://` URL
- * without `tls`, report a close, as an unreachable relay does. Natively a `wss://` connection
- * names the host to the server (SNI) when it is a name, and checks the certificate against the
- * URL's host, a name or an address. It needs no exceptions.
+ * read buffer, and one longer than `protocol::max_relay_message_bytes` closes the connection, a
+ * page's before it is copied into WebAssembly. A relay that stops reading is dropped once the
+ * queue, or a page's `bufferedAmount`, would pass `limits.max_queued_bytes`, and, natively, one
+ * that stops answering once `limits.idle_timeout` passes with its keep-alive ping unanswered; each
+ * reports one close. The URL is read with Boost.URL: `ws://` or `wss://` in any case, a host name
+ * with its escapes decoded, an IPv4 address as a dotted quad or an IPv6 address in brackets, and a
+ * port up to 65535. A URL it refuses, which includes what a page's URL parser reads otherwise (an
+ * IPv4 shorthand such as `127.1`, an international name, a tab or a backslash), and a `wss://` URL
+ * without `tls`, report a close, as an unreachable relay does. Natively a `wss://` connection names
+ * the host to the server (SNI) when it is a name, verifies the relay's certificate whatever the
+ * verify mode of `tls`, and checks it against the URL's host, a name or an address; in a page the
+ * browser does all three. It needs no exceptions.
+ *
+ * The connection, its handlers, its queued texts, its read buffer and its operations are in
+ * `memory`, and a message allocates nothing in the default allocator. Natively what Boost.Beast,
+ * Asio and OpenSSL allocate of their own stays outside it, for each connection: their streams'
+ * state, the resolver's, the handshake's request and response, the verify callback, their timers'
+ * waits and each keep-alive ping's frame. Among it, a relay that answers the handshake with a
+ * status other than 101 can have Beast read a body of up to 8 MiB, Beast's default limit for a
+ * response, which no option of its stream lowers, before the connection reports its close.
  *
  * @param ex The executor every handler runs on.
- * @param tls The TLS context of `wss://`, which must outlive the connection and should verify
- * peers, as the context of @ref make_tls_context does; null when the program has none.
+ * @param tls The TLS context of `wss://`, which must outlive the connection, or null when the
+ * program has none; natively the connection verifies the relay against its authorities even when
+ * its verify mode is `verify_none`, as Asio makes a client's context.
  * @param url The relay's URL, read during the call.
  * @param h What the WebSocket reports.
- * @param memory The room's resource, which the connection, its handlers, its queued texts, its read
- * buffer and its operations are allocated in; natively Boost.Beast's stream state and OpenSSL's
- * are theirs.
+ * @param memory The room's resource, which the connection's own allocations are in.
  * @param limits What it tolerates of a relay that stops reading or answering.
  * @return The WebSocket; destroying it drops the connection without reporting it.
- * @see "The native backend", in the guide.
+ * @see "The platform backend", in the guide.
+ * @see "What stays outside the resource", in the guide.
  */
 inline std::shared_ptr<backend::websocket> connect_websocket(
     const webcpp::asio::any_io_executor& ex, webcpp::asio::ssl::context* tls, std::string_view url,
@@ -651,6 +752,6 @@ inline std::shared_ptr<backend::websocket> connect_websocket(
     return std::allocate_shared<detail::websocket_handle<false>>(allocator, session);
 }
 
-}  // namespace webcpp::trystero::native
+}  // namespace webcpp::trystero::platform
 
 #endif

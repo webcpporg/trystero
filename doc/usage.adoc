@@ -195,17 +195,44 @@ messages travel and how they are received:
 | `std::string` | text | a copy of the bytes
 | `std::pmr::string` | text | a copy of the bytes, in the room's resource
 | `std::string_view` | text | a view of the frame it arrived in, valid during the handler
-| `boost::json::value` | JSON | parsed, in the room's JSON storage
+| `webcpp::document::document` | JSON | parsed into a document of its own, with the standard allocator
+| `trystero::pmr_document` | JSON | parsed into a buffer of the room's resource
 | `trystero::bytes` | binary | a copy of the bytes
 | `trystero::pmr_bytes` | binary | the transfer's buffer, moved when resources match, otherwise copied once into the room's resource
 | `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the handler
-| `trystero::payload` | any | a `std::variant` of `std::string`, `boost::json::value` and `bytes`, by format
+| `trystero::payload` | any | a `std::variant` of `std::string`, `webcpp::document::document` and `bytes`, by format
 |===
+
+A JSON payload is webcpp::document's: a `webcpp::document::document` the
+program builds or parses, or a `pmr_document`, whose image is a buffer of a
+memory resource, the room's when it is received. A text that does not parse
+is not delivered. A {cpp} peer sends what `JSON.stringify` writes of the
+document, the bytes Trystero JS sends of the same value. The room test sends
+one:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-send,indent=0]
+----
+
+receives it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-receive,indent=0]
+----
+
+and reads it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-read,indent=0]
+----
 
 A message of another format than the action's type is not delivered to it.
 Several actions of different types may share a name: one receives as views,
 another sends by moving strings, as the chat does
-(<<trystero-browser-chat>>).
+(<<trystero-platform-chat>>).
 
 Messages arrive at the handler `on_message` sets, with a `message_info`: the
 sender's id and the metadata it passed. Without a handler they queue, up to
@@ -239,8 +266,8 @@ tokens are the same there; on emscripten they are webcpp::asio's.
 Because a deferred operation starts after the call, the arguments of an
 asynchronous operation are owned: `async_send` takes its value by value,
 moved when the type owns its storage, copied once at the call into the room's
-resource when it is a view, and serialized at once when it is a
-`boost::json::value`; `send_options` owns its strings; and `async_ping`
+resource when it is a view, and written at once, as `JSON.stringify`
+writes it, when it is a JSON document; `send_options` owns its strings; and `async_ping`
 copies the peer id at the call. Everything else that only reads text takes a
 `std::string_view`.
 

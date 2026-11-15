@@ -9,8 +9,8 @@
 
 trystero is header-only, and is developed inside the webcpp superproject, as
 a Boost library is developed inside Boost. It builds on three libraries of
-webcpp's: webcpp::asio; webcpp::webrtc, the WebRTC of both its backends; and
-webcpp::beast, the native backend's relays.
+webcpp's: webcpp::asio; webcpp::webrtc, the platform backend's WebRTC; and
+webcpp::beast, its relays' WebSockets, on both targets.
 Its native TLS and WebRTC dependencies are built from pinned sources. Only
 libsecp256k1 needs an external installation:
 
@@ -29,23 +29,25 @@ libsecp256k1 needs an external installation:
 | `/webcpp/asio//asio`: natively Boost.Asio, on emscripten the backend it ships
 
 | webcpp::webrtc
-| both backends' WebRTC
+| the platform backend's WebRTC, on both targets
 | `/webcpp/webrtc//webrtc`, the superproject's `libs/webrtc`
 
 | webcpp::beast
-| the native backend's relays: their WebSockets and TLS
-| `/webcpp/beast//tls`: natively Boost.Beast over the source-built OpenSSL
+| the platform backend's relays: their WebSockets, and natively their TLS
+| `/webcpp/beast//tls` natively, Boost.Beast over the source-built OpenSSL;
+  `/webcpp/beast//browser` in a page, over the page's `WebSocket`
 
 | Boost.URL
-| the native backend's relays: their URLs
+| the platform backend's relays: their URLs, on both targets
 | `/webcpp//boost_url`, built from Boost's sources once per variant
 
 | libdatachannel 0.24.6
-| the native backend, through webcpp::webrtc
+| the platform backend natively, through webcpp::webrtc
 | `/webcpp/third_party//libdatachannel`, built from `third_party/libs/libdatachannel`
 
 | OpenSSL 3.5.9
-| the native backend
+| the platform backend natively: its WebRTC, its relays' TLS, its sealer and
+  its randomness
 | `/webcpp/third_party//openssl`, shared by the Asio, Beast and Trystero build graphs
 |===
 
@@ -73,59 +75,70 @@ include::{library-root}/build.jam[tag=dependencies]
 [#trystero-building-project]
 === In a b2 project
 
-A b2 project uses the rooms and the browser backend through
-`/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
-webcpp::asio, libsecp256k1 and Boost.JSON's definitions, compiled once per
-variant, and, on emscripten, webcpp::webrtc and embind:
+A program uses trystero through `/webcpp/trystero//platform`, the rooms and
+the platform backend (<<trystero-platform>>), on either target: natively,
+built with `threading=multi`, and in a page. `/webcpp/trystero//trystero`
+is the rooms alone, which adds trystero's headers, Boost's, webcpp::asio,
+libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
+definitions, compiled once per variant, and no
+WebRTC on any target: a program that runs its rooms over a backend of its
+own, as trystero's tests run whole rooms over the memory relays
+(<<trystero-testing-program>>), needs no more:
 
 [listing]
 ----
 include::{library-root}/build.jam[tag=trystero]
 ----
 
-embind is linked as a flag, `-lembind`, rather than with b2's own
-`<embind>on`: that feature is not free, and b2 ignores a feature that is not
-free among usage requirements, so a program that used it would not link.
 On emscripten webcpp::asio builds without threads, since the page has none,
-and links its runtime in the suspension variant the build asks,
-`webcpp-suspend=jspi` by default or `asyncify`; a program is named after
-it, as `quick_start-60-d-jspi.js`.
+links embind, and links its runtime in the suspension variant the build
+asks, `webcpp-suspend=jspi` by default or `asyncify`; a program is named
+after it, as `quick_start-60-d-jspi.js`. embind is linked as a flag,
+`-lembind`, rather than with b2's own `<embind>on`: that feature is not
+free, and b2 ignores a feature that is not free among usage requirements, so
+a program that used it would not link.
 
-A native program uses `/webcpp/trystero//native`, which adds webcpp::webrtc,
-with libdatachannel and the same source-built OpenSSL used by Asio and Beast;
-webcpp::beast's TLS over that OpenSSL for the relays' WebSockets; Boost.URL,
-which reads the relays' URLs; and webcpp::asio's `//tls`, whose
-`make_tls_client_context()` gives a program webcpp's embedded authorities in
-place of the system's, which the backend trusts by default
-(<<trystero-native-relays>>):
+`/webcpp/trystero//platform` adds the platform backend to the rooms, with an
+alternative for each target. Natively it adds webcpp::webrtc, with
+libdatachannel and the same source-built OpenSSL used by Asio and Beast;
+webcpp::beast's TLS over that OpenSSL for the relays' WebSockets,
+`/webcpp/beast//tls`; Boost.URL, which reads the relays' URLs; and
+webcpp::asio's `//tls`, whose `make_tls_client_context()` gives a program
+webcpp's embedded authorities in place of the system's, which the backend
+trusts by default (<<trystero-platform-relays>>). In a page it adds
+webcpp::webrtc, over the page's own `RTCPeerConnection`; webcpp::beast's
+`//browser`, over the page's `WebSocket`; and Boost.URL, which reads the
+relays' URLs there too. A page links no OpenSSL:
 
 [listing]
 ----
-include::{library-root}/build.jam[tag=native]
+include::{library-root}/build.jam[tag=platform]
 ----
 
-The native backend uses worker threads, so each consumer declares
-`<threading>multi`. Its OpenSSL dependency is the matching threaded variant;
-a single-threaded native backend is rejected before compilation.
+Natively the platform backend's WebRTC, libdatachannel's, uses worker
+threads, so each consumer declares `<threading>multi`. Its OpenSSL
+dependency is the matching threaded variant; a single-threaded native
+program that uses the backend is rejected before compilation, with an error
+that says to add `<threading>multi`. A page has no threads, and needs none.
 
-The native backend works with exceptions and without them
-(<<trystero-native-exceptions>>), so a program builds as it asks, as the
-examples do:
+The platform backend works with exceptions and without them
+(<<trystero-platform-exceptions>>), so a program builds as it asks, as the
+examples do, the native one with `<threading>multi`:
 
 [listing]
 ----
 include::{examples}/Jamfile[tag=native]
 ----
 
-and as trystero's own tests of the native backend's connections do, once
-without exceptions too:
+and as trystero's own tests of the platform backend do, on each target that
+builds them, once without exceptions too:
 
 [listing]
 ----
-include::{library-root}/test/Jamfile[tag=native]
+include::{library-root}/test/Jamfile[tag=platform]
 ----
 
-A browser program is linked for the web, with a memory that grows:
+A page's program is linked for the web, with a memory that grows:
 
 [listing]
 ----
@@ -209,7 +222,7 @@ three libraries.
 The three examples need the public relays or a browser, so the build links
 them and never runs them: `native_quick_start.cpp`, natively;
 `quick_start.cpp`, a `.js` and a `.wasm` to embed in a page; and the chat,
-a page whose room is {cpp} (<<trystero-browser-chat>>). The quick starts
+a page whose room is {cpp} (<<trystero-platform-chat>>). The quick starts
 meet in the room `lobby` of the app `webcpp-trystero-quick-start`, over the
 public relays; the chat joins the app and the room its user types, the room
 `lobby` of the app `webcpp-trystero-chat` unless the user changes them, and
