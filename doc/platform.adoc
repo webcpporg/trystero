@@ -232,14 +232,17 @@ hold:
   bounded too, at webcpp::beast's `queue_limits::receive`, 4 MiB: past it
   the socket closes.
 * Natively, a relay that answers the handshake with a status other than 101
-  can have Boost.Beast read a body of up to 8 MiB, its default limit for a
-  response, outside the room's resource, before the connection reports its
-  close (measured: an 8 MiB body held about 18 MiB at its peak, as the
-  string that holds it grew); it is freed then, and the room retries with
-  its backoff. Beast's WebSocket stream reads the response with a parser of
-  its own, inside its handshake, and none of its options, nor its handshake
-  that returns the response, reaches that parser's limit, so the backend
-  cannot lower it. In a page the browser makes the handshake.
+  has its response's header read, at most 8 KiB, and no byte of its body,
+  and the connection reports its close; the room retries with its backoff.
+  Beast's WebSocket stream reads the response with a parser of its own,
+  inside its handshake, whose limits none of its options reaches, so the
+  session's next layer is webcpp::beast's bounded handshake layer
+  (`websocket::bounded_handshake_stream`, with `response_limits::body` 0),
+  which reads the response through Beast's parser within those bounds and
+  hands the handshake no more: a relay's refusal with a body of 4 MiB made
+  the room's thread allocate 4,199,353 bytes before it, and 5,144 now, the
+  connection's own state among them (`platform_websocket_allocation`). In a
+  page the browser makes the handshake.
 * Natively, a relay that stops answering is dropped once `idle_timeout`
   (30 s) passes with its keep-alive ping unanswered: halfway through, the
   connection sends a ping. The timeout counts bytes received, and a ping

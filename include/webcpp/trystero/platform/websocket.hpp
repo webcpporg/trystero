@@ -25,6 +25,8 @@
 #include <webcpp/beast/websocket.hpp>         // lint-world: the relays' WebSockets
 
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+#include <webcpp/beast/websocket/bounded_handshake_stream.hpp>  // lint-world: the relays' WebSockets
+
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #endif
@@ -309,9 +311,10 @@ inline std::optional<url_parts> parse_url(
  * and OpenSSL allocate of their own takes no allocator and stays outside the room's resource, for
  * each connection: the WebSocket stream's state and the TCP stream's, the WebSocket's write buffer
  * and, over TLS, Asio's two TLS buffers and OpenSSL's state; the resolver's state and results; the
- * handshake's request and response, the header fields of both and, for a response that is not
- * 101, its body, which Beast's own parser reads up to Beast's default limit for a response, 8 MiB,
- * that no option of its stream lowers; the verify callback Asio's `set_verify_callback` makes with
+ * handshake's request and response and the header fields of both, the response's header at most
+ * 8 KiB, which webcpp::beast's bounded handshake layer reads through Beast's own parser, keeping a
+ * header line split between two reads in the room's resource, and reading no byte of the body of a
+ * response that refuses the upgrade; the verify callback Asio's `set_verify_callback` makes with
  * `new`, with its copy of the host; each wait of Beast's timers, from Asio's per-thread recycling
  * cache (the TCP stream's deadline over the connection and the TLS handshake, the WebSocket's
  * handshake, idle and close timeouts, the idle one started again at each read); and each
@@ -331,10 +334,24 @@ public:
     using executor_type = webcpp::asio::any_io_executor;
     /** Asio's TCP. */
     using tcp = webcpp::asio::ip::tcp;
-    /** The stream the WebSocket runs over: TLS over TCP for `wss`, TCP for `ws`. */
-    using next_layer =
+    /** The transport the WebSocket runs over: TLS over TCP for `wss`, TCP for `ws`. */
+    using transport =
         std::conditional_t<Secure, webcpp::beast::ssl_stream<webcpp::beast::tcp_stream>,
                            webcpp::beast::tcp_stream>;
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+    /** The stream the WebSocket runs over: in a page the transport, whose WebSocket reads its own
+     * handshake response. */
+    using next_layer = transport;
+#else
+    /**
+     * The stream the WebSocket runs over: natively the transport under webcpp::beast's bounded
+     * handshake layer, which reads a refusal's header alone, a split header line kept in the room's
+     * resource.
+     */
+    using next_layer =
+        webcpp::beast::websocket::bounded_handshake_stream<transport,
+                                                           std::pmr::polymorphic_allocator<char>>;
+#endif
     /** Beast's WebSocket stream. */
     using stream_type = webcpp::beast::websocket::stream<next_layer>;
 
@@ -434,13 +451,22 @@ private:
             return stream_type(std::allocator_arg, allocator, ex);
         }
 #else
-        (void)memory;
+        const std::pmr::polymorphic_allocator<char> allocator(memory);
         if constexpr (Secure) {
-            return stream_type(ex, *tls);
+            return stream_type(std::allocator_arg, allocator, ex, *tls);
         } else {
             (void)tls;
-            return stream_type(ex);
+            return stream_type(std::allocator_arg, allocator, ex);
         }
+#endif
+    }
+
+    /** The TLS stream, natively under the bounded handshake layer, in a page the next layer. */
+    transport& tls_stream() {
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        return ws_.next_layer();
+#else
+        return ws_.next_layer().next_layer();
 #endif
     }
 
@@ -472,7 +498,7 @@ private:
             return;
         }
         if constexpr (Secure) {
-            auto& tls = ws_.next_layer();
+            auto& tls = tls_stream();
             // The relay is verified whatever the context's own mode, which a program's context
             // made as Asio makes a client's leaves at verify_none: natively a certificate that does
             // not verify fails the handshake; a page's WebSocket always verifies, and its stream
@@ -538,6 +564,12 @@ private:
         // ones can arrive in the same task of the page as its open, before the handshake's
         // completion runs on the executor.
         ws_.read_message_max(protocol::max_relay_message_bytes);
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+        // A relay that refuses the upgrade has its response's header read, at most 8 KiB, and no
+        // byte of its body: Beast's own parser would read a body of up to 8 MiB outside the room's
+        // resource. A page's WebSocket reads its own response.
+        ws_.next_layer().limits({.body = 0});
+#endif
         ws_.async_handshake(
             url_.handshake_host, url_.target,
             bound([self = this->shared_from_this()](const boost::system::error_code& ec) {
@@ -749,9 +781,9 @@ private:
  * `memory`. What stays outside it, for each connection: natively what Boost.Beast, Asio and OpenSSL
  * allocate of their own, their streams' state, the resolver's, the handshake's request and
  * response, the verify callback, their timers' waits, the idle timer's again at each read, and
- * each keep-alive ping's frame; among it, a relay that answers the handshake with a status other
- * than 101 can have Beast read a body of up to 8 MiB, Beast's default limit for a response, which
- * no option of its stream lowers, before the connection reports its close. In a page, the page
+ * each keep-alive ping's frame; a relay that answers the handshake with a status other than 101
+ * has its response's header read, at most 8 KiB, and no byte of its body, through webcpp::beast's
+ * bounded handshake layer, before the connection reports its close. In a page, the page
  * resolver's results, made with `new`, and, for each event of the page's `WebSocket`, the open,
  * each message and the close, the C library's allocation embind makes for its type, and for a
  * message a second, for the type of its data, each freed before the call that made it returns.

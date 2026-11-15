@@ -19,9 +19,10 @@
 //
 // A relay that refuses the upgrade with a body of 4 MiB has the handshake read its header alone:
 // from the call that makes the socket to its close, reported without an open, operator new gives
-// the room's thread less than 64 KiB. Without webcpp::beast's bounded handshake layer, Beast's own
+// the room's thread less than 64 KiB (measured: 5,144 bytes, the connection's own state among
+// them). Before the session's next layer was webcpp::beast's bounded handshake layer, Beast's own
 // parser read the body whole, up to its default limit for a response, 8 MiB, outside the room's
-// resource.
+// resource (measured: 4,199,353 bytes).
 //
 // main runs an io_context for each case: in the first each echo sends the next text, and the last
 // closes the socket; in the second the refusal ends the connection.

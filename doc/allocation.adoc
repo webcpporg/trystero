@@ -274,11 +274,13 @@ nothing.
   buffer, made at its first write, and, over TLS, the two 17 KiB buffers of
   Asio's TLS stream; the resolver's state and its results, with what the C
   library's `getaddrinfo` allocates on Asio's resolver thread; the WebSocket
-  handshake's request and response, the header fields of both and, for a
-  response that is not 101, its body, which Beast's own parser reads up to
-  Beast's default limit for a response, 8 MiB, that no option of its stream
-  lowers (measured: an 8 MiB body held about 18 MiB at its peak, as its
-  string grew); over TLS, the verify callback Asio's `set_verify_callback`
+  handshake's request and response and the header fields of both, the
+  response's header at most 8 KiB, which webcpp::beast's bounded handshake
+  layer reads through Beast's own parser, reading no byte of the body of a
+  response that refuses the upgrade (before it, Beast read such a body up to
+  its default 8 MiB: an 8 MiB body held about 18 MiB at its peak), and
+  keeping a header line split between two reads in the room's resource;
+  over TLS, the verify callback Asio's `set_verify_callback`
   makes with `new`, with the copy of the host that `host_name_verification`
   holds, a `std::string`; each wait of Beast's timers, from Asio's
   per-thread recycling cache, which calls `std::aligned_alloc` on a miss:

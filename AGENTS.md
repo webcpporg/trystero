@@ -173,7 +173,9 @@ holds only what is specific to trystero.
   webcpp::webrtc's census of the page counts every runtime's connections.
 - **The relays.** One session (`platform/websocket.hpp`) serves both
   targets: resolve, connect, TLS, the handshake, a read loop and one write at
-  a time, on the room's executor, natively over Boost.Beast's own stream and
+  a time, on the room's executor, natively over Boost.Beast's own stream,
+  whose next layer is webcpp::beast's `bounded_handshake_stream` over the
+  transport, with a body limit of 0 (a refusal's body is never read), and
   in a page over webcpp::beast's page `WebSocket` (`/webcpp/beast//browser`).
   On both targets a write that fails ends the session at once, reporting one
   close, unless it is already closing, when its read ends it. A relay's URL
@@ -714,9 +716,10 @@ holds only what is specific to trystero.
     connection, what Boost.Beast, Asio and OpenSSL allocate of their own,
     which takes no allocator: the streams' state, the WebSocket's write
     buffer, Asio's two TLS buffers, the resolver's state and results, the
-    handshake's request and response with their fields, and a non-101
-    response's body up to Beast's default 8 MiB, which no option of its
-    stream lowers, the verify callback and its copy of the host, the timers'
+    handshake's request and response with their fields, the response's
+    header at most 8 KiB and no byte of a refusal's body (webcpp::beast's
+    `bounded_handshake_stream`, the session's next layer natively, with a
+    body limit of 0), the verify callback and its copy of the host, the timers'
     waits, the idle timer's again at each read, and each keep-alive ping's
     frame, while the WebSocket's operations, read buffer and queued texts are
     in the room's resource and a message allocates nothing else outside it

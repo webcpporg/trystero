@@ -171,7 +171,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `platform_websocket_allocation`, `platform_websocket_allocation_no_exceptions`
 | Natively, a relay's message allocates nothing outside the room's resource:
   from the send of a text to the receipt of its echo, ten times, the global
-  `operator new` counts none on the room's thread (<<trystero-allocation-outside>>).
+  `operator new` counts none on the room's thread
+  (<<trystero-allocation-outside>>); and a relay that refuses the upgrade
+  with a body of 4 MiB has its response's header read alone, the room's
+  thread allocating less than 64 KiB until the close.
 
 | `platform_peer_connection`, `platform_room`, and each `_no_exceptions`
 | Natively, two connections of the backend's WebRTC, over webcpp::webrtc's
