@@ -763,7 +763,7 @@ void a_strategy_draws_the_key_of_its_event_ids() {
         f.net, std::span<const std::pmr::string>(), std::pmr::vector<std::pmr::string>(), "topic",
         trystero::handler<std::pmr::string()>(),
         trystero::detail::nostr_strategy::message_handler(), trystero::detail::logger(),
-        std::pmr::get_default_resource(), boost::json::storage_ptr());
+        std::pmr::get_default_resource());
     BOOST_TEST_EQ(f.net.random_bytes - before,
                   32U + trystero::detail::recent_event_ids::key_size);  // the secret, the key
 }

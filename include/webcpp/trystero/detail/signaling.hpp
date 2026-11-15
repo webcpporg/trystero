@@ -22,8 +22,6 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/json/storage_ptr.hpp>
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -133,18 +131,16 @@ public:
             failed;
     };
 
-    /** Every allocation goes through `memory`, the parsed signals through `json`, a storage of that
-     * resource, but the peer connections, which are made in `connection_memory`, the app's: the
+    /** Every allocation goes through `memory`, the parsed signals' documents included, but the
+     * peer connections, which are made in `connection_memory`, the app's: the
      * one a negotiation opens becomes the app's connection. */
     signaling(backend::factory& factory, std::shared_ptr<backend::sealer> sealer,
               std::string_view app_id, std::string_view room_id, std::string_view self_id,
               std::span<const backend::ice_server> ice_servers, callbacks cb, logger log,
-              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory,
-              boost::json::storage_ptr json)
+              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory)
         : factory_(factory),
           memory_(memory),
           connection_memory_(connection_memory),
-          json_(std::move(json)),
           sealer_(std::move(sealer)),
           app_id_(app_id, memory),
           room_id_(room_id, memory),
@@ -159,9 +155,11 @@ public:
         if (closed_) {
             return;
         }
-        boost::system::error_code ec;
-        const auto document = protocol::json::parse(content, json_, ec);
-        const auto message = ec ? std::nullopt : protocol::read_signal(document);
+        // A signal past its bound is dropped as a malformed one is, before it is read.
+        const auto document = protocol::json::parse(
+            content, protocol::json::protocol_limits(protocol::max_parsed_signal_bytes), memory_);
+        const auto message =
+            document.has_value() ? protocol::read_signal(document->root()) : std::nullopt;
         if (!message || message->peer_id == self_id_) {
             return;
         }
@@ -1137,7 +1135,6 @@ private:
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
     std::pmr::memory_resource* connection_memory_;
-    boost::json::storage_ptr json_;
     std::shared_ptr<backend::sealer> sealer_;
     std::pmr::string app_id_;
     std::pmr::string room_id_;

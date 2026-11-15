@@ -59,10 +59,12 @@ rule native-dependencies ( properties * )
 # through embind: -lembind, what b2's <embind>on links, which as a usage
 # requirement it would drop (measured: a program then fails to link,
 # undefined _embind_register_function), since b2 takes only free features
-# from usage requirements.
+# from usage requirements. Every JSON text the rooms read or write is
+# webcpp::document's, which brings Boost.JSON's parser and Boost.Charconv's
+# definitions.
 # tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
-  : : <include>include <library>/boost//headers <library>/webcpp//boost_json
+  : : <include>include <library>/boost//headers <library>/webcpp/document//document
   <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1
   <toolset>emscripten:<library>/webcpp/webrtc//webrtc
   <toolset>emscripten:<linkflags>-lembind ;

@@ -10,6 +10,8 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <secp256k1.h>
@@ -17,7 +19,6 @@
 #include <secp256k1_preallocated.h>
 #include <secp256k1_schnorrsig.h>
 #include <boost/hash2/sha2.hpp>
-#include <boost/json/value.hpp>
 
 #include <algorithm>
 #include <array>
@@ -36,6 +37,19 @@
 #include <variant>
 
 namespace webcpp::trystero::protocol::nostr {
+
+/**
+ * The longest text of a relay a room reads, in bytes: a longer one is dropped before it is read,
+ * and the connection goes on; one longer than @ref max_relay_message_bytes closes the connection
+ * instead.
+ *
+ * The longest text measured is an event that carries an answer, 1,244 bytes, among Trystero JS in
+ * Chrome and both backends. The bound is an event that carries the longest signal a room reads
+ * (@ref max_parsed_signal_bytes), with 2 KiB for the event's other fields, the subscription id and
+ * the escaping of the signal's quotes, which take some 600 bytes.
+ */
+inline constexpr std::size_t max_parsed_relay_text_bytes = max_parsed_signal_bytes + 2048;
+static_assert(max_parsed_relay_text_bytes < max_relay_message_bytes);
 
 /** The tag a Trystero event carries its topic in, its `tag`: "x". */
 inline constexpr std::string_view topic_tag = "x";
@@ -377,34 +391,23 @@ using relay_message = std::variant<event, ok, eose, closed, notice>;
 
 namespace detail {
 
-/** The text a JSON value holds, or an empty view when it holds none. */
-inline std::string_view text_of(const boost::json::value& v) {
-    const auto* s = v.if_string();
-    return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
-}
-
-/** The event of a relay's `["EVENT", <subscription>, <event>]`, as views into `array`. */
-inline std::optional<relay_message> read_event(const boost::json::array& array) {
-    if (array.size() < 3 || !array.at(2).is_object()) {
+/** The event of a relay's `["EVENT", <subscription>, <event>]`, as views into its document. */
+inline std::optional<relay_message> read_event(const json::const_value& array) {
+    const json::const_value o = array[2];
+    if (!o.is_object()) {
         return std::nullopt;
     }
-    const auto& o = array.at(2).get_object();
     event e;
-    e.subscription = text_of(array.at(1));
-    if (const auto* id = o.if_contains("id")) {
-        e.id = text_of(*id);
-    }
-    if (const auto* c = o.if_contains("content")) {
-        e.content = text_of(*c);
-    }
-    if (const auto* tags = o.if_contains("tags"); tags != nullptr && tags->is_array()) {
-        for (const auto& tag : tags->get_array()) {
-            const auto* pair = tag.if_array();
-            if (pair != nullptr && pair->size() >= 2 && text_of(pair->at(0)) == topic_tag &&
-                pair->at(1).is_string()) {
-                e.topic = text_of(pair->at(1));
-                break;
-            }
+    e.subscription = json::text_of(array[1]);
+    e.id = json::text_of(o["id"]);
+    e.content = json::text_of(o["content"]);
+    // An array is its own range of elements, which the handle, outliving the loop, keeps.
+    const json::const_value tags = o["tags"];
+    for (const json::const_value tag : tags) {
+        if (tag.is_array() && tag.size() >= 2 && json::text_of(tag[0]) == topic_tag &&
+            tag[1].is_string()) {
+            e.topic = json::text_of(tag[1]);
+            break;
         }
     }
     return e;
@@ -413,28 +416,28 @@ inline std::optional<relay_message> read_event(const boost::json::array& array) 
 }  // namespace detail
 
 /**
- * The message a parsed relay text holds, as views into `document`.
+ * The message a parsed relay text holds, as views into its document.
  *
- * @param document The parsed text, which the caller keeps alive while it reads the views.
+ * A key written twice is read as JavaScript reads it, the last value, which the parse keeps.
+ *
+ * @param document The root of the parsed text, whose document the caller keeps alive and unchanged
+ * while it reads the views.
  * @return The message, or nothing when Trystero would ignore it: not an array, or not one of the
  * messages of @ref relay_message.
  */
-inline std::optional<relay_message> read_relay_message(const boost::json::value& document) {
-    const auto* array = document.if_array();
-    if (array == nullptr || array->empty() || !array->at(0).is_string()) {
+inline std::optional<relay_message> read_relay_message(const json::const_value& document) {
+    if (!document.is_array() || !document[0].is_string()) {
         return std::nullopt;
     }
-    const auto text_at = [array](std::size_t i) {
-        return i < array->size() ? detail::text_of(array->at(i)) : std::string_view();
-    };
+    const auto text_at = [&document](std::uint64_t i) { return json::text_of(document[i]); };
     const std::string_view type = text_at(0);
     if (type == "EVENT") {
-        return detail::read_event(*array);
+        return detail::read_event(document);
     }
     if (type == "OK") {
         return ok{
             .id = text_at(1),
-            .accepted = array->size() > 2 && array->at(2).is_bool() && array->at(2).get_bool(),
+            .accepted = document[2].value_or(false),
             .reason = text_at(3),
         };
     }
