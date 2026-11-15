@@ -266,7 +266,14 @@ what each costs a room.
   clock, the one the room took first. So an offer whose sealed text the
   backend is still opening (Web Crypto's asynchronous step in a page) keeps
   its place however many new ids arrive meanwhile, and is acted on once it
-  opens; and the offers opened at once come from at most 32 peers.
+  opens.
+* A negotiation opens one offer of its peer at a time, as Trystero answers
+  one at a time: until it is opened, another offer in that name is ignored,
+  and the same offer through another relay has the answer sent there too.
+  So the room opens at most 32 offers at once, and offers sent in one name,
+  however many, hold one open and one copy of an offer. As with Trystero, a
+  forged offer opened first has the peer's own, arriving meanwhile, wait
+  until the peer sends it again, 2 s later.
 * A room makes at most `max_connections_per_window` (64) connections in any
   57 s, however soon they end; the platform backend makes at most 256 a
   minute on both targets (<<trystero-platform-config>>), and a page holds at

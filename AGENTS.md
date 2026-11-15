@@ -311,15 +311,23 @@ holds only what is specific to trystero.
     offer and answer expire without a connection is dropped, an idle one
     gives its place to a new peer, and a new peer beyond the bound is
     refused and logged once. Idle means no connection and no offer of the
-    peer being opened (`negotiation::offers_opening`): the one idle longest
+    peer being opened (`negotiation::opening_offer`): the one idle longest
     goes, and of those idle as long, as at one instant of a page's coarse
     clock, the one taken first (`negotiation::admitted`), never the first in
     id order. An offer the sealer is opening keeps its place, so new ids
-    that arrive meanwhile cannot have the room drop it unopened, and the
-    offers opened at once come from at most 32 peers (`room`'s
+    that arrive meanwhile cannot have the room drop it unopened (`room`'s
     `an_offer_being_opened_keeps_its_place` and
     `a_flood_of_offers_at_one_instant_is_bounded`, over the memory backend's
     `hold_sealer_opens`).
+  - A negotiation opens one offer of its peer at a time, as Trystero answers
+    one at a time (`dist/signal-handler.mjs:264-323`): another offer in that
+    name is ignored until it is opened, and the same offer through another
+    relay meanwhile has the answer sent there too, as Trystero's replay
+    records its relay. So the room opens at most 32 offers at once, and
+    offers in one name, however many, hold one open and one copy of an offer
+    (`room`'s `offers_in_one_name_are_opened_one_at_a_time`). As with
+    Trystero, a forged offer opened first has the peer's own, arriving
+    meanwhile, wait until the peer sends it again, 2 s later.
   - A room makes at most `max_connections_per_window` (64) connections in
     any 57 s, however soon they end. The platform backend makes at most
     `backend_config::max_peer_connections_per_minute` (256) in any minute,

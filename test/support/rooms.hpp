@@ -173,11 +173,13 @@ private:
     }
 };
 
-/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own. */
+/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own to one
+ * relay, the first unless another is named. */
 class flooder {
 public:
-    flooder(fixture& f, std::string_view room) : f_(f), topic_(protocol::root_topic(app_id, room)) {
-        socket_ = f.net.connect(relay_a,
+    flooder(fixture& f, std::string_view room, std::string_view relay = relay_a)
+        : f_(f), topic_(protocol::root_topic(app_id, room)) {
+        socket_ = f.net.connect(relay,
                                 {
                                     .open = [this] { open_ = true; },
                                     .message =
@@ -205,11 +207,12 @@ public:
             protocol::nostr::subscribe_message("watch" + std::to_string(next_++), topics, {}));
     }
 
-    /** Publishes a signal on a topic, in any peer's name. */
-    void publish(std::string_view topic, const protocol::signal_message& m) {
+    /** Publishes a signal on a topic, in any peer's name; with a nonce, as an event of its own. */
+    void publish(std::string_view topic, const protocol::signal_message& m,
+                 std::string_view nonce = {}) {
         const std::array<std::uint8_t, 32> aux{};
         socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic,
-                                                     protocol::write_signal(m), aux));
+                                                     protocol::write_signal(m, nonce), aux));
     }
 
     /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.

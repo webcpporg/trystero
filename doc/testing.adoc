@@ -100,9 +100,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
   signals, offers being opened that keep their places when new ids arrive
-  at the same instant, a relay that closes at once or rate-limits, a
-  three-peer mesh, coroutines and view handlers, JSON payloads read in the
-  room's resource up to its bound, and a rejected document receive.
+  at the same instant, one offer of a peer opened at a time, a relay that
+  closes at once or rate-limits, a three-peer mesh, coroutines and view
+  handlers, JSON payloads read in the room's resource up to its bound, and a
+  rejected document receive.
 
 | `app_impl`
 | Configuration copying and validation, a self id that is not UTF-8 set

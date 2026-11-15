@@ -35,6 +35,7 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -595,8 +596,9 @@ void an_offer_being_opened_keeps_its_place() {
     auto z = join(z_app, "opening");
     std::vector<std::string> joined;
     z.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
-    // Its announcement reaches both peers, whose ids are below its own: each offers to it, and the
-    // room receives each offer on both relays, four opens that wait.
+    // Its announcement reaches both peers, whose ids are below its own: each offers to it and sends
+    // its candidate, and the room's opens of the two offers and the two candidates wait. (Each
+    // signal comes through both relays, as one event, which the room acts on once.)
     settle();
     BOOST_TEST_EQ(f.net.held_sealer_opens(), 4U);
     flooder crowd(f, "opening");
@@ -658,6 +660,67 @@ void a_flood_of_offers_at_one_instant_is_bounded() {
     trystero::app a_app(f.io.get_executor(), f.net, app_config("0aaaaaaaaaaaaaaaaaaa"));
     const auto a = join(a_app, "instant");
     BOOST_TEST(run_until(f, [&] { return joined.size() == 1; }));
+}
+
+// Offers in one peer's name, all at one instant, while the room's sealer takes its time to open
+// them: first one sealed with the room key, then 40 others, each a text of its own and 48 KiB
+// long, and the first again, as an event of its own through the other relay. The room opens one
+// offer of a peer at a time, as Trystero answers one at a time, and ignores the others in that name
+// until it is opened: one open, and one copy of an offer, the first, in the room's resource. The
+// first again has the answer sent through its relay too, as Trystero's replay records the relay.
+// When each offer started an open of its own, holding its copy, only the relays' rate bounded
+// them: 42 opens, some 1.9 MiB, and an answer through the first relay alone (measured).
+void offers_in_one_name_are_opened_one_at_a_time() {
+    constexpr std::size_t offers = 40;
+    const std::string padding(std::size_t{48} * 1024, 'x');
+    counting_resource memory;  // first: the io_context's pending operations free into it
+    fixture f{true};
+    const std::string_view z_id = "zzzzzzzzzzzzzzzzzzzz";
+    auto c = app_config(z_id);
+    c.memory = &memory;
+    trystero::app z_app(f.io.get_executor(), f.net, std::move(c));
+    const auto z = join(z_app, "one");
+    const auto z_topic = trystero::protocol::peer_topic(app_id, "one", z_id);
+    // Two sockets in the name of 0name, one on each relay, which see the room's answers to it.
+    std::set<std::string> answered_through;
+    flooder on_a(f, "one");
+    flooder on_b(f, "one", relay_b);
+    for (auto [socket, relay] : {std::pair{&on_a, relay_a}, std::pair{&on_b, relay_b}}) {
+        socket->on_text = [&answered_through, relay, z_id](std::string_view text) {
+            const auto signal = relayed_signal(text);
+            if (signal && signal->peer == z_id && !signal->answer.empty()) {
+                answered_through.emplace(relay);
+            }
+        };
+        socket->watch(trystero::protocol::peer_topic(app_id, "one", "0name"));
+    }
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    const std::size_t joined = memory.in_use;
+    f.net.hold_sealer_opens = true;
+    const auto sealed = flooder::sealed("one", "mem:999");
+    const trystero::protocol::signal_message first{
+        .peer_id = "0name",
+        .offer_id = "first",
+        .offer = sealed,
+    };
+    on_a.publish(z_topic, first);
+    for (std::size_t i = 0; i < offers; ++i) {
+        on_a.publish(z_topic, {
+                                  .peer_id = "0name",
+                                  .offer_id = "o" + std::to_string(i),
+                                  .offer = padding + std::to_string(i),
+                              });
+    }
+    on_b.publish(z_topic, first, "again");
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    BOOST_TEST_EQ(f.net.held_sealer_opens(), 1U);
+    BOOST_TEST_LT(memory.in_use - joined, padding.size());
+    f.net.hold_sealer_opens = false;
+    f.net.release_sealer_opens();
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    BOOST_TEST_EQ(f.net.made_connections, 1U);
+    const std::set<std::string> both{relay_a, relay_b};
+    BOOST_TEST_ALL_EQ(answered_through.begin(), answered_through.end(), both.begin(), both.end());
 }
 
 // Unsealed offers from 2000 fresh ids, which anyone who reads the relays can send: the room reports
@@ -1872,6 +1935,7 @@ int main() {
     forged_offers_make_no_connection();
     an_offer_being_opened_keeps_its_place();
     a_flood_of_offers_at_one_instant_is_bounded();
+    offers_in_one_name_are_opened_one_at_a_time();
     signals_that_do_not_open_are_reported_once_per_interval();
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();

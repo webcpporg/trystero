@@ -51,8 +51,9 @@ namespace webcpp::trystero::detail {
  * | announcement | the lower peer id offers on the relay that carried it; the higher one asks the |
  * |              | other to offer by announcing itself on the other's topic, at most once a       |
  * |              | second per peer and once in 5.3 s per relay for the whole room                 |
- * | offer        | answers it, unless it already answers one, or offers itself and its id is      |
- * |              | lower                                                                          |
+ * | offer        | answers it, unless it already answers or opens one, or offers itself and its   |
+ * |              | id is lower; the same offer through another relay, while it is opened, has the |
+ * |              | answer sent there too                                                          |
  * | answer       | applies it to the matching offer                                               |
  * | candidate    | adds it to the connection its offer id names, or keeps it until that           |
  * |              | connection has a remote description                                            |
@@ -96,7 +97,7 @@ public:
     /**
      * The most negotiations a room holds at once with peers it is not connected to, each with at
      * most two pending connections: a peer beyond it waits for its next announcement, or its offer
-     * sent again. It bounds the offers opened at once from fresh ids too.
+     * sent again. It bounds the offers opened at once too, one per negotiation.
      */
     static constexpr std::size_t max_unconnected_peers = 32;
 
@@ -261,6 +262,9 @@ private:
     struct negotiation {
         negotiation(pmr_allocator a, std::uint64_t admitted)
             : admitted(admitted),
+              opening_offer_id(a),
+              opening_offer(a),
+              opening_relays(a),
               offer(a),
               offer_id(a),
               sealed_offer(a),
@@ -284,9 +288,13 @@ private:
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
         time_point last_message{};
-        // How many of the peer's offers the sealer is opening: until each completes, the
-        // negotiation is not idle, and keeps its place.
-        std::size_t offers_opening = 0;
+        // The peer's offer the sealer is opening, one at a time, as Trystero answers one at a
+        // time: its id, its sealed text, empty when none is being opened, and the relays it came
+        // through, where the answer goes. Until it is opened, the negotiation is not idle, and
+        // keeps its place.
+        std::pmr::string opening_offer_id;
+        std::pmr::string opening_offer;
+        std::pmr::set<std::size_t> opening_relays;
         // Whether a signal of this negotiation that did not open was reported.
         bool failed_open_reported = false;
         // Whether an offer or an answer of this negotiation that the room had used before was
@@ -357,7 +365,7 @@ private:
      * offer of its peer is being opened.
      */
     static bool idle(const negotiation& n) {
-        return !n.connected && !n.offer.pc && !n.answer.pc && n.offers_opening == 0;
+        return !n.connected && !n.offer.pc && !n.answer.pc && n.opening_offer.empty();
     }
 
     /**
@@ -606,37 +614,53 @@ private:
         if (n.offer.pc && self_id_ < peer) {
             return;  // we lead; our offer stands
         }
+        // One offer of a peer is opened at a time, as Trystero answers one at a time, ignoring
+        // another until the first fails (dist/signal-handler.mjs:264-323): so offers sent in one
+        // name hold one open and one copy. The same offer through another relay has the answer
+        // sent there too, as Trystero's replay records its relay.
+        if (!n.opening_offer.empty()) {
+            if (offer == n.opening_offer && offer_id == n.opening_offer_id) {
+                n.opening_relays.insert(relay);
+            }
+            return;
+        }
         // Nothing changes until the offer opens with the room key: a forged one, which anyone who
         // reads the relays can send in any peer's name, makes no connection and resets no offer.
         // Until it opens, the negotiation keeps its place.
-        ++n.offers_opening;
+        n.opening_offer_id = offer_id;
+        n.opening_offer = offer;
+        n.opening_relays.insert(relay);
         const auto weak = weak_from_this();
-        sealer_->open(
-            offer,
-            bind<void(boost::system::error_code, std::string_view)>(
-                [weak, relay, peer = copy(peer), admitted = n.admitted, offer_id = copy(offer_id),
-                 offer = copy(offer)](boost::system::error_code ec, std::string_view sdp) {
-                    if (const auto self = weak.lock()) {
-                        self->on_offer_opened(relay, peer, admitted, offer_id, offer, ec, sdp);
-                    }
-                }));
+        sealer_->open(n.opening_offer, bind<void(boost::system::error_code, std::string_view)>(
+                                           [weak, peer = copy(peer), admitted = n.admitted](
+                                               boost::system::error_code ec, std::string_view sdp) {
+                                               if (const auto self = weak.lock()) {
+                                                   self->on_offer_opened(peer, admitted, ec, sdp);
+                                               }
+                                           }));
     }
 
     /**
-     * Answers an offer the sealer opened for the negotiation taken in `admitted`-th: makes the
-     * answering connection and applies the offer as its remote description. An offer that did not
-     * open changes nothing, nor one whose negotiation the room no longer holds: the peer left, or
-     * the room closed.
+     * Answers the offer the sealer opened for the negotiation taken in `admitted`-th: makes the
+     * answering connection and applies the offer as its remote description, and the next offer of
+     * the peer may be opened. An offer that did not open changes nothing, nor one whose
+     * negotiation the room no longer holds: the peer left, or the room closed.
      */
-    void on_offer_opened(std::size_t relay, std::string_view peer, std::uint64_t admitted,
-                         std::string_view offer_id, std::string_view offer,
+    void on_offer_opened(std::string_view peer, std::uint64_t admitted,
                          boost::system::error_code ec, std::string_view sdp) {
         auto* found = find(peer, admitted);
         if (found == nullptr) {
             return;
         }
         auto& n = *found;
-        --n.offers_opening;
+        // Taken out of the negotiation, which then opens none: the same resource on both sides,
+        // so each swap only exchanges what the two hold.
+        std::pmr::string offer_id(memory_);
+        std::pmr::string offer(memory_);
+        std::pmr::set<std::size_t> relays(memory_);
+        offer_id.swap(n.opening_offer_id);
+        offer.swap(n.opening_offer);
+        relays.swap(n.opening_relays);
         if (n.connected) {
             return;
         }
@@ -651,21 +675,35 @@ private:
             replayed(peer, n, "offer");
             return;
         }
-        auto made = make_connection(peer);
+        const auto made = make_connection(peer);
         if (!made) {
             return;
         }
+        start_answer(peer, n, made, std::move(offer_id), std::move(offer), relays, sdp);
+    }
+
+    /**
+     * Answers the offer `offer_id`, sealed as `offer` and opened as `sdp`, through the connection
+     * `pc`: it becomes the negotiation's answering one, the offer its remote description, and the
+     * answer goes through every relay the offer came through.
+     */
+    void start_answer(std::string_view peer, negotiation& n,
+                      const std::shared_ptr<backend::peer_connection>& pc,
+                      std::pmr::string offer_id, std::pmr::string offer,
+                      const std::pmr::set<std::size_t>& relays, std::string_view sdp) {
         used_.insert(sdp);
         if (n.offer.pc) {
             reset_offer(n);
         }
         log_("signal", "offer ", offer_id, " from ", peer);
-        n.answer.pc = std::move(made);
-        n.answered_offer_id = offer_id;
-        n.answered_offer = offer;
-        n.answer_relays.insert(relay);
-        n.answer_replayed[relay] = steady_now(factory_);
-        const auto pc = n.answer.pc;
+        n.answer.pc = pc;
+        n.answered_offer_id = std::move(offer_id);
+        n.answered_offer = std::move(offer);
+        const auto now = steady_now(factory_);
+        for (const auto relay : relays) {
+            n.answer_relays.insert(relay);
+            n.answer_replayed[relay] = now;
+        }
         const auto weak = weak_from_this();
         pc->set_handlers({
             .ice_candidate = bind<void(std::string_view)>(
