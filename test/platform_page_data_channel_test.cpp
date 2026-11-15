@@ -67,7 +67,7 @@ struct state {
     trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::peer_connection> connection;
     std::shared_ptr<trystero::backend::data_channel> wrapper;
-    int messages = 0;
+    std::size_t messages = 0;
     std::size_t last_size = 0;
 };
 
@@ -132,7 +132,7 @@ int main() {
         BOOST_ERROR("the frame sent last never arrived");
     }
     // The first frame to arrive is the last one sent: the run stopped there.
-    BOOST_TEST_EQ(s.messages, 1);
+    BOOST_TEST_EQ(s.messages, 1U);
     BOOST_TEST_EQ(s.last_size, 3U);
     BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
     return webcpp::test::exit_status(boost::report_errors());

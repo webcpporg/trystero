@@ -72,10 +72,10 @@ class memory_timer;
  * that nothing keeps it, or its memory in the resource of the room or connection that made it,
  * past that call. */
 struct virtual_clock_state {
-    using key = std::pair<double, std::uint64_t>;
+    using key = std::pair<std::chrono::steady_clock::time_point, std::uint64_t>;
     std::map<key, memory_timer*> due;
     std::uint64_t scheduled = 0;
-    double now_ms = 0;
+    std::chrono::steady_clock::time_point now{};
 };
 
 /** An Asio timer, as the platform backend's: a wait cancelled, replaced or destroyed never fires,
@@ -106,8 +106,7 @@ public:
             unschedule();  // a restart replaces the pending expiry
             fire_ = std::move(fire);
             if (const auto c = clock_.lock()) {
-                key_ = virtual_clock_state::key{c->now_ms + static_cast<double>(delay.count()),
-                                                c->scheduled++};
+                key_ = virtual_clock_state::key{c->now + delay, c->scheduled++};
                 c->due.emplace(*key_, this);
             }
             return;
@@ -302,6 +301,26 @@ inline void memory_relay::close_all() {
     }
 }
 
+/** A subscription of `socket` to the kinds and topics a NIP-01 filter names, in `memory`. */
+inline memory_relay::subscription subscription_of(const std::shared_ptr<memory_websocket>& socket,
+                                                  const protocol::json::const_value& filter,
+                                                  std::pmr::memory_resource* memory) {
+    memory_relay::subscription s{
+        .socket = socket,
+        .kinds = std::pmr::set<std::int64_t>(memory),
+        .topics = std::pmr::set<std::pmr::string, std::less<>>(memory),
+    };
+    for (const protocol::json::const_value k : filter["kinds"]) {
+        if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
+            s.kinds.insert(*kind);
+        }
+    }
+    for (const protocol::json::const_value t : filter["#x"]) {
+        s.topics.emplace(protocol::json::text_of(t));
+    }
+    return s;
+}
+
 inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
                                   std::string_view text) {
     ++texts;
@@ -318,23 +337,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     }
     const std::string_view type = protocol::json::text_of(message.at(0));
     if (type == "REQ" && message.size() >= 3) {
-        subscription s{
-            .socket = from,
-            .kinds = std::pmr::set<std::int64_t>(memory_),
-            .topics = std::pmr::set<std::pmr::string, std::less<>>(memory_),
-        };
-        const protocol::json::const_value filter = message.at(2);
-        for (const protocol::json::const_value k : filter["kinds"]) {
-            if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
-                s.kinds.insert(*kind);
-            }
-        }
-        for (const protocol::json::const_value t : filter["#x"]) {
-            s.topics.emplace(protocol::json::text_of(t));
-        }
         subscriptions_.insert_or_assign(
             key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
-            std::move(s));
+            subscription_of(from, message.at(2), memory_));
         std::pmr::string eose(R"(["EOSE",)", from->memory());
         protocol::json::append_value(eose, message.at(1));
         eose += ']';
@@ -744,17 +749,21 @@ public:
         }
     }
 
-    std::int64_t unix_seconds() override {
-        return 1'759'700'000 + static_cast<std::int64_t>(now_ms() / 1000);
+    /** A wall clock that moves with steady_now(), from 2025-10-05T21:33:20Z at its origin, in whole
+     * seconds. */
+    std::chrono::sys_seconds unix_now() override {
+        return std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)) +
+               std::chrono::floor<std::chrono::seconds>(steady_now().time_since_epoch());
     }
 
-    double now_ms() override {
+    /** The virtual clock's time, or the time since the network was made, `time_scale` times
+     * faster; from the steady clock's epoch. */
+    std::chrono::steady_clock::time_point steady_now() override {
         if (virtual_clock) {
-            return clock_ ? clock_->now_ms : 0.0;
+            return clock_ ? clock_->now : std::chrono::steady_clock::time_point();
         }
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
-                   .count() *
-               time_scale;
+        return std::chrono::steady_clock::time_point((std::chrono::steady_clock::now() - start_) *
+                                                     time_scale);
     }
 
     std::shared_ptr<memory_peer_connection> find(std::size_t id) {
@@ -819,8 +828,8 @@ public:
     /** The buffered_amount() of the channel of `pc`, or 0 when it has none. */
     [[nodiscard]] std::size_t buffered(std::size_t pc) const;
 
-    /** Whether the timers made from now on run on the virtual clock, which now_ms() and
-     * unix_seconds() then read, and which moves only through advance() and step(). */
+    /** Whether the timers made from now on run on the virtual clock, which steady_now() and
+     * unix_now() then read, and which moves only through advance() and step(). */
     bool virtual_clock = false;
     /** How many timers one advance() fires at most before it gives up. */
     std::size_t max_steps = 1'000'000;
@@ -832,9 +841,9 @@ public:
     bool poll_ready();
     /** A ready-handler budget was exhausted; the caller must report a test failure. */
     bool handlers_exhausted = false;
-    /** Runs the io_context's ready work, then fires the earliest timer due at or before
-     * `until_ms`, moving the clock to it; false, with the clock at `until_ms`, when none is due. */
-    bool step(double until_ms);
+    /** Runs the io_context's ready work, then fires the earliest timer due at or before `until`,
+     * moving the clock to it; false, with the clock at `until`, when none is due. */
+    bool step(std::chrono::steady_clock::time_point until);
     /** How many timers wait on the virtual clock. */
     [[nodiscard]] std::size_t scheduled() const;
 
@@ -853,8 +862,8 @@ private:
     /** Hands `frame` to the other end of the channel of `from`, or to that channel's queue when
      * channels buffer. */
     void deliver(std::size_t from, std::span<const std::uint8_t> frame);
-    /** Whether a timer of the virtual clock is due at or before `until_ms`. */
-    [[nodiscard]] bool due_by(double until_ms) const;
+    /** Whether a timer of the virtual clock is due at or before `until`. */
+    [[nodiscard]] bool due_by(std::chrono::steady_clock::time_point until) const;
 
     webcpp::asio::io_context& io_;
     std::mt19937_64 random_;
@@ -1104,8 +1113,8 @@ inline std::size_t memory_network::buffered(std::size_t pc) const {
     return channel ? channel->buffered_amount() : 0;
 }
 
-inline bool memory_network::due_by(double until_ms) const {
-    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until_ms;
+inline bool memory_network::due_by(std::chrono::steady_clock::time_point until) const {
+    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until;
 }
 
 inline bool memory_network::poll_ready() {
@@ -1122,7 +1131,7 @@ inline bool memory_network::poll_ready() {
     return false;
 }
 
-inline bool memory_network::step(double until_ms) {
+inline bool memory_network::step(std::chrono::steady_clock::time_point until) {
     // The clock moves from the first step, before any timer is made.
     if (virtual_clock && !clock_) {
         clock_ = std::make_shared<virtual_clock_state>();
@@ -1130,14 +1139,14 @@ inline bool memory_network::step(double until_ms) {
     if (!poll_ready()) {
         return false;
     }
-    if (!due_by(until_ms)) {
+    if (!due_by(until)) {
         if (clock_) {
-            clock_->now_ms = std::max(clock_->now_ms, until_ms);
+            clock_->now = std::max(clock_->now, until);
         }
         return false;
     }
     const auto it = clock_->due.begin();
-    clock_->now_ms = std::max(clock_->now_ms, it->first.first);
+    clock_->now = std::max(clock_->now, it->first.first);
     memory_timer* const timer = it->second;
     clock_->due.erase(it);
     timer->expire();
@@ -1145,7 +1154,7 @@ inline bool memory_network::step(double until_ms) {
 }
 
 inline bool memory_network::advance(std::chrono::milliseconds by) {
-    const double until = now_ms() + static_cast<double>(by.count());
+    const auto until = steady_now() + by;
     // A run of exactly max_steps timers is finite: only one more due timer stops it.
     for (std::size_t fired = 0;; ++fired) {
         if (!poll_ready()) {

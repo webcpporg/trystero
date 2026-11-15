@@ -319,7 +319,7 @@ struct payload_traits<pmr_document> {
             return std::nullopt;
         }
         auto v =
-            protocol::json::parse(as_text(m.payload()), webcpp::document::parse_options{}, memory);
+            protocol::json::parse(as_text(m.payload()), webcpp::document::parse_options(), memory);
         if (!v.has_value()) {
             return std::nullopt;
         }

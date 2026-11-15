@@ -47,7 +47,7 @@
 #else
 #include <pthread.h>
 #endif
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
 #include <emscripten/em_asm.h>
 #include <emscripten/heap.h>
 #include <poll.h>
@@ -58,6 +58,7 @@
 
 namespace trystero = webcpp::trystero;
 namespace tp = webcpp::trystero::protocol;
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -89,13 +90,13 @@ bool live_overflow = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
 // Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
 // emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
 // platform's (webcpp::asio's page "Allocation"), counted apart. A char, which JavaScript writes
 // through HEAPU8.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-unsigned char inside_runtime = 0;
+std::uint8_t inside_runtime = 0;
 // The C library's allocations made while inside_runtime is set.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t runtime_allocations = 0;
@@ -145,7 +146,7 @@ void count_this_thread() noexcept {
 // any under AddressSanitizer.
 #ifdef WEBCPP_TEST_TRYSTERO_ADDRESS_SANITIZER
 // Nothing of the C library is counted.
-#elif defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+#elif defined(__GLIBC__) || defined(WEBCPP_TARGET_EMSCRIPTEN)
 #define WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS 1
 #ifdef __GLIBC__
 extern "C" {
@@ -172,7 +173,7 @@ namespace {
 
 void* counted(void* pointer) {
     if (on_counted_thread() && counting && !inside_operator_new) {
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
         ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
 #else
         ++c_allocations;
@@ -219,60 +220,69 @@ int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
 }
 // NOLINTEND(readability-inconsistent-declaration-parameter-name,cert-dcl58-cpp)
 
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
 // Emscripten's select() is a poll() over an array of pollfd it callocs on every
 // call (system/lib/libc/musl/src/select/select.c), and Asio's reactor calls it on
 // every wait of the io_context the test drives: measured, thousands of calls
 // while two rooms exchange one payload. This one keeps the array on the stack, so
 // that the count sees the rooms' allocations rather than the C library's wait.
+namespace {
+
+/** The poll() event `event` when `set` holds `fd`, else none. */
+std::uint32_t requested_event(int fd, const fd_set* set, std::uint32_t event) {
+    return set != nullptr && FD_ISSET(fd, set) ? event : 0U;
+}
+
+void clear_set(fd_set* set) {
+    if (set != nullptr) {
+        FD_ZERO(set);
+    }
+}
+
+/** Adds the descriptor to `set` when poll() reported one of `events` on it; 1 when it did. */
+int ready_event(const pollfd& descriptor, fd_set* set, std::uint32_t events) {
+    if (set != nullptr && (static_cast<std::uint32_t>(descriptor.revents) & events) != 0) {
+        FD_SET(descriptor.fd, set);
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+// select's C declaration requires a mutable timeval pointer, although this implementation
+// does not change it.
 extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
-                      timeval* timeout) {
+                      timeval* timeout) {  // NOLINT(misc-const-correctness)
     if (nfds < 0 || nfds > FD_SETSIZE) {
         errno = EINVAL;
         return -1;
     }
     std::array<pollfd, FD_SETSIZE> fds{};
-    int n = 0;
+    std::size_t n = 0;
     for (int fd = 0; fd < nfds; ++fd) {
-        short events = 0;
-        events |= readfds != nullptr && FD_ISSET(fd, readfds) ? POLLIN : 0;
-        events |= writefds != nullptr && FD_ISSET(fd, writefds) ? POLLOUT : 0;
-        events |= exceptfds != nullptr && FD_ISSET(fd, exceptfds) ? POLLPRI : 0;
+        const std::uint32_t events = requested_event(fd, readfds, POLLIN) |
+                                     requested_event(fd, writefds, POLLOUT) |
+                                     requested_event(fd, exceptfds, POLLPRI);
         if (events != 0) {
-            fds[n++] = pollfd{fd, events, 0};
+            fds[n++] = pollfd{.fd = fd, .events = static_cast<short>(events), .revents = 0};
         }
     }
     const int milliseconds =
         timeout == nullptr ? -1
-                           : static_cast<int>(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
+                           : static_cast<int>((timeout->tv_sec * 1000) + (timeout->tv_usec / 1000));
     const int ready = poll(fds.data(), static_cast<nfds_t>(n), milliseconds);
     if (ready < 0) {
         return ready;
     }
-    if (readfds != nullptr) {
-        FD_ZERO(readfds);
-    }
-    if (writefds != nullptr) {
-        FD_ZERO(writefds);
-    }
-    if (exceptfds != nullptr) {
-        FD_ZERO(exceptfds);
-    }
+    clear_set(readfds);
+    clear_set(writefds);
+    clear_set(exceptfds);
     int count = 0;
-    for (int i = 0; i < n && ready > 0; ++i) {
-        const short got = fds[i].revents;
-        if (readfds != nullptr && (got & (POLLIN | POLLHUP | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, readfds);
-            ++count;
-        }
-        if (writefds != nullptr && (got & (POLLOUT | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, writefds);
-            ++count;
-        }
-        if (exceptfds != nullptr && (got & POLLPRI) != 0) {
-            FD_SET(fds[i].fd, exceptfds);
-            ++count;
-        }
+    for (std::size_t i = 0; i < n && ready > 0; ++i) {
+        count += ready_event(fds[i], readfds, POLLIN | POLLHUP | POLLERR);
+        count += ready_event(fds[i], writefds, POLLOUT | POLLERR);
+        count += ready_event(fds[i], exceptfds, POLLPRI);
     }
     return count;
 }
@@ -322,10 +332,10 @@ void track(void* pointer) noexcept {
         return;
     }
     std::size_t i = home_of(pointer);
-    while (live.at(i) != nullptr) {
+    while (live[i] != nullptr) {
         i = (i + 1) & (live_slots - 1);
     }
-    live.at(i) = pointer;
+    live[i] = pointer;
     ++live_count;
 }
 
@@ -335,22 +345,22 @@ void untrack(const void* pointer) noexcept {
         return;
     }
     std::size_t i = home_of(pointer);
-    while (live.at(i) != pointer) {
-        if (live.at(i) == nullptr) {
+    while (live[i] != pointer) {
+        if (live[i] == nullptr) {
             return;
         }
         i = (i + 1) & (live_slots - 1);
     }
-    live.at(i) = nullptr;
+    live[i] = nullptr;
     --live_count;
     // Every entry after it in its run moves back unless its own slot lies between them.
-    for (std::size_t j = (i + 1) & (live_slots - 1); live.at(j) != nullptr;
+    for (std::size_t j = (i + 1) & (live_slots - 1); live[j] != nullptr;
          j = (j + 1) & (live_slots - 1)) {
-        const std::size_t k = home_of(live.at(j));
+        const std::size_t k = home_of(live[j]);
         const bool stays = i < j ? (i < k && k <= j) : (i < k || k <= j);
         if (!stays) {
-            live.at(i) = live.at(j);
-            live.at(j) = nullptr;
+            live[i] = live[j];
+            live[j] = nullptr;
             i = j;
         }
     }
@@ -480,12 +490,15 @@ private:
     }
 };
 
+/** How long each run of the io_context the test drives lasts. */
+constexpr std::chrono::milliseconds slice = 10ms;
+
 /** Runs io in slices of 10 ms until done holds, for 5 s at most. */
 template <class Predicate>
 bool run_until(webcpp::asio::io_context& io, Predicate done) {
-    for (int slice = 0; slice < 500 && !done(); ++slice) {
+    for (auto ran = 0ms; ran < 5s && !done(); ran += slice) {
         io.restart();
-        io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
+        io.run_for(slice);  // lint-run: the memory relays post to it
     }
     return done();
 }
@@ -564,7 +577,7 @@ std::size_t document_cost(const trystero::pmr_document& payload,
     global_allocations = 0;
     counting = true;
     tp::json::append_value(text, payload.root());
-    const bool read = tp::json::parse(text, webcpp::document::parse_options{}, memory).has_value();
+    const bool read = tp::json::parse(text, webcpp::document::parse_options(), memory).has_value();
     counting = false;
     BOOST_TEST(read);
     BOOST_TEST_EQ(live_count, 0U);
@@ -585,7 +598,7 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
-    trystero::test::memory_relay& relay_state = network.relay(relay);
+    const trystero::test::memory_relay& relay_state = network.relay(relay);
     trystero::app a_app(io.get_executor(), network,
                         {
                             .app_id = "allocation",
@@ -624,7 +637,7 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // A window in which the relay carries a text, an announcement the rooms read, sees that
     // parse too; such a window is opened again, five times at most.
     bool quiet = false;
-    for (int window = 0; window < 5 && !quiet; ++window) {
+    for (std::size_t window = 0; window < 5 && !quiet; ++window) {
         Payload value = make(&a_memory);
         const std::size_t expected = cost(value, &z_memory);
         const std::size_t texts = relay_state.texts;
@@ -654,6 +667,8 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
 }
 
 /** How many values a document holds, its own included. */
+// Recursive as deep as the document nests, which its parse bounded.
+// NOLINTNEXTLINE(misc-no-recursion)
 std::size_t values_in(const tp::json::const_value& v) {
     std::size_t n = 1;
     if (v.is_array()) {
@@ -709,13 +724,14 @@ void reading_a_text_costs_the_heap_a_bounded_working_state() {
         std::size_t bound;
     };
 
-    const std::array<text, 5> texts{{
-        {"relay event", relayed, tp::nostr::max_parsed_relay_text_bytes},
-        {"relay OK", ok, tp::nostr::max_parsed_relay_text_bytes},
-        {"signal", signal, tp::max_parsed_signal_bytes},
-        {"handshake", handshake, tp::max_handshake_bytes},
-        {"candidate", candidate, tp::max_sealed_candidate_bytes},
-    }};
+    constexpr std::size_t relay_bound = tp::nostr::max_parsed_relay_text_bytes;
+    const std::array<text, 5> texts{
+        text{.what = "relay event", .json = relayed, .bound = relay_bound},
+        text{.what = "relay OK", .json = ok, .bound = relay_bound},
+        text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
+        text{.what = "handshake", .json = handshake, .bound = tp::max_handshake_bytes},
+        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
+    };
     for (const text& t : texts) {
         const std::size_t outstanding = memory.outstanding;
         global_allocations = 0;
@@ -739,11 +755,11 @@ void reading_a_text_costs_the_heap_a_bounded_working_state() {
     c_allocations = 0;
 }
 
-/** Runs io for about `milliseconds`, whatever happens. */
-void run_for(webcpp::asio::io_context& io, int milliseconds) {
-    for (int slice = 0; slice < milliseconds / 10; ++slice) {
+/** Runs io for about `duration`, whatever happens, in slices of 10 ms. */
+void run_for(webcpp::asio::io_context& io, std::chrono::milliseconds duration) {
+    for (auto ran = 0ms; ran + slice <= duration; ran += slice) {
         io.restart();
-        io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
+        io.run_for(slice);  // lint-run: the memory relays post to it
     }
 }
 
@@ -754,7 +770,7 @@ void run_for(webcpp::asio::io_context& io, int milliseconds) {
  */
 void warm(webcpp::asio::io_context& io) {
     std::vector<std::unique_ptr<webcpp::asio::steady_timer>> timers;
-    for (int i = 0; i < 256; ++i) {
+    for (std::size_t i = 0; i < 256; ++i) {
         timers.push_back(std::make_unique<webcpp::asio::steady_timer>(io, std::chrono::hours(1)));
         timers.back()->async_wait([](boost::system::error_code /*ec*/) {});
     }
@@ -762,7 +778,7 @@ void warm(webcpp::asio::io_context& io) {
         timer->cancel();
     }
     webcpp::asio::post(io, [] {});
-    run_for(io, 20);
+    run_for(io, 20ms);
 }
 
 // tag::config[]
@@ -835,7 +851,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         trystero::app z_app(io.get_executor(), network,
                             app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines));
         auto z = join(z_app, "room", options_in(z_memory));
-        run_for(io, 100);
+        run_for(io, 100ms);
         {
             trystero::app a_app(io.get_executor(), network,
                                 app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
@@ -877,7 +893,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //     }
     //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
     const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
-    run_for(io, 300);
+    run_for(io, 300ms);
     counting = false;
     BOOST_TEST_GT(left_behind, 0U);
     BOOST_TEST_EQ(a_memory.outstanding, 0U);
@@ -973,7 +989,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
                 BOOST_TEST(run_until(io, [&] { return got == 2; }));
                 BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
-            run_for(io, 300);  // the io_context runs out of the rooms' work
+            run_for(io, 300ms);  // the io_context runs out of the rooms' work
         }
         counting = false;
     }
@@ -1032,7 +1048,7 @@ namespace {
  * apart, since a suspension of webcpp::asio's run family makes one, which is no room's.
  */
 void mark_the_runtime_allocations() {
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
     // clang-format off
     EM_ASM({
         if (typeof Asyncify !== 'object' || typeof Asyncify.allocateData !== 'function') {
@@ -1060,7 +1076,7 @@ int main() {
     count_this_thread();
     mark_the_runtime_allocations();
 #if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
-    !defined(__EMSCRIPTEN__)
+    !defined(WEBCPP_TARGET_EMSCRIPTEN)
     malloc_logger = &count_c_allocation;
 #endif
     the_replaced_operators_serve_every_alignment();
@@ -1082,7 +1098,7 @@ int main() {
         [](std::pmr::memory_resource* memory) {
             auto made = tp::json::parse(
                 R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
-                webcpp::document::parse_options{}, memory);
+                webcpp::document::parse_options(), memory);
             webcpp::test::require(BOOST_TEST(made.has_value()));
             return std::move(made).unsafe_value();
         },

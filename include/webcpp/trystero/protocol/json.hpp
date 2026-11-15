@@ -361,13 +361,12 @@ inline void append_string(std::pmr::string& out, std::string_view text) {
  * @param v The value; `undefined` writes nothing.
  */
 template <class Storage>
-// A handle is taken by value, as document passes every handle.
-// NOLINTNEXTLINE(performance-unnecessary-value-param)
+// A handle is taken by value, as document passes every handle, and moved on.
 void append_value(std::pmr::string& out, webcpp::document::basic_const_value<traits, Storage> v) {
     constexpr std::uint64_t piece = 8;
     // A sink that returns nothing never fails, so neither does the writing.
     static_cast<void>(webcpp::document::stringify_to(
-        v, [&out](std::string_view text) { out.append(text); }, 0, piece));
+        std::move(v), [&out](std::string_view text) { out.append(text); }, 0, piece));
 }
 
 /**

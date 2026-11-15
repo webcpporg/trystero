@@ -10,7 +10,6 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
-#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/timer.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -255,7 +254,7 @@ public:
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        if (!constructions_.take(trystero::detail::steady_now(*this))) {
+        if (!constructions_.take(steady_now())) {
             return nullptr;
         }
         auto made = webrtc::peer_connection::make(runtime_, ex_, servers, config_.bind_address,
@@ -308,23 +307,22 @@ public:
     }
 
     /**
-     * Seconds since the Unix epoch, from the system's wall clock, in a page `Date.now()`'s.
+     * The standard library's wall clock, which a page reads from `Date.now()`, in whole seconds.
      *
-     * @return The current time, in whole seconds.
+     * @return The current time, in whole seconds since the Unix epoch.
      */
-    std::int64_t unix_seconds() override {
+    std::chrono::sys_seconds unix_now() override {
         const auto now = std::chrono::system_clock::now();  // lint-world: Nostr's created_at
-        return std::chrono::floor<std::chrono::seconds>(now.time_since_epoch()).count();
+        return std::chrono::floor<std::chrono::seconds>(now);
     }
 
     /**
-     * Milliseconds from the standard library's steady clock, in a page `performance.now()`'s.
+     * The standard library's steady clock, which a page reads from `performance.now()`.
      *
-     * @return The current time, in milliseconds since the clock's epoch.
+     * @return The current time, from the steady clock's epoch.
      */
-    double now_ms() override {
-        const auto now = std::chrono::steady_clock::now();  // lint-world: Trystero's timing
-        return std::chrono::duration<double, std::milli>(now.time_since_epoch()).count();
+    std::chrono::steady_clock::time_point steady_now() override {  // lint-world: a type only
+        return std::chrono::steady_clock::now();                   // lint-world: Trystero's timing
     }
 
 private:
