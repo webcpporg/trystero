@@ -18,9 +18,9 @@ webcpp::beast's, natively Boost.Beast's own and in a page its `WebSocket`;
 its timers are webcpp::asio's `steady_timer`. Two parts are the target's own,
 chosen by `WEBCPP_TARGET_EMSCRIPTEN`: the sealer, natively OpenSSL's AES-GCM
 and in a page `crypto.subtle`, and the source of randomness, natively
-OpenSSL's generator and in a page `getentropy`, which Emscripten draws from
-`crypto.getRandomValues`. Its clocks are the standard library's on both:
-`std::chrono::system_clock` for Nostr's `created_at`, and
+OpenSSL's generator and in a page `crypto.getRandomValues`, called from
+JavaScript that catches what it throws. Its clocks are the standard
+library's on both: `std::chrono::system_clock` for Nostr's `created_at`, and
 `std::chrono::steady_clock` for its timing, which Emscripten reads from the
 page's `Date.now()` and `performance.now()`.
 
@@ -120,15 +120,21 @@ chain of Asio operations on the room's executor (resolve, connect, TLS, the
 handshake, then one read after another, and one write at a time), whose
 handlers carry the room's allocator, so that what Asio and Beast allocate
 for them, the read buffer among it, is in the room's resource
-(<<trystero-allocation>>), and a message allocates nothing outside it; in a
-page the stream's own state is there too. Natively what Beast, Asio and
-OpenSSL allocate of their own, which takes no allocator, stays outside it,
-for each connection: their streams' state, the resolver's, the handshake's
-request and response, the verify callback, their timers' waits and each
-keep-alive ping's frame (<<trystero-allocation-outside>>). A write that
-fails ends the connection, which reports its close at once. The WebSockets
-are Beast's rather than libdatachannel's own, so the relays run on the
-room's executor like everything else.
+(<<trystero-allocation>>); the reads' and the writes' handlers have no
+executor of their own, so that Asio wraps none of their completions. In a
+page the stream's own state is there too. What stays outside it is listed in
+<<trystero-allocation-outside>>: natively, for each connection, what Beast,
+Asio and OpenSSL allocate of their own, which takes no allocator (their
+streams' state, the resolver's, the handshake's request and response, the
+verify callback, their timers' waits and each keep-alive ping's frame), and
+a message allocates nothing more than the wait of the idle timer, from
+Asio's per-thread cache; in a page, for each connection, the resolver's
+results, and for each event of the page's `WebSocket` the string embind makes
+of its type, two for a message. A write that fails ends the connection,
+which reports its close at once. A relay's messages are texts (NIP-01): a
+binary one is dropped, on both targets. The WebSockets are Beast's rather
+than libdatachannel's own, so the relays run on the room's executor like
+everything else.
 
 A relay's URL is read with Boost.URL, on both targets, by the same rules.
 It accepts `ws://` and `wss://`, the scheme in any case; a host name, with
@@ -152,20 +158,30 @@ shorthand `127.1`, octal or hexadecimal parts (`0x7f.0.0.1`), a final dot or
 a single number, and so any host whose last label is a number, which a page
 reads as an address or refuses; an international domain name, which a page
 turns into its A-label (`+xn--bcher-kva.example+` for `bücher.example`) and
-this parser does not, with its bytes beyond ASCII escaped or not; and a tab,
-a newline or a backslash anywhere in the URL, which a page drops or reads as
-a slash. A refused URL makes the relay report a close, as an unreachable one
+this parser does not, with its bytes beyond ASCII escaped or not; a tab, a
+newline or a backslash anywhere in the URL, which a page drops or reads as a
+slash; and a character that RFC 3986 allows in no path, as a space, `{` or a
+byte beyond ASCII, which a page escapes and Boost.URL refuses. A refused URL makes the relay report a close, as an unreachable one
 does, and the room retries it later as it would any other.
 
-Over TLS, natively, the connection names the relay's host to the server
-(SNI) when it is a name, never when it is an address, verifies the relay's
-certificate whatever the verify mode of the context, and checks it against
-the URL's host, a name or an address; in a page the browser does all three,
-against its own authorities. A program's context made as Asio makes a
-client's, `ssl::context(ssl::context::tls_client)`, whose verify mode is
-`verify_none`, still has every relay verified against the authorities it
-trusts, as a page's `WebSocket` always verifies; the context itself is left
-as it is. By default the backend makes its TLS context with
+Over TLS the connection asks for the relay's verification on both targets,
+whatever the verify mode of the context: it sets `verify_peer` on its stream.
+A program's context made as Asio makes a client's,
+`ssl::context(ssl::context::tls_client)`, whose verify mode is `verify_none`,
+still has every relay verified; the context itself is left as it is.
+Natively the connection names the relay's host to the server (SNI) when it
+is a name, never when it is an address, verifies the relay's certificate
+against the context's authorities, and checks it against the URL's host, a
+name or an address, with a verify callback of its own: of the context, its
+authorities, its client certificate, its options and its protocol versions
+hold, and its verify mode and verify callback do not. In a page the browser
+does all three, against its own authorities, and webcpp::beast's page stream
+refuses a context that asks for what a page cannot honour: authorities
+added, a client certificate or key, options, a method other than
+`tls_client` or `sslv23_client`, or a verify callback other than
+`host_name_verification` of the relay's host. Such a context makes no
+`WebSocket`, and every `wss://` relay reports a close. By default the backend
+makes its TLS context with
 `platform::make_tls_context()`: natively TLS 1.2 or newer, and the system's
 certificate authorities, those OpenSSL's default verify paths name; in a
 page a context that records only the policy the page's stream asks for, a
@@ -196,13 +212,17 @@ The backend takes the context as `make_tls_client_context` returns it, a
 make the backend's own, is kept, `tls_context()` returns it, and every
 `wss://` relay reports a close while the `ws://` ones are still reached. No
 constructor throws. `tls_context()` also gives the context itself, which an
-application may configure further before the backend connects to a relay.
+application may configure further before the backend connects to a relay,
+natively; in a page what it adds that the page cannot honour, as above, has
+every `wss://` relay report a close.
 
 A relay is a third party, and the backend bounds what one can make the room
 hold:
 
 * A text longer than 1 MiB (`protocol::max_relay_message_bytes`) closes the
-  connection before it is copied, in a page before it enters WebAssembly.
+  connection before it is copied, in a page before it enters WebAssembly,
+  the relay's first texts too: the bound is set before the handshake, since
+  a page can deliver a relay's first messages in the same task as its open.
 * A relay that stops reading is dropped once the text held unsent for it
   would pass 4 MiB (`websocket_limits::max_queued_bytes`, which is
   `protocol::max_queued_relay_bytes`): the session's own queue, and in a page
@@ -237,16 +257,22 @@ Each drop reports one close, and the room reconnects with its backoff
 
 The backend's randomness, the room's keys and nonces, and the IV of each
 seal come from the platform's one secure source, its result checked:
-OpenSSL's `RAND_bytes` natively, `getentropy` in a page. When it has none,
-`random()` aborts the program, since nothing is safe without it, and a seal
-fails with `error::backend_failure`.
+OpenSSL's `RAND_bytes` natively, and in a page `crypto.getRandomValues`, at
+most 65536 bytes a call, which the backend calls from JavaScript that catches
+what it throws: a page whose `getRandomValues` is missing or throws has no
+randomness, and no JavaScript exception enters WebAssembly, where Emscripten's
+`getentropy` let it through. When it has none, `random()` aborts the program,
+since nothing is safe without it, and a seal fails with
+`error::backend_failure`.
 
 The sealer is asynchronous on both targets, as Web Crypto is: natively it
 works synchronously and posts its completion, and in a page it awaits each
 Web Crypto promise with webcpp::asio's `browser::async_await`, under a key it
 imports on its first operation, while the operations that arrive meanwhile
 wait with a copy of their text. A completion never runs inside the call that
-started it.
+started it. A settlement that is not an `ArrayBuffer`, which only a page whose
+`crypto.subtle` was replaced gives, fails the seal or the open with
+`error::backend_failure`.
 
 [#trystero-platform-exceptions]
 === Exceptions
@@ -394,11 +420,14 @@ is made to carry either.
 ==== No JavaScript exception enters WebAssembly
 
 The backend makes every call into JavaScript that can throw, a `WebSocket`
-constructor or `send`, a Web Crypto method, in JavaScript that catches what
-it throws: webcpp::beast's page stream turns a socket that cannot be made into
-an error, and its relay reports its close, and a Web Crypto call is made
-inside an `async` function, so that what it throws becomes the rejection of
-its promise, which the {cpp} turns into the error its interface has.
+constructor or `send`, a Web Crypto method, `crypto.getRandomValues`, in
+JavaScript that catches what it throws: webcpp::beast's page stream turns a
+socket that cannot be made into an error, and its relay reports its close; a
+Web Crypto call is made inside an `async` function, so that what it throws
+becomes the rejection of its promise, which the {cpp} turns into the error
+its interface has, and its settlement is read only when it is an
+`ArrayBuffer`; and `crypto.getRandomValues`, missing or throwing, is a
+platform without randomness (<<trystero-platform-randomness>>).
 webcpp::webrtc's JavaScript catches the page's WebRTC exceptions the same
 way. The bridge's functions catch what still escapes a delivery, put
 WebAssembly's stack pointer back and report it, and with exceptions a {cpp}
@@ -415,9 +444,10 @@ stops it.
   (`protocol::max_room_frame_bytes`): neither can be a frame. webcpp::webrtc
   bounds what it reads: a message past `max_message_size` (256 KiB), or
   unread messages past `max_received_bytes` (16 MiB), close the channel.
-* A relay's texts are bounded as natively, and its socket's
-  `bufferedAmount` and its texts waiting for the executor too
-  (<<trystero-platform-relays>>); a page has no idle timeout.
+* A relay's texts are bounded as natively, the first ones it sends in the
+  task of its open too, and its socket's `bufferedAmount` and its texts
+  waiting for the executor too (<<trystero-platform-relays>>); a binary
+  message is dropped; a page has no idle timeout.
 * A page makes at most `runtime_options::max_peer_connections` (256) peer
   connections across all apps and rooms it serves, counted from their
   construction until the garbage collector frees them

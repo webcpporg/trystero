@@ -10,7 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
-#include <sys/random.h>  // lint-world: getentropy, the page's crypto.getRandomValues
+#include <emscripten/em_asm.h>
 #else
 #include <openssl/rand.h>
 #endif
@@ -22,18 +22,51 @@
 
 namespace webcpp::trystero::platform::detail {
 
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+
+// clang-format off
+/**
+ * Fills the `size` bytes at `data` from the page's `crypto.getRandomValues`: 0 when it filled
+ * them, -1 when the page has no such function or it threw, caught here, so that no JavaScript
+ * exception enters WebAssembly, as one does through the C library's entropy call, Emscripten's,
+ * which lets the page's exception through.
+ */
+// NOLINTNEXTLINE(misc-const-correctness): JavaScript writes to the pointed WebAssembly storage
+inline int js_fill_random(void* data, std::size_t size) {
+    return EM_ASM_INT(({
+    const data = $0 >>> 0;
+    const size = $1 >>> 0;
+
+    try {
+        const view = HEAPU8.subarray(data, data + size);
+        /* Web Crypto fills no view of a SharedArrayBuffer, which a threaded build's memory is. */
+        if (view.buffer instanceof ArrayBuffer) {
+            crypto.getRandomValues(view);
+        } else {
+            view.set(crypto.getRandomValues(new Uint8Array(size)));
+        }
+        return 0;
+    } catch (_) {
+        return -1;
+    }
+    }), data, size);
+}
+// clang-format on
+
+#endif
+
 /**
  * Fills `out` from the platform's one secure source of randomness, its result checked: natively
- * OpenSSL's generator; on emscripten the C library's entropy call, which Emscripten draws from
- * the page's `crypto.getRandomValues`.
+ * OpenSSL's generator; on emscripten the page's `crypto.getRandomValues`, whose absence or
+ * exception is a failure, not an exception in WebAssembly.
  *
  * @param out The bytes to fill.
  * @return Whether every byte was filled; on false, the bytes must not be used.
  */
 inline bool fill_random(std::span<std::uint8_t> out) noexcept {
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
-    // The C library's entropy call fills at most 256 bytes at a time.
-    constexpr std::size_t most = 256;
+    // Web Crypto fills at most 65536 bytes a call, and throws for more.
+    constexpr std::size_t most = std::size_t{1} << 16U;
 #else
     // OpenSSL's generator takes its count as an int.
     constexpr std::size_t most = std::size_t{1} << 30U;
@@ -41,7 +74,7 @@ inline bool fill_random(std::span<std::uint8_t> out) noexcept {
     for (std::size_t at = 0; at < out.size(); at += most) {
         const auto piece = std::min(most, out.size() - at);
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
-        if (getentropy(out.data() + at, piece) != 0) {  // lint-world: Trystero's randomness
+        if (js_fill_random(out.data() + at, piece) != 0) {  // lint-world: Trystero's randomness
             return false;
         }
 #else

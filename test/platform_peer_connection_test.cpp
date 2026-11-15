@@ -5,10 +5,9 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the platform backend's peer connection natively, webcpp::webrtc's over libdatachannel,
-// between two
-// connections in one process, wired to each other directly: what the signaling would carry over
-// the relays is handed across here. Each connection is bound to 127.0.0.1, so that its one host
-// candidate is the loopback's and no other interface is needed. The backend makes at most
+// between two connections in one process, wired to each other directly: what the signaling would
+// carry over the relays is handed across here. Each connection is bound to 127.0.0.1, so that its
+// one host candidate is the loopback's and no other interface is needed. The backend makes at most
 // `backend_config::max_peer_connections_per_minute` of them in a minute, whatever became of them,
 // and holds at most its runtime's `max_peer_connections` at once.
 

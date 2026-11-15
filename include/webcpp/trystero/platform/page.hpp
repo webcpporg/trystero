@@ -86,12 +86,15 @@ inline emscripten::val js_string(std::string_view utf8) {
  * suspension variant). A page may pass any value, so `f` checks its type before it converts it,
  * with `isString()`, `isNumber()` or `typeOf()`, and reads a field only of what is neither null
  * nor undefined: embind's `as<std::string>()` of a number throws a `BindingError`, and a field of
- * undefined a `TypeError`. `f` is given the page's value as it is when `f` runs, not when the page
- * called: a JavaScript object the page changes meanwhile is seen changed.
+ * undefined a `TypeError`. A number is read as a `double`, with `as<double>()`, and its range
+ * checked before it becomes an integer: in a build with assertions, as a debug build is, embind's
+ * `as<std::int32_t>()` of a number beyond the type's range, as `1e10`, throws a `TypeError`. `f`
+ * is given the page's value as it is when `f` runs, not when the page called: a JavaScript object
+ * the page changes meanwhile is seen changed.
  *
  * @tparam F A callable of one `const emscripten::val&`, the value the page passed.
  * @see "The program runs its io_context", in the guide, and webcpp::asio's guide, "A JavaScript
- * error out of a handler".
+ * error that a handler lets escape".
  */
 template <class F>
 // The bridge indexes the call by its registration, a private base: its one owner is the call.
