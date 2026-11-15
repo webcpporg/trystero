@@ -175,7 +175,8 @@ plus 1 s, doubling after each further end to at most 5 minutes. A completed
 handshake or the connection's end resets the count. After its own kick the
 lower id refuses bindings until that time and keeps frames; the higher id
 drops frames until it sends presence, but accepts the lower id's presence.
-A binding also requires the peer to have advertised the token itself.
+A binding also requires the peer to have advertised the token itself, by
+its presence or by a frame of the room on its connection.
 A peer on a protected app's shared connection already authenticated with
 that app's password through the initial sealed negotiation. A peer that
 knows it can still send a wrong room proof: only the lower id reports that

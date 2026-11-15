@@ -81,6 +81,8 @@ has nothing of it to run beside its twin.
 
 | Reuse over a live connection | binds on any signal of that peer id | binds only a peer that advertised the room's token itself, and by reuse only on their first meeting over that connection | a forged announcement must not bind an innocent peer
 
+| A room frame before the peer's presence for the room | kept until the room binds by presence or by reuse | also taken as the peer's advertisement of the room, which binds it | a forged announcement cannot reuse, so a presence that Chrome dropped as the page's channel opened would otherwise leave the room unbound for good; only the peer writes its connection's frames
+
 | Announcements after a peer leaves | restarted after every leave | restarted only when no live connection to that peer remains | over a live connection, rebinding goes through the connection
 
 | Presence after binding | sent when a room registers | also sent again when a room binds by reuse or at its rebinding time | it makes the other side, Trystero JS included, bind at once
@@ -607,6 +609,9 @@ its reason.
 
 | Reuse over a live connection
 | Only a forged announcement shows it: a third party that publishes, in a peer's name, a room token that peer never advertised, which neither API publishes. The `shared` test forges one over the memory relays.
+
+| A room frame before the peer's presence for the room
+| Both APIs advertise a room before its first frame on a connection, so only a presence lost on the way shows it: Chrome drops it, rarely, when a page sends as its answering channel opens, and the interop lane's delayed-open scenario met it; the `connection` and `shared` tests drop it over the memory relays.
 
 | Announcements after a peer leaves
 | What differs is what a room publishes to its relays after a peer leaves it while their connection stays, which neither API reports: the peers see the same joins and leaves.

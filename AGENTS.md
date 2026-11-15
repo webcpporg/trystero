@@ -272,6 +272,17 @@ holds only what is specific to trystero.
   limits and resource release (`webrtc::data_channel::pending_frames`);
   `shared` tests closure during adoption, and interop controls native open
   delivery while a JS peer sends both rooms' presence first.
+- **A room frame advertises its room.** A frame of a local room's token that
+  a connection keeps records the token as the remote's advertisement, as its
+  presence does (64 tokens at most; a frame never ends the connection for a
+  65th), and the room binds on it. Trystero sends a room's presence once per
+  connection, from the open of its channel, and Chrome can drop what a page
+  sends on an answering channel as it opens: measured in a 2-CPU Linux
+  container, 8 of 240 runs of the interop's delayed-open scenario, Chrome
+  logging "Send failed INVALID_STATE" for both presence frames and the native
+  peer's SCTP receiving neither. Waiting for presence alone left the room
+  unbound for good, with the page's frames of the room kept and expiring.
+  `connection` and `shared` drop the presence over the memory relays.
 - **embind.** Every program on emscripten links `-lembind`, which
   `/webcpp/asio//asio` adds as a linker flag, and `/webcpp/trystero//trystero`
   brings: `<embind>on`, b2's own feature, is not free, and b2 ignores it
@@ -433,7 +444,8 @@ holds only what is specific to trystero.
   bindings. A kick ends only its binding; if the last binding was kicked,
   close at once. After departures, idle expiry is `app_config::idle_timeout`,
   123,333 ms by default, 0 closes immediately. A remote must advertise the token
-  itself before any binding; forged relay announcements bind nothing.
+  itself before any binding, by its presence or a kept room frame; forged relay
+  announcements bind nothing.
   Rebinding after a kick or peer leave uses the larger of handshake timeout
   and 10 s plus 1 s, doubling to 5 minutes until a completed handshake or
   connection end. The lower id refuses bindings during its own-kick

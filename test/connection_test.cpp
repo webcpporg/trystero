@@ -274,6 +274,41 @@ void a_withdrawn_token_drops_its_kept_frames() {
     BOOST_TEST_EQ(p.b.c->take_kept("T3").size(), 1U);
 }
 
+// A room frame the app keeps advertises its token, as the remote's presence does, and reports no
+// presence: only the remote writes to its connection, and its presence for a room comes once per
+// connection, which a page can lose (Chrome drops what a page sends on an answering channel as it
+// opens). A frame the app does not keep advertises nothing.
+void a_kept_frame_advertises_its_token() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    auto* m = std::pmr::get_default_resource();
+    const std::array<std::uint8_t, 2> action{2, 0};
+    p.a.c->send(trystero::protocol::room_frame("nobody", action, m));
+    p.a.c->send(trystero::protocol::room_frame("T2", action, m));
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 1; })));
+    BOOST_TEST(p.b.c->advertised("T2"));
+    BOOST_TEST(!p.b.c->advertised("nobody"));
+    BOOST_TEST(p.b.presence == (std::vector<std::string>{"+T1"}));
+}
+
+// A kept frame never advertises a 65th token, nor ends the connection as a 65th presence does:
+// it is kept, and its token is not advertised.
+void a_kept_frame_never_advertises_a_65th_token() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    auto* m = std::pmr::get_default_resource();
+    for (std::size_t i = 0; i < 63; ++i) {
+        p.a.c->send(trystero::protocol::presence_frame("X" + std::to_string(i), true, m));
+    }
+    const std::array<std::uint8_t, 2> action{2, 0};
+    p.a.c->send(trystero::protocol::room_frame("T2", action, m));
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 1; })));
+    BOOST_TEST_EQ(p.b.presence.size(), 64U);
+    BOOST_TEST(!p.b.c->advertised("T2"));
+    BOOST_TEST(p.b.ended.empty());
+    BOOST_TEST(p.b.c->live());
+}
+
 void a_65th_advertised_token_ends_the_connection() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
@@ -832,6 +867,8 @@ int main() {
     a_withdrawn_token_is_forgotten();
     a_bound_token_reaches_its_binding_and_another_is_kept();
     a_withdrawn_token_drops_its_kept_frames();
+    a_kept_frame_advertises_its_token();
+    a_kept_frame_never_advertises_a_65th_token();
     a_65th_advertised_token_ends_the_connection();
     a_malformed_frame_ends_the_connection();
     kept_frames_are_bounded_and_dropped_after_10_s();

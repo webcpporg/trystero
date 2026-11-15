@@ -365,36 +365,37 @@ void corrupt_r2_responses(two_apps& t) {
 }
 
 // Frames of r2 that reach A before B's presence, as a Trystero JS peer sends its handshake before
-// its presence: A keeps them, and once B's presence binds r2 it delivers them after making B's
-// state, so the handshake completes. B's own `@_hsready` of r2 never reaches A, so only the kept
-// one can complete it. B, whose join finds A's presence for r2, binds during the join, as Trystero
-// JS does: its handshake goes out first, then its presence. The 64-frame bound and the 10 s expiry
-// are the connection's, tested in connection_test.cpp.
-void frames_before_presence_are_kept() {
+// its presence: the first is B's own advertisement of r2, on which A binds, and A delivers it after
+// making B's state, so the handshake completes on it. B's presence is held until both have joined,
+// so the frame alone bound A. B, whose join finds A's presence for r2, binds during the join, as
+// Trystero JS does: its handshake goes out first, then its presence. The 64-frame bound and the
+// 10 s expiry are the connection's, tested in connection_test.cpp.
+void frames_before_presence_bind_their_room() {
     two_apps t("HHHHHHHHHHHHHHHHHHHH", "IIIIIIIIIIIIIIIIIIII");
     const ends e(t);
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
     webcpp::trystero::test::advance(t.f, 200ms);
-    t.f.net.inject(e.a(), internal_frame("r2", "@_hsready"));
-    webcpp::trystero::test::advance(t.f, 50ms);
-    BOOST_TEST(t.a_rooms[1].peers().empty());  // kept, not bound: B never advertised r2
     std::vector<std::string> b_sent;
     t.f.net.filter = [&](std::size_t, std::size_t to, std::span<const std::uint8_t> frame) {
         if (to != e.a()) {
             return trystero::test::memory_network::verdict::deliver;
         }
-        if (auto what = what_of(frame, "r2"); !what.empty()) {
+        auto what = what_of(frame, "r2");
+        const bool presence = what == "presence(1)";
+        if (!what.empty()) {
             b_sent.push_back(std::move(what));
         }
-        return internal_name(frame, "r2") == "@_hsready"
-                   ? trystero::test::memory_network::verdict::drop
-                   : trystero::test::memory_network::verdict::deliver;
+        return presence ? trystero::test::memory_network::verdict::hold
+                        : trystero::test::memory_network::verdict::deliver;
     };
     t.b_rooms.push_back(join(t.b, "r2"));
     BOOST_TEST((b_sent == std::vector<std::string>{"@_hsready", "presence(1)"}));
-    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }));
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
     t.f.net.filter = nullptr;  // the rooms' farewells go through the network after `e` is gone
+    t.f.net.release(e.a());
+    webcpp::trystero::test::advance(t.f, 1000ms);
+    BOOST_TEST(t.all_joined());
 }
 
 // A kept frame that makes A kick B while A binds (an undecodable action frame of r2, then B's
@@ -1126,23 +1127,26 @@ void hold_first(two_apps& t, std::size_t from, std::string message, std::size_t 
     };
 }
 
-// binding needs the peer's own presence. The filter drops B's presence(1, r2) while B
-// joins r2, A having joined it first: B binds at its join, on A's presence, and its handshake
-// frames reach A, which keeps them and does not bind; B's announcements in r2 bind nothing and
-// start no negotiation. B's handshake times out 10 s after its join and B, the higher id, kicks;
-// at its rebinding time, 21 s after its join, B binds again and sends its presence, which goes
-// through now: A binds at that instant.
-void binding_needs_the_peers_own_presence() {
+// a lost presence is replaced by the peer's own frames. Trystero JS advertises a room once per
+// connection, and Chrome can drop what a page sends on an answering channel as it opens (its log
+// says "Send failed INVALID_STATE"; the interop test measured it), so the filter drops every
+// presence(1, r2) of B, which joins r2 after A: B binds at its join, on A's presence, and its
+// handshake frames reach A, which binds on the first, as on B's presence. Both join at once, with
+// no handshake timed out on either side; B's announcements in r2 still bind nothing and start no
+// negotiation.
+void a_lost_presence_is_replaced_by_the_peers_frames() {
     two_apps t("NNNNNNNNNNNNNNNNNNNN", "OOOOOOOOOOOOOOOOOOOO");
     const ends e(t);
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
     webcpp::trystero::test::advance(t.f, 300ms);
-    bool drop = true;
+    std::size_t dropped = 0;
     t.f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
-        return drop && from != e.a() && is_presence(frame, "r2", true)
-                   ? trystero::test::memory_network::verdict::drop
-                   : trystero::test::memory_network::verdict::deliver;
+        if (from != e.a() && is_presence(frame, "r2", true)) {
+            ++dropped;
+            return trystero::test::memory_network::verdict::drop;
+        }
+        return trystero::test::memory_network::verdict::deliver;
     };
     flooder watcher(t.f, "r2");
     bool offer_or_answer = false;
@@ -1153,19 +1157,17 @@ void binding_needs_the_peers_own_presence() {
     };
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
-    std::vector<boost::system::error_code> b_errors;
-    const auto joined = t.f.net.steady_now();
+    std::vector<boost::system::error_code> errors;
+    const auto recorder = [&errors](std::string_view, boost::system::error_code ec,
+                                    std::string_view) { errors.push_back(ec); };
+    t.a_rooms[1].on_error(recorder);
     t.b_rooms.push_back(join(t.b, "r2"));
-    t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        b_errors.push_back(ec);
-    });
-    webcpp::trystero::test::advance(t.f, 10'999ms);
-    BOOST_TEST(t.a_rooms[1].peers().empty());
-    BOOST_TEST((b_errors == std::vector<boost::system::error_code>{
-                                make_error_code(trystero::error::handshake_timed_out)}));
-    drop = false;
-    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 11s));
-    BOOST_TEST(t.f.net.steady_now() - joined == 21s);
+    t.b_rooms[1].on_error(recorder);
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
+    webcpp::trystero::test::advance(t.f, 11s);  // past both handshake timeouts
+    BOOST_TEST(t.all_joined());
+    BOOST_TEST(errors.empty());
+    BOOST_TEST_EQ(dropped, 1U);
     BOOST_TEST(!offer_or_answer);
 }
 
@@ -1307,9 +1309,10 @@ void a_corrected_response_rejoins() {
     }
 }
 
-// before A's r2 binds B, inject delivers on A's end B's @_hsready and @_leave of r2; then
-// B's presence is let through: A binds, discards both, and the handshake completes on B's next
-// frames, with no leave: A's log names no peer gone.
+// A, the lower id, kicks B from r2 (an action frame of r2 that does not decode) and refuses it
+// until its rebinding time; meanwhile inject delivers on A's end B's @_hsready and @_leave of r2,
+// which A keeps without binding. At its rebinding time A binds, discards both, and the handshake
+// completes on what follows, with no second leave: A's log names B gone once, for the kick.
 void a_kept_leave_discards_what_came_before() {
     std::vector<std::string> a_log;
     auto a_config = app_config("AAAAAAAAAAAAAAAAAAE1");
@@ -1317,26 +1320,21 @@ void a_kept_leave_discards_what_came_before() {
     two_apps t("AAAAAAAAAAAAAAAAAAE1", "ZZZZZZZZZZZZZZZZZZE2");
     t.a = trystero::app(t.f.io.get_executor(), t.f.net, std::move(a_config));
     const ends e(t);
-    joined_in(t, {"r1"});
-    bool hold_presence = true;
-    t.f.net.filter = [&](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
-        return hold_presence && is_presence(frame, "r2", true)
-                   ? trystero::test::memory_network::verdict::hold
-                   : trystero::test::memory_network::verdict::deliver;
-    };
-    t.a_rooms.push_back(join(t.a, "r2"));
-    t.b_rooms.push_back(join(t.b, "r2"));
+    joined_in(t, {"r1", "r2"});
+    const std::array<std::uint8_t, 3> garbage{9, 9, 9};
+    t.f.net.inject(e.a(), trystero::protocol::room_frame(
+                              trystero::protocol::room_token(app_id, "r2"), garbage));
+    webcpp::test::require(
+        BOOST_TEST(run_until(t.f, [&] { return t.a_rooms[1].peers().empty(); }, 1ms)));
     for (const auto* name : {"@_hsready", "@_leave"}) {
         t.f.net.inject(e.a(), internal_frame("r2", name));
     }
     webcpp::trystero::test::advance(t.f, 200ms);
-    BOOST_TEST(t.a_rooms[1].peers().empty());
-    hold_presence = false;
-    t.f.net.release(e.a());
-    t.f.net.release(t.f.net.peer_of(e.a()));
-    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 1ms));
-    BOOST_TEST(std::ranges::none_of(
-        a_log, [](const std::string& line) { return line.find(" gone: ") != std::string::npos; }));
+    BOOST_TEST(t.a_rooms[1].peers().empty());  // refused, and kept
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 11s));
+    const auto gone = std::ranges::count_if(
+        a_log, [](const std::string& line) { return line.find(" gone: ") != std::string::npos; });
+    BOOST_TEST_EQ(gone, 1);
 }
 
 // crossed connections recover: A's end of r1's pair and B's end of r2's open first; both
@@ -2018,7 +2016,7 @@ int main(int argc, const char* const argv[]) {
         {"an_app_destroyed_leaves_its_rooms_going", an_app_destroyed_leaves_its_rooms_going},
         {"an_app_assigned_over_releases_its_state", an_app_assigned_over_releases_its_state},
         {"an_app_assigned_to_itself_keeps_its_state", an_app_assigned_to_itself_keeps_its_state},
-        {"frames_before_presence_are_kept", frames_before_presence_are_kept},
+        {"frames_before_presence_bind_their_room", frames_before_presence_bind_their_room},
         {"a_kept_frame_that_kicks_during_a_binding", a_kept_frame_that_kicks_during_a_binding},
         {"a_kept_frame_binds_its_room", a_kept_frame_binds_its_room},
         {"a_leaving_room_binds_no_one", a_leaving_room_binds_no_one},
@@ -2047,7 +2045,10 @@ int main(int argc, const char* const argv[]) {
         {"the_rebinding_step", the_rebinding_step},
         {"an_incorrect_proof_rebinds_at_the_steps", an_incorrect_proof_rebinds_at_the_steps},
         {"a_kick_that_closes_the_connection", a_kick_that_closes_the_connection},
-        {"binding_needs_the_peers_own_presence", binding_needs_the_peers_own_presence},
+        {
+            "a_lost_presence_is_replaced_by_the_peers_frames",
+            a_lost_presence_is_replaced_by_the_peers_frames,
+        },
         {"a_transient_failure_converges", a_transient_failure_converges},
         {"an_answer_to_an_old_challenge", an_answer_to_an_old_challenge},
         {"a_corrected_response_rejoins", a_corrected_response_rejoins},

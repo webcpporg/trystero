@@ -770,7 +770,7 @@ public:
         return it == rebinds_.end() || !it->second.dropping;
     }
 
-    /** Tries to bind a peer after its frame for this room was kept. */
+    /** Tries to bind a peer after its frame for this room was kept, which advertised the room. */
     void frame_kept(std::string_view peer) override { try_bind(peer, bind_event::frame); }
 
     /** Forgets history and removes only the binding belonging to the ended connection. */
@@ -1117,8 +1117,9 @@ private:
      * itself advertised this room's token on that connection, this room is not leaving, no backoff
      * of this room runs for the peer, and the peer is not bound already. Whether it bound.
      *
-     * Tip: the advertisement is the peer's own, on a connection only it can write to, so that an
-     * announcement or a signal anyone publishes in its name binds nothing. */
+     * Tip: the advertisement is the peer's own, its presence or a room frame of the token, on a
+     * connection only it can write to, so that an announcement or a signal anyone publishes in its
+     * name binds nothing. */
     bool try_bind(std::string_view peer, bind_event event) {
         if (left_ || peers_.contains(peer)) {
             return false;

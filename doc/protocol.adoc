@@ -185,11 +185,19 @@ withdrawal detaches only that room. The connection routes by token:
 
 | Room frame for another room of the app, not bound to this connection
 | Keep it, at most 64 frames per connection, all expiring 10 s after the
-  first. Bind only when the peer advertised the token and no backoff runs.
+  first, and record its token as the peer's advertisement, below 64 tokens.
+  Bind when no backoff runs.
 
 | Room frame for any other token
 | Drop it silently; keep the connection.
 |===
+
+A room frame is the peer's own advertisement of its room, as its presence
+is: only the peer writes to its connection. Trystero sends a room's presence
+once per connection, from the open of the channel, and Chrome can drop what a
+page sends on an answering channel as it opens (its log says "Send failed
+INVALID_STATE"): a room waiting for that presence alone would never bind the
+peer, whose frames of the room keep coming.
 
 On binding, kept frames arrive before later frames; a kept `@_leave`
 discards itself and everything kept before it for that token. There is no
