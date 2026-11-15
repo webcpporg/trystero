@@ -223,26 +223,32 @@ void ping_measures_a_round_trip() {
 }
 
 void the_same_password_joins_and_another_does_not() {
-    fixture f;
+    fixture f{true};
     trystero::app a_app(f.io.get_executor(), f.net, app_config("FFFFFFFFFFFFFFFFFFFF", "s3cret"));
     auto a = join(a_app, "private");
     trystero::app b_app(f.io.get_executor(), f.net, app_config("GGGGGGGGGGGGGGGGGGGG", "s3cret"));
     auto b = join(b_app, "private");
-    BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; }));
+    BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b.peers().size() == 1; }));
 
-    // The intruder's signals cannot be opened with the room key, so it never connects; both sides
-    // report it.
+    // A and B, whose ids are lower, offer to the intruder, which cannot open their offers with its
+    // room key, so it never connects. It reports both: the first at once, with its peer, and the
+    // other with their number when the interval of its reports ends, 10 s later.
     std::vector<boost::system::error_code> errors;
+    std::size_t refused = 0;
     trystero::app intruder_app(f.io.get_executor(), f.net,
                                app_config("HHHHHHHHHHHHHHHHHHHH", "guess"));
     auto intruder = join(intruder_app, "private");
-    intruder.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        errors.push_back(ec);
-    });
+    intruder.on_error(
+        [&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
+            errors.push_back(ec);
+            if (ec == trystero::error::wrong_password) {
+                refused += peer.empty() ? std::stoul(std::string(what)) : 1;
+            }
+        });
     a.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
         errors.push_back(ec);
     });
-    run_until(f.io, [] { return false; }, 1500ms);
+    BOOST_TEST(run_until(f, [&] { return refused == 2; }, 20'000ms));
     BOOST_TEST(intruder.peers().empty());
     BOOST_TEST_EQ(a.peers().size(), 1U);
     BOOST_TEST(!errors.empty());
@@ -525,21 +531,36 @@ void a_forged_answer_changes_nothing() {
 }
 
 // Offers from fresh ids that are not sealed with the room key make no connection: a negotiation
-// changes only once its offer opened.
+// changes only once its offer opened. The case counts the offers the room could not open, each
+// logged once, and looks at the connections once it has every one.
 void forged_offers_make_no_connection() {
-    fixture f;
-    trystero::app a_app(f.io.get_executor(), f.net, app_config("zzzzzzzzzzzzzzzzzzzz"));
+    constexpr std::size_t flood = 200;
+    fixture f{true};
+    auto c = app_config("zzzzzzzzzzzzzzzzzzzz");
+    std::size_t refused = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refused += text.starts_with("could not open the offer from 0offer") ? 1 : 0;
+    };
+    trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
     const auto a = join(a_app, "offers");
     flooder attacker(f, "offers");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "offers", "zzzzzzzzzzzzzzzzzzzz");
-    const auto before = f.net.relay(relay_a).events_seen;
-    for (std::size_t i = 0; i < 200; ++i) {
+    // Twenty at a time, each twenty refused before the next comes, 1 ms later. A new id beyond the
+    // room's 32 negotiations evicts the one idle longest, which is then one already refused: sent
+    // at once, or at one instant, the later ids would evict negotiations whose offers were still
+    // opening, and the room drops an offer whose negotiation is gone unopened.
+    for (std::size_t i = 0; i < flood; ++i) {
         const std::string id = "0offer" + std::to_string(i);
         attacker.publish(a_topic,
                          {.peer_id = id, .offer_id = "offer", .offer = "not a sealed offer"});
+        if (i % 20 == 19) {
+            if (!BOOST_TEST(run_until(f, [&] { return refused == i + 1; }))) {
+                break;
+            }
+            advance(f, 1ms);
+        }
     }
-    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + 200; }));
-    run_until(f.io, [] { return false; }, 200ms);  // the opens complete
+    BOOST_TEST_EQ(refused, flood);
     BOOST_TEST_EQ(f.net.made_connections, 0U);
 }
 
@@ -1174,9 +1195,11 @@ void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
 
 // A flood of fresh ids below ours asks the room for a counter-announcement each: the room sends
 // at most one per relay in 5.3 s, Trystero's announce interval, so that no relay rate-limits it.
+// On the virtual clock the interval is checked at its end: a flood at once asks once, an id 1 ms
+// before the interval ends asks nothing, and one as it ends asks again.
 void counter_announcements_are_paced() {
     constexpr std::size_t flood = 300;
-    fixture f;
+    fixture f{true};
     auto c = app_config("zzzzzzzzzzzzzzzzzzzz");
     std::size_t asked = 0;
     c.log = [&](std::string_view /*category*/, std::string_view text) {
@@ -1185,14 +1208,22 @@ void counter_announcements_are_paced() {
     trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
     const auto a = join(a_app, "counter");
     flooder attacker(f, "counter");
-    const auto start = std::chrono::steady_clock::now();
-    const auto before = f.net.relay(relay_a).events_seen;
-    attacker.announce(flood, "0low");
-    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
-    f.io.poll();  // the room handles what the relay forwarded, posted behind every event it took
-    const auto elapsed = std::chrono::steady_clock::now() - start;
-    BOOST_TEST_GE(asked, 1U);
-    BOOST_TEST_LE(asked, 1 + static_cast<std::size_t>(elapsed / 5333ms));
+    // Announces `count` fresh ids, and returns once the relay took them and the room handled them,
+    // the clock still.
+    const auto announced = [&](std::size_t count, std::string_view prefix) {
+        const auto before = f.net.relay(relay_a).events_seen;
+        attacker.announce(count, prefix);
+        BOOST_TEST(
+            run_until(f, [&] { return f.net.relay(relay_a).events_seen >= before + count; }));
+    };
+    announced(flood, "0low");
+    BOOST_TEST_EQ(asked, 1U);
+    advance(f, 5332ms);
+    announced(1, "0early");
+    BOOST_TEST_EQ(asked, 1U);
+    advance(f, 1ms);
+    announced(1, "0due");
+    BOOST_TEST_EQ(asked, 2U);
 }
 
 // Beyond the bound, a new peer is refused, and one refused again and again is logged once: the
