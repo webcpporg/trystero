@@ -87,8 +87,9 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `signaling`
 | The signaling and the Nostr strategy alone: as an answerer, the signals
   Trystero JS 0.26.0's own signal handler published for the same offers,
-  byte for byte, and a signal or a relay's text read at its bound and
-  dropped one byte past it.
+  byte for byte, a signal or a relay's text read at its bound and
+  dropped one byte past it, and a relay's text read 16 deep and dropped one
+  level deeper.
 
 | `room`
 | Whole rooms in one process, over the memory relays: every payload format,
@@ -97,7 +98,7 @@ include::{library-root}/test/Jamfile[tag=allocation]
   checks them, floods of announcements and of forged, replayed and reflected
   signals, a relay that closes at once or rate-limits, a three-peer mesh,
   coroutines and view handlers, JSON payloads read in the room's resource
-  within their size's bound, and a rejected document receive.
+  up to its bound, and a rejected document receive.
 
 | `app_impl`
 | Configuration copying and validation, a self id that is not UTF-8 set

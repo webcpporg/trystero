@@ -887,6 +887,18 @@ static_assert(tp::max_handshake_bytes == 1024);
 // A parse reads at most its bound of text, into an image of at most twice that and 64 KiB more.
 static_assert(tp::json::protocol_limits(1000).max_bytes == 1000);
 static_assert(tp::json::protocol_limits(1000).max_document_bytes == 2000 + 65536);
+// A protocol text nests at most 16 deep; a payload as deep as document's default.
+static_assert(tp::json::protocol_limits(1000).max_depth == 16);
+static_assert(tp::json::payload_limits(1000, std::uint64_t{64} << 20U).max_depth ==
+              wd::parse_options().max_depth);
+// A payload's image grows to 96 times its text and 64 KiB, at most the room's bound.
+static_assert(tp::json::payload_limits(1000, std::uint64_t{64} << 20U).max_bytes == 1000);
+static_assert(tp::json::payload_limits(1000, std::uint64_t{64} << 20U).max_document_bytes ==
+              96000 + 65536);
+static_assert(tp::json::payload_limits(1000, 100000).max_document_bytes == 100000);
+static_assert(tp::json::payload_limits(1'000'000, std::uint64_t{64} << 20U).max_document_bytes ==
+              std::uint64_t{64} << 20U);
+static_assert(tp::json::payload_limits(0, 1000).max_document_bytes == 1000);
 
 // Each text a room parses is read up to its bound, to the byte, and one byte more is refused
 // before anything of it is read: no buffer is made, and a text that is not JSON at all is refused
@@ -1024,12 +1036,12 @@ void parse_cost() {
     }
 }
 
-// A text nested past max_depth is refused: Boost.JSON's parser stops at the 257th level, and the
-// resource has nothing out after it.
+// A protocol text nested past its depth is refused: Boost.JSON's parser stops at the 17th level,
+// and the resource has nothing out after it.
 void parse_depth() {
     const auto limits = tp::json::protocol_limits(tp::nostr::max_parsed_relay_text_bytes);
     const auto depth = static_cast<std::size_t>(limits.max_depth);
-    BOOST_TEST_EQ(depth, 256U);
+    BOOST_TEST_EQ(depth, 16U);
     const auto nested = [](std::size_t levels) {
         std::string text(levels, '[');
         text.append(levels, ']');
@@ -1045,6 +1057,39 @@ void parse_depth() {
         wd::parse(nested(depth + 1), limits, std::pmr::polymorphic_allocator<std::byte>(&deeper));
     BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
     BOOST_TEST(deeper.live.empty());
+}
+
+// Every valid payload fits the image its own length allows, 96 bytes a byte of text: a value of one
+// character with its comma or bracket, two bytes, is a node of 192, whether a number, an array of
+// one or an array nested 255 deep. The factor is tight: 95 bytes a byte refuses an array of zeros.
+void payload_image_per_text_byte() {
+    const auto parses = [](const std::string& text, std::uint64_t image) {
+        wd::parse_options o;
+        o.max_document_bytes = image;
+        return wd::parse(
+                   text, o,
+                   std::pmr::polymorphic_allocator<std::byte>(std::pmr::get_default_resource()))
+            .has_value();
+    };
+    const auto array_of = [](std::string_view value, std::size_t n) {
+        std::string text = "[";
+        for (std::size_t i = 0; i < n; ++i) {
+            text += i == 0 ? "" : ",";
+            text += value;
+        }
+        return text + "]";
+    };
+    const std::string deep = std::string(255, '[') + std::string(255, ']');
+    for (const auto& text : {array_of("0", 1000), array_of("[0]", 1000), array_of("[0,0]", 1000),
+                             array_of(deep, 10), array_of("{}", 1000), array_of("\"\"", 1000)}) {
+        const auto n = static_cast<std::uint64_t>(text.size());
+        const auto limits = tp::json::payload_limits(n, std::uint64_t{64} << 20U);
+        BOOST_TEST(parses(text, limits.max_document_bytes));
+        // Within 1 KiB of the 96 bytes a byte: the 64 KiB the limits add are spare.
+        BOOST_TEST(parses(text, (tp::json::image_bytes_per_text_byte * n) + 1024));
+    }
+    const std::string zeros = array_of("0", 1000);
+    BOOST_TEST(!parses(zeros, ((tp::json::image_bytes_per_text_byte - 1) * zeros.size()) + 1024));
 }
 
 // A parse's image is one allocation of the resource it is given, the only thing the resource has
@@ -1138,6 +1183,7 @@ int main(int argc, char* argv[]) {
     parse_bounds();
     parse_cost();
     parse_depth();
+    payload_image_per_text_byte();
     parse_resource();
     text();
     return boost::report_errors();

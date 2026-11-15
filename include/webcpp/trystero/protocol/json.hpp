@@ -48,14 +48,19 @@ using const_value = webcpp::document::basic_const_value<traits, webcpp::document
 /** The handle of a value of a `webcpp::document::pmr::document`, which reads and writes. */
 using value = webcpp::document::basic_value<traits, webcpp::document::pmr::owned>;
 
+/** The deepest a protocol text nests: Trystero's nest 4 deep at most, a relay's event and its tags.
+ */
+inline constexpr std::uint64_t max_protocol_depth = 16;
+
 /**
- * The limits of a JSON text's parse: at most `max_bytes` of text, into an image that grows to at
- * most twice that and 64 KiB more.
+ * The limits of a protocol text's parse: at most `max_bytes` of text, nested at most
+ * @ref max_protocol_depth deep, into an image that grows to at most twice that and 64 KiB more.
  *
  * Tip: a text Trystero writes holds a few dozen values at most, each node some 200 bytes of image
  * beside its string, so the image of the longest is under its text and 16 KiB. A text that needs
  * more holds thousands of values, which no Trystero message has; it is refused once its image has
- * grown to the bound, so that no text costs a room more than a multiple of its bound to read.
+ * grown to the bound, so that no text costs a room more than a multiple of its bound to read. The
+ * depth bounds what the parse's recursion takes of the stack, far below document's 256.
  *
  * @param max_bytes The longest text the caller reads.
  * @return The options.
@@ -63,7 +68,35 @@ using value = webcpp::document::basic_value<traits, webcpp::document::pmr::owned
 constexpr webcpp::document::parse_options protocol_limits(std::uint64_t max_bytes) noexcept {
     webcpp::document::parse_options o;
     o.max_bytes = max_bytes;
+    o.max_depth = max_protocol_depth;
     o.max_document_bytes = (2 * max_bytes) + (std::uint64_t{64} << 10U);
+    return o;
+}
+
+/**
+ * The most image a byte of JSON text takes in a document: a value of one character with its comma
+ * or bracket, two bytes, is a node of 192 bytes, and no text takes more (measured on every shape:
+ * numbers, literals, empty strings, arrays and objects, nested to 255).
+ */
+inline constexpr std::uint64_t image_bytes_per_text_byte = 96;
+
+/**
+ * The limits of a JSON payload's parse: its own length, nested as deep as document's default,
+ * into an image that grows to at most 96 times the text and 64 KiB, which every valid text of that
+ * length fits, or `most`, the smaller.
+ *
+ * @param text_bytes The payload's length.
+ * @param most The largest image a payload may take, `room_options::max_json_document_bytes`.
+ * @return The options.
+ */
+constexpr webcpp::document::parse_options payload_limits(std::uint64_t text_bytes,
+                                                         std::uint64_t most) noexcept {
+    constexpr std::uint64_t spare = std::uint64_t{64} << 10U;
+    webcpp::document::parse_options o;
+    o.max_bytes = text_bytes;
+    o.max_document_bytes = most <= spare || text_bytes >= (most - spare) / image_bytes_per_text_byte
+                               ? most
+                               : (image_bytes_per_text_byte * text_bytes) + spare;
     return o;
 }
 

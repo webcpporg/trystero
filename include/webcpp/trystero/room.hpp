@@ -162,14 +162,25 @@ inline std::string_view as_text(std::span<const std::uint8_t> data) {
 }
 
 /**
+ * What a room decodes a received payload with: its resource, and its bound on a JSON payload's
+ * image.
+ */
+struct decoding {
+    /** The room's resource, which the `std::pmr` types are built in. */
+    std::pmr::memory_resource* memory = nullptr;
+    /** The largest image a JSON payload may take, `room_options::max_json_document_bytes`. */
+    std::uint64_t max_json_document_bytes = 0;
+};
+
+/**
  * How an action's type travels. `encode` takes the value at the call and keeps it alive without
  * copying it when the type owns its storage; a view is copied once, there, into the room's
- * resource. `decode` reads a received message: a view type refers to the message's buffer and is
+ * resource. `decode` reads a received message with the room's @ref decoding: a view type refers to
+ * the message's buffer and is
  * valid for the duration of the handler, so only owning types can be awaited. The `std::pmr` types
  * are built in the receiving room's resource, `webcpp::document::pmr::document` too; the standard
  * types allocate with `std::allocator`, as the user chose, and so does
- * `webcpp::document::document`. A JSON text is parsed within @ref protocol::json::protocol_limits
- * of its own size.
+ * `webcpp::document::document`. A JSON text is parsed within @ref json_payload_limits.
  *
  * | Type                             | Trystero format | Receiving                                |
  * | std::string                      | text            | a copy of the bytes                      |
@@ -204,7 +215,7 @@ struct payload_traits<std::string> {
      * The message's payload as this type: a copy of the text, allocated with `std::allocator`;
      * nothing for another format.
      */
-    static std::optional<std::string> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
+    static std::optional<std::string> decode(incoming& m, const decoding& /*to*/) {
         if (m.format != protocol::payload_format::text) {
             return std::nullopt;
         }
@@ -229,11 +240,11 @@ struct payload_traits<std::pmr::string> {
      * The message's payload as this type: a copy of the text, in the room's resource; nothing for
      * another format.
      */
-    static std::optional<std::pmr::string> decode(incoming& m, std::pmr::memory_resource* memory) {
+    static std::optional<std::pmr::string> decode(incoming& m, const decoding& to) {
         if (m.format != protocol::payload_format::text) {
             return std::nullopt;
         }
-        return std::pmr::string(as_text(m.payload()), memory);
+        return std::pmr::string(as_text(m.payload()), to.memory);
     }
 };
 
@@ -252,8 +263,7 @@ struct payload_traits<std::string_view> {
      * The message's payload as this type: a view of the message, valid for the handler's call;
      * nothing for another format.
      */
-    static std::optional<std::string_view> decode(incoming& m,
-                                                  std::pmr::memory_resource* /*memory*/) {
+    static std::optional<std::string_view> decode(incoming& m, const decoding& /*to*/) {
         if (m.format != protocol::payload_format::text) {
             return std::nullopt;
         }
@@ -262,11 +272,13 @@ struct payload_traits<std::string_view> {
 };
 
 /**
- * The limits of a received JSON payload's parse: its own size, and an image that grows to at most
- * twice that and 64 KiB, as a protocol text's (@ref protocol::json::protocol_limits).
+ * The limits of a received JSON payload's parse: its own length, and an image that grows to at
+ * most 96 times that and 64 KiB, which every valid text fits, or the room's bound, the smaller
+ * (@ref protocol::json::payload_limits).
  */
-inline webcpp::document::parse_options json_payload_limits(std::string_view text) noexcept {
-    return protocol::json::protocol_limits(text.size());
+inline webcpp::document::parse_options json_payload_limits(std::string_view text,
+                                                           const decoding& to) noexcept {
+    return protocol::json::payload_limits(text.size(), to.max_json_document_bytes);
 }
 
 /** How an action of `webcpp::document::document`, Trystero's JSON payload, travels. */
@@ -289,13 +301,12 @@ struct payload_traits<webcpp::document::document> {
      * as the user chose (@ref json_payload_limits); nothing for another format or a text that does
      * not parse within them.
      */
-    static std::optional<webcpp::document::document> decode(incoming& m,
-                                                            std::pmr::memory_resource* /*memory*/) {
+    static std::optional<webcpp::document::document> decode(incoming& m, const decoding& to) {
         if (m.format != protocol::payload_format::json) {
             return std::nullopt;
         }
         const std::string_view text = as_text(m.payload());
-        auto v = webcpp::document::parse(text, json_payload_limits(text));
+        auto v = webcpp::document::parse(text, json_payload_limits(text, to));
         if (!v.has_value()) {
             return std::nullopt;
         }
@@ -323,14 +334,13 @@ struct payload_traits<webcpp::document::pmr::document> {
      * in the room's resource (@ref json_payload_limits); nothing for another format or a text that
      * does not parse within them.
      */
-    static std::optional<webcpp::document::pmr::document> decode(
-        incoming& m, std::pmr::memory_resource* memory) {
+    static std::optional<webcpp::document::pmr::document> decode(incoming& m, const decoding& to) {
         if (m.format != protocol::payload_format::json) {
             return std::nullopt;
         }
         const std::string_view text = as_text(m.payload());
-        auto v = webcpp::document::parse(text, json_payload_limits(text),
-                                         std::pmr::polymorphic_allocator<std::byte>(memory));
+        auto v = webcpp::document::parse(text, json_payload_limits(text, to),
+                                         std::pmr::polymorphic_allocator<std::byte>(to.memory));
         if (!v.has_value()) {
             return std::nullopt;
         }
@@ -355,7 +365,7 @@ struct payload_traits<bytes> {
      * The message's payload as this type: a copy of the bytes, allocated with `std::allocator`;
      * nothing for another format.
      */
-    static std::optional<bytes> decode(incoming& m, std::pmr::memory_resource* /*memory*/) {
+    static std::optional<bytes> decode(incoming& m, const decoding& /*to*/) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
         }
@@ -381,15 +391,15 @@ struct payload_traits<pmr_bytes> {
      * The message's payload as this type: the message's buffer, moved when the payload starts it,
      * in the room's resource; nothing for another format.
      */
-    static std::optional<pmr_bytes> decode(incoming& m, std::pmr::memory_resource* memory) {
+    static std::optional<pmr_bytes> decode(incoming& m, const decoding& to) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
         }
-        if (m.buffer.get_allocator().resource() != memory) {
+        if (m.buffer.get_allocator().resource() != to.memory) {
             const auto payload = m.payload();
-            return pmr_bytes(payload.begin(), payload.end(), memory);
+            return pmr_bytes(payload.begin(), payload.end(), to.memory);
         }
-        return pmr_bytes(std::move(m).take_payload(), memory);
+        return pmr_bytes(std::move(m).take_payload(), to.memory);
     }
 };
 
@@ -409,8 +419,8 @@ struct payload_traits<std::span<const std::uint8_t>> {
      * The message's payload as this type: a view of the message, valid for the handler's call;
      * nothing for another format.
      */
-    static std::optional<std::span<const std::uint8_t>> decode(
-        incoming& m, std::pmr::memory_resource* /*memory*/) {
+    static std::optional<std::span<const std::uint8_t>> decode(incoming& m,
+                                                               const decoding& /*to*/) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
         }
@@ -438,20 +448,20 @@ struct payload_traits<payload> {
      * The message's payload as this type: the alternative of the message's format; nothing for
      * another format.
      */
-    static std::optional<payload> decode(incoming& m, std::pmr::memory_resource* memory) {
+    static std::optional<payload> decode(incoming& m, const decoding& to) {
         switch (m.format) {
             case protocol::payload_format::text:
-                if (auto v = payload_traits<std::string>::decode(m, memory)) {
+                if (auto v = payload_traits<std::string>::decode(m, to)) {
                     return payload(std::move(*v));
                 }
                 return std::nullopt;
             case protocol::payload_format::json:
-                if (auto v = payload_traits<webcpp::document::document>::decode(m, memory)) {
+                if (auto v = payload_traits<webcpp::document::document>::decode(m, to)) {
                     return payload(std::move(*v));
                 }
                 return std::nullopt;
             case protocol::payload_format::binary:
-                if (auto v = payload_traits<bytes>::decode(m, memory)) {
+                if (auto v = payload_traits<bytes>::decode(m, to)) {
                     return payload(std::move(*v));
                 }
                 return std::nullopt;
@@ -478,6 +488,9 @@ Document made_or_bad_alloc(webcpp::document::result<Document> made) {
  */
 template <class T>
 T empty_payload(std::pmr::memory_resource* memory) {
+    // TODO(document): webcpp::document's basic_document::nothing(alloc), which has no image,
+    // allocates nothing and cannot fail, lands on its branch pmr; the two documents below take it
+    // then, made_or_bad_alloc goes, and a rejected receive neither allocates nor raises.
     if constexpr (std::is_same_v<T, webcpp::document::pmr::document>) {
         return made_or_bad_alloc(webcpp::document::pmr::document::create(
             std::pmr::polymorphic_allocator<std::byte>(memory)));
@@ -548,6 +561,7 @@ public:
           options_{
               .handshake_timeout = options.handshake_timeout,
               .max_receive_bytes = options.max_receive_bytes,
+              .max_json_document_bytes = options.max_json_document_bytes,
               .memory = memory_,
           },
           room_id_(room_id, memory_),
@@ -711,6 +725,9 @@ public:
 
     /** The room's resource. */
     std::pmr::memory_resource* memory() const { return memory_; }
+
+    /** What the room decodes a received payload with. */
+    detail::decoding decoding() const { return {memory_, options_.max_json_document_bytes}; }
 
     /** An allocator of the room's resource. */
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
@@ -1857,14 +1874,14 @@ public:
         impl_->set_action_handler(
             name_,
             impl_->bind<void(detail::incoming&)>(
-                [f = std::forward<F>(f), memory = impl_->memory()](detail::incoming& m) mutable {
+                [f = std::forward<F>(f), to = impl_->decoding()](detail::incoming& m) mutable {
                     // The metadata is read before decoding: a binary payload takes the buffer the
                     // metadata lives in.
                     const message_info info{
                         .from = std::move(m.peer),
-                        .metadata = std::pmr::string(m.metadata(), memory),
+                        .metadata = std::pmr::string(m.metadata(), to.memory),
                     };
-                    if (auto value = detail::payload_traits<T>::decode(m, memory)) {
+                    if (auto value = detail::payload_traits<T>::decode(m, to)) {
                         f(std::move(*value), info);
                     }
                 }));
@@ -1947,20 +1964,19 @@ public:
                                   allocator,
                                   [impl, handler = std::move(handler)](boost::system::error_code ec,
                                                                        detail::incoming m) mutable {
-                                      auto* const memory = impl->memory();
+                                      const detail::decoding to = impl->decoding();
                                       message_info info{
                                           .from = std::move(m.peer),
-                                          .metadata = std::pmr::string(m.metadata(), memory),
+                                          .metadata = std::pmr::string(m.metadata(), to.memory),
                                       };
-                                      auto value =
-                                          ec ? std::nullopt
-                                             : detail::payload_traits<T>::decode(m, memory);
+                                      auto value = ec ? std::nullopt
+                                                      : detail::payload_traits<T>::decode(m, to);
                                       if (!ec && !value) {
                                           ec = make_error_code(error::transfer_rejected);
                                       }
                                       impl->complete(std::move(handler), ec,
                                                      value ? std::move(*value)
-                                                           : detail::empty_payload<T>(memory),
+                                                           : detail::empty_payload<T>(to.memory),
                                                      std::move(info));
                                   })));
             },

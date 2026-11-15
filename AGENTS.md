@@ -647,10 +647,16 @@ holds only what is specific to trystero.
     every text with `webcpp::document::parse(text, options, allocator)` into
     a document of the room's resource (of the app's for a remote
     candidate), and keeps no owner of its own around it: the caller's text
-    bound is `parse_options::max_bytes`, and the image, 4 KiB at first,
-    grows in place to at most twice that bound and 64 KiB
-    (`protocol::json::protocol_limits`, as `max_document_bytes`); a JSON
-    payload is bounded the same way by its own size. A text the room writes
+    bound is `parse_options::max_bytes`, a protocol text nests at most 16
+    deep (`protocol::json::max_protocol_depth`), and the image, 4 KiB at
+    first, grows in place to at most twice that bound and 64 KiB
+    (`protocol::json::protocol_limits`, as `max_document_bytes`). A JSON
+    payload's image grows to at most 96 times its length and 64 KiB
+    (`protocol::json::image_bytes_per_text_byte`, a value of one character
+    and its comma being a node of 192 bytes, so every valid payload fits),
+    or the room's `room_options::max_json_document_bytes`, 64 MiB by
+    default, the smaller (`protocol::json::payload_limits`); its depth is
+    document's 256. A text the room writes
     is appended field by field to a `std::pmr::string` of its resource, its
     strings quoted by `webcpp::document::quote`, which allocates only
     through that string, and a JSON payload is written by
@@ -662,11 +668,14 @@ holds only what is specific to trystero.
     a received one is moved by construction alone.
   - **Payloads.** `detail::payload_traits` has `std::pmr::string` and
     `std::pmr::vector<std::uint8_t>` (`webcpp::trystero::pmr_bytes`) beside
-    the standard types, and `decode(incoming& message,
-    std::pmr::memory_resource* memory)` takes the resource for every type:
-    the `std::pmr` types are built in it, `webcpp::document::pmr::document`
-    among them, and a rejected `async_receive` completes with an empty one
-    there (a document holding `null`), through `detail::empty_payload`.
+    the standard types, and `decode(incoming& message, const decoding& to)`
+    takes the room's `detail::decoding` for every type, its resource and its
+    bound on a JSON payload's image: the `std::pmr` types are built in the
+    resource, `webcpp::document::pmr::document` among them, and a rejected
+    `async_receive` completes with an empty one there, through
+    `detail::empty_payload` (a document holding `null` until
+    webcpp::document's `basic_document::nothing` lands, then one with no
+    image, which allocates nothing).
     `std::string`, `bytes`, `webcpp::document::document` and `payload` stay
     as they are, with `std::allocator`: the user's choice, and a received
     `bytes`, or the binary of a `payload`, is a copy of the frame, which

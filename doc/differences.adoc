@@ -115,13 +115,15 @@ has nothing of it to run beside its twin.
 
 | A protocol text of thousands of values | parsed | refused once its image passes twice its bound and 64 KiB | no Trystero message holds more than a few dozen values, and a document's value takes some 200 bytes of image
 
+| A protocol text nested deeper than 16 | parsed | dropped as a malformed one is | no Trystero message nests deeper than 4, a relay's event and its tags, and each level of a parse is a level of recursion, which a hostile relay would otherwise take to 256
+
 | A self id that is not UTF-8 | impossible: a JavaScript string | set aside for a random one, with a configuration report | JSON carries UTF-8 alone, and a signal writes the id as a JSON string
 
 | A JSON payload's number that a double cannot hold: an integer past 2^53^, a decimal of more digits, one past a double's range | sent as the nearest double, and one past a double's range as `null`: a JavaScript number is a double | sent exact, as webcpp::document holds it; a Trystero JS peer reads the nearest double, or `Infinity` | webcpp::document keeps every number exact, and writes each one a double holds as JavaScript does
 
 | A JSON payload nested deeper than 256, or holding a lone surrogate | delivered: `JSON.parse` takes both | not delivered | webcpp::document's defaults: a bounded depth, and strings that are UTF-8
 
-| A JSON payload whose document needs more than twice its length and 64 KiB of image: an array of more than 345 zeros, 352 numbers of three digits, 287 short strings or 101 objects of two members | delivered: `JSON.parse` takes any | not delivered (<<trystero-differences-json-refused>>) | each value of a document is a node of some 200 bytes of image, so the image's bound is tied to the payload's length, as a protocol text's to its bound (<<trystero-protocol-json>>), and a payload of many small values costs the room no more than a multiple of its length
+| A JSON payload whose document passes the room's `room_options::max_json_document_bytes`, 64 MiB by default: some 350,000 values of one character | delivered: `JSON.parse` has no bound but the page's memory | not delivered (<<trystero-differences-json-refused>>) | each value of a document is a node of 192 bytes of image, 96 times its text at most, so a program bounds what a peer's JSON may take of its room's resource; every payload within the bound is delivered
 
 | The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
 
@@ -511,21 +513,30 @@ include::{examples}/diff_json_numbers.expected[]
 ----
 
 [#trystero-differences-json-refused]
-==== A JSON payload nested deeper than 256, holding a lone surrogate, or of many small values
+==== A JSON payload nested deeper than 256, holding a lone surrogate, or past the room's bound
 
 Trystero JS:: `JSON.parse` reads a payload nested deeper than 256, a string
 that holds a lone surrogate, `"\ud800"`, as `JSON.stringify` writes one, and
-an array of 1,000 zeros, so a room delivers all three.
+an array of any length, so a room delivers all three.
 trystero:: A room reads a JSON payload with webcpp::document's defaults, into
-an image of at most twice the payload and 64 KiB, and delivers none: a text
-nested deeper than 256 is refused, and so is a lone surrogate, and an array
-of 1,000 zeros, whose nodes would need some 190 KB. The room goes on, and
-delivers the payloads sent after them.
+an image of at most `room_options::max_json_document_bytes`, 64 MiB by
+default, and delivers none: a text nested deeper than 256 is refused, and so
+is a lone surrogate, and an array of 1,000 zeros, whose nodes need some
+190 KB, in a room whose bound is 64 KiB. The room goes on, and delivers the
+payloads sent after them.
 Why:: webcpp::document's defaults: a bounded depth, and strings that are
-UTF-8; and each value of a document is a node of some 200 bytes of image, so
-the image's bound is tied to the payload's length, as a protocol text's to
-its bound (<<trystero-protocol-json>>), and a payload of many small values
-costs the room no more than a multiple of its length.
+UTF-8; and each value of a document is a node of 192 bytes of image, 96
+times its text at most, so a program bounds what a peer's JSON may take of
+its room's resource. Every payload within the bound is delivered: its image
+is first bounded by 96 times its length and 64 KiB, which every valid text
+fits (<<trystero-protocol-json>>).
+
+The program's room sets the bound:
+
+[source]
+----
+include::{examples}/diff_json_refused.cpp[tag=bound,indent=0]
+----
 
 A Trystero JS page sends such payloads, and no {cpp} peer sends a lone
 surrogate, which a document's UTF-8 strings cannot hold. So the program's
@@ -624,8 +635,8 @@ its reason.
 | A Nostr event a relay repeats, or that several relays carry
 | What an event changes when it comes twice is the signaling's work, offers and answers made again, which neither API reports: a program sees one join either way, and over honest relays an event's id is always its own. The `protocol` and `room` tests hold the dedup, forged ids included.
 
-| A relay's text, a signal or a handshake message past its bound; a protocol text of thousands of values
-| No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` test holds the bounds.
+| A relay's text, a signal or a handshake message past its bound; a protocol text of thousands of values, or nested deeper than 16
+| No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` and `signaling` tests hold the bounds.
 
 | The characters of a random id
 | A bias of about 0.005 bits a character, which only a count over many ids shows, and a count of random characters prints something else on every run.

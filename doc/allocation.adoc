@@ -232,8 +232,12 @@ writer's stack, each freed before the call that made it returns. trystero
 reads each text with `webcpp::document::parse(text, options, allocator)`
 into a document of the room's resource, of the app's for a remote
 candidate: its image starts at 4 KiB and grows in place, twice as large
-each time, up to twice the caller's bound and 64 KiB; a text given whole
-leaves Boost.JSON's parser no state to suspend. A text the room writes is
+each time, up to twice the caller's bound and 64 KiB for a protocol text,
+and for a JSON payload up to 96 times its length and 64 KiB, which every
+valid payload fits, or the room's `room_options::max_json_document_bytes`,
+64 MiB by default, the smaller: the most a peer's payload takes of the
+room's resource. A text given whole leaves Boost.JSON's parser no state to
+suspend. A text the room writes is
 appended field by field to a `std::pmr::string` of its resource, its
 strings quoted by `webcpp::document::quote`, which allocates only through
 that string, and a JSON payload is written by

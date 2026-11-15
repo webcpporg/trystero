@@ -1309,16 +1309,18 @@ void async_receive_works_in_a_coroutine() {
 }
 
 // A JSON payload is parsed in the receiving room's resource, as a webcpp::document::pmr::document,
-// within twice its own size and 64 KiB of image, whatever type receives it: an array of 100 zeros
-// is delivered, one of 1,000, whose nodes would need some 190 KB, is not, and the messages after it
-// are.
-void json_payloads_are_read_in_the_rooms_resource_within_their_size() {
+// into an image of at most the room's max_json_document_bytes, whatever type receives it: an array
+// of 1,000 zeros is delivered, as is the longest array of zeros whose document fits the bound,
+// and the one a zero longer is not, while the messages after it are.
+void json_payloads_are_read_in_the_rooms_resource_up_to_its_bound() {
+    constexpr std::uint64_t bound = std::uint64_t{256} << 10U;
     std::pmr::unsynchronized_pool_resource z_memory;  // outlives the io_context
     fixture f;
     trystero::app a_app(f.io.get_executor(), f.net, app_config("TTTTTTTTTTTTTTTTTTTT"));
     auto a = join(a_app, "json");
     trystero::app z_app(f.io.get_executor(), f.net, app_config("UUUUUUUUUUUUUUUUUUUU"));
-    auto z = join(z_app, "json", trystero::room_options{.memory = &z_memory});
+    auto z = join(z_app, "json",
+                  trystero::room_options{.max_json_document_bytes = bound, .memory = &z_memory});
     std::vector<std::size_t> in_resource;
     std::vector<std::size_t> in_heap;
     std::size_t elsewhere = 0;
@@ -1337,17 +1339,28 @@ void json_payloads_are_read_in_the_rooms_resource_within_their_size() {
         for (std::size_t i = 1; i < n; ++i) {
             text += ",0";
         }
-        return document_of(text + "]");
+        return text + "]";
     };
+    // The longest array of zeros whose document fits the bound, found by parsing as the room does.
+    const auto fits = [&zeros](std::size_t n) {
+        webcpp::document::parse_options o;
+        o.max_document_bytes = bound;
+        return webcpp::document::parse(zeros(n), o).has_value();
+    };
+    std::size_t at_bound = 1000;
+    while (fits(at_bound + 1)) {
+        ++at_bound;
+    }
+    BOOST_TEST(fits(at_bound) && !fits(at_bound + 1));
     for (const char* name : {"pmr", "std"}) {
         auto to_z = a.make_action<webcpp::document::document>(name);
-        for (const std::size_t n : {100, 1000, 3}) {
-            to_z.async_send(zeros(n), asio::detached);
+        for (const std::size_t n : {std::size_t{1000}, at_bound, at_bound + 1, std::size_t{3}}) {
+            to_z.async_send(document_of(zeros(n)), asio::detached);
         }
     }
-    // A data channel keeps its order: the last of each action arrives after the other two.
-    BOOST_TEST(run_until(f.io, [&] { return in_resource.size() >= 2 && in_heap.size() >= 2; }));
-    const std::vector<std::size_t> delivered{100, 3};
+    // A data channel keeps its order: the last of each action arrives after the other three.
+    BOOST_TEST(run_until(f.io, [&] { return in_resource.size() >= 3 && in_heap.size() >= 3; }));
+    const std::vector<std::size_t> delivered{1000, at_bound, 3};
     BOOST_TEST_ALL_EQ(in_resource.begin(), in_resource.end(), delivered.begin(), delivered.end());
     BOOST_TEST_ALL_EQ(in_heap.begin(), in_heap.end(), delivered.begin(), delivered.end());
     BOOST_TEST_EQ(elsewhere, 0U);
@@ -1695,7 +1708,7 @@ int main() {
     counter_announcements_are_paced();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
-    json_payloads_are_read_in_the_rooms_resource_within_their_size();
+    json_payloads_are_read_in_the_rooms_resource_up_to_its_bound();
     a_rejected_document_receive_holds_null_in_the_rooms_resource();
     view_handlers_read_the_frame_without_copying();
     a_rate_limited_relay_does_not_stop_discovery();

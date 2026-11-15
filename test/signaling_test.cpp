@@ -419,6 +419,58 @@ void a_relay_text_past_its_bound_is_dropped() {
     strategy->stop();
 }
 
+/** A relay's `["EVENT", <subscription>, <event>]` of `topic` under the id `id`, its event holding
+ * a member nested so that the whole text nests `depth` deep. */
+std::string nested_event(std::string_view subscription, std::string_view topic, std::string_view id,
+                         std::size_t depth) {
+    std::pmr::string text(R"(["EVENT",)", memory());
+    require(BOOST_TEST(webcpp::document::quote(subscription, text).has_value()));
+    text += R"(,{"id":")";
+    text += id;
+    text += R"(","tags":[["x",)";
+    require(BOOST_TEST(webcpp::document::quote(topic, text).has_value()));
+    // The text's array and its event are two levels; the member's arrays are the rest.
+    text += R"(]],"content":"c","deep":)";
+    text.append(depth - 2, '[');
+    text.append(depth - 2, ']');
+    text += "}]";
+    return std::string(text);
+}
+
+// A relay's text nested as deep as a protocol text may, protocol::json::max_protocol_depth, reaches
+// the room; one level deeper is dropped as a malformed one is, before the parse recurses further.
+void a_relay_text_past_its_depth_is_dropped() {
+    asio::io_context io;
+    relaying_network net(io);
+    const std::pmr::string url("wss://relay.test", memory());
+    const std::string_view topic = "the-room-topic";
+    std::vector<std::string> contents;
+    const auto strategy = std::make_shared<detail::nostr_strategy>(
+        net, std::span<const std::pmr::string>(&url, 1),
+        std::pmr::vector<std::pmr::string>({std::pmr::string(topic, memory())}, memory()), topic,
+        [] { return std::pmr::string(R"({"peerId":"p"})", memory()); },
+        [&contents](std::size_t, std::string_view, std::string_view content) {
+            contents.emplace_back(content);
+        },
+        detail::logger(), memory());
+    strategy->start();
+    require(BOOST_TEST(net.socket != nullptr && static_cast<bool>(net.handlers.open)));
+    net.handlers.open();
+    require(BOOST_TEST(net.poll_ready()));
+    require(BOOST_TEST(!net.socket->sent.empty()));
+    const auto request = webcpp::document::parse(net.socket->sent.front());
+    require(BOOST_TEST(request.has_value() && str(request->root()[0]) == "REQ"));
+    const auto subscription = str(request->root()[1]);
+    const std::size_t depth = tp::json::max_protocol_depth;
+    BOOST_TEST_EQ(depth, 16U);
+    net.handlers.message(nested_event(subscription, topic, std::string(64, '1'), depth));
+    BOOST_TEST_EQ(contents.size(), 1U);
+    net.handlers.message(nested_event(subscription, topic, std::string(64, '2'), depth + 1));
+    BOOST_TEST_EQ(contents.size(), 1U);
+    BOOST_TEST(!net.socket->closed);
+    strategy->stop();
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -435,5 +487,6 @@ int main(int argc, char* argv[]) {
     an_answerers_signals_are_trysteros(oracle);
     a_signal_past_its_bound_is_dropped(oracle);
     a_relay_text_past_its_bound_is_dropped();
+    a_relay_text_past_its_depth_is_dropped();
     return webcpp::test::exit_status(boost::report_errors());
 }

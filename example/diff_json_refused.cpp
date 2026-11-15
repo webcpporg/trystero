@@ -5,11 +5,12 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // A difference from Trystero (doc: #trystero-differences-behaviour): a JSON payload nested deeper
-// than 256, holding a lone surrogate, or of many small values. Trystero JS delivers all three, as
-// JSON.parse reads them; a room here delivers none, since it reads a JSON payload with
-// webcpp::document's defaults, at most 256 deep, and strings that are UTF-8, into an image of at
-// most twice the payload and 64 KiB, which an array of 1,000 zeros, a node of some 200 bytes each,
-// passes. A Trystero JS page sends such payloads, and a C++
+// than 256, holding a lone surrogate, or whose document passes the room's bound. Trystero JS
+// delivers all three, as JSON.parse reads them; a room here delivers none, since it reads a JSON
+// payload with webcpp::document's defaults, at most 256 deep, and strings that are UTF-8, into an
+// image of at most room_options::max_json_document_bytes, which this program's room sets to 64 KiB:
+// an array of 1,000 zeros, a node of 192 bytes each, passes it. A Trystero JS page sends such
+// payloads, and a C++
 // peer sends no lone surrogate, which a document's UTF-8 strings cannot hold, so the other peer of
 // this program sends what a page sends: each payload's JSON text, as JSON.stringify writes the
 // value, as a text payload, which the backend its app is given marks as JSON on the wire. This
@@ -227,7 +228,10 @@ int main() {
     trystero::app other_app(io.get_executor(), marking_backend, config());
     auto other = other_app.join("lobby");
     trystero::app app(io.get_executor(), backend, config());
-    auto joined = app.join("lobby");
+    // tag::bound[]
+    // A room whose received JSON payloads take at most 64 KiB of its resource each.
+    auto joined = app.join("lobby", {.max_json_document_bytes = std::uint64_t{64} << 10U});
+    // end::bound[]
     if (!other || !joined) {
         std::cerr << "not joined\n";
         return 1;
@@ -239,8 +243,8 @@ int main() {
     };
     // tag::example[]
     // The payloads the other peer sends, as JSON text, each an array of its label and a value: one
-    // nested 257 deep, one holding a lone surrogate, an array of 1,000 zeros, and a last one sent
-    // after them.
+    // nested 257 deep, one holding a lone surrogate, an array of 1,000 zeros past the room's bound,
+    // and a last one sent after them.
     std::string zeros = "[0";
     for (std::size_t i = 1; i < 1000; ++i) {
         zeros += ",0";

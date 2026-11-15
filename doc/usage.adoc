@@ -94,6 +94,9 @@ moved, or build it in place. Each room adds `room_options`:
 | `max_receive_bytes`
 | The most bytes the room reserves for incoming transfers across peers, 256 MiB.
 
+| `max_json_document_bytes`
+| The largest image a received JSON payload's document may take of the room's resource, webcpp::document's default, 64 MiB; a payload past it is not delivered (<<trystero-protocol-json>>).
+
 | `memory`
 | The room's own resource; null uses the app's resource.
 |===
@@ -216,9 +219,10 @@ hold, an integer past 2^53^ or a decimal of more digits, is sent exact, as
 webcpp::document holds it: a Trystero JS peer reads the nearest double, or
 `Infinity` past a double's range. A text that does not parse is not
 delivered, nor one nested deeper than 256 or holding a lone surrogate,
-which `JSON.parse` takes, nor one whose document would need more than twice
-its length and 64 KiB of image, an array of more than 345 zeros among them
-(<<trystero-protocol-json>>).
+which `JSON.parse` takes, nor one whose document passes the room's
+`room_options::max_json_document_bytes`, 64 MiB of image by default, some
+350,000 values of one character, which a program lowers to bound what a
+peer's JSON may take of its room's resource (<<trystero-protocol-json>>).
 
 A document is moved, never copied: so `payload`, which may hold one, has no
 copy assignment, and in a build without exceptions no copy constructor
