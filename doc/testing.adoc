@@ -26,7 +26,10 @@ The memory network identifies connection ends with `std::size_t` ids.
 paired end. A `filter` delivers, drops or holds frames; a held frame holds
 all later frames from its sending end behind it, preserving channel order
 until `release`. Deferred `open` calls open each end separately; `inject`
-and `fail` supply malformed frames and transport failure.
+and `fail` supply malformed frames and transport failure. With
+`hold_sealer_opens`, every sealer's opens wait, as Web Crypto's take their
+time in a page, until `release_sealer_opens` completes them in order;
+`held_sealer_opens` counts them.
 
 With `channel_capacity` enabled, the channel queues bytes and drains up to
 `drain_per_post` per post. It delivers a frame only after its last byte
@@ -96,9 +99,10 @@ include::{library-root}/test/Jamfile[tag=allocation]
   100 KB transfers both ways, ping, passwords right and wrong, leaving and
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
-  signals, a relay that closes at once or rate-limits, a three-peer mesh,
-  coroutines and view handlers, JSON payloads read in the room's resource
-  up to its bound, and a rejected document receive.
+  signals, offers being opened that keep their places when new ids arrive
+  at the same instant, a relay that closes at once or rate-limits, a
+  three-peer mesh, coroutines and view handlers, JSON payloads read in the
+  room's resource up to its bound, and a rejected document receive.
 
 | `app_impl`
 | Configuration copying and validation, a self id that is not UTF-8 set

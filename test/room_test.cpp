@@ -545,23 +545,119 @@ void forged_offers_make_no_connection() {
     const auto a = join(a_app, "offers");
     flooder attacker(f, "offers");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "offers", "zzzzzzzzzzzzzzzzzzzz");
-    // Twenty at a time, each twenty refused before the next comes, 1 ms later. A new id beyond the
-    // room's 32 negotiations evicts the one idle longest, which is then one already refused: sent
-    // at once, or at one instant, the later ids would evict negotiations whose offers were still
-    // opening, and the room drops an offer whose negotiation is gone unopened.
+    // Twenty at a time, all at one instant, each twenty refused before the next comes. A new id
+    // beyond the room's 32 negotiations takes the place of one already refused, which is idle: one
+    // whose offer is being opened keeps its place. More than 32 at once would have the later ids
+    // refused at the bound, unopened (a_flood_of_offers_at_one_instant_is_bounded).
+    const auto instant = f.net.steady_now();
     for (std::size_t i = 0; i < flood; ++i) {
         const std::string id = "0offer" + std::to_string(i);
         attacker.publish(a_topic,
                          {.peer_id = id, .offer_id = "offer", .offer = "not a sealed offer"});
-        if (i % 20 == 19) {
-            if (!BOOST_TEST(run_until(f, [&] { return refused == i + 1; }))) {
-                break;
-            }
-            advance(f, 1ms);
+        if (i % 20 == 19 && !BOOST_TEST(run_until(f, [&] { return refused == i + 1; }))) {
+            break;
         }
     }
     BOOST_TEST_EQ(refused, flood);
     BOOST_TEST_EQ(f.net.made_connections, 0U);
+    BOOST_TEST(f.net.steady_now() == instant);
+}
+
+// Two peers offer to a room at one instant, and the room's sealer takes its time to open their
+// offers, as Web Crypto's does in a page; meanwhile, at the same instant, as many new ids announce
+// as the room holds negotiations (max_unconnected_peers): they fill every other place, and the last
+// two take the places of idle negotiations. One whose offer is being opened is not idle, so both
+// peers join at that instant, as with Trystero, which bounds nothing. At one instant no negotiation
+// has been idle longer than another, and the peers' ids sort before the others'. When a
+// negotiation was idle as soon as it held no connection, the tie went to the first in id order:
+// the last two ids took the peers' places, the room dropped both offers unopened, and the peers
+// joined only when they offered again, 2 s later (measured).
+void an_offer_being_opened_keeps_its_place() {
+    constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    fixture f{true};
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("0aaaaaaaaaaaaaaaaaaa"));
+    const auto a = join(a_app, "opening");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("0bbbbbbbbbbbbbbbbbbb"));
+    const auto b = join(b_app, "opening");
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+
+    // From here on the clock stands still: only what is ready runs.
+    const auto instant = f.net.steady_now();
+    const auto settle = [&] { webcpp::test::require(BOOST_TEST(f.net.poll_ready())); };
+    f.net.hold_sealer_opens = true;
+    auto c = app_config("zzzzzzzzzzzzzzzzzzzz");
+    std::size_t refusals = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        refusals += text.starts_with("refusing ") ? 1 : 0;
+    };
+    trystero::app z_app(f.io.get_executor(), f.net, std::move(c));
+    auto z = join(z_app, "opening");
+    std::vector<std::string> joined;
+    z.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    // Its announcement reaches both peers, whose ids are below its own: each offers to it, and the
+    // room receives each offer on both relays, four opens that wait.
+    settle();
+    BOOST_TEST_EQ(f.net.held_sealer_opens(), 4U);
+    flooder crowd(f, "opening");
+    crowd.announce(bound, "1crowd");
+    settle();
+    f.net.hold_sealer_opens = false;
+    f.net.release_sealer_opens();
+    settle();
+    BOOST_TEST(f.net.steady_now() == instant);
+    std::ranges::sort(joined);
+    const std::vector<std::string> both{"0aaaaaaaaaaaaaaaaaaa", "0bbbbbbbbbbbbbbbbbbb"};
+    BOOST_TEST_ALL_EQ(joined.begin(), joined.end(), both.begin(), both.end());
+    BOOST_TEST_EQ(refusals, 0U);
+}
+
+// Forged offers from fresh ids, all at one instant, while the room's sealer takes its time to open
+// them: the room opens the offers of at most max_unconnected_peers negotiations, and refuses every
+// other id, each logged once, so that each offer is accounted for, refused for not opening or at
+// the bound. None makes a connection, and a peer who comes next takes the place of a refused one.
+// When each new id could take the place of a negotiation whose offer was being opened, the room
+// opened all 200 at once, and dropped 168 of them unopened, with no log (measured).
+void a_flood_of_offers_at_one_instant_is_bounded() {
+    constexpr std::size_t flood = 200;
+    constexpr std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
+    fixture f{true};
+    const std::string_view z_id = "zzzzzzzzzzzzzzzzzzzz";
+    auto c = app_config(z_id);
+    std::size_t not_opened = 0;
+    std::size_t refused = 0;
+    c.log = [&](std::string_view /*category*/, std::string_view text) {
+        not_opened += text.starts_with("could not open the offer from 0offer") ? 1 : 0;
+        refused += text.starts_with("refusing 0offer") ? 1 : 0;
+    };
+    trystero::app z_app(f.io.get_executor(), f.net, std::move(c));
+    auto z = join(z_app, "instant");
+    std::vector<std::string> joined;
+    z.on_peer_join([&](std::string_view p) { joined.emplace_back(p); });
+    flooder attacker(f, "instant");
+    const auto z_topic = trystero::protocol::peer_topic(app_id, "instant", z_id);
+    const auto instant = f.net.steady_now();
+    f.net.hold_sealer_opens = true;
+    for (std::size_t i = 0; i < flood; ++i) {
+        attacker.publish(z_topic, {
+                                      .peer_id = "0offer" + std::to_string(i),
+                                      .offer_id = "offer",
+                                      .offer = "not a sealed offer",
+                                  });
+    }
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    BOOST_TEST_EQ(f.net.held_sealer_opens(), bound);
+    BOOST_TEST_EQ(refused, flood - bound);
+    f.net.hold_sealer_opens = false;
+    f.net.release_sealer_opens();
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    BOOST_TEST_EQ(not_opened, bound);
+    BOOST_TEST_EQ(f.net.made_connections, 0U);
+    BOOST_TEST(f.net.steady_now() == instant);
+
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("0aaaaaaaaaaaaaaaaaaa"));
+    const auto a = join(a_app, "instant");
+    BOOST_TEST(run_until(f, [&] { return joined.size() == 1; }));
 }
 
 // Unsealed offers from 2000 fresh ids, which anyone who reads the relays can send: the room reports
@@ -590,9 +686,9 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
     const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
     const auto started = f.net.steady_now();
     const auto before = f.net.relay(relay_a).events_seen;
-    // Paced, so that each offer's open completes before later ids evict its negotiation: every
-    // twenty, everything ready runs, the relay, the room and the sealer's opens, and then the clock
-    // moves 250 ms, 25 s for the whole flood.
+    // Paced, twenty at a time, fewer than the room's 32 negotiations, so that every offer is opened
+    // rather than refused at the bound: every twenty, everything ready runs, the relay, the room
+    // and the sealer's opens, and then the clock moves 250 ms, 25 s for the whole flood.
     for (std::size_t i = 0; i < flood; ++i) {
         attacker.publish(a_topic, {
                                       .peer_id = "0garbage" + std::to_string(i),
@@ -638,8 +734,9 @@ void sealed_offers_that_fail_at_once_are_bounded() {
     flooder member(f, "churn");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "churn", "zzzzzzzzzzzzzzzzzzzz");
     // One at a time, each once the previous one made its connection or was refused: sent at once,
-    // the offers would evict each other's negotiations before they open. Each is a text of its
-    // own, as a member makes them: the room refuses an offer it used before.
+    // the ids beyond the room's 32 negotiations would be refused at the bound before their offers
+    // open, and the window would go untested. Each is a text of its own, as a member makes them:
+    // the room refuses an offer it used before.
     for (std::size_t i = 0; i < flood; ++i) {
         const auto offer =
             flooder::sealed("churn", "not an SDP the connection takes " + std::to_string(i));
@@ -1773,6 +1870,8 @@ int main() {
     a_refused_peer_is_logged_once();
     a_forged_answer_changes_nothing();
     forged_offers_make_no_connection();
+    an_offer_being_opened_keeps_its_place();
+    a_flood_of_offers_at_one_instant_is_bounded();
     signals_that_do_not_open_are_reported_once_per_interval();
     sealed_offers_that_fail_at_once_are_bounded();
     announcements_with_forged_answers_are_bounded();

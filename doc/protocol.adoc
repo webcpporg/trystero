@@ -260,7 +260,13 @@ what each costs a room.
   negotiations with peers it is not connected to. A negotiation whose offer
   and answer expire without a connection is dropped, an idle one gives its
   place to a new peer, and a new peer beyond the bound is refused and logged
-  once.
+  once. A negotiation is idle when it holds no connection and no offer of its
+  peer is being opened: the one idle longest gives its place, and of those
+  idle as long, as every negotiation is at one instant of a page's coarse
+  clock, the one the room took first. So an offer whose sealed text the
+  backend is still opening (Web Crypto's asynchronous step in a page) keeps
+  its place however many new ids arrive meanwhile, and is acted on once it
+  opens; and the offers opened at once come from at most 32 peers.
 * A room makes at most `max_connections_per_window` (64) connections in any
   57 s, however soon they end; the platform backend makes at most 256 a
   minute on both targets (<<trystero-platform-config>>), and a page holds at

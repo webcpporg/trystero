@@ -53,8 +53,8 @@
  * each factory method is given; the network's own state (its relays, their subscriptions, its
  * record of the connections) is in the resource the network is constructed with, and changes only
  * when a room joins, connects or leaves. The state of the hooks a test drives (held frames,
- * deferred opens, a buffering channel's queue, the virtual clock) is in the default resource and is
- * made only when the test sets the hook.
+ * deferred opens, held sealer opens, a buffering channel's queue, the virtual clock) is in the
+ * default resource and is made only when the test sets the hook.
  */
 namespace webcpp::trystero::test {
 
@@ -810,6 +810,15 @@ public:
     void open(std::size_t pc);
     /** Delivers `frame` on the channel of `pc`, as if its other end had sent it. */
     void inject(std::size_t pc, std::span<const std::uint8_t> frame);
+    /** When true, every sealer's opens wait until release_sealer_opens(), as Web Crypto's take
+     * their time in a page while the relays' texts keep coming. */
+    bool hold_sealer_opens = false;
+    /** Completes the sealer opens held, in the order they were asked for. */
+    void release_sealer_opens();
+
+    /** How many sealer opens wait to be released. */
+    [[nodiscard]] std::size_t held_sealer_opens() const { return held_sealer_opens_.size(); }
+
     /** Reports `failed` on `pc`, then closes its channel. */
     void fail(std::size_t pc);
     /** Reports `disconnected` on `pc`; its channel stays open. */
@@ -849,11 +858,21 @@ public:
 private:
     friend class memory_data_channel;
     friend class memory_peer_connection;
+    friend class memory_sealer;
 
     /** A frame held by the filter, and every frame its sending end sent after it. */
     struct held_frame {
         std::size_t from;
         std::vector<std::uint8_t> bytes;
+    };
+
+    /** A sealer's open held by `hold_sealer_opens`: its result, made when it was asked for, and
+     * what it completes, in the resource of the room that asked. */
+    struct held_open {
+        std::pmr::memory_resource* memory;
+        bool ours;
+        std::pmr::string plain;
+        handler<void(backend::error_code, std::string_view)> done;
     };
 
     /** Holds, drops or delivers `frame`, as the filter and the frames held before it say. */
@@ -874,6 +893,7 @@ private:
     std::size_t next_pc_ = 0;
     std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end
     std::map<std::size_t, std::weak_ptr<memory_data_channel>> deferred_;  // ends waiting for open()
+    std::deque<held_open> held_sealer_opens_;
     std::shared_ptr<virtual_clock_state> clock_;
 };
 
@@ -1176,9 +1196,18 @@ inline std::size_t memory_network::scheduled() const {
  * opens it. */
 class memory_sealer : public backend::sealer {
 public:
-    memory_sealer(webcpp::asio::io_context& io, std::array<std::uint8_t, 32> key,
+    memory_sealer(memory_network& net, std::array<std::uint8_t, 32> key,
                   std::pmr::memory_resource* memory)
-        : io_(io), key_(key), memory_(memory) {}
+        : net_(net), io_(net.io()), key_(key), memory_(memory) {}
+
+    /** Posts the completion of an open whose result is known: `plain` when the text was `ours`. */
+    static void complete(webcpp::asio::io_context& io, std::pmr::memory_resource* memory, bool ours,
+                         std::pmr::string plain,
+                         handler<void(backend::error_code, std::string_view)> done) {
+        post_in(io, memory, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
+            done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
+        });
+    }
 
     void seal(std::string_view plaintext,
               handler<void(backend::error_code, std::string_view)> done) override {
@@ -1200,12 +1229,20 @@ public:
         if (ours) {
             plain.assign(parts->ciphertext.begin(), parts->ciphertext.end());
         }
-        post_in(io_, memory_, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
-            done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
-        });
+        if (net_.hold_sealer_opens) {
+            net_.held_sealer_opens_.push_back({
+                .memory = memory_,
+                .ours = ours,
+                .plain = std::move(plain),
+                .done = std::move(done),
+            });
+            return;
+        }
+        complete(io_, memory_, ours, std::move(plain), std::move(done));
     }
 
 private:
+    memory_network& net_;
     webcpp::asio::io_context& io_;
     std::array<std::uint8_t, 32> key_;
     std::pmr::memory_resource* memory_;
@@ -1213,8 +1250,15 @@ private:
 
 inline std::shared_ptr<backend::sealer> memory_network::make_sealer(
     std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) {
-    return std::allocate_shared<memory_sealer>(std::pmr::polymorphic_allocator<>(memory), io_, key,
-                                               memory);
+    return std::allocate_shared<memory_sealer>(std::pmr::polymorphic_allocator<>(memory), *this,
+                                               key, memory);
+}
+
+inline void memory_network::release_sealer_opens() {
+    for (auto& held : std::exchange(held_sealer_opens_, {})) {
+        memory_sealer::complete(io_, held.memory, held.ours, std::move(held.plain),
+                                std::move(held.done));
+    }
 }
 
 }  // namespace webcpp::trystero::test
