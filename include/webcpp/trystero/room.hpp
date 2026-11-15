@@ -94,7 +94,8 @@ using pmr_bytes = std::pmr::vector<std::uint8_t>;
  *
  * A message received as `pmr_document` is parsed into a buffer of the room's effective
  * `room_options::memory`, which must outlive the value, with every value of the document in that
- * buffer. One sent is written once, as `JSON.stringify` writes it, into the room's resource.
+ * buffer. One sent is written once into the room's resource, as `JSON.stringify` writes every
+ * value JavaScript can hold; a number a double cannot hold is written exact.
  *
  * @see "Allocation", in the guide.
  */
@@ -268,8 +269,8 @@ struct payload_traits<webcpp::document::document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
-    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
-     * resource. */
+    /** Writes the value once, as `JSON.stringify` writes what JavaScript can hold, into a shared
+     * string of the room's resource. */
     static encoded_payload encode(const webcpp::document::document& v,
                                   std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
@@ -301,8 +302,8 @@ struct payload_traits<pmr_document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
-    /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
-     * resource. */
+    /** Writes the value once, as `JSON.stringify` writes what JavaScript can hold, into a shared
+     * string of the room's resource. */
     static encoded_payload encode(const pmr_document& v, std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
         protocol::json::append_value(text, v.root());
