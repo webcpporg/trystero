@@ -321,8 +321,8 @@ public:
      *
      * @return The current time, from the steady clock's epoch.
      */
-    std::chrono::steady_clock::time_point steady_now() override {
-        return std::chrono::steady_clock::now();  // lint-world: Trystero's timing
+    std::chrono::steady_clock::time_point steady_now() override {  // lint-world: a type only
+        return std::chrono::steady_clock::now();                   // lint-world: Trystero's timing
     }
 
 private:
