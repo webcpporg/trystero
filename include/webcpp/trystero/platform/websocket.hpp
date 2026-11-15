@@ -434,7 +434,9 @@ public:
     void abandon() {
         h_.reset();
         closing_ = true;
-        resolver_.cancel();
+        // A resolution under way is not cancelled: `on_resolve` drops its result, as closing, and
+        // Asio's cancel allocates a new cancellation token, which a destructor, the caller here,
+        // must not risk.
         webcpp::beast::get_lowest_layer(ws_).close();
     }
 

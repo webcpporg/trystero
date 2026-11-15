@@ -102,7 +102,7 @@ private:
 
 // The channel `channel` marking its text payloads of the action as JSON, made in `memory`; null for
 // none.
-channel_ptr marking(channel_ptr channel, std::pmr::memory_resource* memory) {
+channel_ptr marking(channel_ptr&& channel, std::pmr::memory_resource* memory) {
     if (!channel) {
         return nullptr;
     }
@@ -173,6 +173,10 @@ public:
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
+        // The connection is moved into the marking one below, which a const one could not be:
+        // through libstdc++'s polymorphic_allocator construction misc-const-correctness sees no
+        // change.
+        // NOLINTNEXTLINE(misc-const-correctness)
         auto connection = backend_.make_peer_connection(servers, memory);
         if (!connection) {
             return nullptr;
