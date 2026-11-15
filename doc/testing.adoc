@@ -91,7 +91,7 @@ include::{library-root}/test/Jamfile[tag=allocation]
   dropped one byte past it, and a relay's text read 16 deep and dropped one
   level deeper.
 
-| `room`
+| `room`, `room_asyncify_release`
 | Whole rooms in one process, over the memory relays: every payload format,
   100 KB transfers both ways, ping, passwords right and wrong, leaving and
   returning, a room moved over a joined one, ICE servers checked as WebRTC
@@ -100,7 +100,7 @@ include::{library-root}/test/Jamfile[tag=allocation]
   coroutines and view handlers, JSON payloads read in the room's resource
   up to its bound, and a rejected document receive.
 
-| `app_impl`
+| `app_impl`, `app_impl_asyncify_release`
 | Configuration copying and validation, a self id that is not UTF-8 set
   aside, resource ownership, weak room
   registration, shared adoption, stale replacement, reentrant adoption,
@@ -122,7 +122,7 @@ include::{library-root}/test/Jamfile[tag=allocation]
   byte past it, and resource ownership. The suite also runs without exceptions and with
   standard-library hardening; sanitizers check lifetimes and detachment.
 
-| `allocation`
+| `allocation`, `allocation_asyncify_release`
 | Every allocation of two apps and their rooms goes through their resources
   (<<trystero-allocation-proof>>).
 
@@ -240,6 +240,27 @@ runs once, with the standard libraries' checks:
 include::{library-root}/test/Jamfile[tag=platform]
 include::{library-root}/test/Jamfile[tag=page]
 include::{library-root}/test/Jamfile[tag=no-exceptions]
+----
+
+Under Asyncify the deepest build is `release`: compiled with `-O3`, it is
+linked without optimization, as b2's emscripten toolset links it, so that
+each suspension saves every local of every frame from `main` down to the
+call that suspends, in webcpp::asio's 8,192 bytes (webcpp::asio's guide,
+"Asyncify's stack"). A room's own work is never among those frames
+(<<trystero-platform-needs>>), but a test's cases are: each case calls the
+run family itself. So a test whose cases suspend runs each through
+`webcpp::test::run_case` (`test/cases.hpp`), in a frame of its own, which
+the frame of `main` never holds; a case that `main` alone calls is otherwise
+inlined into it, and the room test's `main`, which held every case's locals
+so, saved 29,776 bytes at each suspension and stopped at its first. The
+room, `app_impl` and allocation tests, whose cases hold whole apps, run once
+more in that build, with webcpp::asio's 8,192 bytes, where their deepest
+suspensions wrote 3,096, 2,140 and 5,592 bytes (measured on 2026-11-15 with
+Emscripten 6.0.11):
+
+[listing]
+----
+include::{library-root}/test/Jamfile[tag=asyncify-release]
 ----
 
 From the root of a webcpp checkout, with libsecp256k1 found

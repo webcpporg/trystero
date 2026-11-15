@@ -12,6 +12,7 @@
 
 #include <webcpp/trystero.hpp>
 
+#include "cases.hpp"
 #include "require.hpp"
 #include "support/memory_backend.hpp"
 
@@ -1119,11 +1120,13 @@ int main() {
     !defined(WEBCPP_TARGET_EMSCRIPTEN)
     malloc_logger = &count_c_allocation;
 #endif
-    the_replaced_operators_serve_every_alignment();
-    the_counts_see_an_allocation();
-    exchanges_allocate_through_the_rooms_resources();
-    reading_a_text_allocates_through_its_resource();
-    a_room_allocates_through_its_resource_from_join_to_destruction();
-    rooms_of_one_app_allocate_through_their_resources();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(the_replaced_operators_serve_every_alignment);
+    run_case(the_counts_see_an_allocation);
+    run_case(exchanges_allocate_through_the_rooms_resources);
+    run_case(reading_a_text_allocates_through_its_resource);
+    run_case(a_room_allocates_through_its_resource_from_join_to_destruction);
+    run_case(rooms_of_one_app_allocate_through_their_resources);
     return webcpp::test::exit_status(boost::report_errors());
 }
