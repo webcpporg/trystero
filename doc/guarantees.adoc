@@ -45,8 +45,9 @@ file transfers of the `interop` lane.
 . [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
 resources,* but what <<trystero-allocation-outside>> lists: from its
 construction until its `io_context` has drained, the global `operator new`
-sees only the room's JSON storage counter, and the C library nothing. _Held
-by_ `allocation`, natively and on emscripten.
+sees only webcpp::document's working state while it reads or writes a JSON
+text, each piece freed before that call returns, and the C library nothing.
+_Held by_ `allocation`, natively and on emscripten.
 . [[trystero-invariant-6]]*No unit test reaches beyond the loopback.* The
 rooms of the unit tests meet over the memory relays, the native tests' peer
 connections bind to 127.0.0.1 and gather their candidates there alone, and

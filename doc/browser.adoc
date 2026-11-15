@@ -135,9 +135,9 @@ connection.
 * A program that runs its `io_context` from `main` for as long as the page
   lives, under a work guard: the `io_context` must outlive every room and
   object it serves, and its handlers run only while it runs.
-* Boost.JSON's definitions, which a program links from `/webcpp//boost_json`,
-  which `/webcpp/trystero//trystero` brings and which builds on emscripten
-  as on every target.
+* webcpp::document, with Boost.JSON's and Boost.Charconv's definitions,
+  which `/webcpp/trystero//trystero` brings through `/webcpp/document//document`
+  and which build on emscripten as on every target.
 
 [#trystero-browser-chat]
 === A page and its program

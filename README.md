@@ -102,8 +102,8 @@ build the tests and the examples natively and on emscripten, with the
 emscripten toolset that `user-config.jam` registers against emsdk. A b2
 project uses the rooms and the browser backend through
 `/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
-webcpp::asio, libsecp256k1 and Boost.JSON's definitions, compiled once per
-variant, and on emscripten webcpp::webrtc and embind; a program there is
+webcpp::asio, libsecp256k1 and webcpp::document with Boost.JSON's and
+Boost.Charconv's definitions, compiled once per variant, and on emscripten webcpp::webrtc and embind; a program there is
 built in webcpp::asio's suspension variant, `webcpp-suspend=jspi` by default
 or `asyncify`. A native program uses `/webcpp/trystero//native` and
 declares `<threading>multi` itself, as `example/Jamfile` does; the target
@@ -311,7 +311,8 @@ b2 --user-config=../user-config.jam libs/trystero/example//native_quick_start-pr
 b2 --user-config=../user-config.jam toolset=emscripten libs/trystero/example/chat//site
 ```
 
-The first build also compiles Boost.JSON's definitions, and the first
+The first build also compiles Boost.JSON's and Boost.Charconv's definitions,
+which webcpp::document uses, and the first
 emscripten build Emscripten's system libraries, which takes a few minutes.
 The second command ends by printing the chat site's directory,
 `bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,

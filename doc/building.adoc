@@ -75,8 +75,8 @@ include::{library-root}/build.jam[tag=dependencies]
 
 A b2 project uses the rooms and the browser backend through
 `/webcpp/trystero//trystero`, which adds trystero's headers, Boost's,
-webcpp::asio, libsecp256k1 and Boost.JSON's definitions, compiled once per
-variant, and, on emscripten, webcpp::webrtc and embind:
+webcpp::asio, libsecp256k1 and webcpp::document with Boost.JSON's and
+Boost.Charconv's definitions, compiled once per variant, and, on emscripten, webcpp::webrtc and embind:
 
 [listing]
 ----

@@ -25,7 +25,7 @@ The library provides:
   the peers that join and leave, measures round trips, and leaves with
   Trystero's farewell;
 * `action<T>`, a named channel of messages: text, JSON
-  (`boost::json::value`), binary, or any of the three, with optional JSON
+  (webcpp::document's), binary, or any of the three, with optional JSON
   metadata, of any size, sent inline or in chunks with backpressure;
 * one immutable password per app, part of every room's sealed signaling
   key and challenge handshake; separate passwords use separate apps and ids;
@@ -73,9 +73,9 @@ namespace `webcpp::trystero`.
 
 * A {cpp}20 compiler.
 * Boost 1.92: Asio, Circular Buffer, Container (its `pmr` base class), Core,
-  Endian, Hash2, JSON, System and Unordered; and Beast and URL for the native
-  backend.
-* webcpp::asio, webcpp::webrtc for both backends' WebRTC, and webcpp::beast
+  Endian, Hash2, JSON (the parser webcpp::document uses), System and
+  Unordered; and Beast and URL for the native backend.
+* webcpp::document for every JSON text, webcpp::asio, webcpp::webrtc for both backends' WebRTC, and webcpp::beast
   for the native backend's relays (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
