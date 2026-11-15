@@ -1080,8 +1080,14 @@ void payload_image_per_text_byte() {
         return text + "]";
     };
     const std::string deep = std::string(255, '[') + std::string(255, ']');
-    for (const auto& text : {array_of("0", 1000), array_of("[0]", 1000), array_of("[0,0]", 1000),
-                             array_of(deep, 10), array_of("{}", 1000), array_of("\"\"", 1000)}) {
+    for (const auto& text : {
+             array_of("0", 1000),
+             array_of("[0]", 1000),
+             array_of("[0,0]", 1000),
+             array_of(deep, 10),
+             array_of("{}", 1000),
+             array_of("\"\"", 1000),
+         }) {
         const auto n = static_cast<std::uint64_t>(text.size());
         const auto limits = tp::json::payload_limits(n, std::uint64_t{64} << 20U);
         BOOST_TEST(parses(text, limits.max_document_bytes));

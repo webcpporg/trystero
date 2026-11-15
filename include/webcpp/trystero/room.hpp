@@ -712,7 +712,9 @@ public:
     std::pmr::memory_resource* memory() const { return memory_; }
 
     /** What the room decodes a received payload with. */
-    detail::decoding decoding() const { return {memory_, options_.max_json_document_bytes}; }
+    detail::decoding decoding() const {
+        return {.memory = memory_, .max_json_document_bytes = options_.max_json_document_bytes};
+    }
 
     /** An allocator of the room's resource. */
     std::pmr::polymorphic_allocator<> allocator() const { return {memory_}; }
