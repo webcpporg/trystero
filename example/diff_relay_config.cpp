@@ -86,9 +86,9 @@ public:
 
     void random(std::span<std::uint8_t> out) override { backend_.random(out); }
 
-    std::int64_t unix_seconds() override { return backend_.unix_seconds(); }
+    std::chrono::sys_seconds unix_now() override { return backend_.unix_now(); }
 
-    double now_ms() override { return backend_.now_ms(); }
+    std::chrono::steady_clock::time_point steady_now() override { return backend_.steady_now(); }
 
 private:
     trystero::backend::factory& backend_;
