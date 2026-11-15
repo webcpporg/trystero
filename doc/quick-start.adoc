@@ -7,66 +7,88 @@
 [#trystero-quick-start]
 == Quick start
 
-The two smallest programs that join a room: one for the browser, one native.
-Both use an empty app password and join the room `lobby` of
-`webcpp-trystero-quick-start`, so they
-meet each other, and any Trystero JS page that joins the same room,
-`joinRoom({appId: 'webcpp-trystero-quick-start'}, 'lobby')`, meets them
-both. <<trystero-building-examples>> builds and runs them.
+The quick start is one native program with two peers in it, `alice` and
+`bob`: each is an app of its own, with an id the program gives it, and both
+join the room `lobby` of the app `webcpp-trystero-quick-start`. alice greets
+bob when he joins, bob answers, each prints what it received, and both
+leave, which ends the program. In the browser the same rooms run in a page,
+as the chat example shows (<<trystero-quick-start-browser>>).
+<<trystero-building-examples>> builds and runs both.
 
-[#trystero-quick-start-browser]
-=== In the browser
+[#trystero-quick-start-native]
+=== Two peers in one program
 
-A browser program keeps four things alive for as long as its page: an
-`io_context`, the `platform::backend` that implements the platform over the
-page's own objects on the executor of that `io_context`, the app that owns its
-identity and shared connections, and the room joined through that app.
-Actions are made from the room by name and payload type:
+An app is one peer: its id among the peers, its relays and its STUN servers.
+The program gives each app its id, `app_config::self_id`, where an app would
+draw 20 random characters, so that what it prints is the same on every run.
+It meets over the relay whose URL is in the environment,
+`TRYSTERO_RELAY_URL`, which the lane `relayed` starts on 127.0.0.1, and
+then keeps its peers on the machine; without it, the program uses
+Trystero's public relays and STUN servers, as every program that names none
+does:
 
 [source]
 ----
 include::{examples}/quick_start.cpp[tag=includes]
 
-include::{examples}/quick_start.cpp[tag=application]
+include::{examples}/quick_start.cpp[tag=config]
 ----
 
-Handlers are set once the application exists. This program greets every peer
-that completes the handshake, prints every `chat` message, starts a
-coroutine that answers the `echo` action, and runs the `io_context`:
+`main` makes one `platform::backend` for both apps, joins each app to the
+room, and makes in each room the action `chat`, whose messages are
+`std::string`. alice greets each peer that joins, once its handshake
+completes, with a message to that peer alone, and prints what she receives,
+after its sender's id, then leaves. bob's part is a coroutine. `run`
+returns once no work is left: each room closes its relays as it leaves, and
+each connection closes as soon as no room uses it:
 
 [source]
 ----
 include::{examples}/quick_start.cpp[tag=main]
 ----
 
-The coroutine awaits messages with `async_receive` and answers with
-`async_send`. `webcpp::asio::as_tuple` turns the error into a value, so
-leaving the room ends the loop instead of throwing:
+bob awaits the first message with `async_receive`, prints it after its
+sender's id, answers its sender with `async_send`, and leaves with
+`async_leave`. `asio::as_tuple` hands each error over as a value, so a
+room left first ends the wait instead of throwing:
 
 [source]
 ----
-include::{examples}/quick_start.cpp[tag=coroutine]
+include::{examples}/quick_start.cpp[tag=answer]
 ----
 
-`main` runs the `io_context` for as long as the page lives, as a native
-program does, under a work guard, since a page that waits for its peers may
-have no work of its own. Nothing blocks the browser: whenever nothing is
-ready, `run` suspends into the browser's event loop, and every JavaScript
-event that reaches the library is posted to the `io_context`, whose handlers
-run when `run` resumes (<<trystero-platform-page>>).
+The program prints bob's line, then alice's:
 
-[#trystero-quick-start-native]
-=== Natively
+[listing]
+----
+include::{examples}/quick_start.expected[]
+----
 
-The same app and its joined room, natively, whole: a program that greets every peer that joins
-and prints what it receives on `chat`, over the same `platform::backend`. A native program runs
-its `io_context` as the browser's does, and webcpp::webrtc posts what
-libdatachannel's threads report to it:
+Its twin on Trystero JS prints the same two lines. Trystero draws one
+`selfId` per page, so bob is a second page there, and each peer prints the
+other's name where the {cpp} program prints the id it gave the app:
+
+[source,javascript]
+----
+include::{twins}/quick_start.mjs[lines=7..]
+----
+
+[#trystero-quick-start-browser]
+=== In the browser
+
+In a page the same app and room are {cpp} compiled to WebAssembly, over the
+page's own WebSocket and `RTCPeerConnection`. The chat example keeps what a
+page's program keeps for as long as the page lives: an `io_context`, the
+`platform::backend` on its executor, the app, the room joined through it,
+and its actions:
 
 [source]
 ----
-include::{examples}/native_quick_start.cpp[tag=program]
+include::{examples}/chat/chat.cpp[tag=state]
 ----
 
-`io.run()` returns only when the program is stopped: the room keeps its
-relays and its peers for as long as it lives.
+<<trystero-platform-chat>> shows how it joins, sends, and runs its
+`io_context` from `main`, and <<trystero-building-examples>> serves it.
+Two tabs of the chat that join the same app and room meet; so do a native
+peer and a page, which the lane `interop` proves with Trystero JS pages in
+headless Chrome (<<trystero-testing-lanes>>).

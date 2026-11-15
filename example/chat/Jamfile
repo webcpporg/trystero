@@ -19,8 +19,12 @@ webcpp.targets emscripten ;
 
 path-constant HERE : . ;
 
+# The page's program, linked for the web with a memory that grows
+# (doc: #trystero-building-project).
+# tag::page[]
 webcpp.link chat : chat.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+# end::page[]
 
 # The page is for a browser, built on emscripten alone: asked for on another
 # toolset, site stops the build saying so, where b2 would otherwise skip it

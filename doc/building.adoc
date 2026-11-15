@@ -93,10 +93,10 @@ include::{library-root}/build.jam[tag=trystero]
 On emscripten webcpp::asio builds without threads, since the page has none,
 links embind, and links its runtime in the suspension variant the build
 asks, `webcpp-suspend=jspi` by default or `asyncify`; a program is named
-after it, as `quick_start-60-d-jspi.js`. embind is linked as a flag,
-`-lembind`, rather than with b2's own `<embind>on`: that feature is not
-free, and b2 ignores a feature that is not free among usage requirements, so
-a program that used it would not link.
+after it, as the chat's `chat-program-60-d-jspi.js`. embind is linked as a
+flag, `-lembind`, rather than with b2's own `<embind>on`: that feature is
+not free, and b2 ignores a feature that is not free among usage
+requirements, so a program that used it would not link.
 
 `/webcpp/trystero//platform` adds the platform backend to the rooms, with an
 alternative for each target. Natively it adds webcpp::webrtc, with
@@ -123,11 +123,12 @@ that says to add `<threading>multi`. A page has no threads, and needs none.
 
 The platform backend works with exceptions and without them
 (<<trystero-platform-exceptions>>), so a program builds as it asks, as the
-examples do, the native one with `<threading>multi`:
+examples do, the quick start natively with `<threading>multi`, which the
+build runs over a relay of its own (<<trystero-building-examples>>):
 
 [listing]
 ----
-include::{examples}/Jamfile[tag=native]
+include::{examples}/Jamfile[tag=quick-start]
 ----
 
 and as trystero's own tests of the platform backend do, on each target that
@@ -138,11 +139,12 @@ builds them, once without exceptions too:
 include::{library-root}/test/Jamfile[tag=platform]
 ----
 
-A page's program is linked for the web, with a memory that grows:
+A page's program is linked for the web, with a memory that grows, as the
+chat's is:
 
 [listing]
 ----
-include::{examples}/Jamfile[tag=browser]
+include::{examples}/chat/Jamfile[tag=page]
 ----
 
 [#trystero-building-emscripten]
@@ -219,27 +221,35 @@ three libraries.
 [#trystero-building-examples]
 === Running the examples
 
-The three examples need the public relays or a browser, so the build links
-them and never runs them: `native_quick_start.cpp`, natively;
-`quick_start.cpp`, a `.js` and a `.wasm` to embed in a page; and the chat,
-a page whose room is {cpp} (<<trystero-platform-chat>>). The quick starts
-meet in the room `lobby` of the app `webcpp-trystero-quick-start`, over the
-public relays; the chat joins the app and the room its user types, the room
-`lobby` of the app `webcpp-trystero-chat` unless the user changes them, and
-meets the quick starts when the user types theirs.
-
-The native quick start is built as a program of its own, and runs until it
-is stopped:
+The quick start and the programs of the appendix "Differences"
+(<<trystero-differences>>) run natively in the lane `relayed`, each over a
+Nostr relay of its own on 127.0.0.1, which `example/run_over_relay.mjs`
+starts and names to the program in `TRYSTERO_RELAY_URL`: a program passes
+when it ends by itself having printed its `.expected`. Node runs the relay,
+with the packages `test/oracle` pins. The first command runs the lane, the
+second the quick start alone:
 
 [source,bash]
 ----
-b2 libs/trystero/example//native_quick_start-program
-`find bin/libs/trystero/example -name native_quick_start-program -type f`
+b2 libs/trystero/example//relayed
+b2 libs/trystero/example//quick_start
 ----
 
-The chat is a page and its program, which the target `site` copies into a
-directory of its own under the build directory, out of the tree, and prints.
-The page is served from `localhost`, where `crypto.subtle` exists:
+The quick start's executable stays under the build directory. Run without
+`TRYSTERO_RELAY_URL`, it meets over Trystero's public relays and STUN
+servers, as a program that names none does, and prints the same two lines
+(<<trystero-quick-start-native>>) within seconds, then ends:
+
+[source,bash]
+----
+`find bin/libs/trystero/example/quick_start.test -name quick_start -type f`
+----
+
+The chat needs a browser, so the build links its program and never runs it
+(<<trystero-platform-chat>>). The target `site` copies the page and its
+program into a directory of its own under the build directory, out of the
+tree, and prints it. The page is served from `localhost`, where
+`crypto.subtle` exists:
 
 [source,bash]
 ----
@@ -247,8 +257,8 @@ b2 toolset=emscripten libs/trystero/example/chat//site
 python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
 ----
 
-At http://localhost:8000, joining the app `webcpp-trystero-quick-start`, in
-place of the page's `webcpp-trystero-chat`, and the room `lobby` brings the
-native quick start in as a peer within seconds: its greeting appears in the
-chat, and what the page sends is printed in its terminal. On another toolset, `site` stops the build, saying that the page is
-built on emscripten alone.
+At http://localhost:8000, two tabs that join the same app and room, the
+page's `webcpp-trystero-chat` and `lobby` unless their user changes them,
+meet over the public relays within seconds: each counts the other as a peer,
+and what one sends appears in the other. On another toolset, `site` stops
+the build, saying that the page is built on emscripten alone.

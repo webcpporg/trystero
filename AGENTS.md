@@ -96,7 +96,7 @@ holds only what is specific to trystero.
   (`doc/Jamfile`). `/webcpp/trystero//trystero` brings `/webcpp/asio//asio`:
   on emscripten every program is built in a suspension variant
   (`webcpp-suspend=jspi` by default, or `asyncify`) and named after it
-  (`quick_start-60-d-jspi.js`), and the suites run in both.
+  (the chat's `chat-program-60-d-jspi.js`), and the suites run in both.
   A page's program runs its io_context from `main` under a work guard, as
   webcpp::asio's model asks (the owner's decision of 2026-11-14): the page's
   events post to it through the bridge, and the page calls C++ only through
@@ -718,8 +718,23 @@ holds only what is specific to trystero.
     marked): the test wraps `Asyncify.allocateData` in JavaScript, which sets
     a flag while it runs, and counts what the C library allocates then
     apart, as webcpp::asio's own allocation test does.
-- **No twins.** Every example needs the public relays or a browser, so each
-  is a `webcpp.link`, linked and never run, and has no `.expected` and no
-  twin in Trystero's language. The chat page's site is written by
+- **The examples and their twins.** The quick start and each
+  `diff_<topic>` program run natively in the lane `relayed`
+  (`example/Jamfile`), each over a Nostr relay of its own on 127.0.0.1,
+  which `example/run_over_relay.mjs` starts and names in
+  `TRYSTERO_RELAY_URL`, and passes when it ends by itself having printed its
+  `.expected`; its peers stay on the machine (a backend bound to 127.0.0.1,
+  and `stun:127.0.0.1:9`). Each has its twin under `test/oracle/twins/`,
+  which `test/oracle/run_twin.mjs` runs over a relay of its own: the quick
+  start's agrees, and a difference's records what Trystero prints in its own
+  `.expected`. Two peers of one program are two apps, and the quick start
+  fixes their self ids, since a random id would print differently on every
+  run; a twin's second peer is another page (`test/oracle/page.mjs`), since
+  Trystero JS has one `selfId` per page, so the quick start's twin prints
+  names where the program prints its ids. Without `TRYSTERO_RELAY_URL` the
+  quick start meets over Trystero's public relays and STUN servers, as a
+  user's program does.
+  The chat page alone is a `webcpp.link`, linked and never run, without a
+  twin (`test/oracle/twins/without-twin.txt`); its site is written by
   `b2 toolset=emscripten libs/trystero/example/chat//site` under the build
   directory, never in the tree.
