@@ -456,7 +456,7 @@ void the_last_user_ends_every_connection() {
 }
 
 // A connection whose channel is closing is not reused; the connection that replaces it ends it
-// first, as Trystero clears a stale peer (C/shared-peer.mjs:142-149), so the rooms hear its end
+// first, as Trystero clears a stale peer (dist/shared-peer.mjs:142-149), so the rooms hear its end
 // before the new one is adopted, and its later close event ends nothing.
 void a_stale_connection_ends_before_its_replacement() {
     asio::io_context io;
@@ -483,7 +483,7 @@ void a_stale_connection_ends_before_its_replacement() {
 
 // A room that adopts a connection to the peer from inside the stale connection's end: the
 // replacement the outer adoption brought is closed, and the room's is the one kept, so the peer
-// has one connection, whose end leaves none (Trystero's owns(), C/shared-peer.mjs:210-212).
+// has one connection, whose end leaves none (Trystero's owns(), dist/shared-peer.mjs:210-212).
 void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -577,7 +577,7 @@ void an_adoption_from_inside_an_end_under_way() {
         m);
     net.channel_capacity = 1;
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         webcpp::test::require(
             BOOST_TEST(b->send(trystero::protocol::room_frame("T9", payload, m))));
     }

@@ -85,7 +85,7 @@ class memory_timer : public backend::timer {
 public:
     /** A timer on the virtual clock `clock`, or on Asio's when `clock` is empty. */
     memory_timer(webcpp::asio::io_context& io, std::pmr::memory_resource* memory,
-                 int time_scale = 1, std::weak_ptr<virtual_clock_state> clock = {})
+                 std::uint32_t time_scale = 1, std::weak_ptr<virtual_clock_state> clock = {})
         : io_(io),
           timer_(io),
           memory_(memory),
@@ -157,7 +157,7 @@ private:
     webcpp::asio::io_context& io_;
     webcpp::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
-    int time_scale_;
+    std::uint32_t time_scale_;
     bool on_clock_;
     std::weak_ptr<virtual_clock_state> clock_;
     std::optional<virtual_clock_state::key> key_;
@@ -201,7 +201,7 @@ public:
      * to know whether relay traffic, which parses JSON at both ends, happened in that window. */
     std::size_t texts = 0;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
-    int rate_limit_next = 0;
+    std::size_t rate_limit_next = 0;
     /** Closes each connection right after its subscription, as a relay does after a text longer
      * than a room reads. */
     bool close_after_subscribe = false;
@@ -738,6 +738,7 @@ public:
                                                  std::pmr::memory_resource* memory) override;
 
     void random(std::span<std::uint8_t> out) override {
+        random_bytes += out.size();
         for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
         }
@@ -770,10 +771,12 @@ public:
     std::size_t made_connections = 0;
     /** The most peer connections that were open at once. */
     std::size_t peak_connections = 0;
+    /** How many random bytes were drawn. */
+    std::size_t random_bytes = 0;
     /** How much faster than real time the timers and the clock run, for tests of long timeouts. */
-    int time_scale = 1;
+    std::uint32_t time_scale = 1;
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
-    int refuse_peer_connections = 0;
+    std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
     bool record_servers = false;
     /** The URLs recorded, in the default resource: only a test that records them allocates. */

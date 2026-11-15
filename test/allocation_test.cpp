@@ -380,8 +380,15 @@ public:
     std::size_t sized = 0;
 
 private:
-    std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20U);
-    std::pmr::monotonic_buffer_resource buffer_{storage_.data(), storage_.size(),
+    static constexpr std::size_t capacity = std::size_t{64} << 20U;
+
+    // Left uninitialized: a std::vector would set its bytes one at a time and destroy them one at
+    // a time, a call each in a debug build, and under Asyncify, built with Emscripten's exceptions
+    // in JavaScript, each call inside a try crosses into JavaScript and back: 96 s of the test's
+    // 118 (measured with node's profiler).
+    using arena = std::array<std::byte, capacity>;
+    std::unique_ptr<arena> storage_ = std::make_unique_for_overwrite<arena>();
+    std::pmr::monotonic_buffer_resource buffer_{storage_->data(), storage_->size(),
                                                 std::pmr::null_memory_resource()};
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
@@ -393,7 +400,7 @@ private:
 
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t /*alignment*/) override {
         const auto* at = static_cast<const std::byte*>(pointer);
-        if (at < storage_.data() || at >= storage_.data() + storage_.size()) {
+        if (at < storage_->data() || at >= storage_->data() + storage_->size()) {
             ++foreign;
             return;
         }

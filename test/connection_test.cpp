@@ -279,7 +279,7 @@ void a_65th_advertised_token_ends_the_connection() {
     link_pair p(tokens, tokens);
     auto* m = std::pmr::get_default_resource();
     // T1 and 63 more: 64 tokens, the most a remote may advertise.
-    for (int i = 0; i < 63; ++i) {
+    for (std::size_t i = 0; i < 63; ++i) {
         p.a.c->send(trystero::protocol::presence_frame("X" + std::to_string(i), true, m));
     }
     webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.presence.size() == 64; })));
@@ -310,7 +310,7 @@ void kept_frames_are_bounded_and_dropped_after_10_s() {
     const std::vector<std::uint8_t> action(trystero::protocol::max_action_frame_bytes, 0);
     const auto frame = trystero::protocol::room_frame(token, action, m);
     BOOST_TEST_EQ(frame.size(), 16'515U);
-    for (int i = 0; i < 65; ++i) {
+    for (std::size_t i = 0; i < 65; ++i) {
         p.a.c->send(trystero::protocol::room_frame(token, action, m));
     }
     BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 64; }));
@@ -347,7 +347,7 @@ void drain_turns_follow_the_order_of_waiting() {
     auto* m = std::pmr::get_default_resource();
     // Frames the other side drops, past the threshold: 5 x 16,000 bytes.
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         BOOST_TEST(t1->send(trystero::protocol::room_frame("nobody", payload, m)));
     }
     webcpp::test::require(
@@ -381,7 +381,7 @@ void the_end_fails_every_drain_waiter() {
     p.net.channel_capacity = 1;
     auto* m = std::pmr::get_default_resource();
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         t1->send(trystero::protocol::room_frame("nobody", payload, m));
     }
     std::vector<std::string> turns;
@@ -731,7 +731,7 @@ void taking_every_kept_frame_restarts_the_window() {
 }
 
 // A withdrawal that leaves nothing kept stops the window too, as Trystero's syncDataTimers does
-// (C/shared-peer.mjs:417-422, 468-472).
+// (dist/shared-peer.mjs:417-422, 468-472).
 void a_withdrawal_that_empties_the_kept_frames_restarts_the_window() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);

@@ -60,9 +60,9 @@ Each backend is a header of its own:
 
 | `<webcpp/trystero/native/backend.hpp>`
 | native
-| webcpp::webrtc over libdatachannel for WebRTC, Boost.Beast for the relays'
-  WebSockets, OpenSSL for TLS and AES-GCM, and Asio's timers
-  (<<trystero-native>>)
+| webcpp::webrtc over libdatachannel for WebRTC, webcpp::beast for the
+  relays' WebSockets, natively Boost.Beast's, their URLs read with Boost.URL,
+  OpenSSL for TLS and AES-GCM, and Asio's timers (<<trystero-native>>)
 |===
 
 Both run the same room, and both meet Trystero JS peers. Every name is in the
@@ -72,10 +72,11 @@ namespace `webcpp::trystero`.
 === Requirements
 
 * A {cpp}20 compiler.
-* Boost 1.92: Asio, Container (its `pmr` base class), Core, Hash2, JSON and
-  System; and Beast for the native backend.
-* webcpp::asio, and webcpp::webrtc for both backends' WebRTC
-  (<<trystero-building>>).
+* Boost 1.92: Asio, Circular Buffer, Container (its `pmr` base class), Core,
+  Endian, Hash2, JSON, System and Unordered; and Beast and URL for the native
+  backend.
+* webcpp::asio, webcpp::webrtc for both backends' WebRTC, and webcpp::beast
+  for the native backend's relays (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
   events: every room needs it.

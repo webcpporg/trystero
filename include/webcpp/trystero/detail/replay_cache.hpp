@@ -39,6 +39,12 @@ public:
     replay_cache(std::size_t capacity, std::pmr::memory_resource* memory)
         : digests_(capacity, memory) {}
 
+    /** Deleted: a boost::circular_buffer moves by swapping its allocator, which std::pmr's
+     * cannot. */
+    replay_cache(replay_cache&&) = delete;
+    /** Deleted, as the move constructor is. */
+    replay_cache& operator=(replay_cache&&) = delete;
+
     /** Whether `opened`, an offer's or an answer's text, is among the last `capacity` used. */
     [[nodiscard]] bool contains(std::string_view opened) const {
         return std::ranges::find(digests_, protocol::sha256(opened)) != digests_.end();

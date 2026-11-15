@@ -13,6 +13,7 @@
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
@@ -201,13 +202,13 @@ public:
     void watch(std::string_view topic) {
         const std::array<std::pmr::string, 1> topics{std::pmr::string(topic)};
         socket_->send(
-            protocol::nostr::subscribe_message("watch" + std::to_string(next_++), topics, 0));
+            protocol::nostr::subscribe_message("watch" + std::to_string(next_++), topics, {}));
     }
 
     /** Publishes a signal on a topic, in any peer's name. */
     void publish(std::string_view topic, const protocol::signal_message& m) {
         const std::array<std::uint8_t, 32> aux{};
-        socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic,
+        socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic,
                                                      protocol::write_signal(m), aux));
     }
 
@@ -221,12 +222,12 @@ public:
     }
 
     /** Announces one id `times` times. */
-    void announce_as(std::string_view id, int times) {
+    void announce_as(std::string_view id, std::size_t times) {
         const std::array<std::uint8_t, 32> aux{};
-        for (int i = 0; i < times; ++i) {
+        for (std::size_t i = 0; i < times; ++i) {
             const auto nonce = std::to_string(next_++);
             const auto content = protocol::write_signal({.peer_id = id}, nonce);
-            socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic_,
+            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
                                                          content, aux));
         }
     }
@@ -238,7 +239,7 @@ public:
             std::pmr::string id(prefix);
             id += std::to_string(next_++);
             const auto content = protocol::write_signal({.peer_id = id});
-            socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic_,
+            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
                                                          content, aux));
         }
     }

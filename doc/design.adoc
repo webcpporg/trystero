@@ -38,11 +38,12 @@
 
 | Browser backend
 | `browser/*.hpp`
-| `emscripten::val` over the browser's APIs, and the event loop
+| the page's WebSocket and Web Crypto through webcpp::asio's bridge and
+  `async_await`, webcpp::asio's timers, and `page_call`
 
 | Native backend
 | `native/*.hpp`
-| Boost.Beast, OpenSSL and Asio's timers
+| webcpp::beast (natively Boost.Beast), Boost.URL, OpenSSL and Asio's timers
 |===
 
 Everything above the backend interface is the core, which builds on both
@@ -213,8 +214,11 @@ trystero builds on webcpp::asio, and its backends on webcpp::webrtc.
 `/webcpp/trystero//trystero` brings `/webcpp/asio//asio`, and on emscripten
 `/webcpp/webrtc//webrtc`, the browser's WebRTC; `/webcpp/trystero//native`
 brings `/webcpp/webrtc//webrtc` natively, with its libdatachannel, under the
-MPL 2.0, and OpenSSL, under the Apache License 2.0. Neither is in a browser
-program, as OpenSSL is optional for Asio.
+MPL 2.0, and OpenSSL, under the Apache License 2.0, and for the relays
+`/webcpp/beast//tls`, `/webcpp//boost_url` and `/webcpp/asio//tls`, whose
+embedded authorities a program may trust in place of the system's. Neither
+libdatachannel nor OpenSSL is in a browser program, as OpenSSL is optional
+for Asio.
 
 [#trystero-design-licensing]
 === Licensing

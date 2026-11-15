@@ -168,7 +168,7 @@ inline void append_header(bytes& out, frame_kind kind, std::string_view name, pa
     out.resize(at + header_size, 0);
     out[at] = action_wire_version;
     out[at + 1] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(kind) |
-                                            (static_cast<unsigned>(format) << 4U));
+                                            (static_cast<std::uint32_t>(format) << 4U));
     std::memcpy(out.data() + at + 2, name.data(), name.size());
     set_u16(out, at + 34, static_cast<std::uint16_t>(metadata.size()));
 }

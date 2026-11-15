@@ -12,6 +12,7 @@
 project : requirements <library>/webcpp/trystero//trystero
   <toolset>msvc:<define>_CRT_SECURE_NO_WARNINGS <toolset>msvc:<cxxflags>/bigobj ;
 
+import feature ;
 import webcpp ;
 
 webcpp.targets native emscripten ;
@@ -24,9 +25,26 @@ webcpp.targets native emscripten ;
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/native/*.hpp trystero/webrtc/*.hpp
+  : trystero/native/backend.hpp trystero/native/sealer.hpp trystero/native/timer.hpp
+    trystero/webrtc/*.hpp
   : <library>/webcpp/trystero//native <threading>multi : native ;
 webcpp.headers-alone trystero : ../include : trystero/browser/*.hpp : : emscripten ;
+
+# The relay session names webcpp::asio and webcpp::beast only, and compiles on
+# both targets, though only the native backend uses it: natively against the
+# native backend's dependencies, on emscripten against webcpp::beast's browser
+# implementation and Boost.URL, so that the lanes, not only the reference's
+# parse, prove it compiles there.
+rule relay-session-dependencies ( properties * )
+{
+    if [ feature.get-values <toolset> : $(properties) ] = emscripten
+    {
+        return <library>/webcpp/beast//browser <library>/webcpp//boost_url ;
+    }
+    return <library>/webcpp/trystero//native <threading>multi ;
+}
+webcpp.headers-alone trystero : ../include : trystero/native/websocket.hpp
+  : <conditional>@relay-session-dependencies : native emscripten ;
 
 # config.hpp defines WEBCPP_TRYSTERO_NO_EXCEPTIONS exactly when webcpp has no
 # exceptions, and keeps it when a developer defines it in a build that has
