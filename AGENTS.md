@@ -83,10 +83,12 @@ holds only what is specific to trystero.
   both targets, and no program or test asks for `<exception-handling>on`.
   Every `platform_*` test but `platform_websocket` also runs with
   `exception-handling=off`, its `_no_exceptions` twin, as the evidence.
-  trystero raises nothing of its own; a raise would go through
-  `boost::throw_exception`; natively the platform backend keeps a TLS
-  context OpenSSL cannot make as an error value (`tls_context()`), and its
-  `wss://` relays report a close.
+  trystero raises nothing of its own but `std::bad_alloc`, through
+  `boost::throw_exception`, when a room's resource has no room for the
+  `null` document a rejected `async_receive` of a document completes with,
+  as a `std::pmr` container of the room raises it (`detail::empty_payload`);
+  natively the platform backend keeps a TLS context OpenSSL cannot make as
+  an error value (`tls_context()`), and its `wss://` relays report a close.
 - **webcpp::asio.** trystero names Asio as `webcpp::asio` wherever it builds
   on emscripten (the core, the platform backend, the tests over the memory
   relays, the examples and the browser's interop peer): natively it is
