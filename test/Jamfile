@@ -83,12 +83,14 @@ webcpp.run timer : timer_test.cpp ;
 # The platform backend's own tests, on each target that builds them. On both:
 # the backend itself (its own state in backend_config::memory, its clocks,
 # its randomness, its TLS context); its sealer, natively OpenSSL's AES-GCM, in
-# a page Web Crypto under node, against what Trystero JS sealed; and relays it
-# cannot reach. Natively, against libdatachannel and in-process servers: the
-# relays' WebSocket, built with the standard libraries' own checks, libc++'s
-# extensive hardening and libstdc++'s assertions, so that a completion that
-# touches a container its socket cleared fails at once, not one run in many;
-# the backend's WebRTC; and whole rooms over it. Each as the build asks and,
+# a page Web Crypto under node, against what Trystero JS sealed; relays it
+# cannot reach; and how a relay's URL is read. Natively, against
+# libdatachannel and in-process servers: the relays' WebSocket, built with the
+# standard libraries' own checks, libc++'s extensive hardening and
+# libstdc++'s assertions, so that a completion that touches a container its
+# socket cleared fails at once, not one run in many; what a relay's message
+# allocates outside the room's resource, none; the backend's WebRTC; and whole
+# rooms over it. Each as the build asks and,
 # but the WebSocket's, which runs once with those checks, without exceptions
 # too: webcpp::webrtc calls libdatachannel's C API, which catches what
 # libdatachannel throws, so the backend needs none.
@@ -98,10 +100,13 @@ webcpp.run platform_sealer : platform_sealer_test.cpp
   : $(platform) <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run platform_websocket_unreachable : platform_websocket_unreachable_test.cpp
   : $(platform) ;
+webcpp.run platform_websocket_url : platform_websocket_url_test.cpp : $(platform) ;
 webcpp.run platform_websocket : platform_websocket_test.cpp
   : $(platform) <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE
     <define>_GLIBCXX_ASSERTIONS
   : native ;
+webcpp.run platform_websocket_allocation : platform_websocket_allocation_test.cpp
+  : $(platform) : native ;
 webcpp.run platform_peer_connection : platform_peer_connection_test.cpp
   : $(platform) : native ;
 webcpp.run platform_room : platform_room_test.cpp : $(platform) : native ;
@@ -111,6 +116,10 @@ webcpp.run platform_sealer_no_exceptions : platform_sealer_test.cpp
   : $(platform) <testing.input-file>fixtures/expected/expected.json <exception-handling>off ;
 webcpp.run platform_websocket_unreachable_no_exceptions : platform_websocket_unreachable_test.cpp
   : $(platform) <exception-handling>off ;
+webcpp.run platform_websocket_url_no_exceptions : platform_websocket_url_test.cpp
+  : $(platform) <exception-handling>off ;
+webcpp.run platform_websocket_allocation_no_exceptions : platform_websocket_allocation_test.cpp
+  : $(platform) <exception-handling>off : native ;
 webcpp.run platform_peer_connection_no_exceptions : platform_peer_connection_test.cpp
   : $(platform) <exception-handling>off : native ;
 webcpp.run platform_room_no_exceptions : platform_room_test.cpp
@@ -134,6 +143,13 @@ webcpp.run platform_page_websocket_bound : platform_page_websocket_bound_test.cp
   : $(platform) : emscripten ;
 webcpp.run platform_page_websocket_late_events : platform_page_websocket_late_events_test.cpp
   : $(platform) : emscripten ;
+# What a relay sends: a text past the bound in the task of its open is
+# refused, and a binary message dropped; and the TLS contexts a page honours,
+# and those it refuses.
+webcpp.run platform_page_websocket_ingress : platform_page_websocket_ingress_test.cpp
+  : $(platform) : emscripten ;
+webcpp.run platform_page_websocket_tls : platform_page_websocket_tls_test.cpp
+  : $(platform) : emscripten ;
 webcpp.run platform_page_data_channel : platform_page_data_channel_test.cpp
   : $(platform) : emscripten ;
 webcpp.run platform_page_peer_connection : platform_page_peer_connection_test.cpp
@@ -145,6 +161,10 @@ webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
 # start of a seal or an open to its completion: the global operator new and
 # the C library's allocation functions, replaced, count none.
 webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
+  : $(platform) : emscripten ;
+# A relay's connection and each of its messages allocate outside the room's
+# resource exactly what the guide lists, no more and no fewer.
+webcpp.run platform_page_relay_allocation : platform_page_relay_allocation_test.cpp
   : $(platform) : emscripten ;
 # A page_call's handler sees the page's value as it is when it runs; a
 # function the page kept reaches nothing once its page_call, or its
@@ -163,6 +183,10 @@ webcpp.run platform_page_websocket_bound_no_exceptions : platform_page_websocket
 webcpp.run platform_page_websocket_late_events_no_exceptions
   : platform_page_websocket_late_events_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_websocket_ingress_no_exceptions : platform_page_websocket_ingress_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_websocket_tls_no_exceptions : platform_page_websocket_tls_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_data_channel_no_exceptions : platform_page_data_channel_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_peer_connection_no_exceptions : platform_page_peer_connection_test.cpp
@@ -171,6 +195,8 @@ webcpp.run platform_page_no_exceptions : platform_page_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_sealer_allocation_no_exceptions
   : platform_page_sealer_allocation_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_relay_allocation_no_exceptions : platform_page_relay_allocation_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_call_no_exceptions : platform_page_call_test.cpp
   : $(platform) <exception-handling>off : emscripten ;

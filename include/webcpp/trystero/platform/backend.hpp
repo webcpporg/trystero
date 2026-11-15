@@ -130,11 +130,12 @@ struct backend_config {
 class backend : public trystero::backend::factory {
 public:
     /**
-     * A backend with a runtime of its own, made with `backend_config::runtime`, whose TLS verifies
-     * relays against the system's certificate authorities, as @ref make_tls_context makes it.
+     * A backend with a runtime of its own, made with `backend_config::runtime`, whose TLS context
+     * is @ref make_tls_context's: natively it verifies relays against the system's certificate
+     * authorities, and in a page the browser verifies them against its own.
      *
-     * It throws nothing: when OpenSSL cannot make the TLS context, `tls_context()` holds the error,
-     * and every `wss://` relay reports a close, as an unreachable relay does.
+     * It throws nothing: when OpenSSL cannot make the TLS context natively, `tls_context()` holds
+     * the error, and every `wss://` relay reports a close, as an unreachable relay does.
      *
      * @param ex The executor everything the backend reports runs on, in a page an io_context's of
      * webcpp::asio, which must outlive the backend and every object it makes.
@@ -148,10 +149,15 @@ public:
      * certificate authorities, as webcpp's embedded Mozilla roots, which
      * `webcpp::asio::make_tls_client_context()` trusts natively, or a private one.
      *
+     * Each relay is verified whatever the context's verify mode, natively against the context's
+     * authorities and in a page against the browser's; in a page a context that asks for what the
+     * page cannot honour (authorities added, a client certificate or key, options, a method other
+     * than `tls_client` or `sslv23_client`, or a verify callback of its own) has every `wss://`
+     * relay report a close.
+     *
      * @param ex The executor everything the backend reports runs on.
-     * @param tls The TLS context of every `wss://` connection, whose authorities each relay is
-     * verified against, whatever its verify mode; or the error that kept the program from making
-     * it, which `tls_context()` then holds, every `wss://` relay reporting a close.
+     * @param tls The TLS context of every `wss://` connection, or the error that kept the program
+     * from making it, which `tls_context()` then holds, every `wss://` relay reporting a close.
      * @param config What its peer connections, its relays and its own state are made with.
      */
     backend(webcpp::asio::any_io_executor ex, boost::system::result<webcpp::asio::ssl::context> tls,
@@ -159,8 +165,8 @@ public:
         : backend(std::move(ex), std::move(tls), nullptr, config) {}
 
     /**
-     * A backend whose peer connections the program's runtime counts, and whose TLS verifies relays
-     * against the system's certificate authorities, as the first constructor's does.
+     * A backend whose peer connections the program's runtime counts, and whose TLS context is
+     * @ref make_tls_context's, as the first constructor's is.
      *
      * @param ex The executor everything the backend reports runs on.
      * @param runtime The program's runtime, which must outlive every connection of the backend,
@@ -202,6 +208,12 @@ public:
     /**
      * The TLS context of the relays' connections, which an application may still configure before
      * the backend connects to a relay.
+     *
+     * Natively its authorities, its client certificate, its options and its protocol versions hold,
+     * and its verify mode and verify callback do not: each connection verifies its relay, against
+     * the URL's host. In a page the browser verifies each relay against its own authorities, and
+     * what the context asks for that a page cannot honour (authorities added, a client certificate
+     * or key, options, a verify callback of its own) has every `wss://` relay report a close.
      *
      * @return The context every `wss://` connection of the backend is made with, or the error that
      * kept it from being made.
