@@ -754,6 +754,44 @@ void signal_texts(const fixture_value& fixture) {
     }
 }
 
+/** `text` read as an action of JSON reads its payload, then written back as one sends it: once
+ * into an owned document, as a webcpp::document::document, and once into a buffer of a resource,
+ * as a pmr_document; the two writings, which must agree. */
+std::pmr::string payload_written(std::string_view text) {
+    const auto owned = wd::parse(text);
+    const auto in_resource =
+        tp::json::parse(text, wd::parse_options(), std::pmr::get_default_resource());
+    if (!BOOST_TEST(owned.has_value() && in_resource.has_value())) {
+        return {};
+    }
+    std::pmr::string written;
+    tp::json::append_value(written, owned->root());
+    std::pmr::string written_in_resource;
+    tp::json::append_value(written_in_resource, in_resource->root());
+    BOOST_TEST_EQ(written, written_in_resource);
+    return written;
+}
+
+// A JSON payload's text is JSON.stringify's of the same value for every value a double holds: its
+// numbers as JavaScript writes them, its keys in JavaScript's order, array indices first in
+// increasing order. A number a double cannot hold is written exact, as webcpp::document holds it,
+// where Trystero JS writes the nearest double, or null for Infinity.
+void payload_texts(const fixture_value& fixture) {
+    BOOST_TEST_EQ(fixture["payload_texts"].size(), 5U);
+    for (const auto entry : fixture["payload_texts"]) {
+        BOOST_TEST_EQ(payload_written(str(entry["text"])), str(entry["written"]));
+    }
+    const auto beyond = fixture["payload_beyond_doubles"];
+    if (!BOOST_TEST_EQ(beyond.size(), 1U)) {
+        return;
+    }
+    const auto written = payload_written(str(beyond[0]["text"]));
+    BOOST_TEST_NE(written, str(beyond[0]["written"]));
+    BOOST_TEST_EQ(written,
+                  "[9007199254740993,-9223372036854775808,0.1000000000000000055511151231257827,"
+                  "1e+400]");
+}
+
 /**
  * The sender of a relay's event that a room acts on as the oracle's room did: an event of the
  * room's root topic whose content is a signal with an answer. Empty when the room ignores it.
@@ -1088,6 +1126,7 @@ int main(int argc, char* argv[]) {
     signal_bounds();
     event_messages(fixture);
     signal_texts(fixture);
+    payload_texts(fixture);
     duplicate_keys(fixture);
     parse_bounds();
     parse_cost();

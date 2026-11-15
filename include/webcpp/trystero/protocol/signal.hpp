@@ -224,11 +224,10 @@ struct signal_message {
  * @param document The root of the parsed payload, whose document the caller keeps alive and
  * unchanged while it reads the views.
  * @return The message, or nothing when Trystero would ignore it (not an object, one with a member
- * `peer`, no peer id, or an
- * offer, answer or candidate that is not a non-empty string), or when a field is longer than its
- * bound: the peer id than @ref max_peer_id_bytes, the offer id than @ref max_offer_id_bytes, an
- * offer or answer than @ref max_sealed_description_bytes, a candidate than
- * @ref max_sealed_candidate_bytes.
+ * `peer`, no peer id, or an offer, answer or candidate that is not a non-empty string), or when a
+ * field is longer than its bound: the peer id than @ref max_peer_id_bytes, the offer id than
+ * @ref max_offer_id_bytes, an offer or answer than @ref max_sealed_description_bytes, a candidate
+ * than @ref max_sealed_candidate_bytes.
  */
 inline std::optional<signal_message> read_signal(const json::const_value& document) {
     // Trystero ignores a text that names a member `peer`, which its own rooms keep for a peer
@@ -273,6 +272,9 @@ inline std::optional<signal_message> read_signal(const json::const_value& docume
  * @param nonce A random text, which makes repeated announcements distinct events; empty for none.
  * @param memory The resource the text is allocated in.
  * @return The text.
+ * @pre Every string is UTF-8, as every one a room writes is: the ids, the nonce and the sealed
+ * texts are ASCII, an answered offer's id was read from JSON, and the self id is checked when the
+ * app is made.
  */
 inline std::pmr::string write_signal(
     const signal_message& m, std::string_view nonce = {},
@@ -286,7 +288,7 @@ inline std::pmr::string write_signal(
             return;
         }
         json::append_key(out, key);
-        json::append_string(out, value);
+        json::detail::append_utf8(out, value);
     };
     field("peerId", m.peer_id);
     if (!m.answering) {

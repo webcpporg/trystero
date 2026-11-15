@@ -22,20 +22,26 @@ link `/webcpp/trystero//platform` on both targets.
 * *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
 runs its `io_context` under a work guard, and calls in through
 `platform::page_call` of `platform/page.hpp`.
+* *Breaking change:* Changed JSON payloads to `webcpp::document::document`, or
+`pmr_document` in a resource, for `boost::json::value` and `json_resource`;
+programs link Boost.Charconv too.
+* *Breaking change:* Changed `payload` to lose copy assignment, and without
+exceptions its copy constructor and the default one of
+`webcpp::document::document`; make documents with `create()` or `parse`.
+* *Breaking change:* Changed `read_signal`, `nostr::read_relay_message` and
+`append_value` to take webcpp::document's values, `make_id` to `random_id`,
+and `proposal::size` to `std::uint64_t`.
+* *Breaking change:* Changed `protocol::json::append_string` to return its
+error on text that is not UTF-8; such a local candidate is dropped, such a
+self id set aside.
 * *Breaking change:* Removed the backends' own connection and channel classes
-for webcpp::webrtc's, and `browser::event_loop`.
-* *Breaking change:* Changed the backend to throw nothing; `tls_context()`
-returns a `boost::system::result`.
-* *Breaking change:* Changed `protocol::make_id` to `protocol::random_id`, and
-`protocol::proposal::size` to `std::uint64_t`.
-* Changed a page's relays to the native ones' webcpp::beast session, which
-refuses `http://` relay URLs and bounds what the page holds unsent.
-* Added `backend_config::memory` for the backend's own state, and
-`backend_config::runtime`, at most 256 connections at once, on both targets.
-* Fixed relays at an IPv6 address being unreachable, and pages ignoring a
-failed `getentropy`.
-* Fixed 32-bit receivers, pages among them, misreading transfer offers of 4 GiB
-or more.
+for webcpp::webrtc's, and `browser::event_loop`; the backend throws nothing,
+and `tls_context()` returns a `boost::system::result`.
+* Changed a page's relays to the native webcpp::beast session, refusing
+`http://` URLs and bounding unsent text; added `backend_config::memory` and
+`backend_config::runtime`, at most 256 connections at once.
+* Fixed relays at an IPv6 address being unreachable, pages ignoring a failed
+`getentropy`, and 32-bit receivers misreading transfer offers of 4 GiB or more.
 * Fixed rooms slowed by relays' event ids chosen to collide; channels keep
 frames that arrive before a handler, 64 for 10 s.
 // end::unreleased[]

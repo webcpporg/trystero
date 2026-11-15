@@ -117,6 +117,10 @@ has nothing of it to run beside its twin.
 
 | A self id that is not UTF-8 | impossible: a JavaScript string | set aside for a random one, with a configuration report | JSON carries UTF-8 alone, and a signal writes the id as a JSON string
 
+| A JSON payload's number that a double cannot hold: an integer past 2^53^, a decimal of more digits, one past a double's range | impossible: a JavaScript number is a double | sent exact, as webcpp::document holds it; a Trystero JS peer reads the nearest double, or `Infinity` | webcpp::document keeps every number exact, and writes each one a double holds as JavaScript does
+
+| A JSON payload nested deeper than 256, or holding a lone surrogate | delivered: `JSON.parse` takes both | not delivered | webcpp::document's defaults: a bounded depth, and strings that are UTF-8
+
 | The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
 
 |===
@@ -539,4 +543,10 @@ its reason.
 
 | The characters of a random id
 | A bias of about 0.005 bits a character, which only a count over many ids shows, and a count of random characters prints something else on every run.
+
+| A JSON payload's number that a double cannot hold
+| No Trystero JS program holds such a number, so no twin could send it; the `protocol` test writes one exact beside what `JSON.stringify` writes of the same text.
+
+| A JSON payload nested deeper than 256, or holding a lone surrogate
+| What differs is a message the {cpp} room does not deliver, which a program would show only as nothing printed; webcpp::document's `parse` test holds both refusals.
 |===

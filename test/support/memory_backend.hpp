@@ -378,7 +378,8 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
             // resource: the event's bytes are the ones the room sent, since none of its keys is
             // an integer, which JavaScript's order would move first.
             std::pmr::string forwarded(R"(["EVENT",)", socket->memory());
-            protocol::json::append_string(forwarded, subscribed.second);
+            // The subscription's id was read from the REQ's JSON, so it is UTF-8.
+            protocol::json::detail::append_utf8(forwarded, subscribed.second);
             forwarded += ',';
             protocol::json::append_value(forwarded, event);
             forwarded += ']';

@@ -13,6 +13,7 @@
 
 #include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/webrtc/data_channel.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
 
@@ -598,6 +599,88 @@ void a_malformed_candidate_fails_without_throwing() {
     }
 }
 
+/** `json`, an object's text, with spaces before its closing brace, to `size` bytes. */
+std::string padded(std::string_view json, std::size_t size) {
+    require(BOOST_TEST(json.ends_with('}') && json.size() <= size));
+    std::string out(json.substr(0, json.size() - 1));
+    out.append(size - json.size(), ' ');
+    out += '}';
+    return out;
+}
+
+// A remote candidate of protocol::max_sealed_candidate_bytes, a host candidate's JSON with spaces
+// before its closing brace, is added once an offer is the connection's remote description; one
+// byte longer fails with error::backend_failure before it is read.
+void a_candidate_past_its_bound_fails() {
+    asio::io_context io;
+    trystero::platform::backend factory(io.get_executor(), {.bind_address = loopback});
+    const auto offerer = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    const auto answerer = factory.make_peer_connection({}, std::pmr::get_default_resource());
+    require(BOOST_TEST(offerer != nullptr && answerer != nullptr));
+    const auto channel = offerer->create_data_channel("data");
+    require(BOOST_TEST(channel != nullptr));
+    std::string mid;
+    bool applied = false;
+    offerer->set_local_description(
+        [&](backend::error_code ec, std::string_view type, std::string_view sdp) {
+            require(BOOST_TEST(!ec));
+            // The data channel's media section, "a=mid:<mid>", which a candidate names.
+            const auto at = sdp.find("a=mid:");
+            require(BOOST_TEST(at != std::string_view::npos));
+            const auto rest = sdp.substr(at + 6);
+            mid = rest.substr(0, rest.find_first_of("\r\n"));
+            answerer->set_remote_description(type, sdp, [&](backend::error_code ec) {
+                require(BOOST_TEST(!ec));
+                applied = true;
+            });
+        });
+    require(BOOST_TEST(run_until(io, [&] { return applied; })));
+    const std::string candidate =
+        R"({"candidate":"candidate:1 1 UDP 2122317823 127.0.0.1 9 typ host","sdpMid":")" + mid +
+        R"("})";
+    constexpr std::size_t bound = protocol::max_sealed_candidate_bytes;
+    std::vector<backend::error_code> results;
+    answerer->add_ice_candidate(padded(candidate, bound),
+                                [&](backend::error_code ec) { results.push_back(ec); });
+    answerer->add_ice_candidate(padded(candidate, bound + 1),
+                                [&](backend::error_code ec) { results.push_back(ec); });
+    if (!BOOST_TEST(run_until(io, [&] { return results.size() == 2; }))) {
+        return;
+    }
+    BOOST_TEST(!results[0]);
+    BOOST_TEST(results[1] == trystero::error::backend_failure);
+}
+
+// A local candidate is reported as the JSON of an RTCIceCandidateInit, as JSON.stringify writes a
+// browser's: its mid and index null when unknown, its user name fragment only when it has one. One
+// whose candidate, mid or user name fragment is not UTF-8, which JSON cannot carry, is refused, so
+// the connection reports none.
+void a_candidate_that_is_not_utf8_is_not_written() {
+    const auto json = [](std::string_view candidate, std::string_view mid,
+                         std::optional<std::uint16_t> index, std::string_view fragment) {
+        return trystero::webrtc::detail::candidate_json(candidate, mid, index, fragment,
+                                                        std::pmr::get_default_resource());
+    };
+    const auto full = json("candidate:1 1 UDP 1 127.0.0.1 9 typ host", "0", 0, "uf\xc3\xa9");
+    if (BOOST_TEST(full.has_value())) {
+        BOOST_TEST_EQ(*full,
+                      "{\"candidate\":\"candidate:1 1 UDP 1 127.0.0.1 9 typ host\","
+                      "\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\xc3\xa9\"}");
+    }
+    const auto bare = json("candidate:\"", {}, std::nullopt, {});
+    if (BOOST_TEST(bare.has_value())) {
+        BOOST_TEST_EQ(*bare,
+                      "{\"candidate\":\"candidate:\\\"\",\"sdpMid\":null,\"sdpMLineIndex\":null}");
+    }
+    for (const auto& refused : {
+             json("candidate:\xff", "0", 0, {}),
+             json("candidate:1", "\xc0\xaf", 0, {}),
+             json("candidate:1", "0", 0, "\xed\xa0\x80"),
+         }) {
+        BOOST_TEST(refused.has_error() && refused.error() == webcpp::document::errc::type);
+    }
+}
+
 void the_backend_makes_at_most_its_budget_in_a_minute() {
     asio::io_context io;
     trystero::platform::backend factory(
@@ -831,6 +914,8 @@ int main() {
     pending_messages_expire_without_a_receiver();
     a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
+    a_candidate_past_its_bound_fails();
+    a_candidate_that_is_not_utf8_is_not_written();
     the_backend_makes_at_most_its_budget_in_a_minute();
     the_runtime_holds_at_most_its_cap_at_once();
     a_url_libdatachannel_cannot_parse_is_left_out();

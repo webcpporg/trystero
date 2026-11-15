@@ -81,8 +81,14 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `protocol`
 | The protocol against values Trystero JS 0.26.0 computed itself: topics,
   room tokens, the relay shuffle, sealed text, Nostr event ids, inline and
-  chunked action frames, control frames, envelopes and presence, and the
-  bounds of a signal's fields.
+  chunked action frames, control frames, envelopes and presence, a JSON
+  payload's numbers and key order, and the bounds of a signal's fields.
+
+| `signaling`
+| The signaling and the Nostr strategy alone: as an answerer, the signals
+  Trystero JS 0.26.0's own signal handler published for the same offers,
+  byte for byte, and a signal or a relay's text read at its bound and
+  dropped one byte past it.
 
 | `room`
 | Whole rooms in one process, over the memory relays: every payload format,
@@ -93,7 +99,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
   coroutines and view handlers.
 
 | `app_impl`
-| Configuration copying and validation, resource ownership, weak room
+| Configuration copying and validation, a self id that is not UTF-8 set
+  aside, resource ownership, weak room
   registration, shared adoption, stale replacement, reentrant adoption,
   last-user closure and quiet destruction with pending work.
 
@@ -109,8 +116,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | Multiple apps and rooms with one connection per remote peer, adoption
   races, presence and reuse, room isolation, departures, idle connections,
   password-domain isolation, invalid room proofs, transient handshake recovery,
-  fairness, bounds and
-  resource ownership. The suite also runs without exceptions and with
+  fairness, bounds, a handshake message read at its bound and failing one
+  byte past it, and resource ownership. The suite also runs without exceptions and with
   standard-library hardening; sanitizers check lifetimes and detachment.
 
 | `allocation`
@@ -175,7 +182,9 @@ include::{library-root}/test/Jamfile[tag=allocation]
   handler replacement and destruction, the 64-frame and 10-second bounds,
   and allocation and release through the connection's resource; a peer of
   webcpp::webrtc's own sends a text, which is dropped between two frames;
-  malformed candidates and descriptions fail without throwing; the backend
+  malformed candidates and descriptions fail without throwing, and so does a
+  candidate one byte past its bound, which at the bound is added; a local
+  candidate that is not UTF-8 is not written; the backend
   makes at most its budget in a minute, holds at most its runtime's cap at
   once, and leaves out a URL libdatachannel cannot parse. Both run once more
   without exceptions.

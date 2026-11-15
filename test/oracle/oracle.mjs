@@ -22,12 +22,23 @@ if (process.argv.length !== 4) {
 const [casesDirectory, outputDirectory] = process.argv.slice(2)
 const cases = JSON.parse(readFileSync(join(casesDirectory, 'protocol.json'), 'utf8'))
 
+// Trystero draws its peer id, selfId, from Math.random once, when utils.mjs is loaded: from the
+// answerer fixture's draws while the modules load, so that the signals carrying it are the same
+// every run. Draw i is ((i * multiplier + offset) % 62 + 0.5) / 62, which picks character
+// (i * multiplier + offset) % 62 of Trystero's alphabet.
+const random = Math.random
+{
+    const {multiplier, offset} = cases.answerer.self_id_random
+    let draw = 0
+    Math.random = () => ((((draw++ * multiplier) + offset) % 62) + 0.5) / 62
+}
 const core = join(dirname(fileURLToPath(import.meta.url)), 'node_modules/@trystero-p2p/core/dist')
-const {sha1, hashWith, deriveRoomNamespace, encrypt, genKey} = await import(join(core, 'crypto.mjs'))
-const {strToNum, getRelays, toHex, toJson, topicPath, shuffle} = await import(join(core, 'utils.mjs'))
+const {sha1, hashWith, deriveRoomNamespace, encrypt, decrypt, genKey} = await import(join(core, 'crypto.mjs'))
+const {strToNum, getRelays, toHex, toJson, topicPath, shuffle, selfId} = await import(join(core, 'utils.mjs'))
 const {createActionWireManager} = await import(join(core, 'action-wire.mjs'))
 const {SharedPeerManager} = await import(join(core, 'shared-peer.mjs'))
 const {createSignalHandler} = await import(join(core, 'signal-handler.mjs'))
+Math.random = random
 
 // The bytes getRandomValues gives while a fixture draws them, the same every run: byte i of a draw
 // is (i * multiplier + offset) % 256. Trystero draws an IV with it when it seals, and noble's
@@ -349,6 +360,93 @@ const until = async (done, what) => {
     await room.leave()
     globalThis.WebSocket = WebSocket
 }
+
+// The answerer's signals, as Trystero's own signal handler publishes them (handleOffer): for each
+// case, a room of the oracle's, as readSignal's, gets an offer on its self topic, sealed under the
+// room's key, opens it, and hands it to its answering peer, a stand-in that gives an answer and
+// then a candidate, as an RTCIceCandidate's toJSON in JSON.stringify's text (peer.mjs); the room
+// seals each with Trystero's encrypt, the fixture's IV drawn every time, and publishes the answer,
+// then the candidate it held. `sealed` holds every text sealed, the offers' and the room's, with
+// its plaintext; `published`, the topic and the text of each signal the room sent, in order.
+{
+    const answerer = cases.answerer
+    const key = genKey(answerer.password, answerer.app_id, answerer.room_id)
+    const root = topicPath('Trystero', answerer.app_id, answerer.room_id)
+    const candidate = JSON.stringify(answerer.candidate)
+    const sealed = []
+    const seal = async plaintext => {
+        const text = await encrypt(key, plaintext)
+        if (!sealed.some(entry => entry.plaintext === plaintext)) sealed.push({plaintext, text})
+        return text
+    }
+    crypto.getRandomValues = patterned(answerer.random)
+    const offer = await seal(answerer.offer_sdp)
+    out.answerer = {
+        self_id: selfId,
+        app_id: answerer.app_id,
+        room_id: answerer.room_id,
+        answer_sdp: answerer.answer_sdp,
+        candidate,
+        sealed,
+        cases: [],
+    }
+    for (const {peerId, offerId} of answerer.offers) {
+        const handlers = {}
+        const errors = []
+        const published = []
+        const ctx = {
+            appId: answerer.app_id,
+            roomId: answerer.room_id,
+            config: {},
+            peerStates: {},
+            rootTopicPlaintext: root,
+            rootTopicP: sha1(root),
+            selfTopicP: sha1(topicPath(root, selfId)),
+            isPassive: false,
+            isActive: true,
+            isLeaving: () => false,
+            reusePeer: () => false,
+            toPlain: async ({type, sdp}) => ({type, sdp: await decrypt(key, sdp)}),
+            toCipher: async ({type, sdp}) => ({type, sdp: await seal(sdp)}),
+            initPeer: () => ({
+                isDead: false,
+                setHandlers: given => Object.assign(handlers, given),
+                signal: async description => {
+                    if (description.type !== 'offer' || description.sdp !== answerer.offer_sdp) {
+                        throw new Error('the oracle answers its own offer alone')
+                    }
+                    handlers.signal({type: 'answer', sdp: answerer.answer_sdp})
+                    handlers.signal({type: 'candidate', sdp: candidate})
+                },
+                destroy: () => {},
+            }),
+            offerManager: {checkout: async () => Promise.reject(new Error('the oracle makes no offer'))},
+            connectPeer: () => {},
+            disconnectPeer: () => {},
+            checkDeactivate: () => {},
+            onJoinError: ({error}) => errors.push(error),
+            announceIntervals: [],
+            announceIntervalMs: 5333,
+        }
+        const text = toJson({peerId, ...(offerId === undefined ? {} : {offerId}), offer})
+        await createSignalHandler(ctx)(0)(await ctx.selfTopicP, text,
+            (topic, message) => published.push({topic, text: message}))
+        await until(() => published.length === 2 || errors.length > 0, `the answer to ${peerId}`)
+        if (errors.length > 0) throw new Error(`the room reported ${errors[0]}`)
+        out.answerer.cases.push({offer: text, published})
+    }
+    crypto.getRandomValues = getRandomValues
+}
+
+// JSON payloads, as Trystero sends one: the value an action is given, written by toJson
+// (JSON.stringify), here each case's text as JSON.parse reads it. Their numbers are those a double
+// holds, written as JavaScript writes them, and their keys in JavaScript's order: array indices
+// first, in increasing order, then the other keys in the order they were written.
+out.payload_texts = cases.payload_texts.map(text => ({text, written: toJson(JSON.parse(text))}))
+// And numbers a double cannot hold, which JSON.parse rounds to the nearest double, or to Infinity,
+// which JSON.stringify writes null.
+out.payload_beyond_doubles =
+    cases.payload_beyond_doubles.map(text => ({text, written: toJson(JSON.parse(text))}))
 
 mkdirSync(outputDirectory, {recursive: true})
 const target = join(outputDirectory, 'expected.json')

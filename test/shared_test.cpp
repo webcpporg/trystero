@@ -1855,6 +1855,56 @@ void a_password_challenge_requires_a_string() {
     }
 }
 
+// A handshake message of protocol::max_handshake_bytes, a challenge with spaces before its closing
+// brace, is read and answered: A, the higher id, whose end is the other of the first connection
+// made, sends its proof and reports nothing. One byte longer fails the handshake before it is
+// read, as a message of the wrong shape does.
+void a_handshake_message_past_its_bound_fails() {
+    constexpr std::string_view challenge = R"({"__trystero_pw":"challenge","c":"nonce"})";
+    for (const std::size_t size :
+         {trystero::protocol::max_handshake_bytes, trystero::protocol::max_handshake_bytes + 1}) {
+        two_apps t("ZZZZZZZZZZZZZZZZZZN1", "AAAAAAAAAAAAAAAAAAN2", "pw");
+        const ends e(t);
+        joined_in(t, {"r1"});
+        std::size_t proofs = 0;
+        t.f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+            if (internal_name(frame, "r2") != "@_hsdata") {
+                return trystero::test::memory_network::verdict::deliver;
+            }
+            const std::string_view text(reinterpret_cast<const char*>(frame.data()), frame.size());
+            if (from == t.f.net.peer_of(e.a()) &&
+                text.find(R"("__trystero_pw":"response")") != std::string_view::npos) {
+                ++proofs;
+            }
+            return trystero::test::memory_network::verdict::drop;
+        };
+        t.a_rooms.push_back(join(t.a, "r2"));
+        std::vector<boost::system::error_code> errors;
+        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
+                                  std::string_view) { errors.push_back(ec); });
+        t.b_rooms.push_back(join(t.b, "r2"));
+        webcpp::trystero::test::advance(t.f, 1ms);
+        std::string message(challenge.substr(0, challenge.size() - 1));
+        message.append(size - challenge.size(), ' ');
+        message += '}';
+        BOOST_TEST_EQ(message.size(), size);
+        t.f.net.inject(t.f.net.peer_of(e.a()), internal_frame("r2", "@_hsdata", message));
+        webcpp::trystero::test::advance(t.f, 1ms);
+        if (size == trystero::protocol::max_handshake_bytes) {
+            BOOST_TEST_EQ(proofs, 1U);
+            BOOST_TEST(errors.empty());
+        } else {
+            BOOST_TEST_EQ(proofs, 0U);
+            BOOST_TEST_EQ(errors.size(), 1U);
+            if (!errors.empty()) {
+                BOOST_TEST(errors.front() == trystero::error::wrong_password);
+            }
+            BOOST_TEST(t.a_rooms[1].peers().empty());
+        }
+        BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
+    }
+}
+
 // Connections and room tokens from a passwordless app never reach a protected app's registry,
 // in either peer-id order. Different password domains have distinct app states and peer ids.
 void check_public_connection_isolation(bool protected_lower) {
@@ -1926,6 +1976,7 @@ int main(int argc, const char* const argv[]) {
         {"an_error_log_can_leave_or_destroy_its_room", an_error_log_can_leave_or_destroy_its_room},
         {"a_queue_log_can_drain_or_destroy_its_room", a_queue_log_can_drain_or_destroy_its_room},
         {"a_password_challenge_requires_a_string", a_password_challenge_requires_a_string},
+        {"a_handshake_message_past_its_bound_fails", a_handshake_message_past_its_bound_fails},
         {
             "invalid_room_proofs_fail_within_one_password_domain",
             invalid_room_proofs_fail_within_one_password_domain,
