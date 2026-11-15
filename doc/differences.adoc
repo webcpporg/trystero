@@ -129,17 +129,17 @@ reason of each other row.
 [#trystero-differences-shown]
 === The differences, shown
 
-Each difference below is shown by a {cpp} program and its twin, the same
-program written for Trystero JS: the part of the {cpp} program that differs,
-the twin whole, then what the twin printed on Trystero 0.26.0, then what the
-{cpp} program printed. Both ran, and the outputs are theirs: each program and
-its twin join over a Nostr relay of their own on 127.0.0.1, whose URL is in
-their environment, `TRYSTERO_RELAY_URL`, and two peers of one program meet
-there, as two apps in {cpp} and as two pages in Trystero JS
-(<<trystero-testing-twins>>). The lane `relayed` runs the programs again,
-and the oracle lane the twins, and each fails when its program no longer
-prints what is shown here. The twins of the programs of `example/` agree
-with {n-twins-agreeing} of them, the quick start among them
+Each difference below is shown by a {cpp} program and, but for the last,
+its twin, the same program written for Trystero JS: the part of the {cpp}
+program that differs, the twin whole, then what the twin printed on Trystero
+0.26.0, then what the {cpp} program printed. Both ran, and the outputs are
+theirs: a program and its twin each join over a Nostr relay of their own on
+127.0.0.1, whose URL is in their environment, `TRYSTERO_RELAY_URL`, and two
+peers of one program meet there, as two apps in {cpp} and as two pages in
+Trystero JS (<<trystero-testing-twins>>). The lane `relayed` runs the
+programs again, and the oracle lane the twins, and each fails when its
+program no longer prints what is shown here. The twins of the programs of
+`example/` agree with {n-twins-agreeing} of them, the quick start among them
 (<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
 difference below; {n-examples-without-twin} programs have no twin, the last
 difference below and the chat page, each with its reason in
