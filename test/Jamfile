@@ -139,17 +139,19 @@ webcpp.run platform_room_no_exceptions : platform_room_test.cpp
 webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # end::allocation[]
 
-# Under Asyncify the deepest build is release: compiled with -O3, linked
-# without optimization, as b2's emscripten toolset links it, so that each
-# suspension saves every local of every frame from main down, in
-# webcpp::asio's 8,192 bytes. A test whose cases suspend runs each in a frame
-# of its own (cases.hpp): -O3 inlined the room test's cases into its main,
-# which saved 29,776 bytes at each suspension and stopped at its first
-# (given 262,144 bytes, it passed in 200 s, against 22 s now). The deepest
-# suspension, as the bytes its unwind wrote, measured on 2026-11-15 with
-# Emscripten 6.0.11: in release, room 3,096, app_impl 2,140 and allocation
-# 5,592, whose largest case alone saves 4,680; in debug, 2,332, 2,068 and
-# 2,020.
+# The room, app_impl and allocation tests, whose cases hold whole apps, run
+# once more under Asyncify in a release build, as a page ships them: the
+# CI's emscripten lane builds JSPI, and these are trystero's only programs it
+# runs under Asyncify. A test whose cases suspend runs each in a frame of its
+# own (cases.hpp), whatever the link: -O3 inlines a case that main alone
+# calls into main, and linked without optimization, as b2 linked release
+# until 2026-11-15 and as <linkflags>-O0 still links it, the room test's
+# first suspension then wrote 33,580 bytes, main's frame most of them, and
+# stopped it. Linked at -O3 an inlined main fits, so these runs no longer
+# catch one. The deepest suspension, as the bytes its unwind wrote, measured
+# on 2026-11-15 with Emscripten 6.0.11: in release, linked at -O3, room 564,
+# app_impl 440 and allocation 408 (616, 496 and 400 with every case inlined
+# into main); in debug, now the deepest build, 2,344, 2,068 and 2,020.
 # tag::asyncify-release[]
 webcpp.run room_asyncify_release : room_test.cpp
   : <webcpp-suspend>asyncify <variant>release : emscripten ;

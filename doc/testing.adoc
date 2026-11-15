@@ -247,20 +247,24 @@ include::{library-root}/test/Jamfile[tag=page]
 include::{library-root}/test/Jamfile[tag=no-exceptions]
 ----
 
-Under Asyncify the deepest build is `release`: compiled with `-O3`, it is
-linked without optimization, as b2's emscripten toolset links it, so that
-each suspension saves every local of every frame from `main` down to the
-call that suspends, in webcpp::asio's 8,192 bytes (webcpp::asio's guide,
+Under Asyncify each suspension saves the frames from `main` down to the call
+that suspends, in webcpp::asio's 8,192 bytes (webcpp::asio's guide,
 "Asyncify's stack"). A room's own work is never among those frames
 (<<trystero-platform-needs>>), but a test's cases are: each case calls the
 run family itself. So a test whose cases suspend runs each through
 `webcpp::test::run_case` (`test/cases.hpp`), in a frame of its own, which
-the frame of `main` never holds; a case that `main` alone calls is otherwise
-inlined into it, and the room test's `main`, which held every case's locals
-so, saved 29,776 bytes at each suspension and stopped at its first. The
-room, `app_impl` and allocation tests, whose cases hold whole apps, run once
-more in that build, with webcpp::asio's 8,192 bytes, where their deepest
-suspensions wrote 3,096, 2,140 and 5,592 bytes (measured on 2026-11-15 with
+the frame of `main` never holds, whatever the link. At `-O3` a case that
+`main` alone calls is inlined into it, and a program linked without
+optimization, as b2 linked a `release` build until 2026-11-15 and as
+`<linkflags>-O0` still links one, then saves every case's locals in the
+frame of `main` at each suspension: the room test's `main` saved 29,776
+bytes so, and the test stopped at its first suspension. b2 links a `release`
+build at `-O3` now, where even a `main` with every case inlined fits, and
+the deepest build is `debug`. The room, `app_impl` and allocation tests,
+whose cases hold whole apps, run once more under Asyncify in a `release`
+build, as a page ships them, which the CI's emscripten lane, building JSPI,
+runs no other way; their deepest suspensions wrote 564, 440 and 408 bytes
+there, and 2,344, 2,068 and 2,020 in `debug` (measured on 2026-11-15 with
 Emscripten 6.0.11):
 
 [listing]
