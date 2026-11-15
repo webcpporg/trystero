@@ -115,8 +115,10 @@ void two_peers_join_and_exchange_every_payload_format() {
     chat_z.on_message([&](std::string text, const trystero::message_info& info) {
         chats_z.emplace_back(std::move(text), info);
     });
+    // tag::json-receive[]
     drink_z.on_message(
         [&](webcpp::document::document v, const trystero::message_info&) { drink = std::move(v); });
+    // end::json-receive[]
     pic_z.on_message([&](trystero::bytes b, const trystero::message_info&) { pic = std::move(b); });
 
     BOOST_TEST(run_until(f.io, [&] { return joined_a.size() == 1 && joined_z.size() == 1; }));
@@ -129,9 +131,12 @@ void two_peers_join_and_exchange_every_payload_format() {
     std::vector<boost::system::error_code> sent;
     chat_a.async_send("hello", trystero::send_options{.targets = {}, .metadata = R"({"n":1})"},
                       [&](boost::system::error_code ec) { sent.push_back(ec); });
-    a.make_action<webcpp::document::document>("drink").async_send(
-        document_of(R"({"drink":"negroni"})"),
-        [&](boost::system::error_code ec) { sent.push_back(ec); });
+    // tag::json-send[]
+    if (auto negroni = webcpp::document::parse(R"({"drink":"negroni"})")) {
+        a.make_action<webcpp::document::document>("drink").async_send(
+            std::move(*negroni), [&](boost::system::error_code ec) { sent.push_back(ec); });
+    }
+    // end::json-send[]
     a.make_action<trystero::bytes>("pic").async_send(
         trystero::bytes{0, 1, 255}, [&](boost::system::error_code ec) { sent.push_back(ec); });
 
@@ -149,7 +154,9 @@ void two_peers_join_and_exchange_every_payload_format() {
     if (!BOOST_TEST(drink.has_value())) {
         return;
     }
+    // tag::json-read[]
     BOOST_TEST_EQ((*drink)["drink"].value_or(std::string_view()), "negroni");
+    // end::json-read[]
 }
 
 void large_payloads_travel_in_chunks_both_ways() {

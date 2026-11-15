@@ -233,7 +233,7 @@ allocator: Boost.JSON's parser stack, the path and the pending key and text
 of the value being read, the tree's record of each change, which places a
 value, and the writer's stack. Each is freed before the parse or the write
 that made it returns, so none is left at any moment the room's executor is
-between handlers. Measured natively with libc++, each text a room reads
+between handlers. Measured natively with the LLVM standard library, each text a room reads
 costs `operator new` about seven allocations a value: a relay's event
 carrying an offer, 1,581 bytes and 14 values, 93; a relay's `OK`, 5 values,
 32; a signal, 4 values, 26; a handshake message, 3 values, 20; a candidate,

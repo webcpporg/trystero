@@ -206,19 +206,27 @@ messages travel and how they are received:
 A JSON payload is webcpp::document's: a `webcpp::document::document` the
 program builds or parses, or a `pmr_document`, whose image is a buffer of a
 memory resource, the room's when it is received. A text that does not parse
-is not delivered. A C++ peer sends what `JSON.stringify` writes of the
-document, the bytes Trystero JS sends of the same value:
+is not delivered. A {cpp} peer sends what `JSON.stringify` writes of the
+document, the bytes Trystero JS sends of the same value. The room test sends
+one:
 
 [source]
 ----
-namespace wd = webcpp::document;
-auto drink = room.make_action<wd::document>("drink");
-drink.on_message([](const wd::document& d, const trystero::message_info&) {
-    std::cout << d["drink"].value_or(std::string_view()) << '\n';
-});
-if (auto d = wd::parse(R"({"drink":"negroni"})")) {
-    drink.async_send(std::move(*d), webcpp::asio::detached);
-}
+include::{library-root}/test/room_test.cpp[tag=json-send,indent=0]
+----
+
+receives it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-receive,indent=0]
+----
+
+and reads it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-read,indent=0]
 ----
 
 A message of another format than the action's type is not delivered to it.

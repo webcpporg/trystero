@@ -198,9 +198,11 @@ struct signal_message {
      */
     bool passive = false;
     /**
-     * Whether the sender answers the offer: Trystero's answerer writes `offerId` after its answer
-     * or candidate, its offerer before its offer or candidate. Written only; a reader leaves it
-     * false, the order being no part of the meaning.
+     * Whether the sender answers the offer, which places `offerId` in the text.
+     *
+     * Trystero's answerer writes `offerId` after its answer or candidate, its offerer before its
+     * offer or candidate. Written only; a reader leaves it false, the order being no part of the
+     * meaning.
      */
     bool answering = false;
 

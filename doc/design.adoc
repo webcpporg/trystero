@@ -214,8 +214,8 @@ key, a member, a capture of a handler that runs later.
   of the room's or the app's resource, and read as views into it; each
   caller bounds its text (<<trystero-protocol-json>>). The JSON the room
   writes goes field by field into one reserved buffer, its strings quoted by
-  `webcpp::document::quote`, `JSON.stringify`'s own quoting, and a Nostr
-  event's id is hashed over those same bytes. Building each text as a
+  `webcpp::document::quote`, the quoting of `JSON.stringify` itself, and a
+  Nostr event's id is hashed over those same bytes. Building each text as a
   document and writing it again was set aside: it would copy every string
   into a node of some 200 bytes, then write it once more.
 * A frame is written once, inside its room envelope, and shared by every
