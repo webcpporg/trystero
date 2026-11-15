@@ -607,7 +607,7 @@ std::string answer_sender(std::string_view text, std::string_view root_topic) {
 // acted on, with the same sender, exactly when Trystero's room acted on it.
 void duplicate_keys(const fixture_value& fixture) {
     const auto cases = fixture["duplicate_keys"];
-    BOOST_TEST_EQ(cases["signals"].size(), 11U);
+    BOOST_TEST_EQ(cases["signals"].size(), 13U);
     for (const auto entry : cases["signals"]) {
         const auto document = parse_text(str(entry["text"]), tp::max_parsed_signal_bytes).value();
         const auto read = tp::read_signal(document.root());

@@ -455,6 +455,23 @@
                 "answer": " \u0000"
             },
             "text": "{\"peerId\":\"q\\\"\\\\\\n\",\"answer\":\" \\u0000\"}"
+        },
+        {
+            "signal": {
+                "peerId": "a",
+                "answer": "sealed ",
+                "offerId": "o"
+            },
+            "text": "{\"peerId\":\"a\",\"answer\":\"sealed \",\"offerId\":\"o\"}"
+        },
+        {
+            "signal": {
+                "peerId": "a",
+                "candidate": "  ",
+                "offerId": "o",
+                "passive": true
+            },
+            "text": "{\"peerId\":\"a\",\"candidate\":\"  \",\"offerId\":\"o\",\"passive\":true}"
         }
     ],
     "duplicate_keys": {
@@ -531,6 +548,14 @@
                     "answer": "sealed",
                     "passive": false
                 }
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"peer\":\"x\",\"offer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"p\",\"peer\":null,\"nonce\":\"n\"}",
+                "read": null
             }
         ],
         "root_topic": "731p275e6u4l455l3849481dl46536q3g1r6h5y",
