@@ -9,6 +9,10 @@
 //
 // - A call's handler is given the page's value as it is when the handler runs: the page passes an
 //   object and changes it before the run resumes, and the handler sees it changed.
+// - A handler reads a number as a double and checks its range before it makes it an integer, as
+//   page.hpp says: 1e10, -1e10, 2.5, NaN, a string and undefined are no 32-bit integer, and none
+//   throws. Before the fix the test read `isNumber() ? as<std::int32_t>()`, which for 1e10 throws a
+//   TypeError in a build with assertions.
 // - A JavaScript function the page kept after its page_call was destroyed reaches nothing and
 //   breaks nothing: the page calls it from a timer, while the run is suspended, and the call
 //   returns undefined and runs nothing, and the page's next call, of another page_call, reaches
@@ -32,8 +36,10 @@
 #include <webcpp/test/exit_status.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory_resource>
 #include <optional>
 
@@ -118,6 +124,37 @@ void outlive_the_io_context(program& p) {
 }
 
 /**
+ * The page's value as a 32-bit integer, or nothing when it is no number in that range: its type is
+ * checked first, and its range as a double, since embind's `as<std::int32_t>()` of a number beyond
+ * the range, as 1e10, throws a TypeError in a build with assertions.
+ */
+std::optional<std::int32_t> read_int32(const val& value) {
+    if (!value.isNumber()) {
+        return std::nullopt;
+    }
+    const double number = value.as<double>();
+    // NaN fails every comparison, and so the first.
+    if (!(number >= std::numeric_limits<std::int32_t>::min()) ||
+        number > std::numeric_limits<std::int32_t>::max() || number != std::trunc(number)) {
+        return std::nullopt;
+    }
+    return static_cast<std::int32_t>(number);
+}
+
+/** What a page_call's handler reads of a number, whatever the page passed. */
+void numbers_are_read_within_their_range() {
+    BOOST_TEST(read_int32(val(2)) == std::optional<std::int32_t>(2));
+    BOOST_TEST(read_int32(val(-2147483648.0)) ==
+               std::optional<std::int32_t>(std::numeric_limits<std::int32_t>::min()));
+    BOOST_TEST(!read_int32(val(1e10)).has_value());
+    BOOST_TEST(!read_int32(val(-1e10)).has_value());
+    BOOST_TEST(!read_int32(val(2.5)).has_value());
+    BOOST_TEST(!read_int32(val::global("NaN")).has_value());
+    BOOST_TEST(!read_int32(val("2")).has_value());
+    BOOST_TEST(!read_int32(val::undefined()).has_value());
+}
+
+/**
  * Each call of the page's `next`: reads the page's object and destroys the doomed page_call, then
  * judges what followed.
  */
@@ -125,8 +162,7 @@ void advance(program& p, const val& argument) {
     if (p.stage++ == 0) {
         // The page's value is checked before it is read, as a page_call's handler does.
         if (!argument.isNull() && !argument.isUndefined()) {
-            const val n = argument["n"];
-            p.seen_n = n.isNumber() ? n.as<std::int32_t>() : -1;
+            p.seen_n = read_int32(argument["n"]).value_or(-1);
         }
         p.doomed.reset();
         // The page calls the function it kept, then the next.
@@ -151,6 +187,7 @@ void advance(program& p, const val& argument) {
 }  // namespace
 
 int main() {
+    numbers_are_read_within_their_range();
     program p;
     p.doomed.emplace(
         p.io.get_executor(),
