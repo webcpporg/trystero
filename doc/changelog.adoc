@@ -41,9 +41,9 @@ simultaneous offers.
 * Added `room_options::max_json_document_bytes` for a received JSON payload;
 every JSON text is read in the room's resource within bounds, and a self id
 not UTF-8 is replaced by a random one.
-* Fixed unreachable IPv6 relays, signals written or read unlike Trystero's,
-32-bit receivers misreading 4 GiB offers, and pages ignoring a failing
-`crypto.getRandomValues` or dropping a channel's early frames.
+* Fixed unreachable IPv6 relays, signals unlike Trystero's, 32-bit receivers
+misreading 4 GiB offers, pages ignoring a failing `crypto.getRandomValues` or
+dropping early frames, and rooms never binding after a lost presence.
 * Changed the quick start to one native program, and added programs showing
 differences beside Trystero JS's output.
 // end::unreleased[]
