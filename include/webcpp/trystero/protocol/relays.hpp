@@ -26,8 +26,9 @@ namespace webcpp::trystero::protocol {
  * protocol (an event's content is a signal, whose SDP is a few KiB) and of what public relays
  * accept (their events are capped at 64 to 512 KiB).
  *
- * Both backends close a relay's connection that sends a longer one, before copying it, and the
- * room reconnects as it does to a relay that went away.
+ * The platform backend closes, on both targets, a relay's connection that sends a longer one,
+ * before copying it, in a page before it enters WebAssembly, and the room reconnects as it does to
+ * a relay that went away.
  */
 inline constexpr std::size_t max_relay_message_bytes = std::size_t{1} << 20U;
 
