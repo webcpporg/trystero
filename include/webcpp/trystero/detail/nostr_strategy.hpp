@@ -45,9 +45,11 @@ namespace webcpp::trystero::detail {
  * The ids of the newest Nostr events a strategy received, so that it acts on each event once: a
  * relay may repeat one, and every relay of the room carries it.
  *
- * Only an id NIP-01 defines, 64 lowercase hexadecimal digits, is remembered: an event with any
- * other id is acted on every time, as Trystero, which remembers none, acts on every event, so that
- * what a relay makes the room hold is `capacity` ids of 64 bytes.
+ * The strategy gives it only an id it checked to be its event's own
+ * (`protocol::nostr::has_own_id`), so that a relay cannot hide an event behind a forged one under
+ * its id: an event with any other id is acted on every time, as Trystero, which remembers none,
+ * acts on every event. Only an id NIP-01 defines, 64 lowercase hexadecimal digits, is remembered,
+ * so that what a relay makes the room hold is `capacity` ids of 64 bytes.
  *
  * Tip: an id is whatever a relay sends, so the index hashes it with SipHash under a key drawn when
  * the strategy is made. The standard library's hashes are unseeded: ids a relay chose to fall in
@@ -96,7 +98,7 @@ public:
     /** Whether `id` is new; a new one is remembered in place of the oldest beyond `capacity`, and
      * one that is not NIP-01's is always new and never remembered. */
     bool remember(std::string_view id) {
-        if (!is_nip01_id(id)) {
+        if (!protocol::nostr::detail::is_nip01_hex(id)) {
             return true;
         }
         if (index_.contains(id)) {
@@ -115,14 +117,10 @@ public:
     /** How many ids are remembered. */
     [[nodiscard]] std::size_t size() const { return order_.size(); }
 
-private:
-    /** Whether `id` is an event id as NIP-01 writes it: 64 lowercase hexadecimal digits. */
-    static bool is_nip01_id(std::string_view id) {
-        return id.size() == id_size && std::ranges::all_of(id, [](char c) {
-                   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-               });
-    }
+    /** The index's hash, under its key. */
+    [[nodiscard]] keyed_hash hash_function() const { return index_.hash_function(); }
 
+private:
     index_type index_;
     std::pmr::deque<std::pmr::string> order_;
     std::size_t capacity_;
@@ -209,6 +207,9 @@ public:
 
     /** How many relays the strategy uses. */
     std::size_t relay_count() const { return relays_.size(); }
+
+    /** The ids of the events it acted on, which it remembers to drop their repeats. */
+    [[nodiscard]] const recent_event_ids& seen() const { return seen_; }
 
     /** Stops announcing and reconnecting, closes each subscription and each connection. */
     void stop() {
@@ -468,10 +469,14 @@ private:
         }
         auto& r = relays_[index];
         if (const auto* e = std::get_if<protocol::nostr::event>(&*message)) {
-            if (e->subscription != r.subscription || e->topic.empty()) {
+            if (e->subscription != r.subscription || e->topic.empty() ||
+                std::ranges::find(topics_, e->topic) == topics_.end()) {
                 return;
             }
-            if (std::ranges::find(topics_, e->topic) == topics_.end() || !seen_.remember(e->id)) {
+            // A repeat is dropped only under an id checked to be its event's own: a relay could
+            // otherwise send a forged event under a genuine event's id ahead of the relay that
+            // carries the genuine one, and have the room drop it.
+            if (protocol::nostr::has_own_id(*e, memory_) && !seen_.remember(e->id)) {
                 return;
             }
             on_message_(index, e->topic, e->content);

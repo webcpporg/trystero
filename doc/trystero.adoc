@@ -23,10 +23,11 @@ This page teaches trystero section by section: what a room is, how a program
 joins one in the browser and natively, how its actions carry messages, where
 its memory comes from, what the platform backend asks of each target, the wire it
 speaks, and what it guarantees. Every program it shows is one of the
-library's examples, which the build compiles and links on its target. None
-is run by the build, since each needs the public relays or a browser, so the
-page shows no output of theirs. The <<reference,reference>> lists every name
-the headers declare.
+library's examples, which the build compiles and links on its target. The
+build runs each that needs no browser over a Nostr relay of its own, and the
+page shows what it prints, with its twin on Trystero JS; the chat, a page,
+is linked and never run. The <<reference,reference>> lists every name the
+headers declare.
 
 include::overview.adoc[]
 

@@ -102,7 +102,7 @@ holds only what is specific to trystero.
   (`doc/Jamfile`). `/webcpp/trystero//trystero` brings `/webcpp/asio//asio`:
   on emscripten every program is built in a suspension variant
   (`webcpp-suspend=jspi` by default, or `asyncify`) and named after it
-  (`quick_start-60-d-jspi.js`), and the suites run in both.
+  (the chat's `chat-program-60-d-jspi.js`), and the suites run in both.
   A page's program runs its io_context from `main` under a work guard, as
   webcpp::asio's model asks (the owner's decision of 2026-11-14): the page's
   events post to it through the bridge, and the page calls C++ only through
@@ -311,10 +311,14 @@ holds only what is specific to trystero.
     (`detail::nostr_strategy::remembered_events`) in a
     `boost::unordered_flat_set` hashed with Boost.Hash2's `siphash_64` under
     a key drawn from the backend's randomness when it is made, since a relay
-    chooses the ids; `room`'s `colliding_event_ids_stay_fast` feeds it 2048
-    ids found to share one bucket of `std::unordered_set` and reads
-    Boost.Unordered's statistics (`BOOST_UNORDERED_ENABLE_STATS`, defined by
-    that test only).
+    chooses the ids (`room`'s `a_strategy_draws_the_key_of_its_event_ids`).
+    It remembers an id only once `protocol::nostr::has_own_id` found it to be
+    the SHA-256 of the event's NIP-01 serialization, which
+    `protocol::nostr::event_id` computes over an event whose one tag is its
+    topic's, as Trystero writes them; any other event is acted on every time,
+    as Trystero acts on every event, so that a relay that sends a forged
+    event under a genuine event's id first hides nothing (`room`'s
+    `a_forged_event_under_a_genuine_id_hides_nothing`).
   - A relay is a third party too. A text longer than 1 MiB closes its
     connection on both targets, in a page before it is copied into
     WebAssembly (webcpp::beast's `read_message_max`). A relay that stops
@@ -399,14 +403,17 @@ holds only what is specific to trystero.
 - **The oracle and the interop tests, trystero's own lanes.**
   `test/oracle/` pins Trystero 0.26.0 (`trystero`, `@trystero-p2p/core` and
   `@trystero-p2p/nostr`, with `ws` 8.22.0 and `@noble/secp256k1` 3.2.0 for
-  the local relay, which imports both) in its `package.json` and
-  `package-lock.json`, which `webcpp.original node` installs. Its `Jamfile`
+  the local relay, which imports both, and werift 0.24.4, the WebRTC the
+  twins give Trystero JS in Node as `rtcPolyfill`, which Trystero's README
+  names for Node) in its `package.json` and `package-lock.json`, which
+  `webcpp.original node --conditions=development` installs. Its `Jamfile`
   declares two own lanes. `oracle`, which names no target: `oracle.mjs` runs
   Trystero's own functions over the inputs of
   `test/fixtures/cases/protocol.json` and writes `expected.json`, which must
   equal `test/fixtures/expected/expected.json` byte for byte, the file the
-  `protocol` and `platform_sealer` tests read; `update-expected` is its only
-  writer. `interop`, on native and emscripten (`native.trystero.interop` and
+  `protocol` and `platform_sealer` tests read, and `webcpp.twins` runs every
+  twin of `example/` through `run_twin.mjs` (below); `update-expected` is the
+  only writer of `expected.json` and of each divergent twin's output. `interop`, on native and emscripten (`native.trystero.interop` and
   `emscripten.trystero.interop` in the report): two driven tests,
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in
@@ -756,8 +763,23 @@ holds only what is specific to trystero.
     marked): the test wraps `Asyncify.allocateData` in JavaScript, which sets
     a flag while it runs, and counts what the C library allocates then
     apart, as webcpp::asio's own allocation test does.
-- **No twins.** Every example needs the public relays or a browser, so each
-  is a `webcpp.link`, linked and never run, and has no `.expected` and no
-  twin in Trystero's language. The chat page's site is written by
+- **The examples and their twins.** The quick start and each
+  `diff_<topic>` program run natively in the lane `relayed`
+  (`example/Jamfile`), each over a Nostr relay of its own on 127.0.0.1,
+  which `example/run_over_relay.mjs` starts and names in
+  `TRYSTERO_RELAY_URL`, and passes when it ends by itself having printed its
+  `.expected`; its peers stay on the machine (a backend bound to 127.0.0.1,
+  and `stun:127.0.0.1:9`). Each has its twin under `test/oracle/twins/`,
+  which `test/oracle/run_twin.mjs` runs over a relay of its own: the quick
+  start's agrees, and a difference's records what Trystero prints in its own
+  `.expected`. Two peers of one program are two apps, and the quick start
+  fixes their self ids, since a random id would print differently on every
+  run; a twin's second peer is another page (`test/oracle/page.mjs`), since
+  Trystero JS has one `selfId` per page, so the quick start's twin prints
+  names where the program prints its ids. Without `TRYSTERO_RELAY_URL` the
+  quick start meets over Trystero's public relays and STUN servers, as a
+  user's program does.
+  The chat page alone is a `webcpp.link`, linked and never run, without a
+  twin (`test/oracle/twins/without-twin.txt`); its site is written by
   `b2 toolset=emscripten libs/trystero/example/chat//site` under the build
   directory, never in the tree.

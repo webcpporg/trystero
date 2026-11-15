@@ -1,0 +1,3 @@
+the self id given: 4 bytes, not UTF-8
+the app's self id: 20 random characters
+reported: the configuration is unusable: self_id is not UTF-8, which no peer reads, so the app uses a random one
