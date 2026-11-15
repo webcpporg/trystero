@@ -1371,7 +1371,7 @@ void json_payloads_are_read_in_the_rooms_resource_up_to_its_bound() {
 
 // A JSON payload nested as deep as webcpp::document's default, 256, is delivered, to either
 // document type: its parse recurses once a level, on the room's executor, on every target and in
-// both suspension variants.
+// both suspension variants, within the engine's default stack (doc: #trystero-protocol-json).
 void a_json_payload_nested_256_deep_is_delivered() {
     fixture f;
     trystero::app a_app(f.io.get_executor(), f.net, app_config("XXXXXXXXXXXXXXXXXXXX"));
@@ -1397,27 +1397,38 @@ void a_json_payload_nested_256_deep_is_delivered() {
 }
 
 // A message of another format than a document action's completes its receive with
-// error::transfer_rejected and a document holding null, in the room's resource.
-void a_rejected_document_receive_holds_null_in_the_rooms_resource() {
+// error::transfer_rejected and a document that holds nothing, which allocates nothing: its root
+// reads undefined and it has no image, in the room's resource for a pmr::document.
+void a_rejected_document_receive_holds_nothing() {
     std::pmr::unsynchronized_pool_resource z_memory;  // outlives the io_context
     fixture f;
     trystero::app a_app(f.io.get_executor(), f.net, app_config("VVVVVVVVVVVVVVVVVVVV"));
     auto a = join(a_app, "rejected");
     trystero::app z_app(f.io.get_executor(), f.net, app_config("WWWWWWWWWWWWWWWWWWWW"));
     auto z = join(z_app, "rejected", trystero::room_options{.memory = &z_memory});
-    bool completed = false;
-    z.make_action<webcpp::document::pmr::document>("doc").async_receive(
+    std::size_t completed = 0;
+    z.make_action<webcpp::document::pmr::document>("pmr").async_receive(
         [&](boost::system::error_code ec, webcpp::document::pmr::document v,
             const trystero::message_info& info) {
-            completed = true;
+            ++completed;
             BOOST_TEST(ec == trystero::error::transfer_rejected);
-            BOOST_TEST(v.root().is_null());
+            BOOST_TEST(v.root().is_undefined());
+            BOOST_TEST(v.image().empty());
             BOOST_TEST(v.get_allocator().resource() == &z_memory);
             BOOST_TEST_EQ(info.from, "VVVVVVVVVVVVVVVVVVVV");
         });
+    z.make_action<webcpp::document::document>("std").async_receive(
+        [&](boost::system::error_code ec, webcpp::document::document v,
+            const trystero::message_info& /*info*/) {
+            ++completed;
+            BOOST_TEST(ec == trystero::error::transfer_rejected);
+            BOOST_TEST(v.root().is_undefined());
+            BOOST_TEST(v.image().empty());
+        });
     BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
-    a.make_action<std::string>("doc").async_send("not JSON", asio::detached);
-    BOOST_TEST(run_until(f.io, [&] { return completed; }));
+    a.make_action<std::string>("pmr").async_send("not JSON", asio::detached);
+    a.make_action<std::string>("std").async_send("not JSON", asio::detached);
+    BOOST_TEST(run_until(f.io, [&] { return completed == 2; }));
 }
 
 void view_handlers_read_the_frame_without_copying() {
@@ -1705,6 +1716,9 @@ void the_errors_have_their_values() {
 }  // namespace
 
 int main() {
+    // First, while the parser has run least: a WebAssembly engine compiles a function with its
+    // baseline tier first, whose frames are the largest, and a peer's first payload meets it so.
+    a_json_payload_nested_256_deep_is_delivered();
     two_peers_join_and_exchange_every_payload_format();
     large_payloads_travel_in_chunks_both_ways();
     ping_measures_a_round_trip();
@@ -1739,8 +1753,7 @@ int main() {
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     json_payloads_are_read_in_the_rooms_resource_up_to_its_bound();
-    a_json_payload_nested_256_deep_is_delivered();
-    a_rejected_document_receive_holds_null_in_the_rooms_resource();
+    a_rejected_document_receive_holds_nothing();
     view_handlers_read_the_frame_without_copying();
     a_rate_limited_relay_does_not_stop_discovery();
     a_connections_end_is_seen_and_the_peers_meet_again();

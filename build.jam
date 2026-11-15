@@ -56,10 +56,23 @@ rule platform-dependencies ( properties * )
 # the shipped backend, without threads (main runs it), which links embind.
 # Every JSON text the rooms read or write is webcpp::document's, which brings
 # Boost.JSON's parser and Boost.Charconv's definitions.
+#
+# Under Asyncify, Boost.JSON's recursive descent, basic_parser's parse_*
+# functions, is left uninstrumented (asyncify-remove.json), since none
+# suspends. Instrumented, a level of a parse took some 6.5 KB of node's
+# stack in a debug build before the engine optimized it, so that a peer's
+# first JSON payload nested 256 deep, document's default, overflowed node's
+# 984 KB at about 150 levels; uninstrumented, at 400, and in a release build
+# past 1,000 (measured). A program whose own parse suspends from a
+# selector's callback cannot link this alias under Asyncify; under JSPI
+# nothing is left out.
+path-constant WEBCPP_TRYSTERO_ROOT : . ;
 # tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
-  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1 ;
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1
+  <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
+  ;
 # end::trystero[]
 
 # The platform backend, one for both targets: its WebRTC is webcpp::webrtc's,

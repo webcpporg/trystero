@@ -130,6 +130,16 @@ defaults, values nested at most 256 deep; and document refuses a lone
 surrogate, `"\ud800"`, which `JSON.parse` takes. A payload past any of them
 is not delivered.
 
+A parse recurses once a level of nesting. Under Asyncify, the build leaves
+Boost.JSON's recursive descent, `basic_parser`'s `parse_*` functions, out of
+Asyncify's instrumentation (`asyncify-remove.json`, which
+`/webcpp/trystero//trystero` links), since none of them suspends: instrumented,
+a level took some 6.5 KB of the engine's stack in a debug build before the
+engine optimized the code, so a peer's first payload nested 256 deep
+overflowed node's stack at about 150 levels; uninstrumented, it reaches 400,
+and in a release build more than 1,000. The room test sends such a payload
+first, in both suspension variants.
+
 A text the protocol writes is a fixed shape of a few strings and numbers,
 appended field by field, its strings quoted by `webcpp::document::quote`, the
 bytes `JSON.stringify` writes. A string that is not UTF-8 cannot be quoted, and

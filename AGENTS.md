@@ -83,12 +83,10 @@ holds only what is specific to trystero.
   both targets, and no program or test asks for `<exception-handling>on`.
   Every `platform_*` test but `platform_websocket` also runs with
   `exception-handling=off`, its `_no_exceptions` twin, as the evidence.
-  trystero raises nothing of its own but `std::bad_alloc`, through
-  `boost::throw_exception`, when a room's resource has no room for the
-  `null` document a rejected `async_receive` of a document completes with,
-  as a `std::pmr` container of the room raises it (`detail::empty_payload`);
-  natively the platform backend keeps a TLS context OpenSSL cannot make as
-  an error value (`tls_context()`), and its `wss://` relays report a close.
+  trystero raises nothing of its own; a raise would go through
+  `boost::throw_exception`; natively the platform backend keeps a TLS
+  context OpenSSL cannot make as an error value (`tls_context()`), and its
+  `wss://` relays report a close.
 - **webcpp::asio.** trystero names Asio as `webcpp::asio` wherever it builds
   on emscripten (the core, the platform backend, the tests over the memory
   relays, the examples and the browser's interop peer): natively it is
@@ -656,7 +654,12 @@ holds only what is specific to trystero.
     and its comma being a node of 192 bytes, so every valid payload fits),
     or the room's `room_options::max_json_document_bytes`, 64 MiB by
     default, the smaller (`protocol::json::payload_limits`); its depth is
-    document's 256. A text the room writes
+    document's 256. Under Asyncify `/webcpp/trystero//trystero` links
+    `-sASYNCIFY_REMOVE=@asyncify-remove.json`, which leaves Boost.JSON's
+    recursive descent (`basic_parser<...>::parse_*`, which never suspends)
+    uninstrumented: instrumented, a cold debug build overflowed node's stack
+    at about 150 levels, so a peer's first payload nested 256 deep crashed
+    the page; the room test sends one first. A text the room writes
     is appended field by field to a `std::pmr::string` of its resource, its
     strings quoted by `webcpp::document::quote`, which allocates only
     through that string, and a JSON payload is written by
@@ -673,9 +676,9 @@ holds only what is specific to trystero.
     bound on a JSON payload's image: the `std::pmr` types are built in the
     resource, `webcpp::document::pmr::document` among them, and a rejected
     `async_receive` completes with an empty one there, through
-    `detail::empty_payload` (a document holding `null` until
-    webcpp::document's `basic_document::nothing` lands, then one with no
-    image, which allocates nothing).
+    `detail::empty_payload`, which allocates nothing and raises nothing: an
+    empty container, and for a document `basic_document::nothing`, which
+    holds no image and whose root reads `undefined`.
     `std::string`, `bytes`, `webcpp::document::document` and `payload` stay
     as they are, with `std::allocator`: the user's choice, and a received
     `bytes`, or the binary of a `payload`, is a copy of the frame, which

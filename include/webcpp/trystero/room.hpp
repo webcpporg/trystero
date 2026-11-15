@@ -43,7 +43,6 @@
 #include <webcpp/document/storage.hpp>
 
 #include <boost/assert.hpp>
-#include <boost/throw_exception.hpp>
 
 #include <array>
 #include <chrono>
@@ -51,7 +50,6 @@
 #include <map>
 #include <memory>
 #include <memory_resource>
-#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -470,33 +468,20 @@ struct payload_traits<payload> {
     }
 };
 
-/** An owned document `create` made, or `std::bad_alloc` when its allocator had no room for it. */
-template <class Document>
-Document made_or_bad_alloc(webcpp::document::result<Document> made) {
-    if (!made.has_value()) {
-        // As a std::pmr container fails when its resource has no room.
-        boost::throw_exception(std::bad_alloc());
-    }
-    return std::move(made).unsafe_value();
-}
-
 /**
- * The value `async_receive` completes with when it decodes no message: an empty one, in the room's
- * resource for a `std::pmr` type, and for a JSON document one holding `null`, the
- * `webcpp::document::pmr::document` in the room's resource; `std::bad_alloc` when the resource
- * has no room for that document.
+ * The value `async_receive` completes with when it decodes no message, which neither allocates nor
+ * raises: an empty container in the room's resource for a `std::pmr` type, and for a JSON document
+ * one that holds nothing, whose root reads `undefined`, `webcpp::document::pmr::document`'s in the
+ * room's resource.
  */
 template <class T>
-T empty_payload(std::pmr::memory_resource* memory) {
-    // TODO(document): webcpp::document's basic_document::nothing(alloc), which has no image,
-    // allocates nothing and cannot fail, lands on its branch pmr; the two documents below take it
-    // then, made_or_bad_alloc goes, and a rejected receive neither allocates nor raises.
+T empty_payload(std::pmr::memory_resource* memory) noexcept {
     if constexpr (std::is_same_v<T, webcpp::document::pmr::document>) {
-        return made_or_bad_alloc(webcpp::document::pmr::document::create(
-            std::pmr::polymorphic_allocator<std::byte>(memory)));
+        return T::nothing(std::pmr::polymorphic_allocator<std::byte>(memory));
     } else if constexpr (std::is_same_v<T, webcpp::document::document>) {
-        return made_or_bad_alloc(webcpp::document::document::create());
+        return T::nothing();
     } else if constexpr (std::is_same_v<T, std::pmr::string> || std::is_same_v<T, pmr_bytes>) {
+        // An empty std::pmr container allocates nothing.
         return T(memory);
     } else {
         return T{};
@@ -1940,7 +1925,8 @@ public:
      *
      * Completes with `(error_code, T, message_info)`; a message of another payload format than
      * `T`'s, or a JSON text that does not parse, completes with `error::transfer_rejected` and an
-     * empty value, a JSON document holding `null`, and leaving the room with `error::room_left`.
+     * empty value, which allocates nothing (a JSON document that holds nothing, whose root reads
+     * `undefined`), and leaving the room with `error::room_left`.
      * `T` must own its storage: a view would outlive the message. A JSON document is the
      * handler's: a handle of its values refers to the document object, so moving the document
      * invalidates it.

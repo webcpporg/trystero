@@ -268,9 +268,10 @@ sender's id and the metadata it passed. Without a handler they queue, up to
 1024 per action, the oldest dropped first, for `async_receive`, which needs
 an owning type: a view would outlive the message; a message of another
 format, or a JSON text that does not parse, completes it with
-`error::transfer_rejected` and an empty value, in the room's resource for a
-`std::pmr` type, and a document holding `null` for a JSON one, in the room's
-resource for a `webcpp::document::pmr::document`. Frames of an action that
+`error::transfer_rejected` and an empty value, which allocates nothing: an
+empty container, in the room's resource for a `std::pmr` type, and for a JSON
+one webcpp::document's `nothing()`, a document with no image whose root reads
+`undefined`. Frames of an action that
 arrived before it was made are kept, 64 per peer for 120 s, and delivered
 to it once it is.
 
