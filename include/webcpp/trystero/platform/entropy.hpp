@@ -24,18 +24,18 @@ namespace webcpp::trystero::platform::detail {
 
 /**
  * Fills `out` from the platform's one secure source of randomness, its result checked: natively
- * OpenSSL's generator, `RAND_bytes`; on emscripten `getentropy`, which Emscripten draws from the
- * page's `crypto.getRandomValues`.
+ * OpenSSL's generator; on emscripten the C library's entropy call, which Emscripten draws from
+ * the page's `crypto.getRandomValues`.
  *
  * @param out The bytes to fill.
  * @return Whether every byte was filled; on false, the bytes must not be used.
  */
 inline bool fill_random(std::span<std::uint8_t> out) noexcept {
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
-    // getentropy fills at most 256 bytes a call.
+    // The C library's entropy call fills at most 256 bytes at a time.
     constexpr std::size_t most = 256;
 #else
-    // RAND_bytes takes its count as an int.
+    // OpenSSL's generator takes its count as an int.
     constexpr std::size_t most = std::size_t{1} << 30U;
 #endif
     for (std::size_t at = 0; at < out.size(); at += most) {

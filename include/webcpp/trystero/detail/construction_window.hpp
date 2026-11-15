@@ -50,10 +50,6 @@ public:
         return true;
     }
 
-    /** Takes a construction at `now_ms`, milliseconds of the backend's clock as a backend reads
-     * its own `now_ms`, as take(time_point) does. */
-    bool take(double now_ms) { return take(from_backend_ms(now_ms)); }
-
 private:
     boost::circular_buffer<time_point, std::pmr::polymorphic_allocator<time_point>> times_;
     std::chrono::milliseconds window_;

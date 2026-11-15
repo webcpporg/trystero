@@ -188,7 +188,7 @@ inline std::optional<backend::bytes> aes_gcm(bool encrypt, const std::array<std:
  * JavaScript during the call; an operation that arrives while the key is still being imported waits
  * with a copy of its text, in the room's resource. Without `crypto.subtle`, outside a secure
  * context, every operation fails. A seal's IV comes from the platform's one source of randomness,
- * `getentropy` there.
+ * the page's `crypto.getRandomValues` there.
  *
  * @see "The platform backend", in the guide.
  */

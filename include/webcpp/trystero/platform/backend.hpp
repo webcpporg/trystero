@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/timer.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -148,9 +149,9 @@ public:
      * `webcpp::asio::make_tls_client_context()` trusts natively, or a private one.
      *
      * @param ex The executor everything the backend reports runs on.
-     * @param tls The TLS context of every `wss://` connection, which should verify peers; or the
-     * error that kept the program from making it, which `tls_context()` then holds, every `wss://`
-     * relay reporting a close.
+     * @param tls The TLS context of every `wss://` connection, whose authorities each relay is
+     * verified against, whatever its verify mode; or the error that kept the program from making
+     * it, which `tls_context()` then holds, every `wss://` relay reporting a close.
      * @param config What its peer connections, its relays and its own state are made with.
      */
     backend(webcpp::asio::any_io_executor ex, boost::system::result<webcpp::asio::ssl::context> tls,
@@ -253,7 +254,7 @@ public:
     std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
         std::span<const trystero::backend::ice_server> servers,
         std::pmr::memory_resource* memory) override {
-        if (!constructions_.take(now_ms())) {
+        if (!constructions_.take(trystero::detail::steady_now(*this))) {
             return nullptr;
         }
         auto made = webrtc::peer_connection::make(runtime_, ex_, servers, config_.bind_address,
