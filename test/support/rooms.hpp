@@ -110,7 +110,7 @@ inline bool run_until(fixture& f, const std::function<bool()>& done,
     if (!f.net.virtual_clock) {
         return run_until(f.io, done, limit);
     }
-    const double end = f.net.now_ms() + static_cast<double>(limit.count());
+    const auto end = f.net.steady_now() + limit;
     for (std::size_t steps = 0; !done(); ++steps) {
         if (steps == f.net.max_steps) {
             BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");

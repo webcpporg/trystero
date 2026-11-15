@@ -381,18 +381,21 @@ public:
     virtual void random(std::span<std::uint8_t> out) = 0;
 
     /**
-     * Wall-clock seconds since the Unix epoch, for Nostr's `created_at` and `since`.
+     * The wall clock, for Nostr's `created_at` and `since`: `Date.now()` in whole seconds.
      *
-     * @return The current time, in whole seconds.
+     * @return The current time, in whole seconds since the Unix epoch.
      */
-    virtual std::int64_t unix_seconds() = 0;
+    virtual std::chrono::sys_seconds unix_now() = 0;
 
     /**
-     * A monotonic clock in milliseconds, for rate limits and timeouts, as `performance.now()`.
+     * A monotonic clock, for rate limits and timeouts, as `performance.now()`.
      *
-     * @return The current time, in milliseconds from an origin of the backend's.
+     * A room only subtracts and compares its times, so the origin is the backend's: the steady
+     * clock's epoch, or where a test's virtual clock starts.
+     *
+     * @return The current time.
      */
-    virtual double now_ms() = 0;
+    virtual std::chrono::steady_clock::time_point steady_now() = 0;  // lint-world: a type only
 };
 
 }  // namespace webcpp::trystero::backend

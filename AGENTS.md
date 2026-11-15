@@ -42,13 +42,14 @@ holds only what is specific to trystero.
   own stream and in a page over webcpp::beast's page `WebSocket`. Its timer
   is the core's `detail::timer` over webcpp::asio's `steady_timer`, the one
   timer on both targets. Its clocks are the standard library's on both
-  targets, `std::chrono::system_clock` (`unix_seconds`) and
-  `std::chrono::steady_clock` (`now_ms`), which Emscripten reads from the
-  page's `Date.now()` and `performance.now()`. Two parts are the target's
-  own, chosen by `WEBCPP_TARGET_EMSCRIPTEN`, config's (the library never
-  tests `__EMSCRIPTEN__`): the sealer (`platform/sealer.hpp`), natively
-  OpenSSL's AES-256-GCM and in a page `crypto.subtle` through webcpp::asio's
-  `browser::async_await`; and the platform's one source of randomness,
+  targets, `std::chrono::system_clock` floored to whole seconds
+  (`unix_now`) and `std::chrono::steady_clock` (`steady_now`), which
+  Emscripten reads from the page's `Date.now()` and `performance.now()`.
+  Two parts are the target's own, chosen by `WEBCPP_TARGET_EMSCRIPTEN`,
+  config's (the library never tests `__EMSCRIPTEN__`): the sealer
+  (`platform/sealer.hpp`), natively OpenSSL's AES-256-GCM and in a page
+  `crypto.subtle` through webcpp::asio's `browser::async_await`; and the
+  platform's one source of randomness,
   `platform::detail::fill_random` (`platform/entropy.hpp`), whose result is
   checked: natively OpenSSL's `RAND_bytes`, in a page `getentropy`, which
   Emscripten draws from `crypto.getRandomValues`. Without randomness
@@ -70,7 +71,12 @@ holds only what is specific to trystero.
   interop's native peer wraps the platform backend's (`delayed_channel`,
   `observed_connection`). Their one implementation over a platform is
   `webrtc/`, which webcpp::webrtc's table "trystero's backend, part by
-  part" maps part by part.
+  part" maps part by part. The interface's clocks are std::chrono's, so
+  that no unit is converted at the seam: `factory::steady_now` returns the
+  `std::chrono::steady_clock::time_point` the core keeps
+  (`detail::time_point`), from an origin of the backend's, and
+  `factory::unix_now` a `std::chrono::sys_seconds`, which a Nostr event's
+  `created_at` and a subscription's `since` write.
 - **Exceptions.** trystero's WebRTC is webcpp::webrtc's, which natively calls
   libdatachannel's C API, where no exception crosses: every part of trystero,
   the platform backend included, works with exceptions and without them on
@@ -382,8 +388,11 @@ holds only what is specific to trystero.
   frames and reporting exact unsent bytes through `buffered`. Set
   `virtual_clock` before making timers: `advance`, `step` and `poll_ready` run due
   timers and ready work deterministically, in due-time and registration
-  order. Optional hook storage uses the default resource only when enabled;
-  allocation tests enable none. `connection`, `memory_backend`, `shared`,
+  order. The virtual clock is a `std::chrono::steady_clock::time_point`
+  from the clock's epoch, which `steady_now` returns, and `unix_now` reads
+  it as 2025-10-05T21:33:20Z plus its whole seconds; tests compare its
+  durations exactly. Optional hook storage uses the default resource only
+  when enabled; allocation tests enable none. `connection`, `memory_backend`, `shared`,
   `shared_no_exceptions` and `shared_hardened` cover these paths, with
   sanitizers and library hardening checking resource lifetimes.
 - **The oracle and the interop tests, trystero's own lanes.**

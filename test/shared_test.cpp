@@ -760,13 +760,13 @@ void a_kick_is_per_room() {
         drop_first_challenge(t);
         std::vector<boost::system::error_code> b_errors;
         t.a_rooms.push_back(join(t.a, "r2", {.handshake_timeout = 30s}));
-        const double joined = t.f.net.now_ms();
+        const auto joined = t.f.net.steady_now();
         t.b_rooms.push_back(join(t.b, "r2"));
         t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
                                   std::string_view) { b_errors.push_back(ec); });
         BOOST_TEST(run_until(t.f, [&] { return !b_errors.empty(); }, 11s));
         BOOST_TEST(b_errors.at(0) == trystero::error::handshake_timed_out);
-        BOOST_TEST_EQ(t.f.net.now_ms() - joined, 10'000.0);
+        BOOST_TEST(t.f.net.steady_now() - joined == 10s);
         BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
         BOOST_TEST_EQ(t.f.net.live_connections(), 2U);
     }
@@ -991,12 +991,12 @@ void check_incorrect_proof_rebinding(bool a_lower) {
     watcher.watch(trystero::protocol::root_topic(app_id, "r2"));
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
-    std::vector<double> a_reports;
-    std::vector<double> b_reports;
-    const auto recorder = [&t](std::vector<double>& to) {
+    std::vector<std::chrono::steady_clock::time_point> a_reports;
+    std::vector<std::chrono::steady_clock::time_point> b_reports;
+    const auto recorder = [&t](std::vector<std::chrono::steady_clock::time_point>& to) {
         return [&t, &to](std::string_view, boost::system::error_code ec, std::string_view) {
             if (ec == trystero::error::wrong_password) {
-                to.push_back(t.f.net.now_ms());
+                to.push_back(t.f.net.steady_now());
             }
         };
     };
@@ -1007,19 +1007,18 @@ void check_incorrect_proof_rebinding(bool a_lower) {
     const auto& lower = a_lower ? a_reports : b_reports;
     const auto& higher = a_lower ? b_reports : a_reports;
     webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !lower.empty(); }, 1s)));
-    const double first = lower.front();
-    webcpp::trystero::test::advance(
-        t.f,
-        std::chrono::milliseconds(static_cast<std::int64_t>(first + 100'000 - t.f.net.now_ms())));
+    const auto first = lower.front();
+    webcpp::trystero::test::advance(t.f, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             first + 100s - t.f.net.steady_now()));
     const std::size_t announced_in_100_s = r2_announcements;
     webcpp::trystero::test::advance(t.f, 64'999ms);  // to 164.999 s after the first
     BOOST_TEST_EQ(lower.size(), 4U);
-    const std::array<double, 4> expected{0, 11'000, 33'000, 77'000};
+    const std::array<std::chrono::milliseconds, 4> expected{0s, 11s, 33s, 77s};
     for (std::size_t i = 0; i < std::min<std::size_t>(lower.size(), 4); ++i) {
-        BOOST_TEST_EQ(lower[i] - first, expected[i]);
+        BOOST_TEST(lower[i] - first == expected[i]);
     }
     BOOST_TEST(run_until(t.f, [&] { return lower.size() == 5; }, 1ms));
-    BOOST_TEST_EQ(lower.back() - first, 165'000.0);
+    BOOST_TEST(lower.back() - first == 165s);
     BOOST_TEST(higher.empty());
     BOOST_TEST(!offer_or_answer);
     // Each room's regular cadence on the relay the watcher reads: at once, after 233, 533,
@@ -1042,13 +1041,13 @@ void an_incorrect_proof_rebinds_at_the_steps() {
 // before the 11 s a kept count would impose.
 void a_kick_that_closes_the_connection() {
     {
-        std::optional<double> kicked_connection_at;
+        std::optional<std::chrono::steady_clock::time_point> kicked_connection_at;
         two_apps t("AAAAAAAAAAAAAAAAAAK1", "BBBBBBBBBBBBBBBBBBK2", "pw");
         auto a_config = app_config("AAAAAAAAAAAAAAAAAAK1", "pw");
         a_config.log = [&](std::string_view category, std::string_view text) {
             if (!kicked_connection_at && category == "webrtc" &&
                 text.ends_with("ended: its last room kicked the peer")) {
-                kicked_connection_at = t.f.net.now_ms();
+                kicked_connection_at = t.f.net.steady_now();
             }
         };
         t.a = trystero::app(t.f.io.get_executor(), t.f.net, std::move(a_config));
@@ -1062,12 +1061,12 @@ void a_kick_that_closes_the_connection() {
         };
         joined_in(t, {"r1"});
         corrupt_r2_responses(t);
-        std::vector<double> kicks;
+        std::vector<std::chrono::steady_clock::time_point> kicks;
         t.a_rooms.push_back(join(t.a, "r2"));
         t.a_rooms[1].on_error(
             [&](std::string_view, boost::system::error_code ec, std::string_view) {
                 if (ec == trystero::error::wrong_password) {
-                    kicks.push_back(t.f.net.now_ms());
+                    kicks.push_back(t.f.net.steady_now());
                 }
             });
         t.b_rooms.push_back(join(t.b, "r2"));
@@ -1077,8 +1076,8 @@ void a_kick_that_closes_the_connection() {
         const auto b_made_before = b_made;
         BOOST_TEST(run_until(t.f, [&] { return kicked_connection_at.has_value(); }, 12s));
         webcpp::test::require(BOOST_TEST_GE(kicks.size(), 2U));
-        BOOST_TEST_EQ(kicks[1] - kicks.front(), 11'000.0);
-        BOOST_TEST_EQ(kicked_connection_at.value_or(-1) - kicks.front(), 11'000.0);
+        BOOST_TEST(kicks[1] - kicks.front() == 11s);
+        BOOST_TEST(kicked_connection_at && *kicked_connection_at - kicks.front() == 11s);
         webcpp::trystero::test::advance(t.f, 60s);
         BOOST_TEST_GT(b_made, b_made_before);
         BOOST_TEST(t.a_rooms[0].peers().empty());
@@ -1086,13 +1085,13 @@ void a_kick_that_closes_the_connection() {
     {
         two_apps t("BBBBBBBBBBBBBBBBBBL1", "AAAAAAAAAAAAAAAAAAL2", "pw");  // B the lower id
         drop_first_challenge(t);
-        std::vector<double> b_timeouts;
+        std::vector<std::chrono::steady_clock::time_point> b_timeouts;
         t.a_rooms.push_back(join(t.a, "r2", {.handshake_timeout = 30s}));
         t.b_rooms.push_back(join(t.b, "r2"));
         t.b_rooms[0].on_error(
             [&](std::string_view, boost::system::error_code ec, std::string_view) {
                 if (ec == trystero::error::handshake_timed_out) {
-                    b_timeouts.push_back(t.f.net.now_ms());
+                    b_timeouts.push_back(t.f.net.steady_now());
                 }
             });
         webcpp::test::require(
@@ -1100,7 +1099,7 @@ void a_kick_that_closes_the_connection() {
         const auto made = t.f.net.made_connections;
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !b_timeouts.empty(); }, 30s)));
         BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 5s));
-        BOOST_TEST_LT(t.f.net.now_ms() - b_timeouts.front(), 5'000.0);
+        BOOST_TEST(t.f.net.steady_now() - b_timeouts.front() < 5s);
         BOOST_TEST_GE(t.f.net.made_connections, made + 2);  // a new pair, adopted
         BOOST_TEST(run_until(t.f, [&] { return t.f.net.live_connections() == 2U; }, 1ms));
         BOOST_TEST_EQ(b_timeouts.size(), 1U);
@@ -1155,7 +1154,7 @@ void binding_needs_the_peers_own_presence() {
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
     std::vector<boost::system::error_code> b_errors;
-    const double joined = t.f.net.now_ms();
+    const auto joined = t.f.net.steady_now();
     t.b_rooms.push_back(join(t.b, "r2"));
     t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
         b_errors.push_back(ec);
@@ -1166,7 +1165,7 @@ void binding_needs_the_peers_own_presence() {
                                 make_error_code(trystero::error::handshake_timed_out)}));
     drop = false;
     BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 11s));
-    BOOST_TEST_EQ(t.f.net.now_ms() - joined, 21'000.0);
+    BOOST_TEST(t.f.net.steady_now() - joined == 21s);
     BOOST_TEST(!offer_or_answer);
 }
 
@@ -1196,14 +1195,14 @@ void check_transient_failure(bool password, bool lower_times_out, bool release_a
     });
     const auto& timed_out = lower_times_out ? a_errors : b_errors;
     webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !timed_out.empty(); }, 11s)));
-    const double kick = t.f.net.now_ms();
+    const auto kick = t.f.net.steady_now();
     const std::chrono::milliseconds release_after = release_after_rebinding ? 13s : 2s;
     webcpp::trystero::test::advance(t.f, release_after);
     t.f.net.filter = {};
     t.f.net.release(lower_times_out ? a_end : b_end);  // held at the receiving end
     BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 12s));
-    BOOST_TEST_EQ(t.f.net.now_ms() - kick,
-                  static_cast<double>(std::max<std::int64_t>(11'000, release_after.count())));
+    BOOST_TEST(t.f.net.steady_now() - kick ==
+               std::max<std::chrono::milliseconds>(11s, release_after));
     BOOST_TEST_EQ(timed_out.size(), 1U);
     BOOST_TEST(timed_out.at(0) == trystero::error::handshake_timed_out);
     BOOST_TEST_EQ(a_errors.size() + b_errors.size(), 1U);  // no other report
@@ -1264,18 +1263,18 @@ void a_corrected_response_rejoins() {
         two_apps t("AAAAAAAAAAAAAAAAAAB1", "ZZZZZZZZZZZZZZZZZZB2", "pw");
         joined_in(t, {"r1"});
         corrupt_r2_responses(t);
-        std::vector<double> a_kicks;
+        std::vector<std::chrono::steady_clock::time_point> a_kicks;
         t.a_rooms.push_back(join(t.a, "r2"));
         t.a_rooms[1].on_error(
             [&](std::string_view, boost::system::error_code ec, std::string_view) {
                 if (ec == trystero::error::wrong_password) {
-                    a_kicks.push_back(t.f.net.now_ms());
+                    a_kicks.push_back(t.f.net.steady_now());
                 }
             });
         std::optional<trystero::room> b2(join(t.b, "r2"));
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return a_kicks.size() == 3; }, 40s)));
-        const double first = a_kicks.front();
-        BOOST_TEST_EQ(a_kicks.back() - first, 33'000.0);
+        const auto first = a_kicks.front();
+        BOOST_TEST(a_kicks.back() - first == 33s);
         webcpp::trystero::test::advance(t.f, 2s);
         b2.reset();
         t.f.net.filter = {};
@@ -1285,7 +1284,7 @@ void a_corrected_response_rejoins() {
             b_errors.push_back(ec);
         });
         BOOST_TEST(run_until(t.f, [&] { return b2->peers().size() == 1; }, 45s));
-        BOOST_TEST_EQ(t.f.net.now_ms() - first, 77'000.0);
+        BOOST_TEST(t.f.net.steady_now() - first == 77s);
         BOOST_TEST_LE(std::ranges::count(b_errors, trystero::error::handshake_timed_out), 2);
         BOOST_TEST_EQ(a_kicks.size(), 3U);
     }
@@ -1375,7 +1374,7 @@ void crossed_connections_recover() {
     f.net.open(b_r1);
     f.net.open(a_r2);
     f.net.defer_opens = false;
-    const double opened = f.net.now_ms();
+    const auto opened = f.net.steady_now();
     BOOST_TEST(run_until(
         f,
         [&] {
@@ -1383,7 +1382,7 @@ void crossed_connections_recover() {
                    b2.peers().size() == 1;
         },
         15s));
-    BOOST_TEST_LE(f.net.now_ms() - opened, 15'000.0);
+    BOOST_TEST(f.net.steady_now() - opened <= 15s);
     BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 2U; }));
 }
 
@@ -1521,12 +1520,12 @@ void invalid_room_proofs_fail_within_one_password_domain() {
         std::vector<boost::system::error_code> errors;
         t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
                                   std::string_view) { errors.push_back(ec); });
-        const double joined = t.f.net.now_ms();
+        const auto joined = t.f.net.steady_now();
         t.b_rooms.push_back(join(t.b, "r2", {.handshake_timeout = 30s}));
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !errors.empty(); }, 11s)));
         BOOST_TEST(errors.front() == (wrong_response ? trystero::error::wrong_password
                                                      : trystero::error::handshake_timed_out));
-        BOOST_TEST_EQ(t.f.net.now_ms() - joined, wrong_response ? 0.0 : 10'000.0);
+        BOOST_TEST(t.f.net.steady_now() - joined == (wrong_response ? 0s : 10s));
         BOOST_TEST(t.a_rooms[1].peers().empty());
         BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
     }

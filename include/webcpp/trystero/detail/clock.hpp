@@ -24,24 +24,15 @@ namespace webcpp::trystero::detail {
  */
 using time_point = std::chrono::steady_clock::time_point;  // lint-world: names a type only
 
-/**
- * A time of the backend's monotonic clock given in its milliseconds, as `backend::factory::now_ms`
- * gives it, to the nearest tick of a @ref time_point.
- */
-inline time_point from_backend_ms(double ms) {
-    return time_point(
-        std::chrono::round<time_point::duration>(std::chrono::duration<double, std::milli>(ms)));
-}
-
-/** The time of the backend's monotonic clock, its `now_ms`, as a @ref time_point. */
+/** The time of the backend's monotonic clock, its `steady_now`. */
 inline time_point steady_now(backend::factory& factory) {
-    return from_backend_ms(factory.now_ms());
+    return factory.steady_now();
 }
 
-/** The time of the backend's wall clock, its `unix_seconds`, in whole seconds since the Unix
- * epoch: what a Nostr event's `created_at` and a subscription's `since` say. */
+/** The time of the backend's wall clock, its `unix_now`, in whole seconds since the Unix epoch:
+ * what a Nostr event's `created_at` and a subscription's `since` say. */
 inline std::chrono::sys_seconds unix_now(backend::factory& factory) {
-    return std::chrono::sys_seconds(std::chrono::seconds(factory.unix_seconds()));
+    return factory.unix_now();
 }
 
 }  // namespace webcpp::trystero::detail
