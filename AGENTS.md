@@ -409,8 +409,11 @@ holds only what is specific to trystero.
   Trystero's own functions over the inputs of
   `test/fixtures/cases/protocol.json` and writes `expected.json`, which must
   equal `test/fixtures/expected/expected.json` byte for byte, the file the
-  `protocol` and `platform_sealer` tests read; `update-expected` is its only
-  writer. `interop`, on native and emscripten (`native.trystero.interop` and
+  `protocol`, `signaling` and `platform_sealer` tests read; `update-expected`
+  is its only writer. Trystero draws its self id from `Math.random` when its
+  core loads, so the oracle draws it from the fixture's pattern then: the
+  answerer's signals, which Trystero's own signal handler publishes for the
+  oracle's offers, carry it. `interop`, on native and emscripten (`native.trystero.interop` and
   `emscripten.trystero.interop` in the report): two driven tests,
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
   meets the C++ peer, the native one as a process or the browser's in

@@ -58,6 +58,10 @@ webcpp.compile config_all_off : config_test.cpp
 # backend of support/memory_backend.hpp: on both targets.
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
+# The signaling and the Nostr strategy alone: an answerer's signals against
+# Trystero's, and the bounds of the texts they read.
+webcpp.run signaling : signaling_test.cpp
+  : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
 # Rooms of one app that share one connection per remote peer; once as the
 # build asks, once without exceptions, on both targets; and, natively, once

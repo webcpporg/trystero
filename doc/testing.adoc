@@ -81,8 +81,14 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `protocol`
 | The protocol against values Trystero JS 0.26.0 computed itself: topics,
   room tokens, the relay shuffle, sealed text, Nostr event ids, inline and
-  chunked action frames, control frames, envelopes and presence, and the
-  bounds of a signal's fields.
+  chunked action frames, control frames, envelopes and presence, a JSON
+  payload's numbers and key order, and the bounds of a signal's fields.
+
+| `signaling`
+| The signaling and the Nostr strategy alone: as an answerer, the signals
+  Trystero JS 0.26.0's own signal handler published for the same offers,
+  byte for byte, and a signal or a relay's text read at its bound and
+  dropped one byte past it.
 
 | `room`
 | Whole rooms in one process, over the memory relays: every payload format,
