@@ -64,13 +64,20 @@ rule platform-dependencies ( properties * )
 # first JSON payload nested 256 deep, document's default, overflowed node's
 # 984 KB at about 150 levels; uninstrumented, at 400, and in a release build
 # past 1,000 (measured). A program whose own parse suspends from a
-# selector's callback cannot link this alias under Asyncify; under JSPI
+# selector's callback cannot link trystero under Asyncify; under JSPI
 # nothing is left out.
+#
+# trystero is parts and that list. parts, the same headers and dependencies
+# without it, is for a program of a part that parses no JSON, as trystero's
+# tests of the timer, a relay's URL, a page's calls and the sealer are
+# (test/Jamfile): such a program has none of the parser's functions, and
+# Binaryen warns of a pattern of the list that names none.
 path-constant WEBCPP_TRYSTERO_ROOT : . ;
 # tag::trystero[]
-alias trystero : : <conditional>@trystero-dependencies
+alias parts : : <conditional>@trystero-dependencies
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
-  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1 ;
+alias trystero : : : : <library>parts
   <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
   ;
 # end::trystero[]
@@ -85,12 +92,17 @@ alias trystero : : <conditional>@trystero-dependencies
 # (make_tls_client_context). On emscripten webcpp::webrtc and webcpp::beast
 # bind the page's RTCPeerConnection and WebSocket (//browser), and no
 # OpenSSL is linked.
+#
+# platform is platform-parts and the rooms. platform-parts, the backend over
+# parts, without the rooms' Asyncify list, is for trystero's tests of the
+# backend's parts that parse no JSON (above).
 # tag::platform[]
-alias platform : : <toolset>emscripten
-  : : <library>trystero <library>/webcpp/webrtc//webrtc
+alias platform-parts : : <toolset>emscripten
+  : : <library>parts <library>/webcpp/webrtc//webrtc
   <library>/webcpp/beast//browser <library>/webcpp//boost_url ;
-alias platform : : <conditional>@platform-dependencies
-  : : <library>trystero <library>/webcpp/webrtc//webrtc
+alias platform-parts : : <conditional>@platform-dependencies
+  : : <library>parts <library>/webcpp/webrtc//webrtc
   <library>/webcpp/beast//tls <library>/webcpp/asio//tls
   <library>/webcpp//boost_url ;
+alias platform : : : : <library>platform-parts <library>trystero ;
 # end::platform[]

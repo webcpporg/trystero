@@ -147,13 +147,22 @@ holds only what is specific to trystero.
   installation leaves trystero out unless `webcpp-require-external=on`.
   MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
   `/webcpp/trystero//trystero` (`build.jam`'s `tag::trystero[]`) is the
-  rooms alone, the core: its headers, Boost, webcpp::document
+  rooms alone, the core: `parts`, its headers, Boost, webcpp::document
   (`/webcpp/document//document`, with Boost.JSON's and Boost.Charconv's
-  definitions), config, webcpp::asio and libsecp256k1; on no target does it
-  bring webcpp::webrtc, and the tests over the memory relays use it alone.
+  definitions), config, webcpp::asio and libsecp256k1, and under Asyncify
+  the list that leaves Boost.JSON's parser uninstrumented
+  (**webcpp::document**, below); on no target does it bring webcpp::webrtc,
+  and the tests over the memory relays use it alone.
   `/webcpp/trystero//platform` (`tag::platform[]`) is the platform backend's
-  target on both targets, alternatives by `<toolset>emscripten`, which a
-  native program and a page's program both name. Its WebRTC is
+  target on both targets, the rooms and `platform-parts`, the backend over
+  `parts`, alternatives by `<toolset>emscripten`, which a native program and
+  a page's program both name. A test of a part that parses no JSON
+  (`timer`, `platform_websocket_url`, `platform_page_call`,
+  `platform_page_sealer`, `platform_page_sealer_allocation` and their twins
+  without exceptions) links `parts` or `platform-parts` in place of the
+  rooms, `$(part)` or `$(platform-part)` in `test/Jamfile`, without that
+  list: Binaryen warns of a pattern that names none of a program's
+  functions. The backend's WebRTC is
   webcpp::webrtc's, `/webcpp/webrtc//webrtc`, on both targets; natively it
   names `/webcpp/third_party//libdatachannel`, which builds pinned
   libdatachannel 0.24.6, libjuice, usrsctp and libsrtp as separate static
@@ -716,7 +725,9 @@ holds only what is specific to trystero.
     recursive descent (`basic_parser<...>::parse_*`, which never suspends)
     uninstrumented: instrumented, a cold debug build overflowed node's stack
     at about 150 levels, so a peer's first payload nested 256 deep crashed
-    the page; the room test sends one first. A text the room writes
+    the page; the room test sends one first. `parts` and `platform-parts`
+    leave the list out, for the tests of parts that parse no JSON, whose
+    programs have none of the parser's functions. A text the room writes
     is appended field by field to a `std::pmr::string` of its resource, its
     strings quoted by `webcpp::document::quote`, which allocates only
     through that string, and a JSON payload is written by

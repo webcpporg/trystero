@@ -90,6 +90,14 @@ own, as trystero's tests run whole rooms over the memory relays
 include::{library-root}/build.jam[tag=trystero]
 ----
 
+`/webcpp/trystero//trystero` is `parts`, which brings those dependencies,
+and, under Asyncify, the list that leaves Boost.JSON's recursive descent
+out of Asyncify's instrumentation (<<trystero-protocol-json>>). A program of
+a part that parses no JSON, as trystero's tests of the timer, a relay's
+URL, a page's calls and the sealer are, links `parts`, or `platform-parts`
+(below), in place of the rooms: it has none of the parser's functions, and
+Binaryen warns of a pattern of the list that names none.
+
 On emscripten webcpp::asio builds without threads, since the page has none,
 links embind, and links its runtime in the suspension variant the build
 asks, `webcpp-suspend=jspi` by default or `asyncify`; a program is named
@@ -98,8 +106,10 @@ flag, `-lembind`, rather than with b2's own `<embind>on`: that feature is
 not free, and b2 ignores a feature that is not free among usage
 requirements, so a program that used it would not link.
 
-`/webcpp/trystero//platform` adds the platform backend to the rooms, with an
-alternative for each target. Natively it adds webcpp::webrtc, with
+`/webcpp/trystero//platform` adds the platform backend to the rooms:
+`platform-parts`, the backend over `parts`, with an alternative for each
+target, which trystero's tests of the backend's parts that parse no JSON
+link alone. Natively it adds webcpp::webrtc, with
 libdatachannel and the same source-built OpenSSL used by Asio and Beast;
 webcpp::beast's TLS over that OpenSSL for the relays' WebSockets,
 `/webcpp/beast//tls`; Boost.URL, which reads the relays' URLs; and
@@ -132,7 +142,8 @@ include::{examples}/Jamfile[tag=quick-start]
 ----
 
 and as trystero's own tests of the platform backend do, on each target that
-builds them, once without exceptions too:
+builds them, once without exceptions too, a test of a part that parses no
+JSON over `platform-parts` (`$(platform-part)`):
 
 [listing]
 ----

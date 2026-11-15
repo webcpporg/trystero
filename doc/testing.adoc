@@ -63,6 +63,10 @@ include::{library-root}/test/Jamfile[tag=both-targets]
 include::{library-root}/test/Jamfile[tag=allocation]
 ----
 
+The timer's test, of a part that parses no JSON, links `parts` (`$(part)`)
+in place of the rooms, the Jamfile's own requirement, without their Asyncify
+list (<<trystero-building-project>>).
+
 [cols="1,3",options="header"]
 |===
 | Test | What it checks
@@ -238,7 +242,9 @@ include::{library-root}/test/Jamfile[tag=allocation]
 The platform backend's tests run on each target that builds them, and once
 more without exceptions (<<trystero-platform-exceptions>>), as a program
 that uses the backend may be built, but for `platform_websocket`, which
-runs once, with the standard libraries' checks:
+runs once, with the standard libraries' checks. The tests of a relay's URL,
+a page's calls and the sealer in a page, parts that parse no JSON, link
+`platform-parts` (`$(platform-part)`) in place of the backend and the rooms:
 
 [listing]
 ----
