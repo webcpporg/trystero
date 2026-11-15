@@ -79,7 +79,8 @@ A program uses trystero through `/webcpp/trystero//platform`, the rooms and
 the platform backend (<<trystero-platform>>), on either target: natively,
 built with `threading=multi`, and in a page. `/webcpp/trystero//trystero`
 is the rooms alone, which adds trystero's headers, Boost's, webcpp::asio,
-libsecp256k1 and Boost.JSON's definitions, compiled once per variant, and no
+libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
+definitions, compiled once per variant, and no
 WebRTC on any target: a program that runs its rooms over a backend of its
 own, as trystero's tests run whole rooms over the memory relays
 (<<trystero-testing-program>>), needs no more:

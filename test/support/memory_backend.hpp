@@ -10,9 +10,9 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
@@ -20,9 +20,6 @@
 #include <webcpp/asio/io_context.hpp>
 #include <webcpp/asio/post.hpp>
 #include <webcpp/asio/steady_timer.hpp>
-
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -198,6 +195,10 @@ public:
     void close_all();
 
     std::size_t events_seen = 0;
+    /** How many texts went through the relay: each text it received from a socket, and each text
+     * a socket of it handed to its room. A test that measures a window of a room's life reads it
+     * to know whether relay traffic, which parses JSON at both ends, happened in that window. */
+    std::size_t texts = 0;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
     std::size_t rate_limit_next = 0;
     /** Closes each connection right after its subscription, as a relay does after a text longer
@@ -216,12 +217,9 @@ class memory_websocket : public backend::websocket,
 public:
     memory_websocket(webcpp::asio::io_context& io, memory_relay* relay, handlers h,
                      std::pmr::memory_resource* memory)
-        : io_(io), relay_(relay), h_(std::move(h)), memory_(memory), json_(memory) {}
+        : io_(io), relay_(relay), h_(std::move(h)), memory_(memory) {}
 
     std::pmr::memory_resource* memory() const { return memory_; }
-
-    /** A storage over this socket's resource, for a value parsed and dropped during one call. */
-    boost::json::storage_ptr json() { return {&json_}; }
 
     void open() {
         post_in(io_, memory_, [self = shared_from_this()] {
@@ -250,10 +248,14 @@ public:
         });
     }
 
-    /** Delivers a text the relay made in this socket's resource. */
+    /** Delivers a text the relay made in this socket's resource; the relay counts it in its
+     * `texts` once the socket hands it to its room. */
     void deliver(std::pmr::string text) {
         post_in(io_, memory_, [self = shared_from_this(), text = std::move(text)] {
             if (self->open_ && self->h_.message) {
+                if (self->relay_ != nullptr) {
+                    ++self->relay_->texts;
+                }
                 self->h_.message(text);
             }
         });
@@ -283,7 +285,6 @@ private:
     memory_relay* relay_;
     handlers h_;
     std::pmr::memory_resource* memory_;
-    json_resource json_;
     bool open_ = false;
     bool closed_ = false;
 };
@@ -302,45 +303,51 @@ inline void memory_relay::close_all() {
 
 inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
                                   std::string_view text) {
-    boost::system::error_code ec;
-    const auto value = protocol::json::parse(text, from->json(), ec);
-    const auto* message = ec ? nullptr : value.if_array();
-    if (message == nullptr || message->empty() || !message->at(0).is_string()) {
+    ++texts;
+    // The text is read into the sender's resource, as a room reads a relay's, within the longest
+    // text a relay's connection carries.
+    const auto parsed = protocol::json::parse(
+        text, protocol::json::protocol_limits(protocol::max_relay_message_bytes), from->memory());
+    if (!parsed.has_value()) {
         return;
     }
-    const std::string_view type = message->at(0).get_string();
-    if (type == "REQ" && message->size() >= 3) {
+    const protocol::json::const_value message = parsed->root();
+    if (!message.at(0).is_string()) {
+        return;
+    }
+    const std::string_view type = protocol::json::text_of(message.at(0));
+    if (type == "REQ" && message.size() >= 3) {
         subscription s{
             .socket = from,
             .kinds = std::pmr::set<std::int64_t>(memory_),
             .topics = std::pmr::set<std::pmr::string, std::less<>>(memory_),
         };
-        const auto& filter = message->at(2).as_object();
-        for (const auto& k : filter.at("kinds").as_array()) {
-            s.kinds.insert(k.as_int64());
+        const protocol::json::const_value filter = message.at(2);
+        for (const protocol::json::const_value k : filter["kinds"]) {
+            if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
+                s.kinds.insert(*kind);
+            }
         }
-        for (const auto& t : filter.at("#x").as_array()) {
-            s.topics.emplace(std::string_view(t.as_string()));
+        for (const protocol::json::const_value t : filter["#x"]) {
+            s.topics.emplace(protocol::json::text_of(t));
         }
         subscriptions_.insert_or_assign(
-            key{from.get(),
-                std::pmr::string(std::string_view(message->at(1).as_string()), memory_)},
+            key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
             std::move(s));
         std::pmr::string eose(R"(["EOSE",)", from->memory());
-        protocol::json::append_value(eose, message->at(1));
+        protocol::json::append_value(eose, message.at(1));
         eose += ']';
         from->deliver(std::move(eose));
         if (close_after_subscribe) {
             from->close();
         }
-    } else if (type == "CLOSE" && message->size() >= 2) {
-        subscriptions_.erase(
-            key{from.get(),
-                std::pmr::string(std::string_view(message->at(1).as_string()), from->memory())});
-    } else if (type == "EVENT" && message->size() >= 2) {
-        const auto& event = message->at(1).as_object();
+    } else if (type == "CLOSE" && message.size() >= 2) {
+        subscriptions_.erase(key{
+            from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), from->memory())});
+    } else if (type == "EVENT" && message.size() >= 2) {
+        const protocol::json::const_value event = message.at(1);
         std::pmr::string ok(R"(["OK",)", from->memory());
-        protocol::json::append_value(ok, event.at("id"));
+        protocol::json::append_value(ok, event["id"]);
         if (rate_limit_next > 0) {
             --rate_limit_next;
             ok += R"(,false,"rate-limited: slow down"])";
@@ -350,22 +357,24 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         ++events_seen;
         ok += R"(,true,""])";
         from->deliver(std::move(ok));
-        const auto kind = event.at("kind").as_int64();
+        const auto kind = event["kind"].get<std::int64_t>();
+        if (!kind.has_value()) {
+            return;
+        }
         // The event's first tag, ["x", <topic>].
-        const auto& tags = event.at("tags").as_array();
-        const auto& tag = tags.at(0).as_array();
-        const std::string_view topic = tag.at(1).as_string();
+        const std::string_view topic = protocol::json::text_of(event["tags"].at(0).at(1));
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();
-            if (!socket || !s.kinds.contains(kind) || !s.topics.contains(topic)) {
+            if (!socket || !s.kinds.contains(*kind) || !s.topics.contains(topic)) {
                 continue;
             }
-            // ["EVENT", <subscription>, <event>], as boost::json::serialize writes it, in the
-            // receiver's resource.
+            // ["EVENT", <subscription>, <event>], as JSON.stringify writes it, in the receiver's
+            // resource: the event's bytes are the ones the room sent, since none of its keys is
+            // an integer, which JavaScript's order would move first.
             std::pmr::string forwarded(R"(["EVENT",)", socket->memory());
             protocol::json::append_string(forwarded, subscribed.second);
             forwarded += ',';
-            protocol::json::append_value(forwarded, message->at(1));
+            protocol::json::append_value(forwarded, event);
             forwarded += ']';
             socket->deliver(std::move(forwarded));
         }

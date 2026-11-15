@@ -79,6 +79,41 @@ the data channel opens: the app adopts the connection, and signals from a
 bound peer are ignored. A live connection is reused for another room only
 after the peer advertised that room's token itself on the connection.
 
+[#trystero-protocol-json]
+=== JSON texts
+
+Every JSON text a room reads or writes is webcpp::document's. A text is read
+by `protocol::json::parse` into a `protocol::json::document`, whose image is a
+buffer of the room's resource, or of the app's for a candidate, and read
+through its handles as views; a key written twice keeps its last value, as
+`JSON.parse` keeps it. Each caller bounds what it reads, and drops a longer
+text before reading it, as it drops a malformed one:
+
+[cols="2,1,3",options="header"]
+|===
+| Text | Bound | Why
+
+| a relay's text | 68,608 bytes | an event that carries the longest signal, with 2 KiB for its other fields
+| a signal | 66,560 bytes | a sealed offer or answer of 64 KiB with the longest ids, and 1 KiB to spare
+| a handshake message | 1,024 bytes | ten times Trystero's longest, 99 bytes
+| a remote candidate | 16 KiB | the bound of a sealed candidate, which its opened JSON never passes
+|===
+
+The image is at most twice the text and 64 KiB: a text Trystero writes holds a
+few dozen values, and a text of thousands of values, which would need a
+hundred times its length, is refused once the parse has filled that bound. A
+document keeps no hashed index, so no key read twice, or chosen to collide,
+makes a parse slower than the logarithm of its object's size: no text costs a
+room more than a multiple of its bound to read. A JSON payload has no bound of
+its own but the room's `max_receive_bytes` and document's 64 MiB of image.
+
+A text the protocol writes is a fixed shape of a few strings and numbers,
+appended field by field, its strings quoted by `webcpp::document::quote`, the
+bytes `JSON.stringify` writes. A string that is not UTF-8 cannot be quoted: the
+only such string a program gives that is ever written, its self id, is set
+aside for a random one when the app is made, with a configuration report to
+`app::on_error`.
+
 [#trystero-protocol-channel]
 === The data channel
 

@@ -6,9 +6,10 @@
 
 // While two rooms over the memory relays exchange a message, every allocation
 // they make goes through the resources of their configurations: the counting
-// resources see them, and the global operator new, replaced here, sees none,
-// nor do the C library's allocation functions where the platform lets a
-// program count them (doc: #trystero-allocation).
+// resources see them, and the global operator new, replaced here, sees only
+// webcpp::document's working state while it reads or writes a JSON text, each
+// freed before the call returns, nor do the C library's allocation functions
+// where the platform lets a program count them (doc: #trystero-allocation).
 
 #include <webcpp/trystero.hpp>
 
@@ -19,10 +20,11 @@
 #include <webcpp/asio/io_context.hpp>
 #include <webcpp/asio/post.hpp>
 #include <webcpp/asio/steady_timer.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
 
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
 #include <boost/throw_exception.hpp>
 #include <webcpp/test/exit_status.hpp>
 
@@ -55,6 +57,7 @@
 #endif
 
 namespace trystero = webcpp::trystero;
+namespace tp = webcpp::trystero::protocol;
 using namespace std::chrono_literals;
 
 namespace {
@@ -72,6 +75,17 @@ std::array<std::size_t, 32> global_sizes{};
 std::size_t c_allocations = 0;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool counting = false;
+
+// The global allocations counted and not freed yet, by address, in a table of a fixed size that
+// allocates nothing: open addressing, linear probing, and deletion by shifting back.
+constexpr std::size_t live_slots = std::size_t{1} << 16U;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::array<void*, live_slots> live{};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t live_count = 0;
+// Set when the table was full: an allocation then went untracked, which fails the test.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+bool live_overflow = false;
 // Set while operator new takes its memory from the C library, which then
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
@@ -304,6 +318,54 @@ void count_c_allocation(std::uint32_t type, std::uintptr_t /*zone*/, std::uintpt
 
 namespace {
 
+/** The slot an address is first looked for in. */
+std::size_t home_of(const void* pointer) noexcept {
+    const auto bits = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
+    return static_cast<std::size_t>(((bits >> 4U) * 0x9E3779B97F4A7C15ULL) >> 48U) &
+           (live_slots - 1);
+}
+
+/** Records a counted allocation as live. */
+void track(void* pointer) noexcept {
+    if (live_count + 1 >= live_slots) {
+        live_overflow = true;
+        return;
+    }
+    std::size_t i = home_of(pointer);
+    while (live.at(i) != nullptr) {
+        i = (i + 1) & (live_slots - 1);
+    }
+    live.at(i) = pointer;
+    ++live_count;
+}
+
+/** Forgets a live allocation when it is freed; one never counted is not in the table. */
+void untrack(const void* pointer) noexcept {
+    if (pointer == nullptr || live_count == 0) {
+        return;
+    }
+    std::size_t i = home_of(pointer);
+    while (live.at(i) != pointer) {
+        if (live.at(i) == nullptr) {
+            return;
+        }
+        i = (i + 1) & (live_slots - 1);
+    }
+    live.at(i) = nullptr;
+    --live_count;
+    // Every entry after it in its run moves back unless its own slot lies between them.
+    for (std::size_t j = (i + 1) & (live_slots - 1); live.at(j) != nullptr;
+         j = (j + 1) & (live_slots - 1)) {
+        const std::size_t k = home_of(live.at(j));
+        const bool stays = i < j ? (i < k && k <= j) : (i < k || k <= j);
+        if (!stays) {
+            live.at(i) = live.at(j);
+            live.at(j) = nullptr;
+            i = j;
+        }
+    }
+}
+
 /** Memory for operator new, from the C library, uncounted there. */
 void* take(std::size_t size, std::size_t alignment) {
 #ifdef _MSC_VER
@@ -319,6 +381,9 @@ void* take(std::size_t size, std::size_t alignment) {
 }
 
 void release(void* pointer) noexcept {
+    if (on_counted_thread()) {
+        untrack(pointer);
+    }
 #ifdef _MSC_VER
     _aligned_free(pointer);
 #elif defined(WEBCPP_TEST_C_FREE)
@@ -351,6 +416,9 @@ void* allocate(std::size_t size, std::size_t alignment) {
     void* pointer = take(rounded, alignment);
     if (pointer == nullptr) {
         boost::throw_exception(std::bad_alloc());
+    }
+    if (on_counted_thread() && counting) {
+        track(pointer);
     }
     return pointer;
 }
@@ -498,9 +566,30 @@ trystero::room join(trystero::app& a, std::string_view room_id,
     return std::move(*r);
 }
 
-/** Two rooms exchange two payloads that make builds; the second is counted. */
-template <class Payload, class Make>
-void exchange_allocates_through_the_rooms_resources(Make make) {
+/**
+ * What webcpp::document's working state costs the global operator new for a JSON payload: writing
+ * it as a sending room does and reading the text back as a receiving room does, into `memory`.
+ * Freed before each call returns, and counted here outside any window.
+ */
+std::size_t document_cost(const trystero::pmr_document& payload,
+                          std::pmr::memory_resource* memory) {
+    std::pmr::string text(memory);
+    global_allocations = 0;
+    counting = true;
+    tp::json::append_value(text, payload.root());
+    const bool read = tp::json::parse(text, webcpp::document::parse_options{}, memory).has_value();
+    counting = false;
+    BOOST_TEST(read);
+    BOOST_TEST_EQ(live_count, 0U);
+    return std::exchange(global_allocations, 0);
+}
+
+/**
+ * Two rooms exchange two payloads that make builds; the second is counted, and the global
+ * operator new sees exactly what `cost` says webcpp::document's working state takes for it.
+ */
+template <class Payload, class Make, class Cost>
+void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // The resources outlive the io_context, whose pending operations they hold.
     counting_resource a_memory;
     counting_resource z_memory;
@@ -509,9 +598,7 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
-    network.relay(relay);
-    const boost::json::storage_ptr json_storage =
-        boost::json::make_shared_resource<trystero::json_resource>(&a_memory);
+    trystero::test::memory_relay& relay_state = network.relay(relay);
     trystero::app a_app(io.get_executor(), network,
                         {
                             .app_id = "allocation",
@@ -532,8 +619,8 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     auto from_a = a.make_action<Payload>("chat");
     z.make_action<Payload>("chat").on_message(
         [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) { ++received; });
-    const auto send = [&] {
-        from_a.async_send(make(&a_memory, json_storage),
+    const auto send = [&](Payload value) {
+        from_a.async_send(std::move(value),
                           webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
                                                        [](boost::system::error_code /*ec*/) {}));
     };
@@ -543,22 +630,125 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
             run_until(io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; }))) {
         return;
     }
-    send();
+    send(make(&a_memory));
     if (!BOOST_TEST(run_until(io, [&] { return received == 1; }))) {
         return;
     }
-    const std::size_t before = a_memory.allocations + z_memory.allocations;
-    counting = true;
-    send();
-    const bool arrived = run_until(io, [&] { return received == 2; });
-    counting = false;
-    BOOST_TEST(arrived);
-    explain_global_allocations(0U);
-    BOOST_TEST_EQ(global_allocations, 0U);
-    BOOST_TEST_EQ(c_allocations, 0U);
-    BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
+    // A window in which the relay carries a text, an announcement the rooms read, sees that
+    // parse too; such a window is opened again, five times at most.
+    bool quiet = false;
+    for (int window = 0; window < 5 && !quiet; ++window) {
+        Payload value = make(&a_memory);
+        const std::size_t expected = cost(value, &z_memory);
+        const std::size_t texts = relay_state.texts;
+        const std::size_t before = a_memory.allocations + z_memory.allocations;
+        const std::size_t wanted = received + 1;
+        global_allocations = 0;
+        c_allocations = 0;
+        counting = true;
+        send(std::move(value));
+        const bool arrived = run_until(io, [&] { return received == wanted; });
+        counting = false;
+        BOOST_TEST(arrived);
+        quiet = relay_state.texts == texts;
+        if (!quiet) {
+            continue;
+        }
+        explain_global_allocations(expected);
+        BOOST_TEST_EQ(global_allocations, expected);
+        BOOST_TEST_EQ(live_count, 0U);
+        BOOST_TEST_EQ(c_allocations, 0U);
+        BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
+    }
+    BOOST_TEST(quiet);
     BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign, 0U);
     global_allocations = 0;
+    c_allocations = 0;
+}
+
+/** How many values a document holds, its own included. */
+std::size_t values_in(const tp::json::const_value& v) {
+    std::size_t n = 1;
+    if (v.is_array()) {
+        for (const tp::json::const_value element : v) {
+            n += values_in(element);
+        }
+    } else if (v.is_object()) {
+        for (const tp::json::const_value member : v.values()) {
+            n += values_in(member);
+        }
+    }
+    return n;
+}
+
+/**
+ * webcpp::document's working state for each text a room reads, counted: Boost.JSON's parser
+ * stack, the path and the pending text, and the tree's record of each value it places, from the
+ * global operator new, all freed before the parse returns, and at most 8 allocations a value and
+ * 16 more; the document itself is in the resource it is given (doc: #trystero-allocation).
+ */
+void reading_a_text_costs_the_heap_a_bounded_working_state() {
+    counting_resource memory;
+    std::array<std::uint8_t, 32> secret{};
+    secret.fill(7);
+    const auto key = tp::nostr::signer::from_secret(secret, &memory);
+    webcpp::test::require(BOOST_TEST(key.has_value()));
+    const std::array<std::uint8_t, 32> aux{};
+    const std::pmr::string sealed(1100, 'A', &memory);
+    const auto signal = tp::write_signal(
+        {.peer_id = "AAAAAAAAAAAAAAAAAAAA", .offer_id = "BBBBBBBBBBBBBBBBBBBB", .offer = sealed},
+        {}, &memory);
+    const auto message = tp::nostr::event_message(
+        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal, aux,
+        &memory);
+    // A relay's text of that event: `["EVENT","<subscription>",<event>]`.
+    const std::string_view written = message;
+    std::pmr::string relayed(R"(["EVENT","CCCCCCCCCCCCCCCCCCCC",)", &memory);
+    relayed += written.substr(9, written.size() - 10);
+    relayed += ']';
+    const std::pmr::string ok(
+        R"(["OK","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",true,""])",
+        &memory);
+    const std::pmr::string handshake(
+        R"({"__trystero_pw":"response","h":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})",
+        &memory);
+    const std::pmr::string candidate(
+        R"({"candidate":"candidate:1 1 UDP 2122317823 192.168.1.10 54321 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":"abcd"})",
+        &memory);
+
+    struct text {
+        std::string_view what;
+        std::string_view json;
+        std::size_t bound;
+    };
+
+    const std::array<text, 5> texts{{
+        {"relay event", relayed, tp::nostr::max_parsed_relay_text_bytes},
+        {"relay OK", ok, tp::nostr::max_parsed_relay_text_bytes},
+        {"signal", signal, tp::max_parsed_signal_bytes},
+        {"handshake", handshake, tp::max_handshake_bytes},
+        {"candidate", candidate, tp::max_sealed_candidate_bytes},
+    }};
+    for (const text& t : texts) {
+        const std::size_t outstanding = memory.outstanding;
+        global_allocations = 0;
+        counting = true;
+        auto document = tp::json::parse(t.json, tp::json::protocol_limits(t.bound), &memory);
+        counting = false;
+        const std::size_t cost = std::exchange(global_allocations, 0);
+        if (!BOOST_TEST(document.has_value())) {
+            continue;
+        }
+        const std::size_t values = values_in(document->root());
+        BOOST_TEST_LE(cost, 16 + (8 * values));
+        BOOST_TEST_EQ(live_count, 0U);
+        // The image is the resource's, and goes back with the document.
+        BOOST_TEST_GT(memory.outstanding, outstanding);
+        document = webcpp::document::result<tp::json::document>(tp::json::document());
+        BOOST_TEST_EQ(memory.outstanding, outstanding);
+    }
+    BOOST_TEST_EQ(c_allocations, 0U);
+    BOOST_TEST_EQ(memory.foreign, 0U);
     c_allocations = 0;
 }
 
@@ -621,8 +811,9 @@ trystero::room_options options_in(counting_resource& memory) {
  * and join a room with a password, whose two sides exchange a payload that travels
  * in chunks, measure a round trip, and one says goodbye; both are destroyed and the
  * io_context drained. From the first construction to the drain, operator new sees
- * the two rooms' JSON storage counters alone, which Boost.JSON allocates once per
- * room, and the C library nothing (doc: #trystero-allocation).
+ * webcpp::document's working state alone, while the rooms and the relay read and
+ * write JSON texts, and nothing of it is left at the drain; the C library sees
+ * nothing (doc: #trystero-allocation).
  */
 void a_room_allocates_through_its_resource_from_join_to_destruction() {
     counting_resource network_memory;
@@ -710,8 +901,10 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(farewell);
     BOOST_TEST_GT(a_lines, 0U);
     BOOST_TEST_GT(z_lines, 0U);
-    explain_global_allocations(2U);
-    BOOST_TEST_EQ(global_allocations, 2U);
+    // The global operator new saw webcpp::document's working state alone, each piece freed before
+    // the parse or the write that made it returned.
+    BOOST_TEST_EQ(live_count, 0U);
+    BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
     global_allocations = 0;
@@ -721,10 +914,10 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 /**
  * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
  * exchange binary payloads: from construction until the io_context drains, operator new sees only
- * the rooms' JSON storage counters and the C library nothing. A payload received by the room with
- * its own resource is copied into that resource once, the received frame staying the app's; by the
- * room in the app's resource, the payload taken out of the frame is moved into the value (doc:
- * #trystero-allocation).
+ * webcpp::document's working state, none of it left at the drain, and the C library nothing. A
+ * payload received by the room with its own resource is copied into that resource once, the
+ * received frame staying the app's; by the room in the app's resource, the payload taken out of the
+ * frame is moved into the value (doc: #trystero-allocation).
  */
 void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource network_memory;
@@ -797,8 +990,9 @@ void rooms_of_one_app_allocate_through_their_resources() {
         }
         counting = false;
     }
-    explain_global_allocations(4U);
-    BOOST_TEST_EQ(global_allocations, 4U);  // the four rooms' JSON storage counters
+    // webcpp::document's working state alone, freed as the long case's.
+    BOOST_TEST_EQ(live_count, 0U);
+    BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
         BOOST_TEST_EQ(m->outstanding, 0U);
@@ -884,19 +1078,29 @@ int main() {
 #endif
     the_replaced_operators_serve_every_alignment();
     the_counts_see_an_allocation();
+    const auto nothing = [](const auto& /*payload*/, std::pmr::memory_resource* /*memory*/) {
+        return std::size_t{0};
+    };
     exchange_allocates_through_the_rooms_resources<std::pmr::string>(
-        [](std::pmr::memory_resource* memory, const boost::json::storage_ptr& /*storage*/) {
+        [](std::pmr::memory_resource* memory) {
             return std::pmr::string("a text that no small string holds", memory);
-        });
+        },
+        nothing);
     exchange_allocates_through_the_rooms_resources<std::pmr::vector<std::uint8_t>>(
-        [](std::pmr::memory_resource* memory, const boost::json::storage_ptr& /*storage*/) {
+        [](std::pmr::memory_resource* memory) {
             return std::pmr::vector<std::uint8_t>(4096, 7, memory);
-        });
-    exchange_allocates_through_the_rooms_resources<boost::json::value>(
-        [](std::pmr::memory_resource* /*memory*/, const boost::json::storage_ptr& storage) {
-            return boost::json::value(std::string_view("a text that no small string holds"),
-                                      storage);
-        });
+        },
+        nothing);
+    exchange_allocates_through_the_rooms_resources<trystero::pmr_document>(
+        [](std::pmr::memory_resource* memory) {
+            auto made = tp::json::parse(
+                R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
+                webcpp::document::parse_options{}, memory);
+            webcpp::test::require(BOOST_TEST(made.has_value()));
+            return std::move(made).unsafe_value();
+        },
+        &document_cost);
+    reading_a_text_costs_the_heap_a_bounded_working_state();
     a_room_allocates_through_its_resource_from_join_to_destruction();
     rooms_of_one_app_allocate_through_their_resources();
     return webcpp::test::exit_status(boost::report_errors());

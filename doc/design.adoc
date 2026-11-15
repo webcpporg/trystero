@@ -163,9 +163,10 @@ in them, over webcpp::webrtc:
   checking), and new.
 * The candidates. A local candidate leaves as the JSON of an
   `RTCIceCandidateInit`, the form Trystero JS adds with `addIceCandidate`; a
-  remote one is read from that JSON. Natively it carries `sdpMid` and an
-  `sdpMLineIndex` of 0, and no user name fragment, as libdatachannel gives
-  none.
+  remote one is read from that JSON, at most 16 KiB of it. Natively it
+  carries `sdpMid` and an `sdpMLineIndex` of 0, and no user name fragment, as
+  libdatachannel gives none; a candidate whose text is not UTF-8, which JSON
+  cannot carry, is not reported.
 * The frames. A channel reads every message as it comes, with
   `async_receive`, into a vector of the app's resource, which the message
   handler then owns. A text message, as a peer can send, or a binary one
@@ -208,9 +209,15 @@ key, a member, a capture of a handler that runs later.
 
 * The digests the protocol takes are fed the parts of their input: nothing is
   concatenated to hash it.
-* Signals and relay messages are read as views into the parsed document; the
-  JSON the room writes goes into one reserved buffer, escaped by Boost.JSON's
-  serializer, and a Nostr event's id is hashed over those same bytes.
+* Every JSON text is webcpp::document's. Signals, relay messages, handshake
+  messages and candidates are parsed into a document whose image is a buffer
+  of the room's or the app's resource, and read as views into it; each
+  caller bounds its text (<<trystero-protocol-json>>). The JSON the room
+  writes goes field by field into one reserved buffer, its strings quoted by
+  `webcpp::document::quote`, the quoting of `JSON.stringify` itself, and a
+  Nostr event's id is hashed over those same bytes. Building each text as a
+  document and writing it again was set aside: it would copy every string
+  into a node of some 200 bytes, then write it once more.
 * A frame is written once, inside its room envelope, and shared by every
   target; a received frame becomes the buffer of the message delivered from
   it, and a view handler reads it in place.

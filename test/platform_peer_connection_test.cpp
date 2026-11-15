@@ -20,10 +20,14 @@
 #include <webcpp/webrtc/peer_connection.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/literal.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/stringify.hpp>
+
 #include <boost/asio/execution.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -650,11 +654,15 @@ void a_url_libdatachannel_cannot_parse_is_left_out() {
 
 /** The JSON of a candidate of webcpp::webrtc, as a peer sends it. */
 std::string json_of(const webcpp::webrtc::ice_candidate& c) {
-    return boost::json::serialize(boost::json::object{
-        {"candidate", c.candidate},
-        {"sdpMid", c.sdp_mid},
+    auto made = webcpp::document::document::create();
+    require(BOOST_TEST(made.has_value()));
+    const auto set = made->root().set(webcpp::document::object{
+        {"candidate", std::string_view(c.candidate)},
+        {"sdpMid", std::string_view(c.sdp_mid)},
         {"sdpMLineIndex", c.sdp_m_line_index.value_or(0)},
     });
+    require(BOOST_TEST(set.has_value()));
+    return made->stringify();
 }
 
 /**
@@ -697,10 +705,12 @@ struct mixed_pair {
     }
 
     void add_to_remote(std::string_view json) {
-        const auto v = boost::json::parse(json).as_object();
-        const std::string_view text = v.at("candidate").as_string();
-        const std::string_view mid = v.at("sdpMid").as_string();
-        remote->async_add_ice_candidate({.candidate = text, .sdp_mid = mid},
+        const auto parsed = webcpp::document::parse(json);
+        require(BOOST_TEST(parsed.has_value()));
+        const auto text = parsed->root()["candidate"].get<std::string_view>();
+        const auto mid = parsed->root()["sdpMid"].get<std::string_view>();
+        require(BOOST_TEST(text.has_value() && mid.has_value()));
+        remote->async_add_ice_candidate({.candidate = *text, .sdp_mid = *mid},
                                         [](webcpp::webrtc::detail::error_code) {});
     }
 

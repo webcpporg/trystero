@@ -53,10 +53,12 @@ rule platform-dependencies ( properties * )
 }
 
 # The rooms: Asio is webcpp::asio, natively Boost.Asio itself, on emscripten
-# the shipped backend, without threads (main runs it), which links embind.
+# the shipped backend, without threads (main runs it), which links embind. Every JSON text the rooms read or
+# write is webcpp::document's, which brings Boost.JSON's parser and
+# Boost.Charconv's definitions.
 # tag::trystero[]
 alias trystero : : <conditional>@trystero-dependencies
-  : : <include>include <library>/boost//headers <library>/webcpp//boost_json
+  : : <include>include <library>/boost//headers <library>/webcpp/document//document
   <library>/webcpp/config//config <library>/webcpp/asio//asio <library>secp256k1 ;
 # end::trystero[]
 

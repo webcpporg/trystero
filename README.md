@@ -105,7 +105,8 @@ program uses the rooms and the platform backend through
 `/webcpp/trystero//platform`, on both targets, as `example/Jamfile` does.
 The target adds `/webcpp/trystero//trystero`, the rooms alone: trystero's
 headers, Boost's, webcpp::asio, which links embind on emscripten,
-libsecp256k1 and Boost.JSON's definitions, compiled once per variant. Beside
+libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
+definitions, compiled once per variant. Beside
 them it adds webcpp::webrtc and Boost.URL on both targets; natively
 libdatachannel and OpenSSL, through webcpp::webrtc, webcpp::beast's `//tls`
 and webcpp::asio's `//tls`, whose embedded authorities a program may trust in
@@ -317,7 +318,8 @@ b2 --user-config=../user-config.jam libs/trystero/example//native_quick_start-pr
 b2 --user-config=../user-config.jam toolset=emscripten libs/trystero/example/chat//site
 ```
 
-The first build also compiles Boost.JSON's definitions, and the first
+The first build also compiles Boost.JSON's and Boost.Charconv's definitions,
+which webcpp::document uses, and the first
 emscripten build Emscripten's system libraries, which takes a few minutes.
 The second command ends by printing the chat site's directory,
 `bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,

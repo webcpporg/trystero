@@ -13,8 +13,6 @@
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/json/value.hpp>
-
 #include <array>
 #include <charconv>
 #include <memory_resource>
@@ -68,6 +66,29 @@ inline constexpr std::size_t max_sealed_description_bytes = std::size_t{64} * 10
  */
 inline constexpr std::size_t max_sealed_candidate_bytes = std::size_t{16} * 1024;
 static_assert(sealed_size(8192) <= max_sealed_candidate_bytes);
+
+/**
+ * The longest signal a room reads, in bytes: a longer one is dropped before it is read.
+ *
+ * The longest signal measured is an answer, 762 bytes, among Trystero JS in Chrome and both
+ * backends, which trickle their candidates. The bound is the longest signal the bounds of its
+ * fields admit, a sealed offer or answer of @ref max_sealed_description_bytes with the longest ids,
+ * and 1 KiB to spare, so that it refuses no signal they accept.
+ */
+inline constexpr std::size_t max_parsed_signal_bytes = max_sealed_description_bytes + 1024;
+// The 64 bytes hold the 53 of the keys and the punctuation of an answer from a passive room.
+static_assert(max_sealed_description_bytes + max_peer_id_bytes + max_offer_id_bytes + 64 <=
+                  max_parsed_signal_bytes,
+              "the longest signal the bounds of its fields admit is read");
+
+/**
+ * The longest message of the password handshake a room reads, in bytes: a longer one fails the
+ * handshake, as a message of the wrong shape does.
+ *
+ * Trystero's are at most 99 bytes, `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`;
+ * the bound is ten times that.
+ */
+inline constexpr std::size_t max_handshake_bytes = 1024;
 
 /**
  * The raw AES-GCM key of a room, what Trystero's `genKey` imports: the SHA-256 of
@@ -176,6 +197,14 @@ struct signal_message {
      * announces only once it has seen a peer that is not passive.
      */
     bool passive = false;
+    /**
+     * Whether the sender answers the offer, which places `offerId` in the text.
+     *
+     * Trystero's answerer writes `offerId` after its answer or candidate, its offerer before its
+     * offer or candidate. Written only; a reader leaves it false, the order being no part of the
+     * meaning.
+     */
+    bool answering = false;
 
     /**
      * Whether the message is an announcement.
@@ -188,32 +217,36 @@ struct signal_message {
 };
 
 /**
- * The message a parsed signaling payload holds, as views into `document`.
+ * The message a parsed signaling payload holds, as views into its document.
  *
- * @param document The parsed payload, which the caller keeps alive while it reads the views.
- * @return The message, or nothing when Trystero would ignore it (not an object, no peer id, or an
+ * A key written twice is read as JavaScript reads it, the last value, which the parse keeps.
+ *
+ * @param document The root of the parsed payload, whose document the caller keeps alive and
+ * unchanged while it reads the views.
+ * @return The message, or nothing when Trystero would ignore it (not an object, one with a member
+ * `peer`, no peer id, or an
  * offer, answer or candidate that is not a non-empty string), or when a field is longer than its
  * bound: the peer id than @ref max_peer_id_bytes, the offer id than @ref max_offer_id_bytes, an
  * offer or answer than @ref max_sealed_description_bytes, a candidate than
  * @ref max_sealed_candidate_bytes.
  */
-inline std::optional<signal_message> read_signal(const boost::json::value& document) {
-    const auto* object = document.if_object();
-    if (object == nullptr) {
+inline std::optional<signal_message> read_signal(const json::const_value& document) {
+    // Trystero ignores a text that names a member `peer`, which its own rooms keep for a peer
+    // object no text can hold.
+    if (!document.is_object() || document.contains("peer")) {
         return std::nullopt;
     }
     signal_message out;
-    const auto text = [object](std::string_view key, std::string_view& into,
-                               bool must_be_nonempty) {
-        const auto* v = object->if_contains(key);
-        if (v == nullptr) {
+    const auto text = [&document](std::string_view key, std::string_view& into,
+                                  bool must_be_nonempty) {
+        const json::const_value v = document[key];
+        if (v.is_undefined()) {
             return true;
         }
-        const auto* s = v->if_string();
-        if (s == nullptr || (must_be_nonempty && s->empty())) {
+        if (!v.is_string() || (must_be_nonempty && json::text_of(v).empty())) {
             return !must_be_nonempty;
         }
-        into = std::string_view(s->data(), s->size());
+        into = json::text_of(v);
         return true;
     };
     if (!text("offer", out.offer, true) || !text("answer", out.answer, true) ||
@@ -222,9 +255,7 @@ inline std::optional<signal_message> read_signal(const boost::json::value& docum
     }
     text("peerId", out.peer_id, false);
     text("offerId", out.offer_id, false);
-    if (const auto* v = object->if_contains("passive"); v != nullptr && v->is_bool()) {
-        out.passive = v->get_bool();
-    }
+    out.passive = document["passive"].value_or(false);
     if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes ||
         out.offer_id.size() > max_offer_id_bytes ||
         out.offer.size() > max_sealed_description_bytes ||
@@ -258,10 +289,15 @@ inline std::pmr::string write_signal(
         json::append_string(out, value);
     };
     field("peerId", m.peer_id);
-    field("offerId", m.offer_id);
+    if (!m.answering) {
+        field("offerId", m.offer_id);
+    }
     field("offer", m.offer);
     field("answer", m.answer);
     field("candidate", m.candidate);
+    if (m.answering) {
+        field("offerId", m.offer_id);
+    }
     if (m.passive) {
         json::append_key(out, "passive");
         out += "true";

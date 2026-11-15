@@ -26,8 +26,11 @@
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 #include <emscripten/val.h>
 #endif
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/value.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json.hpp>
 #include <boost/system/error_code.hpp>
 #include <webcpp/test/exit_status.hpp>
 
@@ -42,18 +45,22 @@
 #include <utility>
 
 namespace asio = webcpp::asio;
-namespace json = boost::json;
 namespace tp = webcpp::trystero::protocol;
 namespace trystero = webcpp::trystero;
 using namespace std::chrono_literals;
 
 namespace {
 
-json::value load(const char* path) {
+/** The fixture at `path`, read with webcpp::document; nothing when it does not parse. */
+std::optional<webcpp::document::document> load(const char* path) {
     const std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
-    return json::parse(text.str());
+    auto parsed = webcpp::document::parse(text.str());
+    if (!parsed.has_value()) {
+        return std::nullopt;
+    }
+    return std::move(parsed).unsafe_value();
 }
 
 /** The resource of every sealer and text of the test. */
@@ -69,9 +76,14 @@ struct outcome {
 };
 
 struct state {
-    explicit state(json::object fixture) : sealed_by_js(std::move(fixture)) {}
+    explicit state(webcpp::document::document fixture) : fixture(std::move(fixture)) {}
 
-    json::object sealed_by_js;
+    /** The fixture's string `key` of what Trystero JS sealed; empty when it holds none. */
+    [[nodiscard]] std::string_view sealed_by_js(std::string_view key) const {
+        return fixture["sealed"][key].value_or(std::string_view());
+    }
+
+    webcpp::document::document fixture;
     asio::io_context io;
     trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::sealer> sealer =
@@ -123,8 +135,7 @@ void expect(const std::optional<outcome>& got, boost::system::error_code expecte
 void verdict(state& s) {
     expect(s.opened_js, {});
     if (s.opened_js) {
-        BOOST_TEST_EQ(s.opened_js->text,
-                      std::string_view(s.sealed_by_js.at("plaintext").as_string()));
+        BOOST_TEST_EQ(s.opened_js->text, s.sealed_by_js("plaintext"));
     }
     expect(s.sealed, {});
     if (s.sealed) {
@@ -187,7 +198,7 @@ void refused(state& s) {
  */
 void refuse(state& s) {
     call(s, [&s] {
-        s.intruder->open(s.sealed_by_js.at("text").as_string(), record(s, s.wrong_key, refused));
+        s.intruder->open(s.sealed_by_js("text"), record(s, s.wrong_key, refused));
         s.sealer->open("not a sealed text", record(s, s.garbage, refused));
     });
 }
@@ -208,9 +219,7 @@ void seal(state& s) {
 
 /** Opens what Trystero JS sealed under the room's key. */
 void open_what_js_sealed(state& s) {
-    call(s, [&s] {
-        s.sealer->open(s.sealed_by_js.at("text").as_string(), record(s, s.opened_js, seal));
-    });
+    call(s, [&s] { s.sealer->open(s.sealed_by_js("text"), record(s, s.opened_js, seal)); });
 }
 
 }  // namespace
@@ -221,7 +230,11 @@ int main(int argc, char* argv[]) {
             << "usage: platform_sealer_test <fixtures/expected/expected.json>\n";
         return webcpp::test::exit_status(boost::report_errors());
     }
-    state s(load(argv[1]).at("sealed").as_object());
+    auto fixture = load(argv[1]);
+    if (!BOOST_TEST(fixture.has_value() && (*fixture)["sealed"].is_object())) {
+        return webcpp::test::exit_status(boost::report_errors());
+    }
+    state s(std::move(*fixture));
     open_what_js_sealed(s);
     s.io.run_for(10s);  // lint-run: the test's event loop, held by the sealers' completions
     if (!s.judged) {
