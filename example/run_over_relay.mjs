@@ -4,11 +4,12 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Runs one program of the appendix "Differences" over a Nostr relay of its own on 127.0.0.1,
-// test/oracle/interop/relay.mjs, and checks what it prints: the driver of each diff_<topic> that
-// the Jamfile declares with webcpp.drive, which gives it the native program last:
+// Runs one example over a Nostr relay of its own on 127.0.0.1, test/oracle/interop/relay.mjs, and
+// checks what it prints: the driver of the quick start and of each diff_<topic> of the appendix
+// "Differences", which the Jamfile declares with webcpp.drive, which gives it the native program
+// last:
 //
-//   node --conditions=development example/run_difference.mjs <program>
+//   node --conditions=development example/run_over_relay.mjs <program>
 //
 // The relay's URL is in the program's environment, TRYSTERO_RELAY_URL, as in its twin's
 // (test/oracle/run_twin.mjs). The run passes when the program exits with 0 having printed

@@ -12,7 +12,7 @@
 // TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <boost/asio/io_context.hpp>
@@ -36,7 +36,7 @@ int main() {
     asio::io_context io;
     // The peers meet on this machine alone: every connection bound to the loopback, and a STUN
     // server where nothing answers in place of Trystero's public ones.
-    trystero::native::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+    trystero::platform::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     const auto config = [relay] {
         trystero::app_config c;
         c.app_id = "webcpp-trystero-differences";

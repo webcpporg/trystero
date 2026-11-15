@@ -10,7 +10,7 @@
 //   node --conditions=development test/oracle/run_twin.mjs test/oracle/twins/<name>.mjs
 //
 // The relay's URL is in the environment, TRYSTERO_RELAY_URL, which the twin reads as its C++
-// program reads it (example/run_difference.mjs starts the program's relay). The run ends once the
+// program reads it (example/run_over_relay.mjs starts the program's relay). The run ends once the
 // twin's module has evaluated, its top-level awaits included, and what it printed has been
 // written: Trystero JS keeps its relay sockets open after its rooms have left, as a page does,
 // so the process would not end by itself. A twin that throws, or whose module fails to load,

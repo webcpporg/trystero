@@ -12,7 +12,7 @@
 // relay whose URL is in the environment, TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
 
 #include <webcpp/trystero/app.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <boost/asio/io_context.hpp>
@@ -35,7 +35,7 @@ int main() {
         return 1;
     }
     boost::asio::io_context io;
-    trystero::native::backend backend(io.get_executor());
+    trystero::platform::backend backend(io.get_executor());
     trystero::app app(io.get_executor(), backend,
                       {.app_id = "webcpp-trystero-differences", .relay_urls = {relay}});
     std::vector<trystero::room> rooms;

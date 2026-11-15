@@ -12,13 +12,13 @@
 // a room of another app. Two peers of one program meet in a lobby with a first configuration, and
 // in a kitchen with a second. Trystero JS hands out the page's relay sockets and a room's
 // connection; a room here hands out neither, so each app of this program is given a backend that
-// records what the app asks of the native one. Its twin is test/oracle/twins/diff_relay_config.mjs.
-// Both meet over the relay whose URL is in the environment, TRYSTERO_RELAY_URL, which their lanes
-// start on 127.0.0.1.
+// records what the app asks of the platform one. Its twin is
+// test/oracle/twins/diff_relay_config.mjs. Both meet over the relay whose URL is in the
+// environment, TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
-#include <webcpp/trystero/native/backend.hpp>
+#include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <boost/asio/io_context.hpp>
@@ -107,7 +107,7 @@ int main() {
     asio::io_context io;
     // The peers meet on this machine alone: every connection bound to the loopback, and STUN
     // servers where nothing answers in place of Trystero's public ones.
-    trystero::native::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+    trystero::platform::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     // Two configurations. The second relay is the same local relay under a path, which it accepts
     // as it accepts any.
     const configuration first{.relay = relay, .stun = "stun:127.0.0.1:9"};
@@ -130,7 +130,8 @@ int main() {
     trystero::app other_second(io.get_executor(), backend, config(second));
     auto other_lobby = other_first.join("lobby");
     auto other_kitchen = other_second.join("kitchen");
-    // Each app of this program is given a backend that records what the app asks of the native one.
+    // Each app of this program is given a backend that records what the app asks of the platform
+    // one.
     observing_backend first_backend(backend);
     observing_backend second_backend(backend);
     // The configuration whose URL, and only it, a backend was asked for, of the two URLs given.
