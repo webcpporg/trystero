@@ -120,10 +120,34 @@ int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
 // Emscripten's select() is a poll() over an array of pollfd it callocs on every call
 // (system/lib/libc/musl/src/select/select.c), and Asio's reactor calls it on every wait of the
 // io_context, once in each seal and each open (measured): the C library's wait, not the sealer's.
-// This one keeps the array on the stack, as allocation_test's does, so that the count sees the
-// sealer's allocations.
+// This one keeps the array on the stack, as webcpp::asio's allocation test does, so that the count
+// sees the sealer's allocations.
+namespace {
+
+unsigned requested_event(int fd, const fd_set* set, unsigned event) {
+    return set != nullptr && FD_ISSET(fd, set) ? event : 0U;
+}
+
+void clear_set(fd_set* set) {
+    if (set != nullptr) {
+        FD_ZERO(set);
+    }
+}
+
+int ready_event(const pollfd& descriptor, fd_set* set, unsigned events) {
+    if (set != nullptr && (static_cast<unsigned>(descriptor.revents) & events) != 0) {
+        FD_SET(descriptor.fd, set);
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+// select's C declaration requires a mutable timeval pointer, although this implementation
+// does not change it.
 extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
-                      timeval* timeout) {
+                      timeval* timeout) {  // NOLINT(misc-const-correctness)
     if (nfds < 0 || nfds > FD_SETSIZE) {
         errno = EINVAL;
         return -1;
@@ -131,45 +155,28 @@ extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* excep
     std::array<pollfd, FD_SETSIZE> fds{};
     int n = 0;
     for (int fd = 0; fd < nfds; ++fd) {
-        short events = 0;
-        events |= readfds != nullptr && FD_ISSET(fd, readfds) ? POLLIN : 0;
-        events |= writefds != nullptr && FD_ISSET(fd, writefds) ? POLLOUT : 0;
-        events |= exceptfds != nullptr && FD_ISSET(fd, exceptfds) ? POLLPRI : 0;
+        const unsigned events = requested_event(fd, readfds, POLLIN) |
+                                requested_event(fd, writefds, POLLOUT) |
+                                requested_event(fd, exceptfds, POLLPRI);
         if (events != 0) {
-            fds[n++] = pollfd{fd, events, 0};
+            fds[n++] = pollfd{.fd = fd, .events = static_cast<short>(events), .revents = 0};
         }
     }
     const int milliseconds =
         timeout == nullptr ? -1
-                           : static_cast<int>(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
+                           : static_cast<int>((timeout->tv_sec * 1000) + (timeout->tv_usec / 1000));
     const int ready = poll(fds.data(), static_cast<nfds_t>(n), milliseconds);
     if (ready < 0) {
         return ready;
     }
-    if (readfds != nullptr) {
-        FD_ZERO(readfds);
-    }
-    if (writefds != nullptr) {
-        FD_ZERO(writefds);
-    }
-    if (exceptfds != nullptr) {
-        FD_ZERO(exceptfds);
-    }
+    clear_set(readfds);
+    clear_set(writefds);
+    clear_set(exceptfds);
     int count = 0;
     for (int i = 0; i < n && ready > 0; ++i) {
-        const short got = fds[i].revents;
-        if (readfds != nullptr && (got & (POLLIN | POLLHUP | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, readfds);
-            ++count;
-        }
-        if (writefds != nullptr && (got & (POLLOUT | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, writefds);
-            ++count;
-        }
-        if (exceptfds != nullptr && (got & POLLPRI) != 0) {
-            FD_SET(fds[i].fd, exceptfds);
-            ++count;
-        }
+        count += ready_event(fds[i], readfds, POLLIN | POLLHUP | POLLERR);
+        count += ready_event(fds[i], writefds, POLLOUT | POLLERR);
+        count += ready_event(fds[i], exceptfds, POLLPRI);
     }
     return count;
 }
@@ -288,7 +295,7 @@ done_handler completion(state& s, F f) {
 }
 
 /** Starts counting what `into` will report, from zero. */
-void start_counting(state& s, counts& into) {
+void start_counting(const state& s, counts& into) {
     global_allocations = 0;
     c_allocations = 0;
     into.room = s.room.allocations;
@@ -296,7 +303,7 @@ void start_counting(state& s, counts& into) {
 }
 
 /** Stops counting, and records what was counted since start_counting into `into`. */
-void stop_counting(state& s, counts& into, boost::system::error_code ec) {
+void stop_counting(const state& s, counts& into, boost::system::error_code ec) {
     counting = false;
     into.completed = true;
     into.ec = ec;

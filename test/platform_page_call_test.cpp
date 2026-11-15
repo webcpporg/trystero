@@ -98,9 +98,10 @@ void outlive_the_io_context(program& p) {
     counting_resource memory;
     std::optional<call> orphan;
     std::optional<asio::io_context> other(std::in_place);
-    orphan.emplace(other->get_executor(),
-                   step{&p, [](program& q, const val& /*argument*/) { ++q.orphan_calls; }},
-                   &memory);
+    orphan.emplace(
+        other->get_executor(),
+        step{.p = &p, .run = [](program& q, const val& /*argument*/) { ++q.orphan_calls; }},
+        &memory);
     const std::size_t made = memory.outstanding;
     const val kept = orphan->function();
     // Posted to the other io_context, which never runs.
@@ -150,9 +151,10 @@ void advance(program& p, const val& argument) {
 
 int main() {
     program p;
-    p.doomed.emplace(p.io.get_executor(),
-                     step{&p, [](program& q, const val& /*argument*/) { ++q.doomed_calls; }});
-    p.next.emplace(p.io.get_executor(), step{&p, advance});
+    p.doomed.emplace(
+        p.io.get_executor(),
+        step{.p = &p, .run = [](program& q, const val& /*argument*/) { ++q.doomed_calls; }});
+    p.next.emplace(p.io.get_executor(), step{.p = &p, .run = advance});
     // clang-format off
     EM_ASM(({
         globalThis.kept = Emval.toValue($0);
