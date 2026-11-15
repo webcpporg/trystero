@@ -1716,6 +1716,9 @@ void the_errors_have_their_values() {
 }  // namespace
 
 int main() {
+    // Some forty cases of two or three apps each: under Asyncify a debug build runs them in about
+    // 115 s alone (measured), near node's default bound of 120 s, and past it on a loaded machine.
+    webcpp::test::bound(std::chrono::seconds(300));
     // First, while the parser has run least: a WebAssembly engine compiles a function with its
     // baseline tier first, whose frames are the largest, and a peer's first payload meets it so.
     a_json_payload_nested_256_deep_is_delivered();
