@@ -248,7 +248,11 @@ struct answerer {
                 .claim = {},
                 .publish =
                     [this](std::size_t relay, std::string_view topic, std::string_view content) {
-                        published.push_back({relay, std::string(topic), std::string(content)});
+                        published.push_back({
+                            .relay = relay,
+                            .topic = std::string(topic),
+                            .text = std::string(content),
+                        });
                     },
                 .connected = {},
                 .failed = [this](std::string_view, boost::system::error_code ec,
@@ -385,7 +389,7 @@ void a_relay_text_past_its_bound_is_dropped() {
     const std::pmr::string url("wss://relay.test", memory());
     const std::string_view topic = "the-room-topic";
     std::vector<std::size_t> contents;
-    auto strategy = std::make_shared<detail::nostr_strategy>(
+    const auto strategy = std::make_shared<detail::nostr_strategy>(
         net, std::span<const std::pmr::string>(&url, 1),
         std::pmr::vector<std::pmr::string>({std::pmr::string(topic, memory())}, memory()), topic,
         [] { return std::pmr::string(R"({"peerId":"p"})", memory()); },

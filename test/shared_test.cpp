@@ -1873,7 +1873,7 @@ void a_handshake_message_past_its_bound_fails() {
             }
             const std::string_view text(reinterpret_cast<const char*>(frame.data()), frame.size());
             if (from == t.f.net.peer_of(e.a()) &&
-                text.find(R"("__trystero_pw":"response")") != text.npos) {
+                text.find(R"("__trystero_pw":"response")") != std::string_view::npos) {
                 ++proofs;
             }
             return trystero::test::memory_network::verdict::drop;

@@ -54,13 +54,13 @@ inline webcpp::document::result<std::pmr::string> candidate_json(
     std::optional<std::uint16_t> sdp_m_line_index, std::string_view username_fragment,
     std::pmr::memory_resource* memory) {
     std::pmr::string json(R"({"candidate":)", memory);
-    if (auto quoted = protocol::json::append_string(json, candidate); !quoted) {
+    if (const auto quoted = protocol::json::append_string(json, candidate); !quoted) {
         return quoted.error();
     }
     json += R"(,"sdpMid":)";
     if (sdp_mid.empty()) {
         json += "null";
-    } else if (auto quoted = protocol::json::append_string(json, sdp_mid); !quoted) {
+    } else if (const auto quoted = protocol::json::append_string(json, sdp_mid); !quoted) {
         return quoted.error();
     }
     json += R"(,"sdpMLineIndex":)";
@@ -71,7 +71,7 @@ inline webcpp::document::result<std::pmr::string> candidate_json(
     }
     if (!username_fragment.empty()) {
         json += R"(,"usernameFragment":)";
-        if (auto quoted = protocol::json::append_string(json, username_fragment); !quoted) {
+        if (const auto quoted = protocol::json::append_string(json, username_fragment); !quoted) {
             return quoted.error();
         }
     }
