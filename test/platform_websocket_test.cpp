@@ -720,7 +720,7 @@ void a_backend_makes_its_own_tls_context() {
 }
 
 // A backend that trusts webcpp's embedded Mozilla roots in place of the system's, as the guide
-// shows it made (doc: #trystero-native-relays): the test's authority is not among them, so its
+// shows it made (doc: #trystero-platform-relays): the test's authority is not among them, so its
 // relay is unreachable.
 void a_backend_may_trust_webcpps_embedded_roots() {
     asio::io_context io;

@@ -283,7 +283,7 @@ nothing.
   made for the first and grown when more are pending at once than it holds,
   and kept until the `io_context` is destroyed. The rest of a page's seal or
   open, the wait for its promise and the post of its settlement, is in the
-  room's resource when the backend's executor is an `io_context`'s: the
+  room's resource when the backend's executor is that of an `io_context`: the
   test `platform_page_sealer_allocation`, after a first seal and open, sees
   neither `operator new` nor the C library allocate from the start of a seal
   or an open to its completion. The registrations of a WebSocket and of a

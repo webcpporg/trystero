@@ -94,8 +94,9 @@ struct backend_config {
 
     /**
      * The resource of the backend's own state: its copy of `bind_address`, its window of
-     * constructions and its own runtime. It must not be null, and must outlive the backend and
-     * every connection of its runtime.
+     * constructions and its own runtime.
+     *
+     * It must not be null, and must outlive the backend and every connection of its runtime.
      *
      * What the backend makes for a room or an app uses the resource given with each call instead.
      */
