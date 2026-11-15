@@ -99,7 +99,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
   coroutines and view handlers.
 
 | `app_impl`
-| Configuration copying and validation, resource ownership, weak room
+| Configuration copying and validation, a self id that is not UTF-8 set
+  aside, resource ownership, weak room
   registration, shared adoption, stale replacement, reentrant adoption,
   last-user closure and quiet destruction with pending work.
 
@@ -168,7 +169,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
   and allocation and release through the connection's resource; a peer of
   webcpp::webrtc's own sends a text, which is dropped between two frames;
   malformed candidates and descriptions fail without throwing, and so does a
-  candidate one byte past its bound, which at the bound is added; the backend
+  candidate one byte past its bound, which at the bound is added; a local
+  candidate that is not UTF-8 is not written; the backend
   makes at most its budget in a minute, holds at most its runtime's cap at
   once, and leaves out a URL libdatachannel cannot parse. Both run once more
   without exceptions.

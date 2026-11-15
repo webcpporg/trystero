@@ -1236,7 +1236,7 @@ private:
                 history->second.challenges.push(std::pmr::string(state.challenge, memory_));
             }
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
-            protocol::json::append_string(text, state.challenge);
+            protocol::json::detail::append_utf8(text, state.challenge);  // drawn from id_alphabet
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
             state.challenge_sent = true;
@@ -1279,7 +1279,7 @@ private:
             return;
         }
         std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
-        protocol::json::append_string(
+        protocol::json::detail::append_utf8(
             text, protocol::handshake_proof(field("c"), app_->password(), app_->app_id(), room_id_,
                                             memory_));
         text += '}';

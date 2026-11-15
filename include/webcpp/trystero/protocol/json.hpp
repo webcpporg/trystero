@@ -341,16 +341,29 @@ inline bool quotable(std::string_view text) {
  * Appends `text` as a JSON string literal, quotes included, as `JSON.stringify` writes it, with
  * webcpp::document's quoting, which allocates only through `out`.
  *
- * @param out The text to append to.
- * @param text The string, in UTF-8 (@ref quotable): every string the protocol writes is, the self
- * id checked when the app is made, a candidate's fields when it is written, and every other one is
- * ASCII or was read from JSON.
+ * @param out The text to append to, unchanged when `text` is refused.
+ * @param text The string.
+ * @return Nothing, or `errc::type` when `text` is not UTF-8 (@ref quotable), which no JSON string
+ * holds: a local candidate whose text is refused is not sent.
  */
-inline void append_string(std::pmr::string& out, std::string_view text) {
-    [[maybe_unused]] const webcpp::document::result<void> quoted =
-        webcpp::document::quote(text, out);
-    BOOST_ASSERT(quoted.has_value());
+[[nodiscard]] inline webcpp::document::result<void> append_string(std::pmr::string& out,
+                                                                  std::string_view text) {
+    return webcpp::document::quote(text, out);
 }
+
+namespace detail {
+
+/**
+ * Appends `text`, UTF-8 by the caller's precondition, as a JSON string: an id, a topic, a key, a
+ * nonce or a sealed text, all ASCII, a text read from JSON, or the self id, checked when the app
+ * is made.
+ */
+inline void append_utf8(std::pmr::string& out, std::string_view text) {
+    // Quoting fails only on a text that is not UTF-8, which the precondition rules out.
+    static_cast<void>(append_string(out, text));
+}
+
+}  // namespace detail
 
 /**
  * Appends a value as `JSON.stringify` writes it.
@@ -386,12 +399,13 @@ inline void append_integer(std::pmr::string& out, std::int64_t value) {
  *
  * @param out The text of an object being written, which ends with its `{` or a member's value.
  * @param key The member's name.
+ * @pre `key` is UTF-8, as every name the protocol writes is.
  */
 inline void append_key(std::pmr::string& out, std::string_view key) {
     if (out.back() != '{') {
         out += ',';
     }
-    append_string(out, key);
+    detail::append_utf8(out, key);
     out += ':';
 }
 

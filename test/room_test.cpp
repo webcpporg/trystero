@@ -1222,7 +1222,7 @@ void long_peer_ids_are_bounded() {
     const auto signal = [](std::string_view id) {
         std::pmr::string text("{");
         trystero::protocol::json::append_key(text, "peerId");
-        trystero::protocol::json::append_string(text, id);
+        webcpp::test::require(BOOST_TEST(trystero::protocol::json::append_string(text, id)));
         text += '}';
         auto parsed = trystero::protocol::json::parse(
             text,

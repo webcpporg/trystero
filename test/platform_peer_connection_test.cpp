@@ -652,6 +652,36 @@ void a_candidate_past_its_bound_fails() {
     BOOST_TEST(results[1] == trystero::error::backend_failure);
 }
 
+// A local candidate is reported as the JSON of an RTCIceCandidateInit, as JSON.stringify writes a
+// browser's: its mid and index null when unknown, its user name fragment only when it has one. One
+// whose candidate, mid or user name fragment is not UTF-8, which JSON cannot carry, is refused, so
+// the connection reports none.
+void a_candidate_that_is_not_utf8_is_not_written() {
+    const auto json = [](std::string_view candidate, std::string_view mid,
+                         std::optional<std::uint16_t> index, std::string_view fragment) {
+        return trystero::webrtc::detail::candidate_json(candidate, mid, index, fragment,
+                                                        std::pmr::get_default_resource());
+    };
+    const auto full = json("candidate:1 1 UDP 1 127.0.0.1 9 typ host", "0", 0, "uf\xc3\xa9");
+    if (BOOST_TEST(full.has_value())) {
+        BOOST_TEST_EQ(*full,
+                      "{\"candidate\":\"candidate:1 1 UDP 1 127.0.0.1 9 typ host\","
+                      "\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\xc3\xa9\"}");
+    }
+    const auto bare = json("candidate:\"", {}, std::nullopt, {});
+    if (BOOST_TEST(bare.has_value())) {
+        BOOST_TEST_EQ(*bare,
+                      "{\"candidate\":\"candidate:\\\"\",\"sdpMid\":null,\"sdpMLineIndex\":null}");
+    }
+    for (const auto& refused : {
+             json("candidate:\xff", "0", 0, {}),
+             json("candidate:1", "\xc0\xaf", 0, {}),
+             json("candidate:1", "0", 0, "\xed\xa0\x80"),
+         }) {
+        BOOST_TEST(refused.has_error() && refused.error() == webcpp::document::errc::type);
+    }
+}
+
 void the_backend_makes_at_most_its_budget_in_a_minute() {
     asio::io_context io;
     trystero::platform::backend factory(
@@ -886,6 +916,7 @@ int main() {
     a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
     a_candidate_past_its_bound_fails();
+    a_candidate_that_is_not_utf8_is_not_written();
     the_backend_makes_at_most_its_budget_in_a_minute();
     the_runtime_holds_at_most_its_cap_at_once();
     a_url_libdatachannel_cannot_parse_is_left_out();
