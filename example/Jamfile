@@ -36,6 +36,7 @@ local differences =
     diff_peer_join
     diff_peers
     diff_relay_config
+    diff_relay_sockets
     diff_rooms_per_app
     diff_self_id
     diff_send_to_absent_peer
@@ -46,4 +47,7 @@ for local difference in $(differences)
       : <library>/webcpp/trystero//platform <threading>multi : run_over_relay.mjs : : native ;
 }
 webcpp.lane relayed : quick_start $(differences) : native ;
+# One needs no relay, its app joining no room, and has no twin.
+webcpp.example diff_self_id_not_utf8.cpp
+  : <library>/webcpp/trystero//platform <threading>multi : native ;
 # end::differences[]
