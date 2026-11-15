@@ -4,10 +4,10 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// A Nostr relay for the interop test, NIP-01 only and in memory: REQ with kinds, since and #x filters, CLOSE, and
-// EVENT, which it verifies like a public relay (the id is the SHA-256 of the canonical serialization, the signature a
-// valid BIP-340 one) before forwarding it to the subscriptions open at that moment. Nothing is stored: Trystero's
-// kinds are ephemeral.
+// A Nostr relay for the interop test, the examples that run over a relay and their twins, NIP-01 only and in memory:
+// REQ with kinds, since and #x filters, CLOSE, and EVENT, which it verifies like a public relay (the id is the SHA-256
+// of the canonical serialization, the signature a valid BIP-340 one) before forwarding it to the subscriptions open
+// at that moment. Nothing is stored: Trystero's kinds are ephemeral.
 import {createHash} from 'node:crypto'
 import {schnorr} from '@noble/secp256k1'
 import {WebSocketServer} from 'ws'

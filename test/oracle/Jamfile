@@ -6,7 +6,9 @@
 
 # The oracle of trystero: Trystero 0.26.0 itself, pinned by package.json and
 # package-lock.json, run by Node. It computes the protocol's values that the
-# protocol test must reproduce, and meets the C++ peers in the interop tests.
+# protocol test must reproduce, runs the twins of the examples, and meets the
+# C++ peers in the interop tests. werift, pinned beside it, is the WebRTC the
+# twins give Trystero JS in Node, as its README says to.
 
 import webcpp ;
 
