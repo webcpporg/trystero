@@ -78,16 +78,16 @@ struct relay_url {
  * which a page's WebSocket would take as ws and wss), and ones it takes, to a port where nothing
  * listens.
  */
-constexpr std::array<relay_url, 8> urls{{
-    {.url = "ftp://relay.invalid", .attempted = false},
-    {.url = "wss://relay.invalid/#fragment", .attempted = false},
-    {.url = "not a url", .attempted = false},
-    {.url = "/relative", .attempted = false},
-    {.url = "http://127.0.0.1:9", .attempted = false},
-    {.url = "https://127.0.0.1:9", .attempted = false},
-    {.url = "ws://127.0.0.1:9", .attempted = true},
-    {.url = "ws://[::1]:9", .attempted = true},
-}};
+constexpr std::array<relay_url, 8> urls{
+    relay_url{.url = "ftp://relay.invalid", .attempted = false},
+    relay_url{.url = "wss://relay.invalid/#fragment", .attempted = false},
+    relay_url{.url = "not a url", .attempted = false},
+    relay_url{.url = "/relative", .attempted = false},
+    relay_url{.url = "http://127.0.0.1:9", .attempted = false},
+    relay_url{.url = "https://127.0.0.1:9", .attempted = false},
+    relay_url{.url = "ws://127.0.0.1:9", .attempted = true},
+    relay_url{.url = "ws://[::1]:9", .attempted = true},
+};
 
 struct state {
     asio::io_context io;

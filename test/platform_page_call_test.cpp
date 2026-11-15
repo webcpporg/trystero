@@ -132,7 +132,7 @@ std::optional<std::int32_t> read_int32(const val& value) {
     if (!value.isNumber()) {
         return std::nullopt;
     }
-    const double number = value.as<double>();
+    const auto number = value.as<double>();
     // NaN fails every comparison, and so the first.
     if (!(number >= std::numeric_limits<std::int32_t>::min()) ||
         number > std::numeric_limits<std::int32_t>::max() || number != std::trunc(number)) {

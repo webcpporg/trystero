@@ -153,8 +153,7 @@ private:
     void serve() {
         boost::system::error_code ec;
         tcp::socket socket(io_);
-        acceptor_.accept(socket, ec);
-        if (ec) {
+        if (acceptor_.accept(socket, ec)) {
             return;
         }
         beast::websocket::stream<tcp::socket> ws(std::move(socket));

@@ -108,7 +108,11 @@ enum class refused : std::uint8_t {
 };
 
 constexpr std::array<refused, 5> refusals{
-    refused::authority, refused::certificate, refused::option, refused::method, refused::callback,
+    refused::authority,    // add_certificate_authority
+    refused::certificate,  // use_certificate_chain
+    refused::option,       // set_options(no_compression)
+    refused::method,       // tlsv12_client
+    refused::callback,     // a verify callback of its own
 };
 
 /** A context of `tls_client` that asks for `what`, which a page's stream refuses. */

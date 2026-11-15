@@ -134,7 +134,7 @@ void verdict(state& s) {
 
 /** The handlers of a socket that records into `into`, and runs `on_message` after each message. */
 trystero::backend::websocket::handlers recording(state& s, reports& into,
-                                                 void (*on_message)(state&)) {
+                                                 void (*on_message)(const state&)) {
     return {
         .open = [&into] { ++into.opens; },
         .message =
@@ -151,13 +151,13 @@ trystero::backend::websocket::handlers recording(state& s, reports& into,
 }
 
 /** A text reached the binary socket, the one after its binary message: it is closed. */
-void close_binary(state& s) {
+void close_binary(const state& s) {
     s.binary->close();
 }
 
 /** A text reached the oversized socket, which none should: it is closed, so that the verdict runs.
  */
-void close_oversized(state& s) {
+void close_oversized(const state& s) {
     s.oversized->close();
 }
 

@@ -593,8 +593,10 @@ private:
     };
 
     void read() {
-        ws_.async_read(buffer_, transfer_handler{.self = this->shared_from_this(),
-                                                 .member = &websocket_session::on_read});
+        ws_.async_read(buffer_, transfer_handler{
+                                    .self = this->shared_from_this(),
+                                    .member = &websocket_session::on_read,
+                                });
     }
 
     void on_read(const boost::system::error_code& ec, std::size_t size) {
@@ -634,8 +636,10 @@ private:
         queue_.pop_front();
         queued_bytes_ -= writing_text_.size();
         ws_.async_write(webcpp::asio::buffer(writing_text_),
-                        transfer_handler{.self = this->shared_from_this(),
-                                         .member = &websocket_session::on_write});
+                        transfer_handler{
+                            .self = this->shared_from_this(),
+                            .member = &websocket_session::on_write,
+                        });
     }
 
     void on_write(const boost::system::error_code& ec, std::size_t /*size*/) {
