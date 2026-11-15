@@ -34,7 +34,7 @@ int main() {
     trystero::app app(io.get_executor(), backend,
                       {.app_id = "webcpp-trystero-differences", .relay_urls = {relay}});
     auto first = app.join("lobby");
-    auto second = app.join("lobby");
+    const auto second = app.join("lobby");
     std::cout << "the first join: " << (first ? std::string("a room") : first.error().message())
               << '\n'
               << "the second join: "
