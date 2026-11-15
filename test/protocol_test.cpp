@@ -540,9 +540,17 @@ void event_messages(const fixture_value& fixture) {
 // A signal's text is JSON.stringify's of Trystero's object, member for member, with the same
 // strings, every byte of their quoting included, and the protocol reads the same fields back.
 void signal_texts(const fixture_value& fixture) {
-    BOOST_TEST_EQ(fixture["signal_texts"].size(), 5U);
+    BOOST_TEST_EQ(fixture["signal_texts"].size(), 7U);
     for (const auto entry : fixture["signal_texts"]) {
         const auto s = entry["signal"];
+        // The answerer's messages are those whose second member is the answer or the candidate.
+        std::string_view second;
+        std::size_t at = 0;
+        for (const std::string_view key : s.keys()) {
+            if (at++ == 1) {
+                second = key;
+            }
+        }
         const tp::signal_message m{
             .peer_id = str(s["peerId"]),
             .offer_id = str(s["offerId"]),
@@ -550,6 +558,8 @@ void signal_texts(const fixture_value& fixture) {
             .answer = str(s["answer"]),
             .candidate = str(s["candidate"]),
             .passive = s["passive"].value_or(false),
+            .answering =
+                second == "answer" || (second == "candidate" && !s["offerId"].is_undefined()),
         };
         const auto text = str(entry["text"]);
         BOOST_TEST_EQ(tp::write_signal(m, str(s["nonce"])), text);

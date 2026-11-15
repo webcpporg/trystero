@@ -217,8 +217,10 @@ out.actions = await captureActions()
 // Signals' texts, written as Trystero writes each, with toJson (JSON.stringify), their members in
 // the order Trystero gives them: an announcement {peerId, passive, nonce} (the topic strategy's
 // announce, then the Nostr strategy's nonce), an offer {peerId, offerId, offer} and the offerer's
-// candidate {peerId, offerId, candidate, passive} (handleAnnouncement), and an answer to an offer
-// without an id {peerId, answer} (handleOffer); their strings hold the event messages' characters.
+// candidate {peerId, offerId, candidate, passive} (handleAnnouncement), an answer to an offer
+// without an id {peerId, answer}, and the answerer's answer and candidate, whose offerId follows
+// them {peerId, answer, offerId} and {peerId, candidate, offerId, passive} (handleOffer's
+// publishAnswerSignal); their strings hold the event messages' characters.
 out.signal_texts = cases.signal_texts.map(signal => ({signal, text: toJson(signal)}))
 
 // Signals whose objects hold a key twice, as Trystero's own signal handler reads them: it runs in a

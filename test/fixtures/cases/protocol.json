@@ -54,7 +54,9 @@
         {"peerId": "\b\f\n\r\t\u000b", "passive": true, "nonce": "n0nce"},
         {"peerId": "p", "offerId": " \u007f", "offer": "🎉\u0000𝄞 é"},
         {"peerId": "p", "offerId": "o", "candidate": "\u001f \u007f \u0080 \"\\", "passive": true},
-        {"peerId": "q\"\\\n", "answer": " \u0000"}
+        {"peerId": "q\"\\\n", "answer": " \u0000"},
+        {"peerId": "a", "answer": "sealed \u007f", "offerId": "o"},
+        {"peerId": "a", "candidate": "\u2028\u2029", "offerId": "o", "passive": true}
     ],
     "duplicate_keys": {
         "signals": [
@@ -68,7 +70,9 @@
             "{\"peerId\":\"p\",\"passive\":true,\"passive\":false}",
             "{\"peerId\":\"p\",\"passive\":false,\"passive\":true}",
             "{\"peerId\":\"p\",\"peerId\":\"\"}",
-            "{\"peerId\":\"\",\"answer\":\"sealed\",\"peerId\":\"p\"}"
+            "{\"peerId\":\"\",\"answer\":\"sealed\",\"peerId\":\"p\"}",
+            "{\"peerId\":\"p\",\"peer\":\"x\",\"offer\":\"sealed\"}",
+            "{\"peerId\":\"p\",\"peer\":null,\"nonce\":\"n\"}"
         ],
         "events": {
             "app_id": "my-app",

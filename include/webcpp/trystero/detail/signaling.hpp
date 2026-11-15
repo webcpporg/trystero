@@ -738,6 +738,7 @@ private:
                                     .peer_id = self_id_,
                                     .offer_id = m->answered_offer_id,
                                     .answer = sealed,
+                                    .answering = true,
                                 },
                                 {}, memory_));
         m->answer_sent = true;
@@ -1013,6 +1014,7 @@ private:
                                                          .peer_id = self->self_id_,
                                                          .offer_id = m->answered_offer_id,
                                                          .candidate = sealed,
+                                                         .answering = true,
                                                      },
                                                      {}, self->memory_));
                                          }

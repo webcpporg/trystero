@@ -197,6 +197,12 @@ struct signal_message {
      * announces only once it has seen a peer that is not passive.
      */
     bool passive = false;
+    /**
+     * Whether the sender answers the offer: Trystero's answerer writes `offerId` after its answer
+     * or candidate, its offerer before its offer or candidate. Written only; a reader leaves it
+     * false, the order being no part of the meaning.
+     */
+    bool answering = false;
 
     /**
      * Whether the message is an announcement.
@@ -215,14 +221,17 @@ struct signal_message {
  *
  * @param document The root of the parsed payload, whose document the caller keeps alive and
  * unchanged while it reads the views.
- * @return The message, or nothing when Trystero would ignore it (not an object, no peer id, or an
+ * @return The message, or nothing when Trystero would ignore it (not an object, one with a member
+ * `peer`, no peer id, or an
  * offer, answer or candidate that is not a non-empty string), or when a field is longer than its
  * bound: the peer id than @ref max_peer_id_bytes, the offer id than @ref max_offer_id_bytes, an
  * offer or answer than @ref max_sealed_description_bytes, a candidate than
  * @ref max_sealed_candidate_bytes.
  */
 inline std::optional<signal_message> read_signal(const json::const_value& document) {
-    if (!document.is_object()) {
+    // Trystero ignores a text that names a member `peer`, which its own rooms keep for a peer
+    // object no text can hold.
+    if (!document.is_object() || document.contains("peer")) {
         return std::nullopt;
     }
     signal_message out;
@@ -278,10 +287,15 @@ inline std::pmr::string write_signal(
         json::append_string(out, value);
     };
     field("peerId", m.peer_id);
-    field("offerId", m.offer_id);
+    if (!m.answering) {
+        field("offerId", m.offer_id);
+    }
     field("offer", m.offer);
     field("answer", m.answer);
     field("candidate", m.candidate);
+    if (m.answering) {
+        field("offerId", m.offer_id);
+    }
     if (m.passive) {
         json::append_key(out, "passive");
         out += "true";
