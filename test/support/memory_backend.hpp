@@ -85,11 +85,10 @@ class memory_timer : public backend::timer {
 public:
     /** A timer on the virtual clock `clock`, or on Asio's when `clock` is empty. */
     memory_timer(webcpp::asio::io_context& io, std::pmr::memory_resource* memory,
-                 std::uint32_t time_scale = 1, std::weak_ptr<virtual_clock_state> clock = {})
+                 std::weak_ptr<virtual_clock_state> clock = {})
         : io_(io),
           timer_(io),
           memory_(memory),
-          time_scale_(time_scale),
           on_clock_(!clock.expired()),
           clock_(std::move(clock)),
           waits_(
@@ -112,7 +111,7 @@ public:
             return;
         }
         const std::uint64_t wait = ++*waits_;
-        timer_.expires_after(delay / time_scale_);
+        timer_.expires_after(delay);
         timer_.async_wait(webcpp::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [waits = std::weak_ptr<std::uint64_t>(waits_), wait,
@@ -156,7 +155,6 @@ private:
     webcpp::asio::io_context& io_;
     webcpp::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
-    std::uint32_t time_scale_;
     bool on_clock_;
     std::weak_ptr<virtual_clock_state> clock_;
     std::optional<virtual_clock_state::key> key_;
@@ -730,13 +728,13 @@ public:
     std::shared_ptr<backend::timer> make_timer(std::pmr::memory_resource* memory) override {
         if (!virtual_clock) {
             return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory),
-                                                      io_, memory, time_scale);
+                                                      io_, memory);
         }
         if (!clock_) {
             clock_ = std::make_shared<virtual_clock_state>();
         }
         return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory), io_,
-                                                  memory, time_scale,
+                                                  memory,
                                                   std::weak_ptr<virtual_clock_state>(clock_));
     }
 
@@ -757,14 +755,13 @@ public:
                std::chrono::floor<std::chrono::seconds>(steady_now().time_since_epoch());
     }
 
-    /** The virtual clock's time, or the time since the network was made, `time_scale` times
-     * faster; from the steady clock's epoch. */
+    /** The virtual clock's time, or the time since the network was made; from the steady clock's
+     * epoch. */
     std::chrono::steady_clock::time_point steady_now() override {
         if (virtual_clock) {
             return clock_ ? clock_->now : std::chrono::steady_clock::time_point();
         }
-        return std::chrono::steady_clock::time_point((std::chrono::steady_clock::now() - start_) *
-                                                     time_scale);
+        return std::chrono::steady_clock::time_point(std::chrono::steady_clock::now() - start_);
     }
 
     std::shared_ptr<memory_peer_connection> find(std::size_t id) {
@@ -783,8 +780,6 @@ public:
     std::size_t peak_connections = 0;
     /** How many random bytes were drawn. */
     std::size_t random_bytes = 0;
-    /** How much faster than real time the timers and the clock run, for tests of long timeouts. */
-    std::uint32_t time_scale = 1;
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
     std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
