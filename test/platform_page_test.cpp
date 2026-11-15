@@ -46,6 +46,7 @@
 #include <webcpp/test/exit_status.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -72,10 +73,10 @@ struct page {
     std::optional<trystero::action<std::string>> chat_z;
     bool ran_inside_a_call = false;
     bool joined = false;
-    int met = 0;
+    std::size_t met = 0;
     std::vector<std::string> received;
-    int ignored = 0;
-    int late = 0;
+    std::size_t ignored = 0;
+    std::size_t late = 0;
 };
 
 /** Records whether posted work runs inside a call of the page's, which it never should. */
@@ -171,8 +172,8 @@ int main() {
     const std::vector<std::string> expected{"from the page", "again"};
     BOOST_TEST_ALL_EQ(p.received.begin(), p.received.end(), expected.begin(), expected.end());
     BOOST_TEST(val::global("pageReturned").isUndefined());
-    BOOST_TEST_EQ(p.ignored, 2);
+    BOOST_TEST_EQ(p.ignored, 2U);
     BOOST_TEST(!p.ran_inside_a_call);
-    BOOST_TEST_EQ(p.late, 0);
+    BOOST_TEST_EQ(p.late, 0U);
     return webcpp::test::exit_status(boost::report_errors());
 }

@@ -66,7 +66,7 @@ std::shared_ptr<trystero::detail::timer> make_timer(asio::io_context& io,
  */
 template <class Then>
 void both_expired(asio::io_context& io, trystero::detail::timer& first,
-                  trystero::detail::timer& second, int& second_fired, Then then) {
+                  trystero::detail::timer& second, std::size_t& second_fired, Then then) {
     first.start(0ms, then);
     second.start(0ms, [&second_fired] { ++second_fired; });
     io.run_for(100ms);  // lint-run: the timers' expiries are the events under test
@@ -78,10 +78,10 @@ void an_uncancelled_wait_fires_once() {
     counting_resource memory;
     const auto timer = make_timer(io, &memory);
     const std::size_t made = memory.allocations;
-    int fired = 0;
+    std::size_t fired = 0;
     timer->start(1ms, [&] { ++fired; });
     io.run_for(100ms);  // lint-run: the wait expires
-    BOOST_TEST_EQ(fired, 1);
+    BOOST_TEST_EQ(fired, 1U);
     // The wait was allocated in the timer's resource, and given back once it completed.
     BOOST_TEST_GT(memory.allocations, made);
     BOOST_TEST_EQ(memory.outstanding, 2U);  // the timer, and its count of waits
@@ -92,9 +92,9 @@ void a_cancelled_wait_never_fires() {
     std::pmr::memory_resource* const memory = std::pmr::get_default_resource();
     const auto first = make_timer(io, memory);
     const auto second = make_timer(io, memory);
-    int fired = 0;
+    std::size_t fired = 0;
     both_expired(io, *first, *second, fired, [&] { second->cancel(); });
-    BOOST_TEST_EQ(fired, 0);
+    BOOST_TEST_EQ(fired, 0U);
 }
 
 void a_destroyed_timer_never_fires() {
@@ -102,9 +102,9 @@ void a_destroyed_timer_never_fires() {
     std::pmr::memory_resource* const memory = std::pmr::get_default_resource();
     const auto first = make_timer(io, memory);
     auto second = make_timer(io, memory);
-    int fired = 0;
+    std::size_t fired = 0;
     both_expired(io, *first, *second, fired, [&] { second.reset(); });
-    BOOST_TEST_EQ(fired, 0);
+    BOOST_TEST_EQ(fired, 0U);
 }
 
 void a_restarted_timer_fires_only_its_new_wait() {
@@ -112,12 +112,12 @@ void a_restarted_timer_fires_only_its_new_wait() {
     std::pmr::memory_resource* const memory = std::pmr::get_default_resource();
     const auto first = make_timer(io, memory);
     const auto second = make_timer(io, memory);
-    int fired = 0;
-    int restarted = 0;
+    std::size_t fired = 0;
+    std::size_t restarted = 0;
     both_expired(io, *first, *second, fired, [&] { second->start(10ms, [&] { ++restarted; }); });
     io.run_for(100ms);  // lint-run: the restarted wait expires
-    BOOST_TEST_EQ(fired, 0);
-    BOOST_TEST_EQ(restarted, 1);
+    BOOST_TEST_EQ(fired, 0U);
+    BOOST_TEST_EQ(restarted, 1U);
 }
 
 }  // namespace

@@ -27,6 +27,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -84,7 +86,7 @@ struct pair {
     std::vector<backend::bytes> at_offerer, at_answerer;
     bool offer_open = false, answer_open = false, off_thread = false;
     std::vector<backend::connection_state> answerer_states;
-    int answer_closes = 0;
+    std::size_t answer_closes = 0;
 
     /** What makes the offerer's executor of the io_context's. */
     using executor_wrapper = std::function<asio::any_io_executor(asio::any_io_executor)>;
@@ -174,7 +176,7 @@ struct pair {
     }
 
     void watch(const std::shared_ptr<backend::data_channel>& channel, bool& open,
-               std::vector<backend::bytes>& received, int* closes) {
+               std::vector<backend::bytes>& received, std::size_t* closes) {
         channel->set_handlers({
             .open =
                 [this, &open] {
@@ -394,7 +396,7 @@ void a_full_pending_queue_drains_in_order_and_uses_replacement_handlers() {
         p.answer_end->send(backend::bytes{i});
     }
     p.receive(64);
-    std::vector<int> received;
+    std::vector<std::uint8_t> received;
     // The 65th frame's delivery is already queued before set_handlers posts its flush: the
     // channel's read, then its completion.
     p.answer_end->send(backend::bytes{64});
@@ -424,7 +426,7 @@ void a_full_pending_queue_drains_in_order_and_uses_replacement_handlers() {
     registering = false;
     require(BOOST_TEST(p.until([&] { return received.size() == 65; })));
     for (std::size_t i = 0; i < received.size(); ++i) {
-        BOOST_TEST_EQ(received[i], static_cast<int>(i));
+        BOOST_TEST_EQ(received[i], static_cast<std::uint8_t>(i));
     }
     // A later handoff must post a new flush after the first one has finished.
     p.offer_end->set_handlers({});
@@ -437,7 +439,7 @@ void a_full_pending_queue_drains_in_order_and_uses_replacement_handlers() {
         .buffered_amount_low = {},
     });
     require(BOOST_TEST(p.until([&] { return received.size() == 66; })));
-    BOOST_TEST_EQ(received.back(), 65);
+    BOOST_TEST_EQ(received.back(), 65U);
 }
 
 void a_pending_queue_overflow_closes_the_channel() {
@@ -483,7 +485,7 @@ void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
     p.answer_end->send(backend::bytes{1});
     p.answer_end->send(backend::bytes{2});
     p.receive(2);
-    int received = 0;
+    std::size_t received = 0;
     p.offer_end->set_handlers({
         .open = {},
         .message =
@@ -496,7 +498,7 @@ void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
         .buffered_amount_low = {},
     });
     require(BOOST_TEST(p.until([&] { return p.answer_closes == 1; })));
-    BOOST_TEST_EQ(received, 1);
+    BOOST_TEST_EQ(received, 1U);
 }
 
 class pending_memory : public std::pmr::memory_resource {
@@ -543,7 +545,7 @@ void pending_frames_and_delivery_use_the_channels_resource() {
         p.open();
         require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
         p.offer_end->set_handlers({});
-        for (int i = 0; i < 64; ++i) {
+        for (std::size_t i = 0; i < 64; ++i) {
             p.answer_end->send(backend::bytes(1024, static_cast<std::uint8_t>(i)));
         }
         p.receive(64);
@@ -599,7 +601,7 @@ void the_backend_makes_at_most_its_budget_in_a_minute() {
         io.get_executor(),
         {.bind_address = std::pmr::string(loopback), .max_peer_connections_per_minute = 3});
     std::vector<std::shared_ptr<backend::peer_connection>> made;
-    for (int i = 0; i < 3; ++i) {
+    for (std::size_t i = 0; i < 3; ++i) {
         made.push_back(factory.make_peer_connection({}, std::pmr::get_default_resource()));
         BOOST_TEST(made.back() != nullptr);
     }
