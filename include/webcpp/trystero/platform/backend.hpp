@@ -307,7 +307,7 @@ public:
     }
 
     /**
-     * The standard library's wall clock, in a page `Date.now()`'s, to the whole second below.
+     * The standard library's wall clock, which a page reads from `Date.now()`, in whole seconds.
      *
      * @return The current time, in whole seconds since the Unix epoch.
      */
@@ -317,7 +317,7 @@ public:
     }
 
     /**
-     * The standard library's steady clock, in a page `performance.now()`'s.
+     * The standard library's steady clock, which a page reads from `performance.now()`.
      *
      * @return The current time, from the steady clock's epoch.
      */
