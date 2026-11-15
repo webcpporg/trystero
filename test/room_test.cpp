@@ -19,6 +19,7 @@
 #include <webcpp/asio/use_awaitable.hpp>
 
 #include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
 #include <webcpp/document/stringify.hpp>
 
 #include <boost/core/lightweight_test.hpp>
@@ -1224,10 +1225,10 @@ void long_peer_ids_are_bounded() {
         trystero::protocol::json::append_key(text, "peerId");
         trystero::protocol::json::append_string(text, id);
         text += '}';
-        auto parsed = trystero::protocol::json::parse(
+        auto parsed = webcpp::document::parse(
             text,
             trystero::protocol::json::protocol_limits(trystero::protocol::max_parsed_signal_bytes),
-            std::pmr::get_default_resource());
+            std::pmr::polymorphic_allocator<std::byte>(std::pmr::get_default_resource()));
         webcpp::test::require(BOOST_TEST(parsed.has_value()));
         return std::move(*parsed);
     };
@@ -1305,6 +1306,75 @@ void async_receive_works_in_a_coroutine() {
     BOOST_TEST(run_until(f.io, [&] { return seen.size() == 2; }));
     const std::vector<std::string> both{"text", "[1,2]"};
     BOOST_TEST_ALL_EQ(seen.begin(), seen.end(), both.begin(), both.end());
+}
+
+// A JSON payload is parsed in the receiving room's resource, as a webcpp::document::pmr::document,
+// within twice its own size and 64 KiB of image, whatever type receives it: an array of 100 zeros
+// is delivered, one of 1,000, whose nodes would need some 190 KB, is not, and the messages after it
+// are.
+void json_payloads_are_read_in_the_rooms_resource_within_their_size() {
+    std::pmr::unsynchronized_pool_resource z_memory;  // outlives the io_context
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("TTTTTTTTTTTTTTTTTTTT"));
+    auto a = join(a_app, "json");
+    trystero::app z_app(f.io.get_executor(), f.net, app_config("UUUUUUUUUUUUUUUUUUUU"));
+    auto z = join(z_app, "json", trystero::room_options{.memory = &z_memory});
+    std::vector<std::size_t> in_resource;
+    std::vector<std::size_t> in_heap;
+    std::size_t elsewhere = 0;
+    z.make_action<webcpp::document::pmr::document>("pmr").on_message(
+        [&](const webcpp::document::pmr::document& v, const trystero::message_info&) {
+            elsewhere += v.get_allocator().resource() == &z_memory ? 0 : 1;
+            in_resource.push_back(v.root().size());
+        });
+    z.make_action<webcpp::document::document>("std").on_message(
+        [&](const webcpp::document::document& v, const trystero::message_info&) {
+            in_heap.push_back(v.root().size());
+        });
+    BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
+    const auto zeros = [](std::size_t n) {
+        std::string text = "[0";
+        for (std::size_t i = 1; i < n; ++i) {
+            text += ",0";
+        }
+        return document_of(text + "]");
+    };
+    for (const char* name : {"pmr", "std"}) {
+        auto to_z = a.make_action<webcpp::document::document>(name);
+        for (const std::size_t n : {100, 1000, 3}) {
+            to_z.async_send(zeros(n), asio::detached);
+        }
+    }
+    // A data channel keeps its order: the last of each action arrives after the other two.
+    BOOST_TEST(run_until(f.io, [&] { return in_resource.size() >= 2 && in_heap.size() >= 2; }));
+    const std::vector<std::size_t> delivered{100, 3};
+    BOOST_TEST_ALL_EQ(in_resource.begin(), in_resource.end(), delivered.begin(), delivered.end());
+    BOOST_TEST_ALL_EQ(in_heap.begin(), in_heap.end(), delivered.begin(), delivered.end());
+    BOOST_TEST_EQ(elsewhere, 0U);
+}
+
+// A message of another format than a document action's completes its receive with
+// error::transfer_rejected and a document holding null, in the room's resource.
+void a_rejected_document_receive_holds_null_in_the_rooms_resource() {
+    std::pmr::unsynchronized_pool_resource z_memory;  // outlives the io_context
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("VVVVVVVVVVVVVVVVVVVV"));
+    auto a = join(a_app, "rejected");
+    trystero::app z_app(f.io.get_executor(), f.net, app_config("WWWWWWWWWWWWWWWWWWWW"));
+    auto z = join(z_app, "rejected", trystero::room_options{.memory = &z_memory});
+    bool completed = false;
+    z.make_action<webcpp::document::pmr::document>("doc").async_receive(
+        [&](boost::system::error_code ec, webcpp::document::pmr::document v,
+            const trystero::message_info& info) {
+            completed = true;
+            BOOST_TEST(ec == trystero::error::transfer_rejected);
+            BOOST_TEST(v.root().is_null());
+            BOOST_TEST(v.get_allocator().resource() == &z_memory);
+            BOOST_TEST_EQ(info.from, "VVVVVVVVVVVVVVVVVVVV");
+        });
+    BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
+    a.make_action<std::string>("doc").async_send("not JSON", asio::detached);
+    BOOST_TEST(run_until(f.io, [&] { return completed; }));
 }
 
 void view_handlers_read_the_frame_without_copying() {
@@ -1625,6 +1695,8 @@ int main() {
     counter_announcements_are_paced();
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
+    json_payloads_are_read_in_the_rooms_resource_within_their_size();
+    a_rejected_document_receive_holds_null_in_the_rooms_resource();
     view_handlers_read_the_frame_without_copying();
     a_rate_limited_relay_does_not_stop_discovery();
     a_connections_end_is_seen_and_the_peers_meet_again();

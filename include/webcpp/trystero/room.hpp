@@ -38,9 +38,12 @@
 #include <webcpp/asio/bind_allocator.hpp>          // lint-world: posts handlers only
 
 #include <webcpp/document/document.hpp>
+#include <webcpp/document/errors.hpp>
 #include <webcpp/document/parse.hpp>
+#include <webcpp/document/storage.hpp>
 
 #include <boost/assert.hpp>
+#include <boost/throw_exception.hpp>
 
 #include <array>
 #include <chrono>
@@ -48,6 +51,7 @@
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -90,22 +94,14 @@ using bytes = std::vector<std::uint8_t>;
 using pmr_bytes = std::pmr::vector<std::uint8_t>;
 
 /**
- * A JSON document in a memory resource, an action's JSON payload in the room's resource.
- *
- * A message received as `pmr_document` is parsed into a buffer of the room's effective
- * `room_options::memory`, which must outlive the value, with every value of the document in that
- * buffer. One sent is written once, as `JSON.stringify` writes it, into the room's resource.
- *
- * @see "Allocation", in the guide.
- */
-using pmr_document = protocol::json::document;
-
-/**
  * What an action carries when its type is not fixed: Trystero's text, JSON or binary payload.
  *
  * A message received as `payload` holds the alternative of its format: a `std::string` for text,
  * a `webcpp::document::document` for JSON, and `bytes` for binary data, each with the standard
  * allocator.
+ *
+ * Tip: a handle of the document's values refers to the document object, as every handle of
+ * webcpp::document does: moving the document, or the variant that holds it, invalidates it.
  */
 using payload = std::variant<std::string, webcpp::document::document, bytes>;
 
@@ -170,20 +166,23 @@ inline std::string_view as_text(std::span<const std::uint8_t> data) {
  * copying it when the type owns its storage; a view is copied once, there, into the room's
  * resource. `decode` reads a received message: a view type refers to the message's buffer and is
  * valid for the duration of the handler, so only owning types can be awaited. The `std::pmr` types
- * are built in the receiving room's resource, `pmr_document` in a buffer of it; the standard
- * types allocate with `std::allocator`, as the user chose, and so does an owned document.
+ * are built in the receiving room's resource, `webcpp::document::pmr::document` too; the standard
+ * types allocate with `std::allocator`, as the user chose, and so does
+ * `webcpp::document::document`. A JSON text is parsed within @ref protocol::json::protocol_limits
+ * of its own size.
  *
- * | Type                          | Trystero format | Receiving                                   |
- * | std::string                   | text            | a copy of the bytes                         |
- * | std::pmr::string              | text            | a copy of the bytes, in the room's resource |
- * | std::string_view              | text            | a view of the frame, in a handler           |
- * | webcpp::document::document    | JSON            | parsed, in an image of its own              |
- * | trystero::pmr_document        | JSON            | parsed, in a buffer of the room's resource  |
- * | trystero::bytes               | binary          | a copy of the bytes                         |
- * | trystero::pmr_bytes           | binary          | moved or copied once into the room's       |
- * |                               |                 | resource                                    |
- * | std::span<const std::uint8_t> | binary          | a view of the frame, in a handler           |
- * | trystero::payload             | any             | by format                                   |
+ * | Type                             | Trystero format | Receiving                                |
+ * | std::string                      | text            | a copy of the bytes                      |
+ * | std::pmr::string                 | text            | a copy of the bytes, in the room's       |
+ * |                                  |                 | resource                                 |
+ * | std::string_view                 | text            | a view of the frame, in a handler        |
+ * | webcpp::document::document       | JSON            | parsed, with `std::allocator`            |
+ * | webcpp::document::pmr::document  | JSON            | parsed, in the room's resource           |
+ * | trystero::bytes                  | binary          | a copy of the bytes                      |
+ * | trystero::pmr_bytes              | binary          | moved or copied once into the room's     |
+ * |                                  |                 | resource                                 |
+ * | std::span<const std::uint8_t>    | binary          | a view of the frame, in a handler        |
+ * | trystero::payload                | any             | by format                                |
  */
 template <class T>
 struct payload_traits;
@@ -262,6 +261,14 @@ struct payload_traits<std::string_view> {
     }
 };
 
+/**
+ * The limits of a received JSON payload's parse: its own size, and an image that grows to at most
+ * twice that and 64 KiB, as a protocol text's (@ref protocol::json::protocol_limits).
+ */
+inline webcpp::document::parse_options json_payload_limits(std::string_view text) noexcept {
+    return protocol::json::protocol_limits(text.size());
+}
+
 /** How an action of `webcpp::document::document`, Trystero's JSON payload, travels. */
 template <>
 struct payload_traits<webcpp::document::document> {
@@ -278,16 +285,17 @@ struct payload_traits<webcpp::document::document> {
     }
 
     /**
-     * The message's payload as this type: the parsed text, an owned document, whose image comes
-     * from the global `operator new` as document's own does; nothing for another format or a text
-     * that does not parse.
+     * The message's payload as this type: the parsed text, an owned document in `std::allocator`,
+     * as the user chose (@ref json_payload_limits); nothing for another format or a text that does
+     * not parse within them.
      */
     static std::optional<webcpp::document::document> decode(incoming& m,
                                                             std::pmr::memory_resource* /*memory*/) {
         if (m.format != protocol::payload_format::json) {
             return std::nullopt;
         }
-        auto v = webcpp::document::parse(as_text(m.payload()));
+        const std::string_view text = as_text(m.payload());
+        auto v = webcpp::document::parse(text, json_payload_limits(text));
         if (!v.has_value()) {
             return std::nullopt;
         }
@@ -295,31 +303,34 @@ struct payload_traits<webcpp::document::document> {
     }
 };
 
-/** How an action of `trystero::pmr_document`, Trystero's JSON payload, travels. */
+/** How an action of `webcpp::document::pmr::document`, Trystero's JSON payload, travels. */
 template <>
-struct payload_traits<pmr_document> {
+struct payload_traits<webcpp::document::pmr::document> {
     /** Whether a decoded value owns its storage, so that it may be awaited. */
     static constexpr bool owning = true;
 
     /** Writes the value once, as `JSON.stringify` does, into a shared string of the room's
      * resource. */
-    static encoded_payload encode(const pmr_document& v, std::pmr::memory_resource* memory) {
+    static encoded_payload encode(const webcpp::document::pmr::document& v,
+                                  std::pmr::memory_resource* memory) {
         std::pmr::string text(memory);
         protocol::json::append_value(text, v.root());
         return own(protocol::payload_format::json, keep<std::pmr::string>(memory, std::move(text)));
     }
 
     /**
-     * The message's payload as this type: the parsed text, in a buffer of the room's resource, as
-     * large as document's limits let a parse grow (`parse_options::max_document_bytes`); nothing
-     * for another format or a text that does not parse.
+     * The message's payload as this type: the parsed text, its image and the parse's working state
+     * in the room's resource (@ref json_payload_limits); nothing for another format or a text that
+     * does not parse within them.
      */
-    static std::optional<pmr_document> decode(incoming& m, std::pmr::memory_resource* memory) {
+    static std::optional<webcpp::document::pmr::document> decode(
+        incoming& m, std::pmr::memory_resource* memory) {
         if (m.format != protocol::payload_format::json) {
             return std::nullopt;
         }
-        auto v =
-            protocol::json::parse(as_text(m.payload()), webcpp::document::parse_options(), memory);
+        const std::string_view text = as_text(m.payload());
+        auto v = webcpp::document::parse(text, json_payload_limits(text),
+                                         std::pmr::polymorphic_allocator<std::byte>(memory));
         if (!v.has_value()) {
             return std::nullopt;
         }
@@ -448,6 +459,36 @@ struct payload_traits<payload> {
         return std::nullopt;
     }
 };
+
+/** An owned document `create` made, or `std::bad_alloc` when its allocator had no room for it. */
+template <class Document>
+Document made_or_bad_alloc(webcpp::document::result<Document> made) {
+    if (!made.has_value()) {
+        // As a std::pmr container fails when its resource has no room.
+        boost::throw_exception(std::bad_alloc());
+    }
+    return std::move(made).unsafe_value();
+}
+
+/**
+ * The value `async_receive` completes with when it decodes no message: an empty one, in the room's
+ * resource for a `std::pmr` type, and for a JSON document one holding `null`, the
+ * `webcpp::document::pmr::document` in the room's resource; `std::bad_alloc` when the resource
+ * has no room for that document.
+ */
+template <class T>
+T empty_payload(std::pmr::memory_resource* memory) {
+    if constexpr (std::is_same_v<T, webcpp::document::pmr::document>) {
+        return made_or_bad_alloc(webcpp::document::pmr::document::create(
+            std::pmr::polymorphic_allocator<std::byte>(memory)));
+    } else if constexpr (std::is_same_v<T, webcpp::document::document>) {
+        return made_or_bad_alloc(webcpp::document::document::create());
+    } else if constexpr (std::is_same_v<T, std::pmr::string> || std::is_same_v<T, pmr_bytes>) {
+        return T(memory);
+    } else {
+        return T{};
+    }
+}
 
 /**
  * A user's completion handler, type-erased, and whether its associated executor is the room's,
@@ -1249,8 +1290,9 @@ private:
             return;
         }
         // A message past its bound fails the handshake as one of the wrong shape does.
-        const auto value = protocol::json::parse(
-            data, protocol::json::protocol_limits(protocol::max_handshake_bytes), memory_);
+        const auto value = webcpp::document::parse(
+            data, protocol::json::protocol_limits(protocol::max_handshake_bytes),
+            std::pmr::polymorphic_allocator<std::byte>(memory_));
         const protocol::json::const_value o = value.has_value() && value->root().is_object()
                                                   ? value->root()
                                                   : protocol::json::const_value();
@@ -1711,9 +1753,8 @@ public:
      * per peer, for 120 s), are delivered to it.
      *
      * @tparam T The type of its messages: `std::string`, `std::pmr::string`, `std::string_view`,
-     * `webcpp::document::document`, @ref pmr_document, @ref bytes, @ref pmr_bytes,
-     * `std::span<const std::uint8_t>`, or
-     * @ref payload for any of Trystero's formats.
+     * `webcpp::document::document`, `webcpp::document::pmr::document`, @ref bytes, @ref pmr_bytes,
+     * `std::span<const std::uint8_t>`, or @ref payload for any of Trystero's formats.
      * @param name The action's name, 1 to 32 UTF-8 bytes without NUL; with another, every send
      * fails with `error::invalid_action_name`.
      * @return The action.
@@ -1805,7 +1846,9 @@ public:
      * Messages that queued while the action had no handler are delivered to it first.
      *
      * @tparam F A callable with a `T` and a `const message_info&`; with a view type, the view is
-     * valid for the duration of the call.
+     * valid for the duration of the call. A JSON document is the handler's to keep: a handle of its
+     * values refers to the document object, as every handle of webcpp::document does, so moving the
+     * document invalidates it.
      * @param f The handler, kept in the room's resource; it replaces the one set before.
      */
     template <class F>
@@ -1879,8 +1922,11 @@ public:
      * Receives the next message, when no handler is set: the oldest queued, or the next to arrive.
      *
      * Completes with `(error_code, T, message_info)`; a message of another payload format than
-     * `T`'s completes with `error::transfer_rejected` and an empty value, and leaving the room
-     * with `error::room_left`. `T` must own its storage: a view would outlive the message.
+     * `T`'s, or a JSON text that does not parse, completes with `error::transfer_rejected` and an
+     * empty value, a JSON document holding `null`, and leaving the room with `error::room_left`.
+     * `T` must own its storage: a view would outlive the message. A JSON document is the
+     * handler's: a handle of its values refers to the document object, so moving the document
+     * invalidates it.
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code, T, message_info)`.
      * @param token The completion token.
@@ -1896,25 +1942,27 @@ public:
                 // The decoding step is allocated as the user's handler is, which it carries.
                 const auto allocator = webcpp::asio::get_associated_allocator(handler);
                 impl->receive(
-                    name,
-                    impl->template erase<void(boost::system::error_code, detail::incoming)>(
-                        webcpp::asio::bind_allocator(
-                            allocator,
-                            [impl, handler = std::move(handler)](boost::system::error_code ec,
-                                                                 detail::incoming m) mutable {
-                                auto* const memory = impl->memory();
-                                message_info info{
-                                    .from = std::move(m.peer),
-                                    .metadata = std::pmr::string(m.metadata(), memory),
-                                };
-                                auto value = ec ? std::nullopt
-                                                : detail::payload_traits<T>::decode(m, memory);
-                                if (!ec && !value) {
-                                    ec = make_error_code(error::transfer_rejected);
-                                }
-                                impl->complete(std::move(handler), ec,
-                                               value ? std::move(*value) : T{}, std::move(info));
-                            })));
+                    name, impl->template erase<void(boost::system::error_code, detail::incoming)>(
+                              webcpp::asio::bind_allocator(
+                                  allocator,
+                                  [impl, handler = std::move(handler)](boost::system::error_code ec,
+                                                                       detail::incoming m) mutable {
+                                      auto* const memory = impl->memory();
+                                      message_info info{
+                                          .from = std::move(m.peer),
+                                          .metadata = std::pmr::string(m.metadata(), memory),
+                                      };
+                                      auto value =
+                                          ec ? std::nullopt
+                                             : detail::payload_traits<T>::decode(m, memory);
+                                      if (!ec && !value) {
+                                          ec = make_error_code(error::transfer_rejected);
+                                      }
+                                      impl->complete(std::move(handler), ec,
+                                                     value ? std::move(*value)
+                                                           : detail::empty_payload<T>(memory),
+                                                     std::move(info));
+                                  })));
             },
             token);
     }

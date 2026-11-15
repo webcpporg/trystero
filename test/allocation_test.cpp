@@ -6,10 +6,9 @@
 
 // While two rooms over the memory relays exchange a message, every allocation
 // they make goes through the resources of their configurations: the counting
-// resources see them, and the global operator new, replaced here, sees only
-// webcpp::document's working state while it reads or writes a JSON text, each
-// freed before the call returns, nor do the C library's allocation functions
-// where the platform lets a program count them (doc: #trystero-allocation).
+// resources see them, and the global operator new, replaced here, sees none,
+// nor do the C library's allocation functions where the platform lets a
+// program count them (doc: #trystero-allocation).
 
 #include <webcpp/trystero.hpp>
 
@@ -23,6 +22,9 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
+
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
 
 #include <boost/core/lightweight_test.hpp>
 #include <boost/throw_exception.hpp>
@@ -526,13 +528,16 @@ void the_replaced_operators_serve_every_alignment() {
 
 /**
  * What the counts can see, so that a zero below means something: a counted
- * operator new, and a counted call of the C library where it is counted.
+ * operator new, kept live until it is freed, and a counted call of the C
+ * library where it is counted.
  */
 void the_counts_see_an_allocation() {
     counting = true;
     void* pointer = ::operator new(40);
     counting = false;
+    BOOST_TEST_EQ(live_count, 1U);
     ::operator delete(pointer);
+    BOOST_TEST_EQ(live_count, 0U);
     explain_global_allocations(1U);
     BOOST_TEST_EQ(global_allocations, 1U);
 #ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
@@ -566,30 +571,42 @@ trystero::room join(trystero::app& a, std::string_view room_id,
     return std::move(*r);
 }
 
-/**
- * What webcpp::document's working state costs the global operator new for a JSON payload: writing
- * it as a sending room does and reading the text back as a receiving room does, into `memory`.
- * Freed before each call returns, and counted here outside any window.
+/** What the global counts saw in a window: operator new's, the C library's, and what is still out.
  */
-std::size_t document_cost(const trystero::pmr_document& payload,
-                          std::pmr::memory_resource* memory) {
-    std::pmr::string text(memory);
-    global_allocations = 0;
-    counting = true;
-    tp::json::append_value(text, payload.root());
-    const bool read = tp::json::parse(text, webcpp::document::parse_options(), memory).has_value();
-    counting = false;
-    BOOST_TEST(read);
-    BOOST_TEST_EQ(live_count, 0U);
-    return std::exchange(global_allocations, 0);
+struct seen {
+    std::size_t global = 0;
+    std::size_t c = 0;
+    std::size_t live = 0;
+};
+
+// The operator new `plant` leaves out, which `free_planted` frees once the window is closed.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+void* planted = nullptr;
+
+/**
+ * Allocates outside every resource, as a room must not, from a handler the io_context runs: an
+ * operator new it leaves out, and a call of the C library, freed at once.
+ */
+void plant() {
+    planted = ::operator new(24);
+    // The C library's allocation, on purpose.
+    void* volatile memory = std::malloc(40);
+    std::free(memory);
+}
+
+/** Frees what `plant` left out. */
+void free_planted() {
+    ::operator delete(planted);
+    planted = nullptr;
 }
 
 /**
- * Two rooms exchange two payloads that make builds; the second is counted, and the global
- * operator new sees exactly what `cost` says webcpp::document's working state takes for it.
+ * Two rooms exchange two payloads that make builds; the second is counted, and the global counts
+ * seen in its window returned. With `planting`, the receiving handler plants allocations outside
+ * the resources, which the window must see (doc: #trystero-allocation).
  */
-template <class Payload, class Make, class Cost>
-void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
+template <class Payload, class Make>
+seen exchange_through_the_rooms_resources(Make make, bool planting = false) {
     // The resources outlive the io_context, whose pending operations they hold.
     counting_resource a_memory;
     counting_resource z_memory;
@@ -598,7 +615,7 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
-    const trystero::test::memory_relay& relay_state = network.relay(relay);
+    network.relay(relay);
     trystero::app a_app(io.get_executor(), network,
                         {
                             .app_id = "allocation",
@@ -616,11 +633,17 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     auto a = join(a_app, "room");
     auto z = join(z_app, "room");
     std::size_t received = 0;
+    bool plant_next = false;
     auto from_a = a.make_action<Payload>("chat");
     z.make_action<Payload>("chat").on_message(
-        [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) { ++received; });
-    const auto send = [&](Payload value) {
-        from_a.async_send(std::move(value),
+        [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) {
+            ++received;
+            if (std::exchange(plant_next, false)) {
+                plant();
+            }
+        });
+    const auto send = [&] {
+        from_a.async_send(make(&a_memory),
                           webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
                                                        [](boost::system::error_code /*ec*/) {}));
     };
@@ -628,68 +651,83 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // payload sent before the peers meet reaches nobody.
     if (!BOOST_TEST(
             run_until(io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; }))) {
-        return;
+        return {};
     }
-    send(make(&a_memory));
+    send();
     if (!BOOST_TEST(run_until(io, [&] { return received == 1; }))) {
-        return;
+        return {};
     }
-    // A window in which the relay carries a text, an announcement the rooms read, sees that
-    // parse too; such a window is opened again, five times at most.
-    bool quiet = false;
-    for (std::size_t window = 0; window < 5 && !quiet; ++window) {
-        Payload value = make(&a_memory);
-        const std::size_t expected = cost(value, &z_memory);
-        const std::size_t texts = relay_state.texts;
-        const std::size_t before = a_memory.allocations + z_memory.allocations;
-        const std::size_t wanted = received + 1;
-        global_allocations = 0;
-        c_allocations = 0;
-        counting = true;
-        send(std::move(value));
-        const bool arrived = run_until(io, [&] { return received == wanted; });
-        counting = false;
-        BOOST_TEST(arrived);
-        quiet = relay_state.texts == texts;
-        if (!quiet) {
-            continue;
-        }
-        explain_global_allocations(expected);
-        BOOST_TEST_EQ(global_allocations, expected);
-        BOOST_TEST_EQ(live_count, 0U);
-        BOOST_TEST_EQ(c_allocations, 0U);
-        BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
-    }
-    BOOST_TEST(quiet);
-    BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign, 0U);
+    const std::size_t before = a_memory.allocations + z_memory.allocations;
     global_allocations = 0;
     c_allocations = 0;
+    plant_next = planting;
+    counting = true;
+    send();
+    const bool arrived = run_until(io, [&] { return received == 2; });
+    counting = false;
+    BOOST_TEST(arrived);
+    explain_global_allocations(planting ? 1U : 0U);
+    const seen window{
+        .global = std::exchange(global_allocations, 0),
+        .c = std::exchange(c_allocations, 0),
+        .live = live_count,
+    };
+    if (planted != nullptr) {
+        free_planted();
+    }
+    BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
+    BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign, 0U);
+    return window;
 }
 
-/** How many values a document holds, its own included. */
-// Recursive as deep as the document nests, which its parse bounded.
-// NOLINTNEXTLINE(misc-no-recursion)
-std::size_t values_in(const tp::json::const_value& v) {
-    std::size_t n = 1;
-    if (v.is_array()) {
-        for (const tp::json::const_value element : v) {
-            n += values_in(element);
-        }
-    } else if (v.is_object()) {
-        for (const tp::json::const_value member : v.values()) {
-            n += values_in(member);
-        }
-    }
-    return n;
+/** Checks that a window saw no global allocation. */
+void nothing_global(const seen& window) {
+    BOOST_TEST_EQ(window.global, 0U);
+    BOOST_TEST_EQ(window.c, 0U);
+    BOOST_TEST_EQ(window.live, 0U);
 }
 
 /**
- * webcpp::document's working state for each text a room reads, counted: Boost.JSON's parser
- * stack, the path and the pending text, and the tree's record of each value it places, from the
- * global operator new, all freed before the parse returns, and at most 8 allocations a value and
- * 16 more; the document itself is in the resource it is given (doc: #trystero-allocation).
+ * Exchanging each payload type that receives in the room's resource sees no global allocation, a
+ * JSON document's write and parse included; and a window in which the receiving handler allocates
+ * outside the resources sees it, so that the zeros are not vacuous (doc: #trystero-allocation).
  */
-void reading_a_text_costs_the_heap_a_bounded_working_state() {
+void exchanges_allocate_through_the_rooms_resources() {
+    nothing_global(exchange_through_the_rooms_resources<std::pmr::string>(
+        [](std::pmr::memory_resource* memory) {
+            return std::pmr::string("a text that no small string holds", memory);
+        }));
+    nothing_global(exchange_through_the_rooms_resources<trystero::pmr_bytes>(
+        [](std::pmr::memory_resource* memory) { return trystero::pmr_bytes(4096, 7, memory); }));
+    nothing_global(exchange_through_the_rooms_resources<webcpp::document::pmr::document>(
+        [](std::pmr::memory_resource* memory) {
+            auto made = webcpp::document::parse(
+                R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
+                webcpp::document::parse_options(),
+                std::pmr::polymorphic_allocator<std::byte>(memory));
+            webcpp::test::require(BOOST_TEST(made.has_value()));
+            return std::move(made).unsafe_value();
+        }));
+    // A planted operator new and C library call, seen, and the operator new seen still out.
+    const seen planted_window = exchange_through_the_rooms_resources<std::pmr::string>(
+        [](std::pmr::memory_resource* memory) {
+            return std::pmr::string("a text that no small string holds", memory);
+        },
+        true);
+    BOOST_TEST_EQ(planted_window.global, 1U);
+#ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
+    BOOST_TEST_EQ(planted_window.c, 1U);
+#endif
+    BOOST_TEST_EQ(planted_window.live, 1U);
+    BOOST_TEST_EQ(live_count, 0U);
+}
+
+/**
+ * Each text a room reads is parsed into a document of the room's resource without a global
+ * allocation: its image and the parse's working state are the resource's, and the image goes back
+ * with the document (doc: #trystero-allocation).
+ */
+void reading_a_text_allocates_through_its_resource() {
     counting_resource memory;
     std::array<std::uint8_t, 32> secret{};
     secret.fill(7);
@@ -735,24 +773,27 @@ void reading_a_text_costs_the_heap_a_bounded_working_state() {
     for (const text& t : texts) {
         const std::size_t outstanding = memory.outstanding;
         global_allocations = 0;
+        c_allocations = 0;
         counting = true;
-        auto document = tp::json::parse(t.json, tp::json::protocol_limits(t.bound), &memory);
-        counting = false;
-        const std::size_t cost = std::exchange(global_allocations, 0);
-        if (!BOOST_TEST(document.has_value())) {
-            continue;
+        {
+            const auto document =
+                webcpp::document::parse(t.json, tp::json::protocol_limits(t.bound),
+                                        std::pmr::polymorphic_allocator<std::byte>(&memory));
+            // The image is the resource's, and goes back with the document.
+            BOOST_TEST(document.has_value());
+            BOOST_TEST_GT(memory.outstanding, outstanding);
         }
-        const std::size_t values = values_in(document->root());
-        BOOST_TEST_LE(cost, 16 + (8 * values));
-        BOOST_TEST_EQ(live_count, 0U);
-        // The image is the resource's, and goes back with the document.
-        BOOST_TEST_GT(memory.outstanding, outstanding);
-        document = webcpp::document::result<tp::json::document>(tp::json::document());
+        counting = false;
         BOOST_TEST_EQ(memory.outstanding, outstanding);
+        if (global_allocations != 0) {
+            std::cerr << t.what << ": ";
+        }
+        explain_global_allocations(0U);
+        nothing_global({.global = global_allocations, .c = c_allocations, .live = live_count});
+        global_allocations = 0;
+        c_allocations = 0;
     }
-    BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_EQ(memory.foreign, 0U);
-    c_allocations = 0;
 }
 
 /** Runs io for about `duration`, whatever happens, in slices of 10 ms. */
@@ -813,10 +854,9 @@ trystero::room_options options_in(counting_resource& memory) {
  * Two apps, each with a log and a relay of its own, are made one after the other
  * and join a room with a password, whose two sides exchange a payload that travels
  * in chunks, measure a round trip, and one says goodbye; both are destroyed and the
- * io_context drained. From the first construction to the drain, operator new sees
- * webcpp::document's working state alone, while the rooms and the relay read and
- * write JSON texts, and nothing of it is left at the drain; the C library sees
- * nothing (doc: #trystero-allocation).
+ * io_context drained. From the first construction to the drain, while the rooms and
+ * the relay read and write their JSON texts, neither operator new nor the C library
+ * sees an allocation (doc: #trystero-allocation).
  */
 void a_room_allocates_through_its_resource_from_join_to_destruction() {
     counting_resource network_memory;
@@ -904,8 +944,8 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(farewell);
     BOOST_TEST_GT(a_lines, 0U);
     BOOST_TEST_GT(z_lines, 0U);
-    // The global operator new saw webcpp::document's working state alone, each piece freed before
-    // the parse or the write that made it returned.
+    explain_global_allocations(0U);
+    BOOST_TEST_EQ(global_allocations, 0U);
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
@@ -916,11 +956,10 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 
 /**
  * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
- * exchange binary payloads: from construction until the io_context drains, operator new sees only
- * webcpp::document's working state, none of it left at the drain, and the C library nothing. A
- * payload received by the room with its own resource is copied into that resource once, the
- * received frame staying the app's; by the room in the app's resource, the payload taken out of the
- * frame is moved into the value (doc: #trystero-allocation).
+ * exchange binary payloads: from construction until the io_context drains, neither operator new nor
+ * the C library sees an allocation. A payload received by the room with its own resource is copied
+ * into that resource once, the received frame staying the app's; by the room in the app's resource,
+ * the payload taken out of the frame is moved into the value (doc: #trystero-allocation).
  */
 void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource network_memory;
@@ -993,7 +1032,8 @@ void rooms_of_one_app_allocate_through_their_resources() {
         }
         counting = false;
     }
-    // webcpp::document's working state alone, freed as the long case's.
+    explain_global_allocations(0U);
+    BOOST_TEST_EQ(global_allocations, 0U);
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
@@ -1081,29 +1121,8 @@ int main() {
 #endif
     the_replaced_operators_serve_every_alignment();
     the_counts_see_an_allocation();
-    const auto nothing = [](const auto& /*payload*/, std::pmr::memory_resource* /*memory*/) {
-        return std::size_t{0};
-    };
-    exchange_allocates_through_the_rooms_resources<std::pmr::string>(
-        [](std::pmr::memory_resource* memory) {
-            return std::pmr::string("a text that no small string holds", memory);
-        },
-        nothing);
-    exchange_allocates_through_the_rooms_resources<std::pmr::vector<std::uint8_t>>(
-        [](std::pmr::memory_resource* memory) {
-            return std::pmr::vector<std::uint8_t>(4096, 7, memory);
-        },
-        nothing);
-    exchange_allocates_through_the_rooms_resources<trystero::pmr_document>(
-        [](std::pmr::memory_resource* memory) {
-            auto made = tp::json::parse(
-                R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
-                webcpp::document::parse_options(), memory);
-            webcpp::test::require(BOOST_TEST(made.has_value()));
-            return std::move(made).unsafe_value();
-        },
-        &document_cost);
-    reading_a_text_costs_the_heap_a_bounded_working_state();
+    exchanges_allocate_through_the_rooms_resources();
+    reading_a_text_allocates_through_its_resource();
     a_room_allocates_through_its_resource_from_join_to_destruction();
     rooms_of_one_app_allocate_through_their_resources();
     return webcpp::test::exit_status(boost::report_errors());

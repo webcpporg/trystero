@@ -268,15 +268,15 @@ struct relayed {
  * could be sent. */
 inline std::optional<relayed> relayed_signal(std::string_view text) {
     const auto limits = protocol::json::protocol_limits(protocol::max_relay_message_bytes);
-    const auto parsed = protocol::json::parse(text, limits, std::pmr::get_default_resource());
+    const std::pmr::polymorphic_allocator<std::byte> memory(std::pmr::get_default_resource());
+    const auto parsed = webcpp::document::parse(text, limits, memory);
     const auto message =
         parsed.has_value() ? protocol::nostr::read_relay_message(parsed->root()) : std::nullopt;
     const auto* event = message ? std::get_if<protocol::nostr::event>(&*message) : nullptr;
     if (event == nullptr) {
         return std::nullopt;
     }
-    const auto content =
-        protocol::json::parse(event->content, limits, std::pmr::get_default_resource());
+    const auto content = webcpp::document::parse(event->content, limits, memory);
     const auto signal = content.has_value() ? protocol::read_signal(content->root()) : std::nullopt;
     if (!signal) {
         return std::nullopt;

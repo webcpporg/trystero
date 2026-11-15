@@ -7,7 +7,8 @@
 // Tests the protocol layer against values Trystero JS 0.26 computed itself, which the original's
 // oracle wrote into fixtures/expected/expected.json. The fixture's path is the test's one argument,
 // as webcpp.run passes its input file. The fixture is read with webcpp::document, and every text
-// the protocol writes is read back as a room reads it, with protocol::json::parse and its bounds.
+// the protocol writes is read back as a room reads it, with webcpp::document::parse into a
+// pmr::document, within protocol::json::protocol_limits of its bound.
 
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
@@ -20,6 +21,7 @@
 #include <webcpp/document/document.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/parse.hpp>
+#include <webcpp/document/storage.hpp>
 #include <webcpp/document/value.hpp>
 
 #include <boost/core/lightweight_test.hpp>
@@ -31,6 +33,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory_resource>
 #include <optional>
 #include <span>
@@ -70,42 +73,45 @@ tp::bytes hex(const fixture_value& v) {
     return tp::from_hex(str(v)).value();
 }
 
-/** A protocol text read as a room reads it: at most `max_bytes`, into a buffer of `memory`. */
-wd::result<tp::json::document> parse_text(
+/** A protocol text read as a room reads it: at most `max_bytes`, into a document of `memory`. */
+wd::result<wd::pmr::document> parse_text(
     std::string_view text, std::size_t max_bytes,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return tp::json::parse(text, tp::json::protocol_limits(max_bytes), memory);
+    return wd::parse(text, tp::json::protocol_limits(max_bytes),
+                     std::pmr::polymorphic_allocator<std::byte>(memory));
 }
 
-/** A resource that counts what it gives: its buffers, their bytes, and what is still out. */
+/**
+ * A resource that counts what it gives: its allocations, their bytes, the most bytes out at once,
+ * and what is still out, by address.
+ */
 class counting_resource final : public std::pmr::memory_resource {
 public:
     /** How many allocations it made. */
     std::size_t allocations = 0;
-    /** How many of them are not yet returned. */
-    std::size_t outstanding = 0;
-    /** The bytes of all its allocations. */
-    std::size_t allocated = 0;
     /** The bytes of its largest allocation. */
     std::size_t largest = 0;
-    /** Its last allocation. */
-    void* last = nullptr;
-    /** The bytes of its last allocation. */
-    std::size_t last_bytes = 0;
+    /** The bytes out now. */
+    std::size_t bytes_out = 0;
+    /** The most bytes that were out at once. */
+    std::size_t peak = 0;
+    /** The allocations not yet returned, with their bytes. */
+    std::map<const void*, std::size_t> live;
 
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         ++allocations;
-        ++outstanding;
-        allocated += bytes;
         largest = std::max(largest, bytes);
-        last_bytes = bytes;
-        last = std::pmr::new_delete_resource()->allocate(bytes, alignment);
-        return last;
+        bytes_out += bytes;
+        peak = std::max(peak, bytes_out);
+        void* const p = std::pmr::new_delete_resource()->allocate(bytes, alignment);
+        live.emplace(p, bytes);
+        return p;
     }
 
     void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
-        --outstanding;
+        bytes_out -= bytes;
+        live.erase(p);
         std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
     }
 
@@ -516,14 +522,13 @@ void envelopes(const fixture_value& fixture) {
 }
 
 void signals() {
-    tp::json::document document;  // the views read_signal returns point into it
+    std::optional<wd::pmr::document> document;  // the views read_signal returns point into it
     const auto read = [&document](std::string_view text) -> std::optional<tp::signal_message> {
         auto parsed = parse_text(text, tp::max_parsed_signal_bytes);
         if (!parsed.has_value()) {
             return std::nullopt;
         }
-        document = std::move(parsed).value();
-        return tp::read_signal(std::as_const(document).root());
+        return tp::read_signal(std::as_const(document.emplace(std::move(parsed).value())).root());
     };
     const auto announce = read(R"({"peerId":"abc","nonce":"x1"})");
     if (!BOOST_TEST(announce.has_value())) {
@@ -653,14 +658,14 @@ void wide_fields_are_big_endian() {
 // Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
 // candidate, 8192 bytes of plaintext, sealed with the longest IV in decimal, is read.
 void signal_bounds() {
-    tp::json::document document;
+    std::optional<wd::pmr::document> document;
     const auto read = [&document](const tp::signal_message& m) {
         auto parsed = parse_text(tp::write_signal(m), tp::max_parsed_signal_bytes);
         if (!parsed.has_value()) {
             return false;
         }
-        document = std::move(parsed).value();
-        return tp::read_signal(std::as_const(document).root()).has_value();
+        return tp::read_signal(std::as_const(document.emplace(std::move(parsed).value())).root())
+            .has_value();
     };
     std::array<std::uint8_t, tp::seal_iv_size> iv{};
     iv.fill(255);
@@ -926,11 +931,15 @@ std::string event_with(std::string_view members) {
 // No text costs a room more than a few times its bound to read. An event of 256 distinct keys of
 // 128 bytes, which collided in Boost.JSON's hashed objects (chapter 18's draft), is read as any
 // text is: document's objects are ordered indices. A text of thousands of values, each a node of
-// some 200 bytes of image for 2 of text, is refused once its image fills the bound; and what the
-// parse took from the resource, its doubling buffers, sums to less than three times the bound.
+// some 200 bytes of image for 2 of text, is refused once its image has grown to the bound; and the
+// resource never has more out at once than the image grown to the bound, with the image it grew
+// from.
 void parse_cost() {
     const auto limits = tp::json::protocol_limits(tp::nostr::max_parsed_relay_text_bytes);
     const auto bound = static_cast<std::size_t>(limits.max_document_bytes);
+    const auto parse = [&limits](std::string_view text, counting_resource& memory) {
+        return wd::parse(text, limits, std::pmr::polymorphic_allocator<std::byte>(&memory));
+    };
 
     std::string keys;
     for (std::size_t i = 0; i < 256; ++i) {
@@ -940,7 +949,7 @@ void parse_cost() {
     }
     counting_resource keyed;
     {
-        const auto document = tp::json::parse(event_with(keys), limits, &keyed);
+        const auto document = parse(event_with(keys), keyed);
         if (BOOST_TEST(document.has_value())) {
             BOOST_TEST_EQ(document->root()[2].size(), 3U + 256U);
             const auto message = tp::nostr::read_relay_message(document->root());
@@ -950,8 +959,8 @@ void parse_cost() {
         }
     }
     BOOST_TEST_LE(keyed.largest, bound);
-    BOOST_TEST_LT(keyed.allocated, 3 * bound);
-    BOOST_TEST_EQ(keyed.outstanding, 0U);
+    BOOST_TEST_LT(keyed.peak, 2 * bound);
+    BOOST_TEST(keyed.live.empty());
 
     const auto values = [](std::size_t n) {
         std::string text = R"(,"values":[0)";
@@ -961,52 +970,48 @@ void parse_cost() {
         return event_with(text + "]");
     };
     counting_resource few;
-    BOOST_TEST(tp::json::parse(values(100), limits, &few).has_value());
+    BOOST_TEST(parse(values(100), few).has_value());
     // 4,000 values in 8 KB of text, and the most the bound reads: some 34,000 in 68 KB.
     const auto longest =
         values(((tp::nostr::max_parsed_relay_text_bytes - event_with("").size()) / 2) - 8);
     BOOST_TEST_LE(longest.size(), tp::nostr::max_parsed_relay_text_bytes);
     for (const auto& text : {values(4000), longest}) {
         counting_resource many;
-        const auto refused = tp::json::parse(text, limits, &many);
+        const auto refused = parse(text, many);
         BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
         BOOST_TEST_EQ(many.largest, bound);
-        BOOST_TEST_LT(many.allocated, 3 * bound);
-        BOOST_TEST_EQ(many.outstanding, 0U);
+        BOOST_TEST_LT(many.peak, 2 * bound);
+        BOOST_TEST(many.live.empty());
     }
 }
 
-// A text nested past max_depth is refused at once: Boost.JSON's parser stops at the 257th level,
-// which the parse does not take for a full buffer, so it makes no larger one to try again. The
-// texts are padded so that their first buffer holds the 256 levels a room reads; unpadded, the
-// same nesting fills the first buffers, which do grow.
+// A text nested past max_depth is refused: Boost.JSON's parser stops at the 257th level, and the
+// resource has nothing out after it.
 void parse_depth() {
     const auto limits = tp::json::protocol_limits(tp::nostr::max_parsed_relay_text_bytes);
     const auto depth = static_cast<std::size_t>(limits.max_depth);
     BOOST_TEST_EQ(depth, 256U);
-    const auto nested = [](std::size_t levels, std::size_t size) {
-        std::string text(size - (2 * levels), ' ');
-        text.append(levels, '[');
+    const auto nested = [](std::size_t levels) {
+        std::string text(levels, '[');
         text.append(levels, ']');
         return text;
     };
-    const std::size_t size = tp::nostr::max_parsed_relay_text_bytes;
     counting_resource deepest;
-    BOOST_TEST(tp::json::parse(nested(depth, size), limits, &deepest).has_value());
-    BOOST_TEST_EQ(deepest.allocations, 1U);
+    BOOST_TEST(
+        wd::parse(nested(depth), limits, std::pmr::polymorphic_allocator<std::byte>(&deepest))
+            .has_value());
+    BOOST_TEST(deepest.live.empty());
     counting_resource deeper;
-    const auto refused = tp::json::parse(nested(depth + 1, size), limits, &deeper);
+    const auto refused =
+        wd::parse(nested(depth + 1), limits, std::pmr::polymorphic_allocator<std::byte>(&deeper));
     BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
-    BOOST_TEST_EQ(deeper.allocations, 1U);
-    BOOST_TEST_EQ(deeper.outstanding, 0U);
-    counting_resource growing;
-    BOOST_TEST(tp::json::parse(nested(depth, 2 * depth), limits, &growing).has_value());
-    BOOST_TEST_GT(growing.allocations, 1U);
+    BOOST_TEST(deeper.live.empty());
 }
 
-// A parse's image is one buffer of the resource it is given, the only thing it holds there once
-// the parse succeeds: the strings read from it point into it, a move keeps it where it is, and the
-// resource has nothing out once the document goes.
+// A parse's image is one allocation of the resource it is given, the only thing the resource has
+// out once the parse succeeds: the strings read from it point into it, a move construction takes
+// it with the allocator, and the resource has nothing out once the document goes. A handle refers
+// to the document object, so the moved-to document is read through its own.
 void parse_resource() {
     constexpr std::string_view text =
         R"(["EVENT","sub",{"id":"abc","tags":[["x","topic-a"]],"content":"{\"peerId\":\"p\"}"}])";
@@ -1016,13 +1021,14 @@ void parse_resource() {
         if (!BOOST_TEST(parsed.has_value())) {
             return;
         }
-        tp::json::document document = std::move(parsed).value();
-        BOOST_TEST(document.resource() == &memory);
-        BOOST_TEST_EQ(memory.outstanding, 1U);
-        BOOST_TEST_EQ(memory.last_bytes, document.capacity());
-        const auto image = document.get().image();
-        BOOST_TEST(static_cast<const void*>(image.data()) == memory.last);
-        BOOST_TEST_EQ(image.size(), document.capacity());
+        wd::pmr::document document = std::move(parsed).value();
+        BOOST_TEST(document.get_allocator().resource() == &memory);
+        const auto image = document.image();
+        if (!BOOST_TEST_EQ(memory.live.size(), 1U)) {
+            return;
+        }
+        BOOST_TEST(memory.live.begin()->first == static_cast<const void*>(image.data()));
+        BOOST_TEST_EQ(memory.live.begin()->second, document.capacity());
         const auto* begin = reinterpret_cast<const char*>(image.data());
         const auto* end = begin + image.size();
         const auto inside = [begin, end](std::string_view s) {
@@ -1036,16 +1042,16 @@ void parse_resource() {
             BOOST_TEST(inside(e->subscription) && inside(e->id) && inside(e->topic) &&
                        inside(e->content));
         }
-        const tp::json::document moved = std::move(document);
+        const wd::pmr::document moved = std::move(document);
         // A document moved from holds no image.
-        BOOST_TEST(!document.has_value());  // NOLINT(bugprone-use-after-move)
-        const auto moved_image = moved.get().image();
-        BOOST_TEST(static_cast<const void*>(moved_image.data()) == memory.last);
+        BOOST_TEST(document.image().empty());  // NOLINT(bugprone-use-after-move)
+        BOOST_TEST(moved.get_allocator().resource() == &memory);
+        BOOST_TEST(static_cast<const void*>(moved.image().data()) ==
+                   static_cast<const void*>(image.data()));
         BOOST_TEST_EQ(tp::json::text_of(moved.root()[2]["content"]), R"({"peerId":"p"})");
-        BOOST_TEST_EQ(memory.allocations, 1U);
-        BOOST_TEST_EQ(memory.outstanding, 1U);
+        BOOST_TEST_EQ(memory.live.size(), 1U);
     }
-    BOOST_TEST_EQ(memory.outstanding, 0U);
+    BOOST_TEST(memory.live.empty());
 }
 
 void text() {

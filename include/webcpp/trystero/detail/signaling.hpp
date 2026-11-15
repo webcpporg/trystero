@@ -22,6 +22,8 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <webcpp/document/parse.hpp>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -156,8 +158,9 @@ public:
             return;
         }
         // A signal past its bound is dropped as a malformed one is, before it is read.
-        const auto document = protocol::json::parse(
-            content, protocol::json::protocol_limits(protocol::max_parsed_signal_bytes), memory_);
+        const auto document = webcpp::document::parse(
+            content, protocol::json::protocol_limits(protocol::max_parsed_signal_bytes),
+            std::pmr::polymorphic_allocator<std::byte>(memory_));
         const auto message =
             document.has_value() ? protocol::read_signal(document->root()) : std::nullopt;
         if (!message || message->peer_id == self_id_) {

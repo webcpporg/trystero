@@ -18,6 +18,8 @@
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <webcpp/document/parse.hpp>
+
 #include <boost/endian/conversion.hpp>
 #include <boost/hash2/get_integral_result.hpp>
 #include <boost/hash2/siphash.hpp>
@@ -457,9 +459,9 @@ private:
 
     void on_relay_message(std::size_t index, std::string_view text) {
         // A text past its bound is dropped as a malformed one is, before it is read.
-        const auto document = protocol::json::parse(
+        const auto document = webcpp::document::parse(
             text, protocol::json::protocol_limits(protocol::nostr::max_parsed_relay_text_bytes),
-            memory_);
+            std::pmr::polymorphic_allocator<std::byte>(memory_));
         if (!document.has_value()) {
             return;
         }

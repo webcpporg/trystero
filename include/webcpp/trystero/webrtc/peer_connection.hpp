@@ -25,6 +25,8 @@
 #include <webcpp/asio/bind_allocator.hpp>  // lint-world: binds an allocator only
 #include <webcpp/asio/post.hpp>            // lint-world: posts handlers only
 
+#include <webcpp/document/parse.hpp>
+
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
 
@@ -275,9 +277,9 @@ public:
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
         // The document lives in the app's resource for the call: the platform copies the views.
-        const auto document = protocol::json::parse(
+        const auto document = webcpp::document::parse(
             candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_bytes),
-            memory_);
+            std::pmr::polymorphic_allocator<std::byte>(memory_));
         const protocol::json::const_value object =
             document.has_value() ? document->root() : protocol::json::const_value();
         const protocol::json::const_value text = object["candidate"];

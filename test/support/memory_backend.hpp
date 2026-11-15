@@ -21,6 +21,8 @@
 #include <webcpp/asio/post.hpp>
 #include <webcpp/asio/steady_timer.hpp>
 
+#include <webcpp/document/parse.hpp>
+
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -326,8 +328,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     ++texts;
     // The text is read into the sender's resource, as a room reads a relay's, within the longest
     // text a relay's connection carries.
-    const auto parsed = protocol::json::parse(
-        text, protocol::json::protocol_limits(protocol::max_relay_message_bytes), from->memory());
+    const auto parsed = webcpp::document::parse(
+        text, protocol::json::protocol_limits(protocol::max_relay_message_bytes),
+        std::pmr::polymorphic_allocator<std::byte>(from->memory()));
     if (!parsed.has_value()) {
         return;
     }
