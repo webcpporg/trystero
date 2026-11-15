@@ -38,6 +38,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -75,14 +76,15 @@ namespace webcpp::trystero::detail {
  * for as long as it keeps at it, though it can neither read nor join anything, nor touch joined
  * peers. Only a wire that seals the offer id and both peer ids closes this. The negotiations under
  * way are bounded (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer
- * expire without a connection, an idle one gives its place to a new peer, and beyond the bound a
- * new peer is refused, logged once. The connections made are bounded too
- * (`max_connections_per_window`), however soon they end, since a browser counts a closed one until
- * its garbage collector runs. Joined peers, memory and connections stay safe under a flood; new
- * peers do not: a flooder who keeps sending fresh ids takes each place, and each connection of the
- * window, as it frees, and keeps new peers out for as long as the flood lasts. A joined peer whose
- * connection drops is a new peer when it comes back, with the same id, and is kept out the same
- * way: there is no renegotiation of a joined peer's connection. Trystero bounds none of this.
+ * expire without a connection, an idle one (no connection, no offer being opened) gives its place
+ * to a new peer, and beyond the bound a new peer is refused, logged once. The connections made are
+ * bounded too (`max_connections_per_window`), however soon they end, since a browser counts a
+ * closed one until its garbage collector runs. Joined peers, memory and connections stay safe
+ * under a flood; new peers do not: a flooder who keeps sending fresh ids takes each place, and each
+ * connection of the window, as it frees, and keeps new peers out for as long as the flood lasts. A
+ * joined peer whose connection drops is a new peer when it comes back, with the same id, and is
+ * kept out the same way: there is no renegotiation of a joined peer's connection. Trystero bounds
+ * none of this.
  *
  * Tip: a peer id is copied once, into the map's key, and every asynchronous handler captures its
  * own copy, in the room's resource, because it may outlive the entry. The entry points a handler
@@ -93,7 +95,8 @@ class signaling : public std::enable_shared_from_this<signaling> {
 public:
     /**
      * The most negotiations a room holds at once with peers it is not connected to, each with at
-     * most two pending connections: a peer beyond it waits for its next announcement.
+     * most two pending connections: a peer beyond it waits for its next announcement, or its offer
+     * sent again. It bounds the offers opened at once from fresh ids too.
      */
     static constexpr std::size_t max_unconnected_peers = 32;
 
@@ -174,7 +177,7 @@ public:
             if (!make_room_for(message->peer_id)) {
                 return;
             }
-            it = peers_.try_emplace(std::pmr::string(message->peer_id, memory_), allocator()).first;
+            it = admit(message->peer_id);
         }
         const std::string_view peer = it->first;
         auto& n = it->second;
@@ -207,7 +210,7 @@ public:
     void bound(std::string_view peer) {
         auto it = peers_.find(peer);
         if (it == peers_.end()) {
-            it = peers_.try_emplace(std::pmr::string(peer, memory_), allocator()).first;
+            it = admit(peer);
         }
         reset_offer(it->second);
         reset_answer(it->second);
@@ -256,8 +259,9 @@ private:
     };
 
     struct negotiation {
-        explicit negotiation(pmr_allocator a)
-            : offer(a),
+        negotiation(pmr_allocator a, std::uint64_t admitted)
+            : admitted(admitted),
+              offer(a),
               offer_id(a),
               sealed_offer(a),
               offer_relays(a),
@@ -273,9 +277,16 @@ private:
               answer_replayed(a),
               counter_announced(a) {}
 
+        // Its place in the order the room took its negotiations in: of two idle as long, the one
+        // taken first gives its place first, and an opened offer finds by it the very negotiation
+        // it came to, not a later one with the same peer.
+        std::uint64_t admitted;
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
         time_point last_message{};
+        // How many of the peer's offers the sealer is opening: until each completes, the
+        // negotiation is not idle, and keeps its place.
+        std::size_t offers_opening = 0;
         // Whether a signal of this negotiation that did not open was reported.
         bool failed_open_reported = false;
         // Whether an offer or an answer of this negotiation that the room had used before was
@@ -308,6 +319,8 @@ private:
         std::pmr::map<std::size_t, time_point> counter_announced;
     };
 
+    using negotiations = std::pmr::map<std::pmr::string, negotiation, std::less<>>;
+
     pmr_allocator allocator() const { return {memory_}; }
 
     std::pmr::string copy(std::string_view text) const { return std::pmr::string(text, memory_); }
@@ -327,30 +340,57 @@ private:
         return it == peers_.end() ? nullptr : &it->second;
     }
 
+    /** The negotiation with `peer` that the room took in `admitted`-th, if it still holds it. */
+    negotiation* find(std::string_view peer, std::uint64_t admitted) {
+        auto* n = find(peer);
+        return n != nullptr && n->admitted == admitted ? n : nullptr;
+    }
+
+    /** Starts a negotiation with `peer`, which has none. */
+    negotiations::iterator admit(std::string_view peer) {
+        return peers_.try_emplace(std::pmr::string(peer, memory_), allocator(), admissions_++)
+            .first;
+    }
+
+    /**
+     * Whether a negotiation waits on nothing: it is not connected, holds no connection, and no
+     * offer of its peer is being opened.
+     */
+    static bool idle(const negotiation& n) {
+        return !n.connected && !n.offer.pc && !n.answer.pc && n.offers_opening == 0;
+    }
+
     /**
      * Whether a negotiation may start with a new peer: the room holds fewer than
-     * `max_unconnected_peers` unconnected negotiations, or one of them holds no connection and is
-     * dropped, the one idle longest. Otherwise the peer is refused, and logged once.
+     * `max_unconnected_peers` unconnected negotiations, or one of them is idle and is dropped, the
+     * one idle longest, and of those idle as long the one taken first. Otherwise the peer is
+     * refused, and logged once.
+     *
+     * Tip: the sealer opens an offer in a step that takes its time (Web Crypto's, in a page), and
+     * new ids keep arriving meanwhile, at one instant of a page's coarse clock, where no
+     * negotiation is idle longer than another: an offer being opened holds its negotiation's
+     * place, so that none of them has the room drop it unopened.
      */
     bool make_room_for(std::string_view peer) {
         std::size_t unconnected = 0;
-        auto idle = peers_.end();
+        auto evicted = peers_.end();
         for (auto it = peers_.begin(); it != peers_.end(); ++it) {
             const auto& n = it->second;
             if (n.connected) {
                 continue;
             }
             ++unconnected;
-            if (!n.offer.pc && !n.answer.pc &&
-                (idle == peers_.end() || n.last_message < idle->second.last_message)) {
-                idle = it;
+            if (idle(n) && (evicted == peers_.end() ||
+                            std::tie(n.last_message, n.admitted) <
+                                std::tie(evicted->second.last_message, evicted->second.admitted))) {
+                evicted = it;
             }
         }
         if (unconnected < max_unconnected_peers) {
             return true;
         }
-        if (idle != peers_.end()) {
-            peers_.erase(idle);
+        if (evicted != peers_.end()) {
+            peers_.erase(evicted);
             return true;
         }
         if (first_refusal(peer)) {
@@ -392,10 +432,9 @@ private:
         return pc;
     }
 
-    /** Drops a negotiation that holds no connection any more and is not connected. */
+    /** Drops a negotiation that is idle: no connection, and no offer being opened. */
     void drop_if_done(std::string_view peer) {
-        if (const auto it = peers_.find(peer); it != peers_.end() && !it->second.connected &&
-                                               !it->second.offer.pc && !it->second.answer.pc) {
+        if (const auto it = peers_.find(peer); it != peers_.end() && idle(it->second)) {
             peers_.erase(it);
         }
     }
@@ -569,29 +608,38 @@ private:
         }
         // Nothing changes until the offer opens with the room key: a forged one, which anyone who
         // reads the relays can send in any peer's name, makes no connection and resets no offer.
+        // Until it opens, the negotiation keeps its place.
+        ++n.offers_opening;
         const auto weak = weak_from_this();
         sealer_->open(
-            offer, bind<void(boost::system::error_code, std::string_view)>(
-                       [weak, relay, peer = copy(peer), offer_id = copy(offer_id),
-                        offer = copy(offer)](boost::system::error_code ec, std::string_view sdp) {
-                           if (const auto self = weak.lock()) {
-                               self->on_offer_opened(relay, peer, offer_id, offer, ec, sdp);
-                           }
-                       }));
+            offer,
+            bind<void(boost::system::error_code, std::string_view)>(
+                [weak, relay, peer = copy(peer), admitted = n.admitted, offer_id = copy(offer_id),
+                 offer = copy(offer)](boost::system::error_code ec, std::string_view sdp) {
+                    if (const auto self = weak.lock()) {
+                        self->on_offer_opened(relay, peer, admitted, offer_id, offer, ec, sdp);
+                    }
+                }));
     }
 
     /**
-     * Answers an offer the sealer opened: makes the answering connection and applies the offer as
-     * its remote description. An offer that did not open changes nothing.
+     * Answers an offer the sealer opened for the negotiation taken in `admitted`-th: makes the
+     * answering connection and applies the offer as its remote description. An offer that did not
+     * open changes nothing, nor one whose negotiation the room no longer holds: the peer left, or
+     * the room closed.
      */
-    void on_offer_opened(std::size_t relay, std::string_view peer, std::string_view offer_id,
-                         std::string_view offer, boost::system::error_code ec,
-                         std::string_view sdp) {
-        auto* found = find(peer);
-        if (found == nullptr || found->connected) {
+    void on_offer_opened(std::size_t relay, std::string_view peer, std::uint64_t admitted,
+                         std::string_view offer_id, std::string_view offer,
+                         boost::system::error_code ec, std::string_view sdp) {
+        auto* found = find(peer, admitted);
+        if (found == nullptr) {
             return;
         }
         auto& n = *found;
+        --n.offers_opening;
+        if (n.connected) {
+            return;
+        }
         if (ec) {
             failed_open(peer, n, "offer");
             return;
@@ -1147,7 +1195,8 @@ private:
     std::pmr::vector<backend::ice_server> ice_servers_;
     callbacks cb_;
     logger log_;
-    std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
+    negotiations peers_;
+    std::uint64_t admissions_ = 0;  // the negotiations the room took in, the next one's place
     std::pmr::deque<std::pmr::string> refused_{memory_};
     construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
     std::pmr::map<std::size_t, time_point> counter_announced_{memory_};  // per relay

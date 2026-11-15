@@ -323,7 +323,16 @@ holds only what is specific to trystero.
     negotiations with peers it is not connected to. A negotiation whose
     offer and answer expire without a connection is dropped, an idle one
     gives its place to a new peer, and a new peer beyond the bound is
-    refused and logged once.
+    refused and logged once. Idle means no connection and no offer of the
+    peer being opened (`negotiation::offers_opening`): the one idle longest
+    goes, and of those idle as long, as at one instant of a page's coarse
+    clock, the one taken first (`negotiation::admitted`), never the first in
+    id order. An offer the sealer is opening keeps its place, so new ids
+    that arrive meanwhile cannot have the room drop it unopened, and the
+    offers opened at once come from at most 32 peers (`room`'s
+    `an_offer_being_opened_keeps_its_place` and
+    `a_flood_of_offers_at_one_instant_is_bounded`, over the memory backend's
+    `hold_sealer_opens`).
   - A room makes at most `max_connections_per_window` (64) connections in
     any 57 s, however soon they end. The platform backend makes at most
     `backend_config::max_peer_connections_per_minute` (256) in any minute,
