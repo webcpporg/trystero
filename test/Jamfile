@@ -148,9 +148,13 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # end::allocation[]
 
 # The room, app_impl and allocation tests, whose cases hold whole apps, run
-# once more under Asyncify in a release build, as a page ships them: the
-# CI's emscripten lane builds JSPI, and these are trystero's only programs it
-# runs under Asyncify. A test whose cases suspend runs each in a frame of its
+# once more under Asyncify in a release build, as a page ships them, in the
+# own lane asyncify: the CI's emscripten lane builds JSPI, and a target that
+# names <webcpp-suspend>asyncify is declared only in a lane of emscripten's,
+# as asio's and cobalt's are, since asyncify composes
+# <exception-handling-method>js, a feature only the emscripten toolset
+# defines, and a build with no emscripten configured cannot expand it. A
+# test whose cases suspend runs each in a frame of its
 # own (cases.hpp), whatever the link: -O3 inlines a case that main alone
 # calls into main, and linked without optimization, as b2 linked release
 # until 2026-11-15 and as <linkflags>-O0 still links it, the room test's
@@ -168,6 +172,8 @@ webcpp.run app_impl_asyncify_release : app_impl_test.cpp
 webcpp.run allocation_asyncify_release : allocation_test.cpp
   : <webcpp-suspend>asyncify <variant>release <linkflags>-sALLOW_MEMORY_GROWTH
   : emscripten ;
+webcpp.lane asyncify : room_asyncify_release app_impl_asyncify_release
+  allocation_asyncify_release : emscripten ;
 # end::asyncify-release[]
 
 # The platform backend in a page, under node, which has the page's WebSocket

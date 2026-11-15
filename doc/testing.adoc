@@ -268,8 +268,11 @@ bytes so, and the test stopped at its first suspension. b2 links a `release`
 build at `-O3` now, where even a `main` with every case inlined fits, and
 the deepest build is `debug`. The room, `app_impl` and allocation tests,
 whose cases hold whole apps, run once more under Asyncify in a `release`
-build, as a page ships them, which the CI's emscripten lane, building JSPI,
-runs no other way; their deepest suspensions wrote 564, 440 and 408 bytes
+build, as a page ships them, in the own lane `asyncify` on emscripten, which
+the CI's emscripten lane, building JSPI, runs no other way (a target that
+names `<webcpp-suspend>asyncify` belongs in a lane of emscripten's, since a
+build with no emscripten configured cannot expand that feature); their
+deepest suspensions wrote 564, 440 and 408 bytes
 there, and 2,344, 2,068 and 2,020 in `debug` (measured on 2026-11-15 with
 Emscripten 6.0.11):
 
@@ -464,7 +467,8 @@ that dependent archives precede OpenSSL in the link order.
 The continuous integration runs trystero's tests in lanes, one toolset each,
 and its own lanes, the oracle once, the examples over a relay natively, as
 `native.trystero.relayed`, and the interop natively and on emscripten, as
-`native.trystero.interop` and `emscripten.trystero.interop`, plus the
+`native.trystero.interop` and `emscripten.trystero.interop`, the release
+Asyncify tests as `emscripten.trystero.asyncify`, plus the
 native `provider-integration` lane for the common TLS provider.
 Each lane builds from scratch and records what b2 built and ran; webcpp's
 `tools/report/report.py` merges the files of every lane into a matrix, where
