@@ -122,9 +122,11 @@ webcpp.run platform_room_no_exceptions : platform_room_test.cpp
 # end::platform[]
 
 # Every allocation of two rooms that exchange a payload goes through the
-# resources of their configurations, and the global operator new and the C
-# library's allocation functions see none. Its two counting resources hold
-# 64 MiB each, beyond Emscripten's 16 MiB unless the memory grows.
+# resources of their configurations, but webcpp::document's working state
+# while it reads or writes a JSON text, which the global operator new sees,
+# none of it left once the call returns; the C library's allocation functions
+# see none. Its two counting resources hold 64 MiB each, beyond Emscripten's
+# 16 MiB unless the memory grows.
 # tag::allocation[]
 webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # end::allocation[]

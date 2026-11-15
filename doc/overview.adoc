@@ -33,8 +33,8 @@ The library provides:
   completes with a callback, `webcpp::asio::use_awaitable`,
   `webcpp::asio::deferred` or any other completion token of webcpp::asio,
   which natively is Boost.Asio itself;
-* an `app` per program in one application and password domain, with one identity and one
-  connection per remote peer shared by its rooms;
+* an `app` per program in one application and password domain, with one
+  identity and one connection per remote peer shared by its rooms;
 * a resource for the app and an optional resource for each room, which
   receive their allocations (<<trystero-allocation>>);
 * a backend interface that separates the room from the platform, and the
@@ -75,12 +75,14 @@ on both. Every name is in the namespace `webcpp::trystero`.
 === Requirements
 
 * A {cpp}20 compiler.
-* Boost 1.92: Asio, Assert, Circular Buffer, Container (its `pmr` base
-  class), Endian, Hash2, JSON (the parser webcpp::document uses), System and
-  Unordered for the rooms; URL for the
-  platform backend's relays, and Beast for them natively.
-* webcpp::document for every JSON text, webcpp::asio, and webcpp::webrtc and webcpp::beast for the platform
-  backend's WebRTC and relays (<<trystero-building>>).
+* Boost 1.92: Asio, Assert, Charconv and JSON (whose definitions
+  webcpp::document links, its parser and its numbers), Circular Buffer,
+  Container (its `pmr` base class), Endian, Hash2, System and Unordered for
+  the rooms; URL for the platform backend's relays, and Beast for them
+  natively.
+* webcpp::document for every JSON text, webcpp::asio, and webcpp::webrtc
+  and webcpp::beast for the platform backend's WebRTC and relays
+  (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
   events: every room needs it.

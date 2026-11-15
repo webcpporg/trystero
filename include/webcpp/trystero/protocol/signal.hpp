@@ -224,11 +224,10 @@ struct signal_message {
  * @param document The root of the parsed payload, whose document the caller keeps alive and
  * unchanged while it reads the views.
  * @return The message, or nothing when Trystero would ignore it (not an object, one with a member
- * `peer`, no peer id, or an
- * offer, answer or candidate that is not a non-empty string), or when a field is longer than its
- * bound: the peer id than @ref max_peer_id_bytes, the offer id than @ref max_offer_id_bytes, an
- * offer or answer than @ref max_sealed_description_bytes, a candidate than
- * @ref max_sealed_candidate_bytes.
+ * `peer`, no peer id, or an offer, answer or candidate that is not a non-empty string), or when a
+ * field is longer than its bound: the peer id than @ref max_peer_id_bytes, the offer id than
+ * @ref max_offer_id_bytes, an offer or answer than @ref max_sealed_description_bytes, a candidate
+ * than @ref max_sealed_candidate_bytes.
  */
 inline std::optional<signal_message> read_signal(const json::const_value& document) {
     // Trystero ignores a text that names a member `peer`, which its own rooms keep for a peer
