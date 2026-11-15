@@ -46,10 +46,10 @@ holds only what is specific to trystero.
   (`unix_now`) and `std::chrono::steady_clock` (`steady_now`), which
   Emscripten reads from the page's `Date.now()` and `performance.now()`.
   Two parts are the target's own, chosen by `WEBCPP_TARGET_EMSCRIPTEN`,
-  config's (the library never tests `__EMSCRIPTEN__`): the sealer
-  (`platform/sealer.hpp`), natively OpenSSL's AES-256-GCM and in a page
-  `crypto.subtle` through webcpp::asio's `browser::async_await`; and the
-  platform's one source of randomness,
+  config's (neither the library nor its tests test `__EMSCRIPTEN__`): the
+  sealer (`platform/sealer.hpp`), natively OpenSSL's AES-256-GCM and in a
+  page `crypto.subtle` through webcpp::asio's `browser::async_await`; and
+  the platform's one source of randomness,
   `platform::detail::fill_random` (`platform/entropy.hpp`), whose result is
   checked: natively OpenSSL's `RAND_bytes`, in a page `getentropy`, which
   Emscripten draws from `crypto.getRandomValues`. Without randomness

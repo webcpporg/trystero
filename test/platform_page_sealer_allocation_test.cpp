@@ -43,6 +43,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
 #include <new>
@@ -67,7 +68,7 @@ bool counting = false;
 // allocation is the platform's (webcpp::asio's page "Allocation"), counted apart. A char, which
 // JavaScript writes through HEAPU8.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
-unsigned char inside_runtime = 0;
+std::uint8_t inside_runtime = 0;
 // The C library's allocations made while inside_runtime is set.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 std::size_t runtime_allocations = 0;
@@ -124,7 +125,8 @@ int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
 // sees the sealer's allocations.
 namespace {
 
-unsigned requested_event(int fd, const fd_set* set, unsigned event) {
+/** The poll() event `event` when `set` holds `fd`, else none. */
+std::uint32_t requested_event(int fd, const fd_set* set, std::uint32_t event) {
     return set != nullptr && FD_ISSET(fd, set) ? event : 0U;
 }
 
@@ -134,8 +136,9 @@ void clear_set(fd_set* set) {
     }
 }
 
-int ready_event(const pollfd& descriptor, fd_set* set, unsigned events) {
-    if (set != nullptr && (static_cast<unsigned>(descriptor.revents) & events) != 0) {
+/** Adds the descriptor to `set` when poll() reported one of `events` on it; 1 when it did. */
+int ready_event(const pollfd& descriptor, fd_set* set, std::uint32_t events) {
+    if (set != nullptr && (static_cast<std::uint32_t>(descriptor.revents) & events) != 0) {
         FD_SET(descriptor.fd, set);
         return 1;
     }
@@ -153,11 +156,11 @@ extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* excep
         return -1;
     }
     std::array<pollfd, FD_SETSIZE> fds{};
-    int n = 0;
+    std::size_t n = 0;
     for (int fd = 0; fd < nfds; ++fd) {
-        const unsigned events = requested_event(fd, readfds, POLLIN) |
-                                requested_event(fd, writefds, POLLOUT) |
-                                requested_event(fd, exceptfds, POLLPRI);
+        const std::uint32_t events = requested_event(fd, readfds, POLLIN) |
+                                     requested_event(fd, writefds, POLLOUT) |
+                                     requested_event(fd, exceptfds, POLLPRI);
         if (events != 0) {
             fds[n++] = pollfd{.fd = fd, .events = static_cast<short>(events), .revents = 0};
         }
@@ -173,7 +176,7 @@ extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* excep
     clear_set(writefds);
     clear_set(exceptfds);
     int count = 0;
-    for (int i = 0; i < n && ready > 0; ++i) {
+    for (std::size_t i = 0; i < n && ready > 0; ++i) {
         count += ready_event(fds[i], readfds, POLLIN | POLLHUP | POLLERR);
         count += ready_event(fds[i], writefds, POLLOUT | POLLERR);
         count += ready_event(fds[i], exceptfds, POLLPRI);
