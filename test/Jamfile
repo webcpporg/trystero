@@ -166,6 +166,9 @@ webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_tes
 # resource exactly what the guide lists, no more and no fewer.
 webcpp.run platform_page_relay_allocation : platform_page_relay_allocation_test.cpp
   : $(platform) : emscripten ;
+# A page whose crypto misbehaves: its randomness and its sealer fail with
+# their errors, and no JavaScript exception enters WebAssembly.
+webcpp.run platform_page_sealer : platform_page_sealer_test.cpp : $(platform) : emscripten ;
 # A page_call's handler sees the page's value as it is when it runs; a
 # function the page kept reaches nothing once its page_call, or its
 # io_context, is destroyed; and a page_call outlives its io_context harmlessly.
@@ -195,6 +198,8 @@ webcpp.run platform_page_no_exceptions : platform_page_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_sealer_allocation_no_exceptions
   : platform_page_sealer_allocation_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_sealer_no_exceptions : platform_page_sealer_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_relay_allocation_no_exceptions : platform_page_relay_allocation_test.cpp
   : $(platform) <exception-handling>off : emscripten ;

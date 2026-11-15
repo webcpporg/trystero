@@ -12,7 +12,8 @@
 //   and its runtime in the default resource.
 // - Its clocks are the standard library's: the wall clock's whole seconds, as the test reads them,
 //   and the steady clock, which a 20 ms wait moves forward.
-// - Its randomness fills what it is given, differently each time.
+// - Its randomness fills what it is given, differently each time, also beyond a piece of the
+//   platform's source (65536 bytes in a page).
 // - Its executor is the one it was given, and its relays' TLS context was made.
 //
 // main runs the io_context for the wait; a wait that does not come within 10 s fails by name.
@@ -33,6 +34,8 @@
 #include <cstdint>
 #include <memory_resource>
 #include <optional>
+#include <span>
+#include <vector>
 
 namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
@@ -127,6 +130,31 @@ void its_randomness_fills_and_differs() {
     BOOST_TEST(std::ranges::any_of(first, [](std::uint8_t b) { return b != 0; }));
 }
 
+// More than one piece of the platform's source, which a page fills at most 65536 bytes a call (and
+// the C library's entropy call 256): every 256 bytes, the last few included, are filled, and
+// differently each time. On the heap, beyond a page's stack.
+void its_randomness_fills_more_than_a_piece() {
+    asio::io_context io;
+    trystero::platform::backend backend(io.get_executor());
+    constexpr std::size_t size = (2 * 65536) + 300;
+    constexpr std::size_t stride = 256;
+    std::vector<std::uint8_t> first(size);
+    std::vector<std::uint8_t> second(size);
+    backend.random(first);
+    backend.random(second);
+    std::size_t unfilled = 0;
+    std::size_t repeated = 0;
+    for (std::size_t at = 0; at < size; at += stride) {
+        const auto end = std::min(size, at + stride);
+        const auto a = std::span(first).subspan(at, end - at);
+        const auto b = std::span(second).subspan(at, end - at);
+        unfilled += std::ranges::all_of(a, [](std::uint8_t byte) { return byte == 0; }) ? 1 : 0;
+        repeated += std::ranges::equal(a, b) ? 1 : 0;
+    }
+    BOOST_TEST_EQ(unfilled, 0U);
+    BOOST_TEST_EQ(repeated, 0U);
+}
+
 void its_executor_and_tls_context_are_there() {
     asio::io_context io;
     trystero::platform::backend backend(io.get_executor());
@@ -140,6 +168,7 @@ int main() {
     its_own_state_is_in_its_memory();
     its_clocks_are_the_standard_librarys();
     its_randomness_fills_and_differs();
+    its_randomness_fills_more_than_a_piece();
     its_executor_and_tls_context_are_there();
     return webcpp::test::exit_status(boost::report_errors());
 }

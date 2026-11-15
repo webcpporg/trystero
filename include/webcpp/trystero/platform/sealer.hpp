@@ -108,8 +108,16 @@ inline emscripten::val take(emscripten::EM_VAL handle) {
     return emscripten::val::take_ownership(handle);
 }
 
-/** A copy of an `ArrayBuffer`'s bytes, in `memory`. */
-inline backend::bytes from_js(const emscripten::val& buffer, std::pmr::memory_resource* memory) {
+/**
+ * A copy of the bytes of a Web Crypto settlement, in `memory`; nothing when it is no `ArrayBuffer`,
+ * which a page whose `crypto.subtle` was replaced can settle with, and whose reading as one could
+ * throw (`new Uint8Array(-1)`) or read what it is not.
+ */
+inline std::optional<backend::bytes> from_js(const emscripten::val& buffer,
+                                             std::pmr::memory_resource* memory) {
+    if (!buffer.instanceof(emscripten::val::global("ArrayBuffer"))) {
+        return std::nullopt;
+    }
     const emscripten::val view = emscripten::val::global("Uint8Array").new_(buffer);
     backend::bytes out(view["length"].as<std::size_t>(), memory);
     js_copy(view.as_handle(), out.data(), out.size());
@@ -301,12 +309,12 @@ private:
                   allocator(),
                   [iv, done = std::move(done), memory = memory_](
                       boost::system::error_code ec, const emscripten::val& cipher) mutable {
-                      if (ec) {
+                      const auto bytes = ec ? std::nullopt : detail::from_js(cipher, memory);
+                      if (!bytes) {
                           done(make_error_code(error::backend_failure), {});
                           return;
                       }
-                      const auto sealed =
-                          protocol::format_sealed(iv, detail::from_js(cipher, memory), memory);
+                      const auto sealed = protocol::format_sealed(iv, *bytes, memory);
                       done({}, sealed);
                   }));
     }
@@ -328,7 +336,11 @@ private:
                       return;
                   }
                   const auto b = detail::from_js(plain, memory);
-                  done({}, std::string_view(reinterpret_cast<const char*>(b.data()), b.size()));
+                  if (!b) {
+                      done(make_error_code(error::backend_failure), {});
+                      return;
+                  }
+                  done({}, std::string_view(reinterpret_cast<const char*>(b->data()), b->size()));
               }));
     }
 
