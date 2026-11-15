@@ -145,6 +145,9 @@ webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
 # the C library's allocation functions, replaced, count none.
 webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
   : $(platform) : emscripten ;
+# A relay socket's handlers and a sealer's completions run outside the page's
+# events.
+webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
 # end::page[]
 
 # The same, built without exceptions, as a page's program may be: no
@@ -163,6 +166,8 @@ webcpp.run platform_page_no_exceptions : platform_page_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_sealer_allocation_no_exceptions
   : platform_page_sealer_allocation_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_handlers_no_exceptions : platform_page_handlers_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 
