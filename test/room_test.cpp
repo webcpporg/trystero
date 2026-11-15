@@ -1723,8 +1723,10 @@ void the_errors_have_their_values() {
 }  // namespace
 
 int main() {
-    // Some forty cases of two or three apps each: under Asyncify a debug build runs them in about
-    // 115 s alone (measured), near node's default bound of 120 s, and past it on a loaded machine.
+    // Some forty cases of two or three apps each: under Asyncify a debug build takes 54 s of the
+    // processor, more than a third of node's default bound of 120 s, and 74 to 168 s on a loaded
+    // machine, past it (measured on 2026-11-15 with 18 cores at load averages of 50 to 230; under
+    // JSPI 34 s, and 44 to 51 s).
     webcpp::test::bound(std::chrono::seconds(300));
     // Each case in a frame of its own, which main's never holds (cases.hpp).
     using webcpp::test::run_case;
