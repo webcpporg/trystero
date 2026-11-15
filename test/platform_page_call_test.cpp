@@ -33,6 +33,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory_resource>
 #include <optional>
 
@@ -82,10 +83,10 @@ struct program {
     asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
     std::optional<call> doomed;
     std::optional<call> next;
-    int stage = 0;
-    int seen_n = 0;
-    int doomed_calls = 0;
-    int orphan_calls = 0;
+    std::size_t stage = 0;
+    std::int32_t seen_n = 0;
+    std::size_t doomed_calls = 0;
+    std::size_t orphan_calls = 0;
     bool judged = false;
 };
 
@@ -113,7 +114,7 @@ void outlive_the_io_context(program& p) {
     BOOST_TEST(kept(2).isUndefined());
     orphan.reset();
     BOOST_TEST_EQ(memory.outstanding, 0U);
-    BOOST_TEST_EQ(p.orphan_calls, 0);
+    BOOST_TEST_EQ(p.orphan_calls, 0U);
 }
 
 /**
@@ -125,7 +126,7 @@ void advance(program& p, const val& argument) {
         // The page's value is checked before it is read, as a page_call's handler does.
         if (!argument.isNull() && !argument.isUndefined()) {
             const val n = argument["n"];
-            p.seen_n = n.isNumber() ? n.as<int>() : -1;
+            p.seen_n = n.isNumber() ? n.as<std::int32_t>() : -1;
         }
         p.doomed.reset();
         // The page calls the function it kept, then the next.
@@ -141,7 +142,7 @@ void advance(program& p, const val& argument) {
     }
     BOOST_TEST_EQ(p.seen_n, 2);
     BOOST_TEST(val::global("keptReturned").isUndefined());
-    BOOST_TEST_EQ(p.doomed_calls, 0);
+    BOOST_TEST_EQ(p.doomed_calls, 0U);
     outlive_the_io_context(p);
     p.judged = true;
     p.guard.reset();

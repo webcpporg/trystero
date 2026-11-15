@@ -11,7 +11,7 @@
 //   it; all of it is given back when the backend is destroyed. Before, the backend made its window
 //   and its runtime in the default resource.
 // - Its clocks are the standard library's: the wall clock's whole seconds, as the test reads them,
-//   and a steady clock in milliseconds that a 20 ms wait moves forward.
+//   and the steady clock, which a 20 ms wait moves forward.
 // - Its randomness fills what it is given, differently each time.
 // - Its executor is the one it was given, and its relays' TLS context was made.
 //
@@ -101,20 +101,18 @@ void its_own_state_is_in_its_memory() {
 void its_clocks_are_the_standard_librarys() {
     asio::io_context io;
     trystero::platform::backend backend(io.get_executor());
-    const auto seconds = std::chrono::floor<std::chrono::seconds>(
-                             std::chrono::system_clock::now().time_since_epoch())
-                             .count();
-    const std::int64_t read = backend.unix_seconds();
-    BOOST_TEST_LE(seconds, read);
-    BOOST_TEST_LE(read, seconds + 1);
+    const auto before = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+    const std::chrono::sys_seconds read = backend.unix_now();
+    BOOST_TEST(before <= read);
+    BOOST_TEST(read <= before + 1s);
 
-    const double start = backend.now_ms();
+    const auto start = backend.steady_now();
     asio::steady_timer wait(io, 20ms);
-    std::optional<double> waited;
-    wait.async_wait([&](boost::system::error_code) { waited = backend.now_ms() - start; });
+    std::optional<std::chrono::steady_clock::duration> waited;
+    wait.async_wait([&](boost::system::error_code) { waited = backend.steady_now() - start; });
     io.run_for(10s);  // lint-run: the test's 20 ms wait
     if (BOOST_TEST(waited.has_value())) {
-        BOOST_TEST_GE(*waited, 19.0);  // a whole millisecond of the steady clock's rounding
+        BOOST_TEST(*waited >= 19ms);  // a whole millisecond of the steady clock's rounding
     }
 }
 

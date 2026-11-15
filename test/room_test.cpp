@@ -555,7 +555,7 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
     });
     flooder attacker(f, "reports");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
-    const auto started = f.net.now_ms();
+    const auto started = f.net.steady_now();
     const auto before = f.net.relay(relay_a).events_seen;
     // Paced, so that each offer's open completes before later ids evict its negotiation: every
     // twenty, the executor runs until nothing is left to run, the relay, the room and the sealer's
@@ -580,8 +580,8 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
         return sum;
     };
     BOOST_TEST(run_until(f.io, [&] { return counted() == flood; }));
-    const double elapsed = f.net.now_ms() - started;
-    BOOST_TEST_LE(static_cast<double>(reports.size()), 2 + (elapsed / 10'000));
+    const auto elapsed = f.net.steady_now() - started;
+    BOOST_TEST_LE(reports.size(), 2 + static_cast<std::size_t>(elapsed / 10s));
     if (BOOST_TEST(!reports.empty())) {
         BOOST_TEST_EQ(reports.front().peer, "0garbage0");
     }

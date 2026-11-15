@@ -30,6 +30,7 @@
 #include <boost/core/lightweight_test.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -211,7 +212,7 @@ struct tls_echo_server {
     asio::ssl::context context;
     // Written by the server's own callbacks, also while a test holds the server const.
     mutable std::vector<std::string> server_names;
-    mutable int failed_handshakes = 0;
+    mutable std::size_t failed_handshakes = 0;
 };
 
 /** What a hostile relay does once it reads a client's first message. */
@@ -493,7 +494,7 @@ void a_relay_at_an_ipv6_address_opens() {
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     std::vector<std::string> received;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls,
@@ -513,13 +514,13 @@ void a_relay_at_an_ipv6_address_opens() {
     }
     socket->send("over IPv6");
     BOOST_TEST(run_until(io, [&] { return received.size() == 1; }));
-    BOOST_TEST_EQ(closes, 0);
+    BOOST_TEST_EQ(closes, 0U);
 }
 
 // What a socket reported, recorded by the handlers record() makes.
 struct reports {
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     std::vector<std::string> received;
 
     trystero::backend::websocket::handlers record() {
@@ -574,8 +575,8 @@ void a_relay_over_tls_opens_and_is_sent_its_name() {
     }
     socket->send("over TLS");
     BOOST_TEST(run_until(io, [&] { return seen.received.size() == 1; }));
-    BOOST_TEST_EQ(seen.closes, 0);
-    BOOST_TEST_EQ(server.failed_handshakes, 0);
+    BOOST_TEST_EQ(seen.closes, 0U);
+    BOOST_TEST_EQ(server.failed_handshakes, 0U);
     const std::vector<std::string> names{"localhost"};
     BOOST_TEST_ALL_EQ(server.server_names.begin(), server.server_names.end(), names.begin(),
                       names.end());
@@ -741,7 +742,7 @@ void opens_sends_in_order_receives_and_closes_once() {
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     std::vector<std::string> received;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
@@ -766,7 +767,7 @@ void opens_sends_in_order_receives_and_closes_once() {
     BOOST_TEST(run_until(io, [&] { return closes == 1; }));
     socket->close();
     run_until(io, [] { return false; }, 100ms);
-    BOOST_TEST_EQ(closes, 1);
+    BOOST_TEST_EQ(closes, 1U);
 }
 
 // A message longer than any relay's (protocol::max_relay_message_bytes) is never handed over: the
@@ -776,7 +777,7 @@ void a_message_longer_than_a_relay_sends_closes_the_socket() {
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     std::vector<std::size_t> received;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
@@ -806,7 +807,7 @@ void an_unreachable_relay_closes_without_opening() {
     taken.close();  // nothing listens there now
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, "ws://127.0.0.1:" + std::to_string(port),
         {
@@ -832,14 +833,14 @@ void a_relay_at_an_ipv4_shorthand_closes_without_opening() {
         seen.record(), std::pmr::get_default_resource());
     BOOST_TEST(run_until(io, [&] { return seen.opened || seen.closes != 0; }));
     BOOST_TEST(!seen.opened);
-    BOOST_TEST_EQ(seen.closes, 1);
+    BOOST_TEST_EQ(seen.closes, 1U);
 }
 
 void a_dropped_socket_reports_nothing() {
     asio::io_context io;
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
-    int events = 0;
+    std::size_t events = 0;
     {
         const auto socket = trystero::platform::connect_websocket(
             io.get_executor(), &tls, server.url(),
@@ -851,7 +852,7 @@ void a_dropped_socket_reports_nothing() {
             std::pmr::get_default_resource());
     }
     run_until(io, [] { return false; }, 200ms);
-    BOOST_TEST_EQ(events, 0);
+    BOOST_TEST_EQ(events, 0U);
 }
 
 void closing_right_after_a_send_lets_the_write_finish_first() {
@@ -859,7 +860,7 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     const auto socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
                                                               {
                                                                   .open = [&] { opened = true; },
@@ -883,22 +884,23 @@ void closing_right_after_a_send_lets_the_write_finish_first() {
 // The test is built with the standard library's own checks (test/Jamfile), so that a write
 // completion that touches a cleared queue fails at once.
 void a_connection_that_ends_during_a_write_closes_once(misbehaviour what) {
-    constexpr int connections = 10;
-    constexpr int texts = 200;
+    constexpr std::size_t connections = 10;
+    constexpr std::size_t texts = 200;
     asio::io_context io;
     const hostile_server server(io, what);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     const std::string text(std::size_t{64} * 1024, 't');
-    for (int i = 0; i < connections; ++i) {
+    for (std::size_t i = 0; i < connections; ++i) {
         bool opened = false;
-        int closes = 0;
+        std::size_t closes = 0;
         std::shared_ptr<trystero::backend::websocket> socket;
         socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
                                                        {
                                                            .open =
                                                                [&] {
                                                                    opened = true;
-                                                                   for (int t = 0; t < texts; ++t) {
+                                                                   for (std::size_t t = 0;
+                                                                        t < texts; ++t) {
                                                                        socket->send(text);
                                                                    }
                                                                },
@@ -912,7 +914,7 @@ void a_connection_that_ends_during_a_write_closes_once(misbehaviour what) {
         BOOST_TEST(opened);
         socket.reset();  // as the room's strategy replaces a relay's socket when it reconnects
         run_until(io, [] { return false; }, 50ms);
-        BOOST_TEST_EQ(closes, 1);
+        BOOST_TEST_EQ(closes, 1U);
     }
 }
 
@@ -924,7 +926,7 @@ void a_relay_that_stops_reading_is_dropped_at_the_queue_bound() {
     const stalled_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     const auto socket = trystero::platform::connect_websocket(io.get_executor(), &tls, server.url(),
                                                               {
                                                                   .open = [&] { opened = true; },
@@ -936,13 +938,13 @@ void a_relay_that_stops_reading_is_dropped_at_the_queue_bound() {
         return;
     }
     const std::string text(std::size_t{64} * 1024, 't');
-    for (int i = 0; i < 2000 && closes == 0; ++i) {
+    for (std::size_t i = 0; i < 2000 && closes == 0; ++i) {
         socket->send(text);
         io.poll();
     }
     BOOST_TEST(run_until(io, [&] { return closes == 1; }));
     run_until(io, [] { return false; }, 100ms);
-    BOOST_TEST_EQ(closes, 1);
+    BOOST_TEST_EQ(closes, 1U);
 }
 
 // A relay that stops answering while the room has nothing to send: a keep-alive ping goes
@@ -952,7 +954,7 @@ void a_relay_that_stops_answering_times_out() {
     const stalled_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
         {
@@ -978,7 +980,7 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
     const echo_server server(io);
     asio::ssl::context tls(asio::ssl::context::tls_client);
     bool opened = false;
-    int closes = 0;
+    std::size_t closes = 0;
     std::vector<std::string> received;
     const auto socket = trystero::platform::connect_websocket(
         io.get_executor(), &tls, server.url(),
@@ -996,7 +998,7 @@ void a_quiet_relay_that_answers_pings_stays_connected() {
         return;
     }
     run_until(io, [&] { return closes != 0; }, 3s);  // three idle timeouts
-    BOOST_TEST_EQ(closes, 0);
+    BOOST_TEST_EQ(closes, 0U);
     socket->send("still there");
     BOOST_TEST(run_until(io, [&] { return received.size() == 1; }));
 }

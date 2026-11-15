@@ -30,6 +30,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -75,7 +76,7 @@ EM_JS(void, install_stalled_websocket, (), {
 
 namespace {
 
-constexpr int texts = 100;
+constexpr std::size_t texts = 100;
 
 struct state {
     asio::io_context io;
@@ -83,8 +84,8 @@ struct state {
     trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::websocket> socket;
     const std::string text = std::string(std::size_t{64} * 1024, 't');
-    int sending = 0;
-    int closes = 0;
+    std::size_t sending = 0;
+    std::size_t closes = 0;
     bool in_send = false;
     bool sent = false;
     bool judged = false;
@@ -98,9 +99,9 @@ void verdict(state& s) {
     if (!s.sent || s.closes == 0) {
         return;
     }
-    BOOST_TEST_EQ(s.closes, 1);
+    BOOST_TEST_EQ(s.closes, 1U);
     BOOST_TEST_LE(held(), trystero::protocol::max_queued_relay_bytes);
-    BOOST_TEST_GE(val::global("stalledCloses").as<int>(), 1);
+    BOOST_TEST_GE(val::global("stalledCloses").as<std::uint32_t>(), 1U);
     s.socket.reset();
     s.judged = true;
     s.guard.reset();

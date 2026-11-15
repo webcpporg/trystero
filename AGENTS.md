@@ -42,13 +42,14 @@ holds only what is specific to trystero.
   own stream and in a page over webcpp::beast's page `WebSocket`. Its timer
   is the core's `detail::timer` over webcpp::asio's `steady_timer`, the one
   timer on both targets. Its clocks are the standard library's on both
-  targets, `std::chrono::system_clock` (`unix_seconds`) and
-  `std::chrono::steady_clock` (`now_ms`), which Emscripten reads from the
-  page's `Date.now()` and `performance.now()`. Two parts are the target's
-  own, chosen by `WEBCPP_TARGET_EMSCRIPTEN`, config's (the library never
-  tests `__EMSCRIPTEN__`): the sealer (`platform/sealer.hpp`), natively
-  OpenSSL's AES-256-GCM and in a page `crypto.subtle` through webcpp::asio's
-  `browser::async_await`; and the platform's one source of randomness,
+  targets, `std::chrono::system_clock` floored to whole seconds
+  (`unix_now`) and `std::chrono::steady_clock` (`steady_now`), which
+  Emscripten reads from the page's `Date.now()` and `performance.now()`.
+  Two parts are the target's own, chosen by `WEBCPP_TARGET_EMSCRIPTEN`,
+  config's (neither the library nor its tests test `__EMSCRIPTEN__`): the
+  sealer (`platform/sealer.hpp`), natively OpenSSL's AES-256-GCM and in a
+  page `crypto.subtle` through webcpp::asio's `browser::async_await`; and
+  the platform's one source of randomness,
   `platform::detail::fill_random` (`platform/entropy.hpp`), whose result is
   checked: natively OpenSSL's `RAND_bytes`, in a page `getentropy`, which
   Emscripten draws from `crypto.getRandomValues`. Without randomness
@@ -70,7 +71,12 @@ holds only what is specific to trystero.
   interop's native peer wraps the platform backend's (`delayed_channel`,
   `observed_connection`). Their one implementation over a platform is
   `webrtc/`, which webcpp::webrtc's table "trystero's backend, part by
-  part" maps part by part.
+  part" maps part by part. The interface's clocks are std::chrono's, so
+  that no unit is converted at the seam: `factory::steady_now` returns the
+  `std::chrono::steady_clock::time_point` the core keeps
+  (`detail::time_point`), from an origin of the backend's, and
+  `factory::unix_now` a `std::chrono::sys_seconds`, which a Nostr event's
+  `created_at` and a subscription's `since` write.
 - **Exceptions.** trystero's WebRTC is webcpp::webrtc's, which natively calls
   libdatachannel's C API, where no exception crosses: every part of trystero,
   the platform backend included, works with exceptions and without them on
@@ -122,9 +128,10 @@ holds only what is specific to trystero.
   installation leaves trystero out unless `webcpp-require-external=on`.
   MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
   `/webcpp/trystero//trystero` (`build.jam`'s `tag::trystero[]`) is the
-  rooms alone, the core: its headers, Boost, Boost.JSON, config,
-  webcpp::asio and libsecp256k1; on no target does it bring webcpp::webrtc,
-  and the tests over the memory relays use it alone.
+  rooms alone, the core: its headers, Boost, webcpp::document
+  (`/webcpp/document//document`, with Boost.JSON's and Boost.Charconv's
+  definitions), config, webcpp::asio and libsecp256k1; on no target does it
+  bring webcpp::webrtc, and the tests over the memory relays use it alone.
   `/webcpp/trystero//platform` (`tag::platform[]`) is the platform backend's
   target on both targets, alternatives by `<toolset>emscripten`, which a
   native program and a page's program both name. Its WebRTC is
@@ -382,8 +389,11 @@ holds only what is specific to trystero.
   frames and reporting exact unsent bytes through `buffered`. Set
   `virtual_clock` before making timers: `advance`, `step` and `poll_ready` run due
   timers and ready work deterministically, in due-time and registration
-  order. Optional hook storage uses the default resource only when enabled;
-  allocation tests enable none. `connection`, `memory_backend`, `shared`,
+  order. The virtual clock is a `std::chrono::steady_clock::time_point`
+  from the clock's epoch, which `steady_now` returns, and `unix_now` reads
+  it as 2025-10-05T21:33:20Z plus its whole seconds; tests compare its
+  durations exactly. Optional hook storage uses the default resource only
+  when enabled; allocation tests enable none. `connection`, `memory_backend`, `shared`,
   `shared_no_exceptions` and `shared_hardened` cover these paths, with
   sanitizers and library hardening checking resource lifetimes.
 - **The oracle and the interop tests, trystero's own lanes.**
@@ -505,7 +515,8 @@ holds only what is specific to trystero.
     `room_options::memory`, the app's resource when null, receives room
     state, bindings and drain waiters, negotiation records, rebinding
     counts and backoffs, sealed texts, relay sockets, signing context,
-    actions, outgoing frames, queues, transfers, JSON storage and handlers.
+    actions, outgoing frames, queues, transfers, the documents of the JSON
+    texts it reads, and handlers.
     Every touch runs on the app's executor; one thread needs no thread-safe
     resource, multiple threads require a strand.
   - **References and detachment.** Rooms hold the app strongly, the app
@@ -532,8 +543,9 @@ holds only what is specific to trystero.
   - **Containers.** Every container trystero declares is a `std::pmr` one
     or a Boost container over `std::pmr::polymorphic_allocator`, but
     `trystero::bytes` (a `std::vector<std::uint8_t>`) and
-    `trystero::payload` (a variant of `std::string`, `boost::json::value` and
-    `bytes`), the user's choice of `std::allocator`:
+    `trystero::payload` (a variant of `std::string`,
+    `webcpp::document::document` and `bytes`), the user's choice of
+    `std::allocator`:
     `std::pmr::string` (and `peer_id`), `std::pmr::vector` (and
     `backend::bytes`, `protocol::bytes` and `pmr_bytes`), `std::pmr::deque`,
     `std::pmr::map` and `std::pmr::set`, and three Boost containers over
@@ -611,31 +623,44 @@ holds only what is specific to trystero.
     type-erased executor wraps it with `std::allocator` (measured: telling
     the executor apart through the erased type cost two `operator new` calls
     a completion, and Asio's wrapper a `std::aligned_alloc`).
-  - **Boost.JSON** allocates through `json_resource` (`json_resource.hpp`),
-    a `boost::container::pmr::memory_resource` that forwards to a
-    `std::pmr::memory_resource`, header-only: `boost::container::pmr`'s own
-    global resources are compiled (`BOOST_CONTAINER_DECL`), and the CI
-    installs Boost's headers alone. The room's JSON storage is
-    `boost::json::make_shared_resource<json_resource>(memory)`, made once when
-    the room is constructed, since a value a handler keeps may outlive the
-    room. Text is parsed by a `boost::json::parser` over that storage, never
-    by `boost::json::parse`, whose temporaries beyond a stack buffer come
-    from the default resource; JSON is written by a
-    `boost::json::serializer` whose stack is the resource.
+  - **webcpp::document** keeps a document's image in one buffer, and its
+    external storage leaves that buffer to its user: every value, strings
+    included, is allocated inside it by Boost.Interprocess's
+    `rbtree_best_fit` heap, with offsets for pointers. trystero gives each
+    text it reads such a buffer of the room's resource
+    (`protocol::json::document`, of the app's for a remote candidate),
+    sized for a text of a few values, twice the text and 4 KiB, and made
+    again twice as large when the parse fills it, up to the caller's bound
+    (`protocol::json::protocol_limits`: twice its text bound and 64 KiB). A
+    text the room writes is appended field by field to a `std::pmr::string`
+    of its resource, its strings quoted by `webcpp::document::quote`, which
+    allocates only through that string, and a JSON payload is written by
+    `webcpp::document::stringify_to` in pieces of 8 bytes, which no standard
+    library's string keeps outside its own object. What document's parser
+    and writer use while they work stays in the standard allocator:
+    Boost.JSON's parser stack, the path and the pending key and text of the
+    value being read, the tree's record of each change, which places a
+    value, and the writer's stack. Each is freed before the parse or the
+    write that made it returns, so none is left at any moment the room's
+    executor is between handlers (measured natively with the LLVM standard
+    library: about seven allocations a value for each text a room reads,
+    and 48 to write and read back a JSON payload of 7 values).
   - **Payloads.** `detail::payload_traits` has `std::pmr::string` and
     `std::pmr::vector<std::uint8_t>` (`webcpp::trystero::pmr_bytes`) beside
     the standard types, and `decode(incoming& message,
     std::pmr::memory_resource* memory)` takes the resource for every type:
-    the `std::pmr` types are built in it, and `boost::json::value` in the
-    room's JSON storage, which the message carries. `std::string`, `bytes`
-    and `payload` stay as they are, with `std::allocator`: the user's
-    choice, and a received `bytes`, or the binary of a `payload`, is a copy
-    of the frame, which starts in the app's resource. An owning pmr binary
-    payload is moved when its message buffer and the room use the same
-    resource, and copied once otherwise; chunked transfers assemble their
-    buffer in the room's resource. A received std::pmr::string always copies
-    the text once into the room's resource. `encode`
-    takes the resource too, for what keeps the payload alive.
+    the `std::pmr` types are built in it, and `pmr_document` in a buffer of
+    it. `std::string`, `bytes`, `webcpp::document::document` and `payload`
+    stay as they are, with `std::allocator` or document's own
+    `operator new`: the user's choice, and a received `bytes`, or the binary
+    of a `payload`, is a copy of the frame, which starts in the app's
+    resource; a received `webcpp::document::document` is an image of its
+    own, from the global `operator new`, as document's owned documents are.
+    An owning pmr binary payload is moved when its message buffer and the
+    room use the same resource, and copied once otherwise; chunked transfers
+    assemble their buffer in the room's resource. A received
+    std::pmr::string always copies the text once into the room's resource.
+    `encode` takes the resource too, for what keeps the payload alive.
   - **The protocol** (`protocol/`) takes a `std::pmr::memory_resource*` as
     the last parameter of every function that returns what it allocates,
     with `std::pmr::get_default_resource()` as its default, and returns
@@ -644,8 +669,10 @@ holds only what is specific to trystero.
   - **Outside the resource**, stated on the page: libdatachannel's and
     OpenSSL's own allocations, with the copy libdatachannel's C API makes of
     a message before webcpp::webrtc reads it; `emscripten::val`'s JavaScript
-    heap; the JSON storage's counter, which Boost.JSON allocates with
-    `operator new` once per room; Asio's own once-per-context allocations
+    heap; webcpp::document's working state while it reads or writes a JSON
+    text (its parser's stack, path and pending text, its tree's record of
+    each change, its writer's stack), each piece freed before the call
+    returns; Asio's own once-per-context allocations
     (its services and the scheduler's first operation); the wrapper Asio puts
     around a post through an executor that is not an `io_context`'s, which
     webcpp::webrtc's completions get, through `any_io_executor`;
@@ -662,9 +689,9 @@ holds only what is specific to trystero.
     operations, read buffer and queued texts are in the room's resource and
     a message allocates nothing outside it (in a page the stream's own state
     is there too, made with `std::allocator_arg` and the room's allocator);
-    the payload
-    types `std::string`, `bytes` and `payload`, with `std::allocator`; on
-    Emscripten, the C library's `select()`, which Asio's reactor calls on
+    the payload types `std::string`, `bytes`, `webcpp::document::document`
+    and `payload`, with `std::allocator` or document's own `operator new`;
+    on Emscripten, the C library's `select()`, which Asio's reactor calls on
     every wait of an io_context with a timer or a socket, and which callocs
     an array on every call (the test replaces it, below), and under Asyncify
     the unwind data of every suspension of the run (the test counts it
@@ -681,26 +708,37 @@ holds only what is specific to trystero.
     has weak definitions the test replaces and forwards to
     `emscripten_builtin_*`, macOS reports each to `malloc_logger`, and MSVC's
     are not counted, nor any under AddressSanitizer, whose own allocator
-    reports to none of these. Two rooms over the memory relays exchange a
-    payload, a `std::pmr::string`, a `pmr_bytes` and a `boost::json::value`
-    in turn, while both counts see none and the counting resources of the two
-    configurations see the rooms'; and two rooms with a password, a log sink
-    and the network's state in a resource of its own are made, join, exchange
-    a payload that travels in chunks, measure a round trip, one says goodbye,
-    both are destroyed and the io_context is drained, while `operator new`
-    sees exactly the two rooms' JSON storage counters and the C library
-    nothing, and the rooms' resources have nothing out once the io_context
-    has drained. Two apps with two rooms each also prove one binary payload
-    copy into a distinct room resource, with size-specific counters, and
-    no extra copy when resources match; their global count sees only four
-    JSON storage counters and all resources return to zero.
+    reports to none of these. It keeps every global allocation it counts,
+    by its address, in a table of a fixed size until it is freed. Two rooms
+    over the memory relays exchange a payload, a `std::pmr::string`, a
+    `pmr_bytes` and a `pmr_document` in turn: for the first two
+    `operator new` sees nothing, for the document exactly what writing it
+    and reading its text back cost webcpp::document's working state, counted
+    apart beforehand on the same value, and nothing left; the C library
+    sees nothing, and the counting resources of the two configurations see
+    the rooms'. Each text a room reads (a relay's event carrying an offer, a
+    relay's `OK`, a signal, a handshake message, a candidate) is parsed in a
+    counting resource, which holds its image until the document goes, and
+    document's working state costs `operator new` at most 8 allocations a
+    value and 16 more, none left after the parse. Two rooms with a password,
+    a log sink and the network's state in a resource of its own are made,
+    join, exchange a payload that travels in chunks, measure a round trip,
+    one says goodbye, both are destroyed and the io_context is drained,
+    while `operator new` sees webcpp::document's working state alone, none
+    of it live at the drain, and the C library nothing, and the rooms'
+    resources have nothing out once the io_context has drained. Two apps
+    with two rooms each also prove one binary payload copy into a distinct
+    room resource, with size-specific counters, and no extra copy when
+    resources match; their global count sees only webcpp::document's working
+    state, nothing live at the drain, and all resources return to zero.
     The counting resources also count a return of memory they
     never gave, a pmr object freed through the wrong resource, which must be
     none. Only the thread `main` runs on is counted: the C library reports
     allocations from every thread, and a system thread's are not the rooms'.
     Asio's once-per-context allocations are made first (its timer service,
     its reactor, the scheduler's first operation, and room in its timer queue
-    for 256 waits); without them the count is 8, not 2. The replaced
+    for 256 waits); without them, the 6 they make would still be out at the
+    drain. The replaced
     `operator new` raises an alignment below `sizeof(void*)` and rounds the
     size to a multiple of the alignment, since `std::aligned_alloc` refuses
     both (measured: macOS refuses the alignments 1, 2 and 4, Emscripten 1 and

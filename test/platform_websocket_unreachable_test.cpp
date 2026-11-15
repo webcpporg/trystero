@@ -57,7 +57,7 @@ struct state {
     trystero::platform::backend backend{io.get_executor()};
     asio::steady_timer settle{io};
     std::array<std::shared_ptr<trystero::backend::websocket>, urls.size()> sockets;
-    std::array<int, urls.size()> closes{};
+    std::array<std::size_t, urls.size()> closes{};
     std::size_t total = 0;
     bool judged = false;
 };
@@ -72,7 +72,7 @@ void closed(state& s, std::size_t i) {
     s.settle.expires_after(100ms);
     s.settle.async_wait([&s](boost::system::error_code) {
         for (std::size_t j = 0; j < urls.size(); ++j) {
-            BOOST_TEST_EQ(s.closes.at(j), 1);
+            BOOST_TEST_EQ(s.closes.at(j), 1U);
         }
         s.sockets = {};  // destroyed after the close: nothing more is reported
         s.judged = true;
@@ -92,7 +92,7 @@ void connect_all(state& s) {
                                             std::pmr::get_default_resource());
         s.sockets.at(i)->send("ignored");
         s.sockets.at(i)->close();
-        BOOST_TEST_EQ(s.closes.at(i), 0);  // not inside the call
+        BOOST_TEST_EQ(s.closes.at(i), 0U);  // not inside the call
     }
 }
 

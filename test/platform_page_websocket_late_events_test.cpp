@@ -35,6 +35,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
 #include <string>
@@ -92,17 +93,17 @@ struct state {
     trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::websocket> stalled;
     std::shared_ptr<trystero::backend::websocket> big;
-    int stalled_closes = 0;
-    int messages_after_close = 0;
-    int big_closes = 0;
+    std::size_t stalled_closes = 0;
+    std::size_t messages_after_close = 0;
+    std::size_t big_closes = 0;
     bool judged = false;
 };
 
 void judge(state& s) {
-    BOOST_TEST_EQ(s.stalled_closes, 1);
-    BOOST_TEST_EQ(s.messages_after_close, 0);
-    BOOST_TEST_EQ(s.big_closes, 1);
-    BOOST_TEST_EQ(val::global("lateCloses").as<int>(), 2);
+    BOOST_TEST_EQ(s.stalled_closes, 1U);
+    BOOST_TEST_EQ(s.messages_after_close, 0U);
+    BOOST_TEST_EQ(s.big_closes, 1U);
+    BOOST_TEST_EQ(val::global("lateCloses").as<std::uint32_t>(), 2U);
     s.stalled.reset();
     s.big.reset();
     s.judged = true;
@@ -132,7 +133,7 @@ int main() {
                                       .open =
                                           [&s] {
                                               const std::string text(std::size_t{64} * 1024, 't');
-                                              for (int i = 0; i < 100; ++i) {
+                                              for (std::size_t i = 0; i < 100; ++i) {
                                                   s.stalled->send(text);
                                               }
                                           },

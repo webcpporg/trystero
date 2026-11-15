@@ -63,10 +63,10 @@ struct state {
 };
 
 /** The connections webcpp::webrtc's census of the page counts. */
-double held() {
+std::size_t held() {
     const val census = val::global(
         "globalThis")[val::global("Symbol").call<val>("for", val("webcpp.webrtc.census"))];
-    return census.isUndefined() ? 0 : census["held"].as<double>();
+    return census.isUndefined() ? 0 : static_cast<std::size_t>(census["held"].as<double>());
 }
 
 /** Runs node's garbage collector, exposed for this test. */
@@ -165,7 +165,7 @@ int main() {
             pc->close();
         }
     }
-    BOOST_TEST_EQ(held(), static_cast<double>(budget));
+    BOOST_TEST_EQ(held(), budget);
     BOOST_TEST(s.backend.make_peer_connection({}, memory) == nullptr);
 
     // A collection frees them: node's gc, from a handler of the io_context, after the
