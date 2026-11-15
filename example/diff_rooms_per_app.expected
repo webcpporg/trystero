@@ -1,0 +1,4 @@
+joins 1 to 64: 64 rooms
+join 65: the app holds as many rooms as a peer accepts, 64
+join 66, while room 1 is leaving: the app holds as many rooms as a peer accepts, 64
+join 67, once room 1 has left: a room

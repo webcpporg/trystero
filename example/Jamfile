@@ -5,7 +5,7 @@
 # https://www.boost.org/LICENSE_1_0.txt)
 
 # A program of rooms over Asio holds more sections than MSVC's object format
-# allows by default (C1128, measured in native_quick_start): /bigobj.
+# allows by default (C1128, measured in the native quick start): /bigobj.
 project : requirements <library>/webcpp/trystero//trystero
   <toolset>msvc:<cxxflags>/bigobj ;
 
@@ -13,16 +13,41 @@ import webcpp ;
 
 webcpp.targets native emscripten ;
 
-# Each needs the public relays or a browser, so it is linked and never run.
-# tag::native[]
-webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//platform <threading>multi : native ;
-# end::native[]
-# tag::browser[]
-webcpp.link quick_start : quick_start.cpp
-  : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
-    <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
-# end::browser[]
-
-# The chat page, on emscripten: its program and the site it is served from.
+# The chat page, on emscripten: its program and the site it is served from. A
+# page, linked and never run.
 build-project chat ;
+
+# The programs that run over a Nostr relay of their own on 127.0.0.1,
+# natively: run_over_relay.mjs starts it (test/oracle/interop/relay.mjs),
+# gives the program its URL in TRYSTERO_RELAY_URL, and passes when the
+# program prints its .expected. Each has its twin, on Trystero JS, under
+# test/oracle/twins/. Node runs the relay with the packages test/oracle pins.
+webcpp.original node --conditions=development : ../test/oracle ;
+# The quick start (doc: #trystero-quick-start).
+# tag::quick-start[]
+webcpp.drive quick_start : quick_start.cpp
+  : <library>/webcpp/trystero//platform <threading>multi : run_over_relay.mjs : : native ;
+# end::quick-start[]
+# The programs of the appendix "Differences" (doc: #trystero-differences).
+# tag::differences[]
+local differences =
+    diff_already_joined
+    diff_passwords
+    diff_peer_join
+    diff_peers
+    diff_relay_config
+    diff_relay_sockets
+    diff_rooms_per_app
+    diff_self_id
+    diff_send_to_absent_peer
+    ;
+for local difference in $(differences)
+{
+    webcpp.drive $(difference) : $(difference).cpp
+      : <library>/webcpp/trystero//platform <threading>multi : run_over_relay.mjs : : native ;
+}
+webcpp.lane relayed : quick_start $(differences) : native ;
+# One needs no relay, its app joining no room, and has no twin.
+webcpp.example diff_self_id_not_utf8.cpp
+  : <library>/webcpp/trystero//platform <threading>multi : native ;
+# end::differences[]

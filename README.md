@@ -99,10 +99,12 @@ instead. With them found,
     b2 libs/trystero/test libs/trystero/example
     b2 toolset=emscripten libs/trystero/test libs/trystero/example
 
-build the tests and the examples natively and on emscripten, with the
-emscripten toolset that `user-config.jam` registers against emsdk. A b2
-program uses the rooms and the platform backend through
-`/webcpp/trystero//platform`, on both targets, as `example/Jamfile` does.
+build the tests natively and on emscripten, and the chat's program on
+emscripten, with the emscripten toolset that `user-config.jam` registers
+against emsdk; the quick start and the programs of the differences run in
+the lane `relayed` (below). A b2 program uses the rooms and the platform
+backend through `/webcpp/trystero//platform`, on both targets, as the
+examples' Jamfiles do.
 The target adds `/webcpp/trystero//trystero`, the rooms alone: trystero's
 headers, Boost's, webcpp::asio, which links embind on emscripten,
 libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
@@ -119,103 +121,147 @@ over a backend of its own, as the tests' memory relays do, uses
 
 ## The examples
 
-Three examples come with the library. Each needs the public relays or a
-browser, so the build links them and never runs them.
-
 | Example | What it is | Target |
 | --- | --- | --- |
-| `example/native_quick_start.cpp` | a native program that joins the room `lobby`, greets every peer and prints what it receives | native |
-| `example/quick_start.cpp` | the browser quick start, a `.js` and `.wasm` to embed in a page | emscripten |
+| `example/quick_start.cpp` | the quick start: two peers of one program meet in the room `lobby`, greet each other, print what they receive, and leave | native |
+| `example/diff_*.cpp` | the programs of the page's appendix "Differences", each showing one difference from Trystero | native |
 | `example/chat/` | a chat page whose room is C++ compiled to WebAssembly | emscripten |
 
-The native quick start, whole:
+The quick start and the programs of the differences run in the lane
+`relayed`, each over a Nostr relay of its own on 127.0.0.1, whose URL
+`example/run_over_relay.mjs` gives the program in `TRYSTERO_RELAY_URL`; each
+passes when it ends by itself having printed its `.expected`. Each has its
+twin, the same program on Trystero JS, under `test/oracle/twins/`. The chat
+needs a browser, so the build links its program and never runs it.
 
-<!-- include::example/native_quick_start.cpp[tag=program] -->
+The quick start, whole: two apps of one program, `alice` and `bob`, each a
+peer with the id the program gives it, join the room `lobby` of the app
+`webcpp-trystero-quick-start`; alice greets bob when he joins, bob answers
+from a coroutine, each prints what it received, after its sender's id, and
+both leave, which ends the program. Without `TRYSTERO_RELAY_URL` it meets
+over Trystero's public relays and STUN servers, as a program that names
+none does.
+
+<!-- include::example/quick_start.cpp[tag=program] -->
 ```cpp
-#include <webcpp/trystero/app.hpp>
+#include <webcpp/trystero.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
-#include <webcpp/trystero/room.hpp>
 
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/use_awaitable.hpp>
 
+#include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <string>
-#include <utility>
+#include <string_view>
 
+namespace asio = boost::asio;
 namespace trystero = webcpp::trystero;
 
+namespace {
+
+/** What one peer's app is made with: its id, and the relay `relay` names, or the public ones. */
+trystero::app_config config_for(std::string_view self_id, const char* relay) {
+    trystero::app_config config;
+    config.app_id = "webcpp-trystero-quick-start";
+    // An id of the program's own, where an app would draw 20 random characters, so that what each
+    // peer prints of the other is the same on every run.
+    config.self_id = self_id;
+    if (relay != nullptr) {
+        // The peers stay on this machine: the relay given, and a STUN server where nothing answers
+        // in place of Trystero's public ones, beside a backend bound to the loopback.
+        config.relay_urls = {relay};
+        config.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
+    }
+    // Without a relay, both lists stay empty: Trystero's defaults, as a user's program has them,
+    // the public relays its app id selects and Trystero's public STUN servers.
+    // A connection closes as soon as no room uses it, so that the program ends once both leave.
+    config.idle_timeout = std::chrono::milliseconds{0};
+    return config;
+}
+
+
+/** bob's part: waits for a message, prints it, answers its sender, and leaves the room. */
+asio::awaitable<void> answer(trystero::room& lobby, trystero::action<std::string>& chat) {
+    // as_tuple hands the error over as a value: a room left first ends the wait without throwing.
+    auto [ec, text, info] = co_await chat.async_receive(asio::as_tuple(asio::use_awaitable));
+    if (ec) {
+        co_return;
+    }
+    std::cout << info.from << ": " << text << '\n';
+    auto [failed] = co_await chat.async_send("hello back", {.targets = {info.from}, .metadata = {}},
+                                             asio::as_tuple(asio::use_awaitable));
+    if (failed) {
+        std::cerr << "not delivered: " << failed.message() << '\n';
+    }
+    co_await lobby.async_leave(asio::as_tuple(asio::use_awaitable));
+}
+
+
+}  // namespace
+
 int main() {
-    boost::asio::io_context io;
-    trystero::platform::backend backend(io.get_executor());
-    trystero::app app(io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"});
-    auto joined = app.join("lobby");
-    if (!joined) {
-        std::cerr << "not joined: " << joined.error().message() << '\n';
+    // The relay the lane starts on 127.0.0.1, or none: Trystero's public relays.
+    const char* const relay = std::getenv("TRYSTERO_RELAY_URL");
+    asio::io_context io;
+    // One backend for both apps, whose connections stay on the loopback beside a local relay.
+    trystero::platform::backend_config local;
+    if (relay != nullptr) {
+        local.bind_address = "127.0.0.1";
+    }
+    trystero::platform::backend backend(io.get_executor(), local);
+
+    // Two apps, two peers, each with its own id, in the same room.
+    trystero::app alice(io.get_executor(), backend, config_for("alice", relay));
+    trystero::app bob(io.get_executor(), backend, config_for("bob", relay));
+    auto alice_lobby = alice.join("lobby");
+    auto bob_lobby = bob.join("lobby");
+    if (!alice_lobby || !bob_lobby) {
+        std::cerr << "not joined\n";
         return 1;
     }
-    trystero::room room = std::move(*joined);
-    auto chat = room.make_action<std::string>("chat");
+    auto alice_chat = alice_lobby->make_action<std::string>("chat");
+    auto bob_chat = bob_lobby->make_action<std::string>("chat");
 
-    room.on_peer_join([&](std::string_view peer) {
-        trystero::send_options to_peer{.targets = {trystero::peer_id(peer)}, .metadata = {}};
-        chat.async_send("hello from a native peer", std::move(to_peer),
-                        [](boost::system::error_code) {});
+    // alice greets each peer once its handshake completes, prints the answer, and leaves.
+    alice_lobby->on_peer_join([&](std::string_view peer) {
+        alice_chat.async_send("hello", {.targets = {trystero::peer_id(peer)}, .metadata = {}},
+                              [](boost::system::error_code ec) {
+                                  if (ec) {
+                                      std::cerr << "not delivered: " << ec.message() << '\n';
+                                  }
+                              });
     });
-    chat.on_message([](const std::string& text, const trystero::message_info& info) {
-        // flushed: into a pipe too, since the program runs until it is stopped
-        std::cout << info.from << ": " << text << '\n' << std::flush;
+    alice_chat.on_message([&](const std::string& text, const trystero::message_info& info) {
+        std::cout << info.from << ": " << text << '\n';
+        alice_lobby->async_leave([](boost::system::error_code) {});
     });
+    asio::co_spawn(io, answer(*bob_lobby, bob_chat), asio::detached);
 
     io.run();  // lint-run: the program's network I/O; libdatachannel's threads post to it
 }
 ```
 
-The browser quick start's app and the room it joins, which its `main` keeps alive as long as the
-tab, running the `io_context` as a native program does:
+It prints bob's line, then alice's:
 
-<!-- include::example/quick_start.cpp[tag=application] -->
-```cpp
-/** The room the page joined, and its actions. */
-struct lobby {
-    trystero::room room;
-    trystero::action<std::string> chat = room.make_action<std::string>("chat");
-    trystero::action<std::string> echo = room.make_action<std::string>("echo");
-};
-
-/** What the page keeps alive: its io_context, the backend, the app, and the room it joined. */
-struct application {
-    asio::io_context io;
-    trystero::platform::backend backend{io.get_executor()};
-    trystero::app app{io.get_executor(), backend, {.app_id = "webcpp-trystero-quick-start"}};
-    std::optional<lobby> joined;
-
-    /** Joins the lobby and makes its actions; null, with the reason printed, when the app refuses
-     * (a room of that id joined already, or 64 rooms). */
-    lobby* join() {
-        auto result = app.join("lobby");
-        if (!result) {
-            const std::string reason = result.error().message();
-            std::printf("not joined: %s\n", reason.c_str());
-            return nullptr;
-        }
-        return &joined.emplace(std::move(*result));
-    }
-};
+<!-- include::example/quick_start.expected[] -->
+```
+alice: hello
+bob: hello back
 ```
 
-`example/Jamfile` declares each program on its own target:
+`example/Jamfile` declares it natively, built with `<threading>multi`, and
+run by its driver, `run_over_relay.mjs`, over a relay of its own:
 
-<!-- include::example/Jamfile[tag=native] -->
+<!-- include::example/Jamfile[tag=quick-start] -->
 ```
-webcpp.link native_quick_start : native_quick_start.cpp
-  : <library>/webcpp/trystero//platform <threading>multi : native ;
-```
-
-<!-- include::example/Jamfile[tag=browser] -->
-```
-webcpp.link quick_start : quick_start.cpp
-  : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
-    <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+webcpp.drive quick_start : quick_start.cpp
+  : <library>/webcpp/trystero//platform <threading>multi : run_over_relay.mjs : : native ;
 ```
 
 `b2 toolset=emscripten libs/trystero/example/chat//site` copies the chat page
@@ -223,12 +269,12 @@ and its program into `site/` beside the program, under the build directory
 and out of the tree, one per variant, and prints that directory. On another
 toolset it stops, saying that the page is built on emscripten alone.
 
-## From an empty directory to a native peer and the chat
+## From an empty directory to the quick start and the chat
 
-These steps go from an empty directory to the native quick start and the
-chat page talking to each other over the public Nostr relays, on macOS with
-Homebrew. Every command runs in the workspace directory of step 2 unless it
-says otherwise.
+These steps go from an empty directory to the quick start's two peers
+meeting over the public Nostr relays, and to two tabs of the chat page
+talking to each other there, on macOS with Homebrew. Every command runs in
+the workspace directory of step 2 unless it says otherwise.
 
 ### 1. Install the tools
 
@@ -310,17 +356,21 @@ using emscripten : : $PWD/emsdk/upstream/emscripten/em++
 EOF
 ```
 
-### 8. Build the native quick start and the chat page
+### 8. Build the quick start and the chat page
 
 ```sh
 cd webcpp
-b2 --user-config=../user-config.jam libs/trystero/example//native_quick_start-program
+b2 --user-config=../user-config.jam libs/trystero/example//quick_start
 b2 --user-config=../user-config.jam toolset=emscripten libs/trystero/example/chat//site
 ```
 
-The first build also compiles Boost.JSON's and Boost.Charconv's definitions,
-which webcpp::document uses, and the first
-emscripten build Emscripten's system libraries, which takes a few minutes.
+The first command builds the quick start and runs it once over a Nostr relay
+of its own on 127.0.0.1, which Node runs with the packages
+`libs/trystero/test/oracle` pins, installed by npm at the first run; it
+passes when the program prints its `.expected`. The first build also
+compiles OpenSSL, libdatachannel, and Boost.JSON's and Boost.Charconv's
+definitions, which webcpp::document uses, and the first emscripten build
+Emscripten's system libraries, which takes a few minutes.
 The second command ends by printing the chat site's directory,
 `bin/libs/trystero/example/chat/emscripten-6.0.11/debug/address-model-32/cxxstd-20-iso/link-static/target-os-none/site`,
 which holds `index.html`, `chat-program.js` and its WebAssembly,
@@ -330,31 +380,36 @@ builds one that every browser runs.
 
 ### 9. Run them
 
-In a terminal, from `webcpp`, start the native quick start. It runs until you
-stop it with Ctrl-C:
+In a terminal, from `webcpp`, run the quick start. Without
+`TRYSTERO_RELAY_URL` its two peers meet over Trystero's public relays;
+within a few seconds it prints what each received, and ends:
 
 ```sh
-`find bin/libs/trystero/example -name native_quick_start-program -type f`
+`find bin/libs/trystero/example/quick_start.test -name quick_start -type f`
 ```
 
-In a second terminal, from the workspace, serve the chat page:
+<!-- include::example/quick_start.expected[] -->
+```
+alice: hello
+bob: hello back
+```
+
+Then serve the chat page:
 
 ```sh
-cd webcpp
 python3 -m http.server 8000 -d `find bin/libs/trystero/example/chat -name site -type d`
 ```
 
-Open <http://localhost:8000>, write `webcpp-trystero-quick-start` as the app
-and `lobby` as the room, and press Join. Within a few seconds the native quick
-start joins as a peer: the page shows "1 peer", the native peer's id "joined",
-and its greeting, "hello from a native peer". What you send from the page is
-printed in the native quick start's terminal, after the page's peer id:
+Open <http://localhost:8000> in two tabs, and press Join in each, with the
+page's app, `webcpp-trystero-chat`, and room, `lobby`. Within a few seconds
+each tab shows the other's id, its first six characters, "joined", and
+counts it as a peer; what you send from one tab appears in the other, under
+the sender's id. Every tab that joins the same app and room joins the same
+chat, and so does any Trystero JS page.
 
-```
-eXfaPSb9aXpUL1KNqF8M: hello from the page
-```
-
-Every browser tab that joins the same app and room joins the same chat.
+A native peer and a page meet too: the lane `interop` of `test/oracle`
+meets the native peer, and the browser's, with Trystero JS pages in headless
+Chrome (The tests, below).
 
 ### When something goes wrong
 

@@ -221,16 +221,19 @@ b2 libs/trystero/test address-sanitizer=norecover undefined-sanitizer=norecover
 b2 toolset=emscripten libs/trystero/test
 ----
 
-The {n-linked} examples are linked and never run, since each needs the
-public relays or a browser. b2 compares timestamps, so a result that counts
-is built from scratch, with `b2 -a`.
+The chat page's program is linked and never run, since it is a page; the
+quick start and the programs of the appendix "Differences" run over a relay
+of their own in the lane `relayed` (<<trystero-testing-twins>>), and the one
+of them that needs no relay with the ordinary examples, `b2
+libs/trystero/example`. b2 compares timestamps, so a result that counts is
+built from scratch, with `b2 -a`.
 
 [#trystero-testing-lanes]
 === The oracle and the interop lanes
 
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
 against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
-`package-lock.json`, with Node:
+`package-lock.json`, with Node, run as `node --conditions=development`:
 
 [listing]
 ----
@@ -240,8 +243,9 @@ include::{library-root}/test/oracle/Jamfile[tag=oracle]
 `oracle`, which names no target, runs Trystero's own functions over the
 inputs of `test/fixtures/cases/protocol.json` and checks that they still
 write `test/fixtures/expected/expected.json` byte for byte, the values the
-`protocol` and `platform_sealer` tests reproduce; `update-expected` is its only
-writer.
+`protocol` and `platform_sealer` tests reproduce, and runs the twins of the
+examples (<<trystero-testing-twins>>); `update-expected` is the only writer
+of the expected values and of each divergent twin's output.
 
 [listing]
 ----
@@ -315,6 +319,49 @@ b2 -a --dump-tests --out-xml=native.trystero.interop.xml libs/trystero/test/orac
 b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten libs/trystero/test/oracle//interop
 ----
 
+[#trystero-testing-twins]
+=== The examples over a relay, and their twins
+
+The quick start and each program of the appendix "Differences"
+(<<trystero-differences-shown>>) meet over a Nostr relay of their own, the
+interop's `test/oracle/interop/relay.mjs` on 127.0.0.1, in the lane
+`relayed`, natively, which `example/Jamfile` declares: its driver,
+`example/run_over_relay.mjs`, starts the relay, runs the program with the
+relay's URL in its environment, `TRYSTERO_RELAY_URL`, which the program
+reads, and passes when the program exits with 0 having printed its
+`.expected`.
+
+[listing]
+----
+include::{library-root}/example/Jamfile[tag=quick-start]
+include::{library-root}/example/Jamfile[tag=differences]
+----
+
+Each of these programs has its twin in `test/oracle/twins/`, the same
+program on Trystero 0.26.0, which the oracle lane runs through
+`test/oracle/run_twin.mjs`: a relay of its own, its URL in
+`TRYSTERO_RELAY_URL`, and the twin, whose output must be the program's
+`.expected`, or, for a difference, its own `.expected`, which must differ.
+The twins agree with {n-twins-agreeing} of the programs and diverge from
+{n-twins-divergent}; {n-examples-without-twin} have none, each with its
+reason in `test/oracle/twins/without-twin.txt`: the chat, a page that prints
+nothing, and a difference whose original has no counterpart.
+
+Trystero JS has one self id per page, so a twin whose room meets a peer, as
+a {cpp} program's second app does, runs that peer as a second page, a worker
+thread with Trystero's modules of its own (`test/oracle/page.mjs`). Node has
+no WebRTC: Trystero JS takes werift's `RTCPeerConnection` as `rtcPolyfill`,
+the WebRTC for Node that Trystero 0.26.0's own README names, pinned at 0.24.4
+in `test/oracle/package.json` for the twins alone. The {cpp} programs whose
+apps meet bind their connections to 127.0.0.1 with `stun:127.0.0.1:9`, and
+the twins have no ICE server, so every peer stays on the machine.
+
+[source,bash]
+----
+b2 -a --dump-tests --out-xml=native.trystero.relayed.xml libs/trystero/example//relayed
+b2 -a libs/trystero/test/oracle//twins
+----
+
 [#trystero-testing-container]
 === The container lanes
 
@@ -346,8 +393,9 @@ that dependent archives precede OpenSSL in the link order.
 === The test matrix
 
 The continuous integration runs trystero's tests in lanes, one toolset each,
-and its own lanes, the oracle once and the interop natively and on
-emscripten, as `native.trystero.interop` and `emscripten.trystero.interop`, plus the
+and its own lanes, the oracle once, the examples over a relay natively, as
+`native.trystero.relayed`, and the interop natively and on emscripten, as
+`native.trystero.interop` and `emscripten.trystero.interop`, plus the
 native `provider-integration` lane for the common TLS provider.
 Each lane builds from scratch and records what b2 built and ran; webcpp's
 `tools/report/report.py` merges the files of every lane into a matrix, where
