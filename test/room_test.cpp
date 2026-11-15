@@ -1347,9 +1347,12 @@ void json_payloads_are_read_in_the_rooms_resource_up_to_its_bound() {
         o.max_document_bytes = bound;
         return webcpp::document::parse(zeros(n), o).has_value();
     };
+    // Each zero is a node of 192 bytes, so no more than bound / 192 of them fit.
     std::size_t at_bound = 1000;
-    while (fits(at_bound + 1)) {
-        ++at_bound;
+    std::size_t past_bound = (bound / 192) + 1;
+    while (past_bound - at_bound > 1) {
+        const std::size_t middle = at_bound + ((past_bound - at_bound) / 2);
+        (fits(middle) ? at_bound : past_bound) = middle;
     }
     BOOST_TEST(fits(at_bound) && !fits(at_bound + 1));
     for (const char* name : {"pmr", "std"}) {
@@ -1364,6 +1367,33 @@ void json_payloads_are_read_in_the_rooms_resource_up_to_its_bound() {
     BOOST_TEST_ALL_EQ(in_resource.begin(), in_resource.end(), delivered.begin(), delivered.end());
     BOOST_TEST_ALL_EQ(in_heap.begin(), in_heap.end(), delivered.begin(), delivered.end());
     BOOST_TEST_EQ(elsewhere, 0U);
+}
+
+// A JSON payload nested as deep as webcpp::document's default, 256, is delivered, to either
+// document type: its parse recurses once a level, on the room's executor, on every target and in
+// both suspension variants.
+void a_json_payload_nested_256_deep_is_delivered() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("XXXXXXXXXXXXXXXXXXXX"));
+    auto a = join(a_app, "deep");
+    trystero::app z_app(f.io.get_executor(), f.net, app_config("YYYYYYYYYYYYYYYYYYYY"));
+    auto z = join(z_app, "deep");
+    std::size_t delivered = 0;
+    z.make_action<webcpp::document::pmr::document>("pmr").on_message(
+        [&](const webcpp::document::pmr::document& v, const trystero::message_info&) {
+            delivered += v.root().is_array() ? 1 : 0;
+        });
+    z.make_action<webcpp::document::document>("std").on_message(
+        [&](const webcpp::document::document& v, const trystero::message_info&) {
+            delivered += v.root().is_array() ? 1 : 0;
+        });
+    BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }));
+    const std::string deepest = std::string(256, '[') + std::string(256, ']');
+    for (const char* name : {"pmr", "std"}) {
+        a.make_action<webcpp::document::document>(name).async_send(document_of(deepest),
+                                                                   asio::detached);
+    }
+    BOOST_TEST(run_until(f.io, [&] { return delivered == 2; }));
 }
 
 // A message of another format than a document action's completes its receive with
@@ -1709,6 +1739,7 @@ int main() {
     three_peers_form_a_mesh();
     async_receive_works_in_a_coroutine();
     json_payloads_are_read_in_the_rooms_resource_up_to_its_bound();
+    a_json_payload_nested_256_deep_is_delivered();
     a_rejected_document_receive_holds_null_in_the_rooms_resource();
     view_handlers_read_the_frame_without_copying();
     a_rate_limited_relay_does_not_stop_discovery();
