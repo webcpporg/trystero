@@ -545,12 +545,11 @@ void forged_offers_make_no_connection() {
 
 // Unsealed offers from 2000 fresh ids, which anyone who reads the relays can send: the room reports
 // the first at once, with its peer, and the rest together, at most once per interval, with no peer
-// and their number, so that the application is not handed one report per id. The clock runs 10
-// times faster.
+// and their number, so that the application is not handed one report per id. On the virtual
+// clock, the flood spans two and a half intervals.
 void signals_that_do_not_open_are_reported_once_per_interval() {
     constexpr std::size_t flood = 2000;
-    fixture f;
-    f.net.time_scale = 10;
+    fixture f{true};
     const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
     trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id));
     auto a = join(a_app, "reports");
@@ -571,8 +570,8 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
     const auto started = f.net.steady_now();
     const auto before = f.net.relay(relay_a).events_seen;
     // Paced, so that each offer's open completes before later ids evict its negotiation: every
-    // twenty, the executor runs until nothing is left to run, the relay, the room and the sealer's
-    // opens, however slowly the machine runs them.
+    // twenty, everything ready runs, the relay, the room and the sealer's opens, and then the clock
+    // moves 250 ms, 25 s for the whole flood.
     for (std::size_t i = 0; i < flood; ++i) {
         attacker.publish(a_topic, {
                                       .peer_id = "0garbage" + std::to_string(i),
@@ -580,10 +579,10 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
                                       .offer = "not a sealed offer",
                                   });
         if (i % 20 == 19) {
-            f.io.poll();
+            advance(f, 250ms);
         }
     }
-    BOOST_TEST(run_until(f.io, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
+    BOOST_TEST(run_until(f, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
     // Every failed open is counted once its interval ends.
     const auto counted = [&] {
         std::size_t sum = 0;
@@ -592,7 +591,7 @@ void signals_that_do_not_open_are_reported_once_per_interval() {
         }
         return sum;
     };
-    BOOST_TEST(run_until(f.io, [&] { return counted() == flood; }));
+    BOOST_TEST(run_until(f, [&] { return counted() == flood; }));
     const auto elapsed = f.net.steady_now() - started;
     BOOST_TEST_LE(reports.size(), 2 + static_cast<std::size_t>(elapsed / 10s));
     if (BOOST_TEST(!reports.empty())) {
@@ -897,24 +896,22 @@ void join_and_leave(fixture& f, std::string_view b_id, std::string_view room_id,
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id));
     auto b = join(b_app, room_id);
     webcpp::test::require(
-        BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1 && recorded(); })));
+        BOOST_TEST(run_until(f, [&] { return joined.size() == 1 && recorded(); })));
     bool done = false;
     b.async_leave([&](boost::system::error_code) { done = true; });
-    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return done && left.size() == 1; })));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return done && left.size() == 1; })));
 }
 
 // A watcher without the room key records B's sealed answer to A. Once B has left and come back with
 // the same id, as a Trystero JS page does after a network drop, it sends that answer in B's name
 // with each of A's new offers to B, before B's own answer. The answer opens with the room key, but
-// A used it before: A refuses it, blames no one, and B joins again. The clock runs 10 times
-// faster.
+// A used it before: A refuses it, blames no one, and B joins again.
 //
 // The watcher is armed as A sees B leave: an announcement B made before leaving may still reach A
 // after it, and A's offer to that announcement is the one the returning B answers, on a relay
 // where A does not send it again.
 void a_replayed_answer_is_refused() {
-    fixture f;
-    f.net.time_scale = 10;
+    fixture f{true};
     const std::string a_id = "00000000000000000000";
     const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
     trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id));
@@ -954,7 +951,7 @@ void a_replayed_answer_is_refused() {
     join_and_leave(f, b_id, "replay", joined, left, [&] { return !recorded.empty(); });
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id));
     const auto b = join(b_app, "replay");
-    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 2; }));
+    BOOST_TEST(run_until(f, [&] { return joined.size() == 2; }));
     BOOST_TEST_GE(replays, 1U);
     BOOST_TEST(std::ranges::none_of(errors, [](boost::system::error_code ec) {
         return ec == trystero::error::wrong_password;
@@ -962,12 +959,10 @@ void a_replayed_answer_is_refused() {
 }
 
 // The same for an offer: B is lower and offers. The watcher records B's sealed offer to A, and once
-// B is back, sends it in B's name every 0.5 s of the rooms' time, with fresh offer ids. A answered
-// that offer before, so it refuses each replay, and B's own offer joins them. The clock runs 10
-// times faster.
+// B is back, sends it in B's name every 0.5 s of the virtual clock, with fresh offer ids. A
+// answered that offer before, so it refuses each replay, and B's own offer joins them.
 void a_replayed_offer_is_refused() {
-    fixture f;
-    f.net.time_scale = 10;
+    fixture f{true};
     const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
     const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
     trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id));
@@ -990,14 +985,14 @@ void a_replayed_offer_is_refused() {
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id));
     const auto b = join(b_app, "replayo");
     std::size_t replays = 0;
-    const auto end = std::chrono::steady_clock::now() + 10s;
-    while (joined.size() < 2 && std::chrono::steady_clock::now() < end) {
+    const auto end = f.net.steady_now() + 10s;
+    while (joined.size() < 2 && f.net.steady_now() < end) {
         watcher.publish(a_topic, {
                                      .peer_id = b_id,
                                      .offer_id = "replay" + std::to_string(replays++),
                                      .offer = recorded,
                                  });
-        run_until(f.io, [] { return false; }, 50ms);
+        advance(f, 500ms);
     }
     BOOST_TEST_EQ(joined.size(), 2U);
     BOOST_TEST_GE(replays, 1U);
@@ -1035,10 +1030,8 @@ void a_reflected_offer_is_refused_as_an_answer() {
 // A watcher without the room key announces a decoy id above A, records A's sealed offer to it, and
 // sends that offer to A in B's name whenever B announces itself, before B's own offer. A made that
 // offer: A refuses it, never answers one in B's name but B's own, and B's own offer joins them.
-// The clock runs 10 times faster.
 void a_reflected_offer_is_refused_as_an_offer() {
-    fixture f;
-    f.net.time_scale = 10;
+    fixture f{true};
     const std::string a_id = "yyyyyyyyyyyyyyyyyyyy";
     const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
     const std::string decoy = "zzzzzzzzzzzzzzzzzzzz";
@@ -1076,10 +1069,10 @@ void a_reflected_offer_is_refused_as_an_offer() {
     watcher.watch(root);
     watcher.watch(decoy_topic);
     watcher.announce_as(decoy, 1);
-    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return !recorded.empty(); })));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !recorded.empty(); })));
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id));
     const auto b = join(b_app, "reflecto");
-    BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
+    BOOST_TEST(run_until(f, [&] { return joined.size() == 1; }));
     BOOST_TEST_GE(reflected, 1U);
     BOOST_TEST_EQ(answered_reflections, 0U);
 }
@@ -1136,11 +1129,11 @@ void a_reflected_answer_is_refused_as_an_answer() {
 
 // A relay that closes each connection right after its subscription, as one does after a text
 // longer than a room reads, is tried again within a bound that doubles every time, to 60 s; the
-// bound comes back to 3.3 s only after a connection that stayed open for 60 s. The clock runs 100
-// times faster.
+// bound comes back to 3.3 s only after a connection that stayed open for 60 s. On the virtual
+// clock the close comes at the instant of the open: on a wall clock 100 times faster, the process
+// paused for 0.6 s between the two made the connection one that had lasted 60 s.
 void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
-    fixture f;
-    f.net.time_scale = 100;
+    fixture f{true};
     auto& relay = f.net.relay(relay_a);
     relay.close_after_subscribe = true;
     auto c = app_config("AAAAAAAAAAAAAAAAAAAA");
@@ -1156,23 +1149,24 @@ void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
     };
     trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
     const auto a = join(a_app, "backoff");
-    BOOST_TEST(run_until(f.io, [&] { return bounds.size() >= 6; }));
+    BOOST_TEST(run_until(f, [&] { return bounds.size() >= 6; }, 2min));
     const std::vector<std::int64_t> growing{3333, 6666, 13332, 26664, 53328, 60000};
     BOOST_TEST_ALL_EQ(bounds.begin(),
                       bounds.begin() + std::min<std::ptrdiff_t>(6, std::ssize(bounds)),
                       growing.begin(), growing.end());
 
-    // A connection that lasts: the 60 s announcement after it opened is on the relay, then the
-    // relay goes away.
+    // A connection that lasts: once the first of the steady announcements, 60 s after the warm-up,
+    // is on the relay, the relay goes away.
     relay.close_after_subscribe = false;
     const std::size_t before = reconnections;
-    BOOST_TEST(run_until(f.io, [&] { return reconnections > before; }));
+    BOOST_TEST(run_until(f, [&] { return reconnections > before; }, 1min));
+    // The warm-up's first announcement went as the connection opened, before the clock moved: its
+    // four others, then the first steady one.
     const auto seen = relay.events_seen;
-    // the warm-up's five announcements, then the first of the steady ones, 60 s later
-    BOOST_TEST(run_until(f.io, [&] { return relay.events_seen >= seen + 6; }));
+    BOOST_TEST(run_until(f, [&] { return relay.events_seen >= seen + 5; }, 2min));
     const auto lost = bounds.size();
     relay.close_all();
-    BOOST_TEST(run_until(f.io, [&] { return bounds.size() > lost; }));
+    BOOST_TEST(run_until(f, [&] { return bounds.size() > lost; }));
     if (bounds.size() > lost) {
         BOOST_TEST_EQ(bounds[lost], 3333);
     }
