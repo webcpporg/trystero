@@ -311,10 +311,14 @@ holds only what is specific to trystero.
     (`detail::nostr_strategy::remembered_events`) in a
     `boost::unordered_flat_set` hashed with Boost.Hash2's `siphash_64` under
     a key drawn from the backend's randomness when it is made, since a relay
-    chooses the ids; `room`'s `colliding_event_ids_stay_fast` feeds it 2048
-    ids found to share one bucket of `std::unordered_set` and reads
-    Boost.Unordered's statistics (`BOOST_UNORDERED_ENABLE_STATS`, defined by
-    that test only).
+    chooses the ids (`room`'s `a_strategy_draws_the_key_of_its_event_ids`).
+    It remembers an id only once `protocol::nostr::has_own_id` found it to be
+    the SHA-256 of the event's NIP-01 serialization, which
+    `protocol::nostr::event_id` computes over an event whose one tag is its
+    topic's, as Trystero writes them; any other event is acted on every time,
+    as Trystero acts on every event, so that a relay that sends a forged
+    event under a genuine event's id first hides nothing (`room`'s
+    `a_forged_event_under_a_genuine_id_hides_nothing`).
   - A relay is a third party too. A text longer than 1 MiB closes its
     connection on both targets, in a page before it is copied into
     WebAssembly (webcpp::beast's `read_message_max`). A relay that stops
