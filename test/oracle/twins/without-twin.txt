@@ -1,0 +1,14 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+# The examples that have no twin, each with the reason. Every other program
+# of example/ has its twin beside this file (tools/oracle/twins.py), which
+# runs over a relay of its own on 127.0.0.1 (../run_twin.mjs): a relay is not
+# what keeps these three from one. Each is linked and never run, so it has no
+# output to compare, and a twin could not agree with it.
+chat/chat: a page: its program draws what happens in the room into the page, prints nothing, and runs as long as the tab; a twin would be a page too, with nothing printed to compare
+native_quick_start: it prints only the messages peers send it, each after its sender's random id, and runs until it is stopped, so no run of it prints an output of its own to compare
+quick_start: a browser program, which node refuses to run; it prints only the messages peers send it, each after its sender's random id, and runs as long as its page, so no run of it prints an output of its own to compare

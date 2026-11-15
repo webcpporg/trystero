@@ -8,6 +8,7 @@
     "@trystero-p2p/core": "0.26.0",
     "@trystero-p2p/nostr": "0.26.0",
     "trystero": "0.26.0",
+    "werift": "0.24.4",
     "ws": "8.22.0"
   }
 }

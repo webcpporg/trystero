@@ -25,3 +25,28 @@ webcpp.link quick_start : quick_start.cpp
 
 # The chat page, on emscripten: its program and the site it is served from.
 build-project chat ;
+
+# The programs of the appendix "Differences" (doc: #trystero-differences), each
+# with its twin under test/oracle/twins/, run natively over a Nostr relay of
+# their own on 127.0.0.1: run_difference.mjs starts it, gives the program its
+# URL in TRYSTERO_RELAY_URL, and passes when the program prints its .expected.
+# Node runs the relay with the packages test/oracle pins.
+# tag::differences[]
+webcpp.original node --conditions=development : ../test/oracle ;
+local differences =
+    diff_already_joined
+    diff_passwords
+    diff_peer_join
+    diff_peers
+    diff_relay_config
+    diff_rooms_per_app
+    diff_self_id
+    diff_send_to_absent_peer
+    ;
+for local difference in $(differences)
+{
+    webcpp.drive $(difference) : $(difference).cpp
+      : <library>/webcpp/trystero//native <threading>multi : run_difference.mjs : : native ;
+}
+webcpp.lane differences : $(differences) : native ;
+# end::differences[]
