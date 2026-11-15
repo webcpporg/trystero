@@ -19,8 +19,8 @@ its timers are webcpp::asio's `steady_timer`. Two parts are the target's own,
 chosen by `WEBCPP_TARGET_EMSCRIPTEN`: the sealer, natively OpenSSL's AES-GCM
 and in a page `crypto.subtle`, and the source of randomness, natively
 OpenSSL's generator and in a page `crypto.getRandomValues`, called from
-JavaScript that catches what it throws. Its clocks are the standard library's on both:
-`std::chrono::system_clock` for Nostr's `created_at`, and
+JavaScript that catches what it throws. Its clocks are the standard
+library's on both: `std::chrono::system_clock` for Nostr's `created_at`, and
 `std::chrono::steady_clock` for its timing, which Emscripten reads from the
 page's `Date.now()` and `performance.now()`.
 
@@ -158,9 +158,10 @@ shorthand `127.1`, octal or hexadecimal parts (`0x7f.0.0.1`), a final dot or
 a single number, and so any host whose last label is a number, which a page
 reads as an address or refuses; an international domain name, which a page
 turns into its A-label (`+xn--bcher-kva.example+` for `bücher.example`) and
-this parser does not, with its bytes beyond ASCII escaped or not; and a tab,
-a newline or a backslash anywhere in the URL, which a page drops or reads as
-a slash. A refused URL makes the relay report a close, as an unreachable one
+this parser does not, with its bytes beyond ASCII escaped or not; a tab, a
+newline or a backslash anywhere in the URL, which a page drops or reads as a
+slash; and a character that RFC 3986 allows in no path, as a space, `{` or a
+byte beyond ASCII, which a page escapes and Boost.URL refuses. A refused URL makes the relay report a close, as an unreachable one
 does, and the room retries it later as it would any other.
 
 Over TLS the connection asks for the relay's verification on both targets,

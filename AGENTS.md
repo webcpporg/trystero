@@ -204,9 +204,9 @@ holds only what is specific to trystero.
   completions are the session's own `transfer_handler`, a member pointer
   with the room's allocator and no executor, never Asio's
   `any_completion_handler`, whose `any_completion_executor` Asio made with
-  `new` for each operation (`platform_websocket_allocation`). On Windows the system's authorities are
-  none unless `SSL_CERT_FILE` or `SSL_CERT_DIR` names some. A
-  backend trusts the system's authorities by default
+  `new` for each operation (`platform_websocket_allocation`). On Windows the
+  system's authorities are none unless `SSL_CERT_FILE` or `SSL_CERT_DIR`
+  names some. A backend trusts the system's authorities by default
   (`platform::make_tls_context()`, which in a page records only the policy
   the page's stream asks for), or the program's context through the
   constructors that take a `boost::system::result`; `tls_context()` returns
@@ -257,10 +257,11 @@ holds only what is specific to trystero.
   function of `platform/sealer.hpp`, made inside an `async` function, so
   that what it throws rejects its promise, whose settlement is read only when
   it is an `ArrayBuffer`; `crypto.getRandomValues` in an `EM_ASM` block of
-  `platform/entropy.hpp`, which returns its failure. Every event and every page call
-  enters C++ through webcpp::asio's bridge, which restores WebAssembly's
-  stack pointer, catches a C++ exception in C++, which frees it (one that
-  reached JavaScript would keep its object for good), and only posts.
+  `platform/entropy.hpp`, which returns its failure. Every event and every
+  page call enters C++ through webcpp::asio's bridge, which restores
+  WebAssembly's stack pointer, catches a C++ exception in C++, which frees it
+  (one that reached JavaScript would keep its object for good), and only
+  posts.
   webcpp::webrtc's JavaScript catches the page's WebRTC exceptions the same
   way, and its events come through the same bridge, which posts to the
   io_context. A message that is not a frame is dropped on the executor,

@@ -566,11 +566,11 @@ private:
      * (misc-no-recursion) sees no cycle through Asio's post on either target, natively in Boost's
      * headers and on Emscripten in webcpp::asio's and webcpp::beast's own, where the reports would
      * land. Its allocator is the room's, and it has no executor of its own, so that Asio completes
-     * it on the stream's executor, which it finds is an io_context's: Asio's type-erased handler,
-     * `any_completion_handler`, has an executor of another type, which Asio made around the
-     * stream's with `new` for each operation and dispatched each completion through in a function
-     * object of its own (measured natively: six `operator new` and four of Asio's recycled blocks
-     * for a text sent and its echo received).
+     * it on the stream's executor, which it finds is an io_context's. Asio's type-erased handler,
+     * `any_completion_handler`, which the session used before, has an executor of another type,
+     * `any_completion_executor`: Asio made one around the stream's with `new` for each operation,
+     * and dispatched each completion through it in a function object of its own (measured natively:
+     * six `operator new` and four of Asio's recycled blocks for a text sent and its echo received).
      */
     struct transfer_handler {
         /** The room's allocator, which Asio and Beast allocate the operation with. */
