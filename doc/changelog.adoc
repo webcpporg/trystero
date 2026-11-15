@@ -19,6 +19,7 @@ of every version are on webcpp's index page.
 * Changed libsecp256k1 to come from `/third_party//secp256k1`, not an external
   installation: `-sSECP256K1_ROOT` and `-sSECP256K1_EMSCRIPTEN_ROOT` are gone, and
   `webcpp-secp256k1-tables` chooses its tables.
+* Changed `app::join` to `+[[nodiscard]]+`, so a dropped room or its refusal is diagnosed.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]
