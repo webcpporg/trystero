@@ -6,17 +6,23 @@
 
 // Tests the protocol layer against values Trystero JS 0.26 computed itself, which the original's
 // oracle wrote into fixtures/expected/expected.json. The fixture's path is the test's one argument,
-// as webcpp.run passes its input file.
+// as webcpp.run passes its input file. The fixture is read with webcpp::document, and every text
+// the protocol writes is read back as a room reads it, with protocol::json::parse and its bounds.
 
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/errors.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/value.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -24,108 +30,160 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
-namespace json = boost::json;
+namespace wd = webcpp::document;
 namespace tp = webcpp::trystero::protocol;
 
 namespace {
 
-json::value load(const char* path) {
+/** A value of the fixture: a read-only handle of an owned document. */
+using fixture_value = wd::basic_const_value<>;
+
+/** The fixture, read as JSON.parse reads it. */
+wd::result<wd::document> load(const char* path) {
     const std::ifstream file(path);
     std::stringstream text;
     text << file.rdbuf();
-    return json::parse(text.str());
+    return wd::parse(text.str());
 }
 
-std::string_view str(const json::value& v) {
-    return v.as_string();
+std::string_view str(const fixture_value& v) {
+    return v.value_or(std::string_view());
 }
 
-tp::bytes hex(const json::value& v) {
-    return *tp::from_hex(v.as_string());
+// Every number of the fixture is an integer; -1 marks one that is not, or a missing one.
+std::int64_t integer(const fixture_value& v) {
+    return v.value_or(std::int64_t{-1});
 }
 
-void topics(const json::object& fixture) {
-    for (const auto& entry : fixture.at("topics").as_array()) {
-        const auto& t = entry.as_object();
-        const auto app = str(t.at("app_id"));
-        const auto room = str(t.at("room_id"));
-        BOOST_TEST_EQ(tp::root_topic(app, room), str(t.at("root_topic")));
-        BOOST_TEST_EQ(tp::peer_topic(app, room, str(t.at("peer_id"))), str(t.at("self_topic")));
-        BOOST_TEST_EQ(tp::room_token(app, room), str(t.at("room_token")));
+tp::bytes hex(const fixture_value& v) {
+    return tp::from_hex(str(v)).value();
+}
+
+/** A protocol text read as a room reads it: at most `max_bytes`, into a buffer of `memory`. */
+wd::result<tp::json::document> parse_text(
+    std::string_view text, std::size_t max_bytes,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return tp::json::parse(text, tp::json::protocol_limits(max_bytes), memory);
+}
+
+/** A resource that counts what it gives: its buffers, their bytes, and what is still out. */
+class counting_resource final : public std::pmr::memory_resource {
+public:
+    /** How many allocations it made. */
+    std::size_t allocations = 0;
+    /** How many of them are not yet returned. */
+    std::size_t outstanding = 0;
+    /** The bytes of all its allocations. */
+    std::size_t allocated = 0;
+    /** The bytes of its largest allocation. */
+    std::size_t largest = 0;
+    /** Its last allocation. */
+    void* last = nullptr;
+    /** The bytes of its last allocation. */
+    std::size_t last_bytes = 0;
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        ++allocations;
+        ++outstanding;
+        allocated += bytes;
+        largest = std::max(largest, bytes);
+        last_bytes = bytes;
+        last = std::pmr::new_delete_resource()->allocate(bytes, alignment);
+        return last;
     }
-    for (const auto& entry : fixture.at("str_to_num").as_array()) {
-        const auto& t = entry.as_object();
-        BOOST_TEST_EQ(tp::str_to_num(str(t.at("text"))), t.at("unbounded").to_number<double>());
-        BOOST_TEST_EQ(tp::str_to_num(str(t.at("text")), 10000),
-                      t.at("mod_10000").to_number<double>());
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        --outstanding;
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+};
+
+void topics(const fixture_value& fixture) {
+    for (const auto t : fixture["topics"]) {
+        const auto app = str(t["app_id"]);
+        const auto room = str(t["room_id"]);
+        BOOST_TEST_EQ(tp::root_topic(app, room), str(t["root_topic"]));
+        BOOST_TEST_EQ(tp::peer_topic(app, room, str(t["peer_id"])), str(t["self_topic"]));
+        BOOST_TEST_EQ(tp::room_token(app, room), str(t["room_token"]));
+    }
+    for (const auto t : fixture["str_to_num"]) {
+        BOOST_TEST_EQ(tp::str_to_num(str(t["text"])), static_cast<double>(integer(t["unbounded"])));
+        BOOST_TEST_EQ(tp::str_to_num(str(t["text"]), 10000),
+                      static_cast<double>(integer(t["mod_10000"])));
     }
 }
 
-void relays(const json::object& fixture) {
+void relays(const fixture_value& fixture) {
     std::vector<std::string_view> defaults;
-    for (const auto& url : fixture.at("default_relays").as_array()) {
-        defaults.push_back(url.as_string());
+    for (const auto url : fixture["default_relays"]) {
+        defaults.push_back(str(url));
     }
     BOOST_TEST(std::ranges::equal(defaults, tp::default_nostr_relays));
-    for (const auto& entry : fixture.at("relays").as_array()) {
+    for (const auto entry : fixture["relays"]) {
         std::vector<std::string_view> expected;
-        for (const auto& url : entry.at("relays").as_array()) {
-            expected.push_back(url.as_string());
+        for (const auto url : entry["relays"]) {
+            expected.push_back(str(url));
         }
-        const auto derived =
-            tp::derive_relays(str(entry.at("app_id")), tp::default_nostr_relays, 5);
+        const auto derived = tp::derive_relays(str(entry["app_id"]), tp::default_nostr_relays, 5);
         BOOST_TEST_ALL_EQ(derived.begin(), derived.end(), expected.begin(), expected.end());
     }
-    for (const auto& entry : fixture.at("shuffle").as_array()) {
+    for (const auto entry : fixture["shuffle"]) {
         std::vector<int> order(29);
         for (int i = 0; i < 29; ++i) {
             order[i] = i;
         }
         std::vector<int> expected;
-        for (const auto& i : entry.at("order").as_array()) {
-            expected.push_back(static_cast<int>(i.as_int64()));
+        for (const auto i : entry["order"]) {
+            expected.push_back(static_cast<int>(integer(i)));
         }
-        const auto shuffled = tp::shuffle(order, entry.at("seed").to_number<double>());
+        const auto shuffled = tp::shuffle(order, static_cast<double>(integer(entry["seed"])));
         BOOST_TEST_ALL_EQ(shuffled.begin(), shuffled.end(), expected.begin(), expected.end());
     }
 }
 
-void handshake_and_sealing(const json::object& fixture) {
-    for (const auto& entry : fixture.at("handshake").as_array()) {
-        BOOST_TEST_EQ(tp::handshake_proof(str(entry.at("challenge")), str(entry.at("password")),
-                                          str(entry.at("app_id")), str(entry.at("room_id"))),
-                      str(entry.at("hash")));
+void handshake_and_sealing(const fixture_value& fixture) {
+    for (const auto entry : fixture["handshake"]) {
+        BOOST_TEST_EQ(tp::handshake_proof(str(entry["challenge"]), str(entry["password"]),
+                                          str(entry["app_id"]), str(entry["room_id"])),
+                      str(entry["hash"]));
     }
-    const auto& sealed = fixture.at("sealed").as_object();
+    const auto sealed = fixture["sealed"];
     BOOST_TEST_EQ(tp::to_hex(tp::seal_key("secret", "my-app", "room-1")),
-                  str(sealed.at("key_material")));
-    const auto parts = tp::parse_sealed(str(sealed.at("text")));
+                  str(sealed["key_material"]));
+    const auto parts = tp::parse_sealed(str(sealed["text"]));
     BOOST_TEST(parts.has_value());
     BOOST_TEST_EQ(parts->iv.size(), tp::seal_iv_size);
-    BOOST_TEST_EQ(parts->ciphertext.size(), str(sealed.at("plaintext")).size() + 16);
-    BOOST_TEST_EQ(tp::format_sealed(parts->iv, parts->ciphertext), str(sealed.at("text")));
+    BOOST_TEST_EQ(parts->ciphertext.size(), str(sealed["plaintext"]).size() + 16);
+    BOOST_TEST_EQ(tp::format_sealed(parts->iv, parts->ciphertext), str(sealed["text"]));
     BOOST_TEST(!tp::parse_sealed("1,2,300$AAAA").has_value());
     BOOST_TEST(!tp::parse_sealed("no dollar").has_value());
 }
 
-void nostr_events(const json::object& fixture) {
-    for (const auto& entry : fixture.at("nostr_events").as_array()) {
-        const auto& e = entry.as_object();
-        BOOST_TEST_EQ(tp::nostr::topic_kind(str(e.at("topic"))), e.at("kind").as_int64());
+void nostr_events(const fixture_value& fixture) {
+    for (const auto e : fixture["nostr_events"]) {
+        BOOST_TEST_EQ(tp::nostr::topic_kind(str(e["topic"])), integer(e["kind"]));
         const auto created_at =
-            std::chrono::sys_seconds(std::chrono::seconds(e.at("created_at").as_int64()));
-        const auto id = tp::nostr::event_id(str(e.at("pubkey")), created_at,
-                                            static_cast<std::uint32_t>(e.at("kind").as_int64()),
-                                            str(e.at("topic")), str(e.at("content")));
-        BOOST_TEST_EQ(tp::to_hex(id), str(e.at("id")));
+            std::chrono::sys_seconds(std::chrono::seconds(integer(e["created_at"])));
+        const auto id = tp::nostr::event_id(str(e["pubkey"]), created_at,
+                                            static_cast<std::uint32_t>(integer(e["kind"])),
+                                            str(e["topic"]), str(e["content"]));
+        BOOST_TEST_EQ(tp::to_hex(id), str(e["id"]));
     }
     // A signed event verifies, and a relay's echo of it parses back to its topic and content.
     std::array<std::uint8_t, 32> secret{};
@@ -136,29 +194,38 @@ void nostr_events(const json::object& fixture) {
     const auto message =
         tp::nostr::event_message(*key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)),
                                  "topic-a", R"({"peerId":"p"})", aux);
-    const auto parsed = json::parse(message).as_array();
-    auto event = parsed.at(1).as_object();
-    const auto id = *tp::from_hex(event.at("id").as_string());
-    const auto sig = *tp::from_hex(event.at("sig").as_string());
-    const auto pub = *tp::from_hex(event.at("pubkey").as_string());
+    const auto parsed = parse_text(message, tp::nostr::max_parsed_relay_text_bytes).value();
+    const auto event = parsed.root()[1];
+    const auto id = tp::from_hex(tp::json::text_of(event["id"])).value();
+    const auto sig = tp::from_hex(tp::json::text_of(event["sig"])).value();
+    const auto pub = tp::from_hex(tp::json::text_of(event["pubkey"])).value();
     BOOST_TEST(tp::nostr::verify(std::span<const std::uint8_t, 64>(sig.data(), 64),
                                  std::span<const std::uint8_t, 32>(id.data(), 32),
                                  std::span<const std::uint8_t, 32>(pub.data(), 32)));
-    const auto echoed_document = json::value(json::array{"EVENT", "sub", event});
-    const auto echoed = tp::nostr::read_relay_message(echoed_document);
+    // The relay's echo holds the event's text whole: `["EVENT",<event>]` less its first 9 and last
+    // byte, in `["EVENT","sub",<event>]`.
+    const std::string_view written = message;
+    BOOST_TEST(written.starts_with(R"(["EVENT",{)") && written.ends_with("}]"));
+    std::string echo = R"(["EVENT","sub",)";
+    echo += written.substr(9, written.size() - 10);
+    echo += ']';
+    const auto echoed_document = parse_text(echo, tp::nostr::max_parsed_relay_text_bytes).value();
+    const auto echoed = tp::nostr::read_relay_message(echoed_document.root());
     BOOST_TEST(echoed.has_value());
     const auto& e = std::get<tp::nostr::event>(*echoed);
     BOOST_TEST_EQ(e.subscription, "sub");
     BOOST_TEST_EQ(e.topic, "topic-a");
     BOOST_TEST_EQ(e.content, R"({"peerId":"p"})");
-    const auto rejected_document = json::parse(R"(["OK","abc",false,"rate-limited: slow down"])");
-    const auto rejected = tp::nostr::read_relay_message(rejected_document);
+    constexpr std::string_view rate_limited = R"(["OK","abc",false,"rate-limited: slow down"])";
+    const auto rejected_document =
+        parse_text(rate_limited, tp::nostr::max_parsed_relay_text_bytes).value();
+    const auto rejected = tp::nostr::read_relay_message(rejected_document.root());
     BOOST_TEST_EQ(std::get<tp::nostr::ok>(*rejected).reason, "rate-limited: slow down");
     BOOST_TEST(!std::get<tp::nostr::ok>(*rejected).accepted);
 }
 
-void inline_frames(const json::object& fixture) {
-    const auto& actions = fixture.at("actions").as_object();
+void inline_frames(const fixture_value& fixture) {
+    const auto actions = fixture["actions"];
     const auto encode = [](std::string_view name, tp::payload_format format,
                            std::string_view metadata, std::string_view payload) {
         return tp::encode_inline(
@@ -166,33 +233,33 @@ void inline_frames(const json::object& fixture) {
             std::span(reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size()));
     };
     const auto text = encode("chat", tp::payload_format::text, "", "hello from Trystero JS");
-    const auto expected_text = hex(actions.at("text").at(0));
+    const auto expected_text = hex(actions["text"][0]);
     BOOST_TEST_ALL_EQ(text.begin(), text.end(), expected_text.begin(), expected_text.end());
     const auto json_frame = encode("drink", tp::payload_format::json, "",
                                    R"({"drink":"negroni","withIce":true,"n":[1,2.5,null]})");
-    const auto expected_json = hex(actions.at("json").at(0));
+    const auto expected_json = hex(actions["json"][0]);
     BOOST_TEST_ALL_EQ(json_frame.begin(), json_frame.end(), expected_json.begin(),
                       expected_json.end());
     const tp::bytes binary{0, 1, 2, 253, 254, 255};
     const auto binary_frame = tp::encode_inline("pic", tp::payload_format::binary, "", binary);
-    const auto expected_binary = hex(actions.at("binary").at(0));
+    const auto expected_binary = hex(actions["binary"][0]);
     BOOST_TEST_ALL_EQ(binary_frame.begin(), binary_frame.end(), expected_binary.begin(),
                       expected_binary.end());
     const auto with_metadata =
         encode("chat", tp::payload_format::text, R"({"from":"js","n":7})", "hi");
-    const auto expected_with_metadata = hex(actions.at("text_with_metadata").at(0));
+    const auto expected_with_metadata = hex(actions["text_with_metadata"][0]);
     BOOST_TEST_ALL_EQ(with_metadata.begin(), with_metadata.end(), expected_with_metadata.begin(),
                       expected_with_metadata.end());
     const auto empty = encode("@_hsready", tp::payload_format::text, "", "");
-    const auto expected_empty = hex(actions.at("empty_text").at(0));
+    const auto expected_empty = hex(actions["empty_text"][0]);
     BOOST_TEST_ALL_EQ(empty.begin(), empty.end(), expected_empty.begin(), expected_empty.end());
     const auto long_name =
         encode("abcdefghijklmnopqrstuvwxyz012345", tp::payload_format::text, "", "x");
-    const auto expected_long_name = hex(actions.at("thirty_two_byte_name").at(0));
+    const auto expected_long_name = hex(actions["thirty_two_byte_name"][0]);
     BOOST_TEST_ALL_EQ(long_name.begin(), long_name.end(), expected_long_name.begin(),
                       expected_long_name.end());
 
-    const auto frame = hex(actions.at("text_with_metadata").at(0));
+    const auto frame = hex(actions["text_with_metadata"][0]);
     const auto decoded = tp::decode_action(frame);
     const auto& p = std::get<tp::proposal>(*decoded.frame);
     BOOST_TEST_EQ(p.name, "chat");
@@ -205,12 +272,11 @@ void inline_frames(const json::object& fixture) {
     BOOST_TEST(!tp::valid_action_name(""));
 }
 
-void chunked_frames(const json::object& fixture) {
-    const auto& actions = fixture.at("actions");
-    const auto& chunked = actions.at("chunked").as_object();
-    const auto payload = hex(chunked.at("payload"));
-    const auto& frames = chunked.at("frames").as_array();
-    const auto offer = hex(frames.at(0));
+void chunked_frames(const fixture_value& fixture) {
+    const auto chunked = fixture["actions"]["chunked"];
+    const auto payload = hex(chunked["payload"]);
+    const auto frames = chunked["frames"];
+    const auto offer = hex(frames[0]);
     const auto decoded = tp::decode_action(offer);
     const auto& p = std::get<tp::proposal>(*decoded.frame);
     BOOST_TEST(p.kind == tp::frame_kind::offer);
@@ -222,7 +288,7 @@ void chunked_frames(const json::object& fixture) {
     std::size_t offset = 0;
     for (std::size_t i = 1; i < frames.size(); ++i) {
         const auto length = std::min(tp::chunk_size, payload.size() - offset);
-        const auto expected = hex(frames.at(i));
+        const auto expected = hex(frames[i]);
         const auto encoded =
             tp::encode_chunk(p.id, offset, std::span(payload).subspan(offset, length));
         BOOST_TEST_ALL_EQ(encoded.begin(), encoded.end(), expected.begin(), expected.end());
@@ -232,7 +298,7 @@ void chunked_frames(const json::object& fixture) {
         offset += length;
     }
     BOOST_TEST_EQ(offset, payload.size());
-    const auto rejected = hex(fixture.at("controls").at("rejected_too_large"));
+    const auto rejected = hex(fixture["controls"]["rejected_too_large"]);
     const auto encoded_rejected = tp::encode_rejected(p.id, "payload exceeds receiver size limit");
     BOOST_TEST_ALL_EQ(encoded_rejected.begin(), encoded_rejected.end(), rejected.begin(),
                       rejected.end());
@@ -242,30 +308,30 @@ void chunked_frames(const json::object& fixture) {
     BOOST_TEST_EQ(tp::encode_accepted(p.id).size(), tp::control_header_size);
 }
 
-void envelopes(const json::object& fixture) {
-    const auto& env = fixture.at("envelope").as_object();
-    const auto token = str(env.at("room_token"));
+void envelopes(const fixture_value& fixture) {
+    const auto env = fixture["envelope"];
+    const auto token = str(env["room_token"]);
     BOOST_TEST_EQ(token, tp::room_token("my-app", "room-1"));
-    const auto& frames = env.at("frames").as_array();
+    const auto frames = env["frames"];
     const auto present = tp::presence_frame(token, true);
-    const auto expected_present = hex(frames.at(0));
+    const auto expected_present = hex(frames[0]);
     BOOST_TEST_ALL_EQ(present.begin(), present.end(), expected_present.begin(),
                       expected_present.end());
     const tp::bytes action{2, 0, 99, 104, 97, 116};
     const auto room_frame = tp::room_frame(token, action);
-    const auto expected_room = hex(frames.at(1));
+    const auto expected_room = hex(frames[1]);
     BOOST_TEST_ALL_EQ(room_frame.begin(), room_frame.end(), expected_room.begin(),
                       expected_room.end());
     const auto absent = tp::presence_frame(token, false);
-    const auto expected_absent = hex(frames.at(2));
+    const auto expected_absent = hex(frames[2]);
     BOOST_TEST_ALL_EQ(absent.begin(), absent.end(), expected_absent.begin(), expected_absent.end());
-    const auto room = hex(frames.at(1));
+    const auto room = hex(frames[1]);
     const auto decoded = tp::decode_envelope(room);
     BOOST_TEST(decoded->type == tp::envelope::kind::room);
     BOOST_TEST_EQ(decoded->token, token);
     BOOST_TEST_ALL_EQ(decoded->payload.begin(), decoded->payload.end(), action.begin(),
                       action.end());
-    const auto presence = tp::decode_envelope(hex(frames.at(2)));
+    const auto presence = tp::decode_envelope(hex(frames[2]));
     BOOST_TEST(presence->type == tp::envelope::kind::presence);
     BOOST_TEST(!presence->present);
     BOOST_TEST(!tp::decode_envelope(tp::bytes{1, 0, 0}).has_value());
@@ -273,10 +339,14 @@ void envelopes(const json::object& fixture) {
 }
 
 void signals() {
-    json::value document;  // the views read_signal returns point into it
-    const auto read = [&document](std::string_view text) {
-        document = json::parse(text);
-        return tp::read_signal(document);
+    tp::json::document document;  // the views read_signal returns point into it
+    const auto read = [&document](std::string_view text) -> std::optional<tp::signal_message> {
+        auto parsed = parse_text(text, tp::max_parsed_signal_bytes);
+        if (!parsed.has_value()) {
+            return std::nullopt;
+        }
+        document = std::move(parsed).value();
+        return tp::read_signal(std::as_const(document).root());
     };
     const auto announce = read(R"({"peerId":"abc","nonce":"x1"})");
     if (!BOOST_TEST(announce.has_value())) {
@@ -406,10 +476,14 @@ void wide_fields_are_big_endian() {
 // Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
 // candidate, 8192 bytes of plaintext, sealed with the longest IV in decimal, is read.
 void signal_bounds() {
-    json::value document;
+    tp::json::document document;
     const auto read = [&document](const tp::signal_message& m) {
-        document = json::parse(tp::write_signal(m));
-        return tp::read_signal(document).has_value();
+        auto parsed = parse_text(tp::write_signal(m), tp::max_parsed_signal_bytes);
+        if (!parsed.has_value()) {
+            return false;
+        }
+        document = std::move(parsed).value();
+        return tp::read_signal(std::as_const(document).root()).has_value();
     };
     std::array<std::uint8_t, tp::seal_iv_size> iv{};
     iv.fill(255);
@@ -432,6 +506,360 @@ void signal_bounds() {
     BOOST_TEST(!read({.peer_id = "p", .offer_id = offer_id + "a", .offer = "x"}));
 }
 
+// An event message is Trystero's createEvent's, byte for byte, signed with the oracle's key, clock
+// and auxiliary bytes: its topic and content hold every control character, `"`, `\`, U+2028,
+// U+2029, DEL and astral characters, which document's quoting writes as JSON.stringify does, and
+// its id is the one the protocol computes.
+void event_messages(const fixture_value& fixture) {
+    const auto messages = fixture["event_messages"];
+    const auto secret = hex(messages["secret_key"]);
+    const auto aux = hex(messages["aux"]);
+    if (!BOOST_TEST_EQ(secret.size(), 32U) || !BOOST_TEST_EQ(aux.size(), 32U)) {
+        return;
+    }
+    const auto key =
+        tp::nostr::signer::from_secret(std::span<const std::uint8_t, 32>(secret.data(), 32));
+    if (!BOOST_TEST(key.has_value())) {
+        return;
+    }
+    const std::span<const std::uint8_t, 32> aux_bytes(aux.data(), 32);
+    const auto created_at =
+        std::chrono::sys_seconds(std::chrono::seconds(integer(messages["created_at"])));
+    BOOST_TEST_EQ(messages["events"].size(), 6U);
+    for (const auto e : messages["events"]) {
+        const auto topic = str(e["topic"]);
+        const auto content = str(e["content"]);
+        BOOST_TEST_EQ(tp::nostr::event_message(*key, created_at, topic, content, aux_bytes),
+                      str(e["message"]));
+        const auto id = tp::nostr::event_id(key->pubkey(), created_at, tp::nostr::topic_kind(topic),
+                                            topic, content);
+        BOOST_TEST_EQ(tp::to_hex(id), str(e["id"]));
+    }
+}
+
+// A signal's text is JSON.stringify's of Trystero's object, member for member, with the same
+// strings, every byte of their quoting included, and the protocol reads the same fields back.
+void signal_texts(const fixture_value& fixture) {
+    BOOST_TEST_EQ(fixture["signal_texts"].size(), 5U);
+    for (const auto entry : fixture["signal_texts"]) {
+        const auto s = entry["signal"];
+        const tp::signal_message m{
+            .peer_id = str(s["peerId"]),
+            .offer_id = str(s["offerId"]),
+            .offer = str(s["offer"]),
+            .answer = str(s["answer"]),
+            .candidate = str(s["candidate"]),
+            .passive = s["passive"].value_or(false),
+        };
+        const auto text = str(entry["text"]);
+        BOOST_TEST_EQ(tp::write_signal(m, str(s["nonce"])), text);
+        const auto document = parse_text(text, tp::max_parsed_signal_bytes).value();
+        const auto read = tp::read_signal(document.root());
+        if (!BOOST_TEST(read.has_value())) {
+            continue;
+        }
+        BOOST_TEST_EQ(read->peer_id, m.peer_id);
+        BOOST_TEST_EQ(read->offer_id, m.offer_id);
+        BOOST_TEST_EQ(read->offer, m.offer);
+        BOOST_TEST_EQ(read->answer, m.answer);
+        BOOST_TEST_EQ(read->candidate, m.candidate);
+        BOOST_TEST_EQ(read->passive, m.passive);
+    }
+}
+
+/**
+ * The sender of a relay's event that a room acts on as the oracle's room did: an event of the
+ * room's root topic whose content is a signal with an answer. Empty when the room ignores it.
+ */
+std::string answer_sender(std::string_view text, std::string_view root_topic) {
+    const auto document = parse_text(text, tp::nostr::max_parsed_relay_text_bytes);
+    if (!document.has_value()) {
+        return {};
+    }
+    const auto message = tp::nostr::read_relay_message(document->root());
+    const auto* e = message.has_value() ? std::get_if<tp::nostr::event>(&*message) : nullptr;
+    if (e == nullptr || e->topic != root_topic) {
+        return {};
+    }
+    const auto signal_document = parse_text(e->content, tp::max_parsed_signal_bytes);
+    if (!signal_document.has_value()) {
+        return {};
+    }
+    const auto signal = tp::read_signal(signal_document->root());
+    if (!signal.has_value() || signal->answer.empty()) {
+        return {};
+    }
+    return std::string(signal->peer_id);
+}
+
+// A key written twice keeps its last value, as JSON.parse keeps it, an escaped key included: a
+// signal reads what Trystero's own signal handler read from the same text, and a relay's event is
+// acted on, with the same sender, exactly when Trystero's room acted on it.
+void duplicate_keys(const fixture_value& fixture) {
+    const auto cases = fixture["duplicate_keys"];
+    BOOST_TEST_EQ(cases["signals"].size(), 11U);
+    for (const auto entry : cases["signals"]) {
+        const auto document = parse_text(str(entry["text"]), tp::max_parsed_signal_bytes).value();
+        const auto read = tp::read_signal(document.root());
+        const auto expected = entry["read"];
+        if (expected.is_null()) {
+            BOOST_TEST(!read.has_value());
+            continue;
+        }
+        if (!BOOST_TEST(read.has_value())) {
+            continue;
+        }
+        BOOST_TEST_EQ(read->peer_id, str(expected["peer_id"]));
+        BOOST_TEST_EQ(read->offer, str(expected["offer"]));
+        BOOST_TEST_EQ(read->answer, str(expected["answer"]));
+        BOOST_TEST_EQ(read->candidate, str(expected["candidate"]));
+        BOOST_TEST_EQ(read->passive, expected["passive"].value_or(false));
+        // Trystero shows an offer's id, which it keeps to answer with.
+        if (expected.contains("offer_id")) {
+            BOOST_TEST_EQ(read->offer_id, str(expected["offer_id"]));
+        }
+    }
+    const auto root_topic = str(cases["root_topic"]);
+    BOOST_TEST_EQ(cases["events"].size(), 6U);
+    for (const auto entry : cases["events"]) {
+        BOOST_TEST_EQ(answer_sender(str(entry["text"]), root_topic), str(entry["acted"]));
+    }
+}
+
+/** `text` with spaces after its value, which JSON allows, up to `size` bytes. */
+std::string padded(std::string_view text, std::size_t size) {
+    std::string out(text);
+    out.resize(size, ' ');
+    return out;
+}
+
+/** The longest signal the bounds of its fields admit: a passive room's sealed offer. */
+std::string longest_signal() {
+    const std::string peer(tp::max_peer_id_bytes, 'p');
+    const std::string offer_id(tp::max_offer_id_bytes, 'o');
+    const std::string description(tp::max_sealed_description_bytes, 'a');
+    return std::string(tp::write_signal(
+        {.peer_id = peer, .offer_id = offer_id, .offer = description, .passive = true}));
+}
+
+// The bounds a room parses with refuse no text Trystero sends, and the relay's is under the length
+// that closes a relay's connection, so that a text between the two is dropped and the room goes on.
+static_assert(tp::max_parsed_signal_bytes == tp::max_sealed_description_bytes + 1024);
+static_assert(tp::max_parsed_signal_bytes == 66560);
+static_assert(tp::max_sealed_description_bytes + tp::max_peer_id_bytes + tp::max_offer_id_bytes +
+                  64 <=
+              tp::max_parsed_signal_bytes);
+static_assert(tp::nostr::max_parsed_relay_text_bytes == tp::max_parsed_signal_bytes + 2048);
+static_assert(tp::nostr::max_parsed_relay_text_bytes == 68608);
+static_assert(tp::nostr::max_parsed_relay_text_bytes < tp::max_relay_message_bytes);
+static_assert(tp::max_handshake_bytes == 1024);
+// A parse reads at most its bound of text, into an image of at most twice that and 64 KiB more.
+static_assert(tp::json::protocol_limits(1000).max_bytes == 1000);
+static_assert(tp::json::protocol_limits(1000).max_document_bytes == 2000 + 65536);
+
+// Each text a room parses is read up to its bound, to the byte, and one byte more is refused
+// before anything of it is read: no buffer is made, and a text that is not JSON at all is refused
+// for its length, not its syntax. The relay's bound reads an event that carries the longest
+// signal, which the signal's bound reads in turn, and the handshake's reads Trystero's message.
+void parse_bounds() {
+    const auto refused_unread = [](std::string_view text, std::size_t max_bytes) {
+        counting_resource memory;
+        const auto refused = parse_text(text, max_bytes, &memory);
+        const auto garbage = parse_text(std::string(text.size(), 'x'), max_bytes, &memory);
+        return !refused.has_value() && refused.error() == wd::errc::capacity &&
+               !garbage.has_value() && garbage.error() == wd::errc::capacity &&
+               memory.allocations == 0;
+    };
+
+    const auto signal = longest_signal();
+    const auto longest = padded(signal, tp::max_parsed_signal_bytes);
+    if (!BOOST_TEST_LT(signal.size(), longest.size())) {
+        return;
+    }
+    {
+        const auto document = parse_text(longest, tp::max_parsed_signal_bytes).value();
+        const auto read = tp::read_signal(document.root());
+        BOOST_TEST(read.has_value() && read->offer.size() == tp::max_sealed_description_bytes &&
+                   read->peer_id.size() == tp::max_peer_id_bytes && read->passive);
+    }
+    BOOST_TEST(refused_unread(longest + " ", tp::max_parsed_signal_bytes));
+
+    // A relay's echo of an event that carries it, with a subscription id of Trystero's 64
+    // characters.
+    std::array<std::uint8_t, 32> secret{};
+    secret.fill(7);
+    const auto key = tp::nostr::signer::from_secret(secret);
+    if (!BOOST_TEST(key.has_value())) {
+        return;
+    }
+    const std::array<std::uint8_t, 32> aux{};
+    const auto topic = tp::peer_topic("my-app", "room-1", std::string(tp::max_peer_id_bytes, 'p'));
+    const auto message = tp::nostr::event_message(
+        *key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)), topic, signal, aux);
+    const std::string_view written = message;
+    std::string echo = R"(["EVENT",")" + std::string(64, 's') + R"(",)";
+    echo += written.substr(9, written.size() - 10);
+    echo += ']';
+    const auto event_text = padded(echo, tp::nostr::max_parsed_relay_text_bytes);
+    if (!BOOST_TEST_LT(echo.size(), event_text.size())) {
+        return;
+    }
+    {
+        const auto document =
+            parse_text(event_text, tp::nostr::max_parsed_relay_text_bytes).value();
+        const auto message_read = tp::nostr::read_relay_message(document.root());
+        const auto* e =
+            message_read.has_value() ? std::get_if<tp::nostr::event>(&*message_read) : nullptr;
+        if (BOOST_TEST(e != nullptr)) {
+            BOOST_TEST_EQ(e->topic, topic);
+            BOOST_TEST_EQ(e->content, signal);
+        }
+    }
+    BOOST_TEST(refused_unread(event_text + " ", tp::nostr::max_parsed_relay_text_bytes));
+
+    // Trystero's handshake message: `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`.
+    const auto proof = tp::handshake_proof("ch4ll3ng3", "secret", "my-app", "room-1");
+    const auto handshake =
+        padded(R"({"__trystero_pw":"response","h":")" + std::string(proof) + "\"}",
+               tp::max_handshake_bytes);
+    {
+        const auto document = parse_text(handshake, tp::max_handshake_bytes).value();
+        BOOST_TEST_EQ(tp::json::text_of(document.root()["h"]), proof);
+    }
+    BOOST_TEST(refused_unread(handshake + " ", tp::max_handshake_bytes));
+}
+
+/** `["EVENT","sub",<event>]` whose event holds `members` more after its tags and content. */
+std::string event_with(std::string_view members) {
+    std::string text = R"(["EVENT","sub",{"id":"i","tags":[["x","topic"]],"content":"c")";
+    text += members;
+    return text + "}]";
+}
+
+// No text costs a room more than a few times its bound to read. An event of 256 distinct keys of
+// 128 bytes, which collided in Boost.JSON's hashed objects (chapter 18's draft), is read as any
+// text is: document's objects are ordered indices. A text of thousands of values, each a node of
+// some 200 bytes of image for 2 of text, is refused once its image fills the bound; and what the
+// parse took from the resource, its doubling buffers, sums to less than three times the bound.
+void parse_cost() {
+    const auto limits = tp::json::protocol_limits(tp::nostr::max_parsed_relay_text_bytes);
+    const auto bound = static_cast<std::size_t>(limits.max_document_bytes);
+
+    std::string keys;
+    for (std::size_t i = 0; i < 256; ++i) {
+        std::string key = std::to_string(i);
+        key.resize(128, 'k');
+        keys += ",\"" + key + "\":0";
+    }
+    counting_resource keyed;
+    {
+        const auto document = tp::json::parse(event_with(keys), limits, &keyed);
+        if (BOOST_TEST(document.has_value())) {
+            BOOST_TEST_EQ(document->root()[2].size(), 3U + 256U);
+            const auto message = tp::nostr::read_relay_message(document->root());
+            const auto* e =
+                message.has_value() ? std::get_if<tp::nostr::event>(&*message) : nullptr;
+            BOOST_TEST(e != nullptr && e->topic == "topic" && e->content == "c");
+        }
+    }
+    BOOST_TEST_LE(keyed.largest, bound);
+    BOOST_TEST_LT(keyed.allocated, 3 * bound);
+    BOOST_TEST_EQ(keyed.outstanding, 0U);
+
+    const auto values = [](std::size_t n) {
+        std::string text = R"(,"values":[0)";
+        for (std::size_t i = 1; i < n; ++i) {
+            text += ",0";
+        }
+        return event_with(text + "]");
+    };
+    counting_resource few;
+    BOOST_TEST(tp::json::parse(values(100), limits, &few).has_value());
+    // 4,000 values in 8 KB of text, and the most the bound reads: some 34,000 in 68 KB.
+    const auto longest =
+        values(((tp::nostr::max_parsed_relay_text_bytes - event_with("").size()) / 2) - 8);
+    BOOST_TEST_LE(longest.size(), tp::nostr::max_parsed_relay_text_bytes);
+    for (const auto& text : {values(4000), longest}) {
+        counting_resource many;
+        const auto refused = tp::json::parse(text, limits, &many);
+        BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
+        BOOST_TEST_EQ(many.largest, bound);
+        BOOST_TEST_LT(many.allocated, 3 * bound);
+        BOOST_TEST_EQ(many.outstanding, 0U);
+    }
+}
+
+// A text nested past max_depth is refused at once: Boost.JSON's parser stops at the 257th level,
+// which the parse does not take for a full buffer, so it makes no larger one to try again. The
+// texts are padded so that their first buffer holds the 256 levels a room reads; unpadded, the
+// same nesting fills the first buffers, which do grow.
+void parse_depth() {
+    const auto limits = tp::json::protocol_limits(tp::nostr::max_parsed_relay_text_bytes);
+    const auto depth = static_cast<std::size_t>(limits.max_depth);
+    BOOST_TEST_EQ(depth, 256U);
+    const auto nested = [](std::size_t levels, std::size_t size) {
+        std::string text(size - (2 * levels), ' ');
+        text.append(levels, '[');
+        text.append(levels, ']');
+        return text;
+    };
+    const std::size_t size = tp::nostr::max_parsed_relay_text_bytes;
+    counting_resource deepest;
+    BOOST_TEST(tp::json::parse(nested(depth, size), limits, &deepest).has_value());
+    BOOST_TEST_EQ(deepest.allocations, 1U);
+    counting_resource deeper;
+    const auto refused = tp::json::parse(nested(depth + 1, size), limits, &deeper);
+    BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
+    BOOST_TEST_EQ(deeper.allocations, 1U);
+    BOOST_TEST_EQ(deeper.outstanding, 0U);
+    counting_resource growing;
+    BOOST_TEST(tp::json::parse(nested(depth, 2 * depth), limits, &growing).has_value());
+    BOOST_TEST_GT(growing.allocations, 1U);
+}
+
+// A parse's image is one buffer of the resource it is given, the only thing it holds there once
+// the parse succeeds: the strings read from it point into it, a move keeps it where it is, and the
+// resource has nothing out once the document goes.
+void parse_resource() {
+    constexpr std::string_view text =
+        R"(["EVENT","sub",{"id":"abc","tags":[["x","topic-a"]],"content":"{\"peerId\":\"p\"}"}])";
+    counting_resource memory;
+    {
+        auto parsed = parse_text(text, tp::nostr::max_parsed_relay_text_bytes, &memory);
+        if (!BOOST_TEST(parsed.has_value())) {
+            return;
+        }
+        tp::json::document document = std::move(parsed).value();
+        BOOST_TEST(document.resource() == &memory);
+        BOOST_TEST_EQ(memory.outstanding, 1U);
+        BOOST_TEST_EQ(memory.last_bytes, document.capacity());
+        const auto image = document.get().image();
+        BOOST_TEST(static_cast<const void*>(image.data()) == memory.last);
+        BOOST_TEST_EQ(image.size(), document.capacity());
+        const auto* begin = reinterpret_cast<const char*>(image.data());
+        const auto* end = begin + image.size();
+        const auto inside = [begin, end](std::string_view s) {
+            return std::less_equal<>()(begin, s.data()) &&
+                   std::less_equal<>()(s.data() + s.size(), end);
+        };
+        const auto message = tp::nostr::read_relay_message(std::as_const(document).root());
+        const auto* e = message.has_value() ? std::get_if<tp::nostr::event>(&*message) : nullptr;
+        if (BOOST_TEST(e != nullptr)) {
+            BOOST_TEST_EQ(e->content, R"({"peerId":"p"})");
+            BOOST_TEST(inside(e->subscription) && inside(e->id) && inside(e->topic) &&
+                       inside(e->content));
+        }
+        const tp::json::document moved = std::move(document);
+        // A document moved from holds no image.
+        BOOST_TEST(!document.has_value());  // NOLINT(bugprone-use-after-move)
+        BOOST_TEST(static_cast<const void*>(moved.get().image().data()) == memory.last);
+        BOOST_TEST_EQ(tp::json::text_of(moved.root()[2]["content"]), R"({"peerId":"p"})");
+        BOOST_TEST_EQ(memory.allocations, 1U);
+        BOOST_TEST_EQ(memory.outstanding, 1U);
+    }
+    BOOST_TEST_EQ(memory.outstanding, 0U);
+}
+
 void text() {
     BOOST_TEST_EQ(tp::base64_encode(tp::bytes{}), "");
     BOOST_TEST_EQ(tp::base64_encode(tp::bytes{'f'}), "Zg==");
@@ -452,7 +880,10 @@ int main(int argc, char* argv[]) {
         return boost::report_errors();
     }
     const auto loaded = load(argv[1]);
-    const auto& fixture = loaded.as_object();
+    if (!BOOST_TEST(loaded.has_value())) {
+        return boost::report_errors();
+    }
+    const auto fixture = loaded->root();
     topics(fixture);
     relays(fixture);
     handshake_and_sealing(fixture);
@@ -465,6 +896,13 @@ int main(int argc, char* argv[]) {
     signals();
     random_ids();
     signal_bounds();
+    event_messages(fixture);
+    signal_texts(fixture);
+    duplicate_keys(fixture);
+    parse_bounds();
+    parse_cost();
+    parse_depth();
+    parse_resource();
     text();
     return boost::report_errors();
 }
