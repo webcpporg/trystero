@@ -1,3 +1,4 @@
 the payload nested 257 deep: not delivered
 the payload holding a lone surrogate: not delivered
+the payload of 1,000 zeros: not delivered
 the payload sent after them: delivered

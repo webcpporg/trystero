@@ -15,10 +15,12 @@ const config = {
     rtcConfig: {iceServers: []},
 }
 // The payloads the other peer sends, as JSON text, each an array of its label and a value: one
-// nested 257 deep, one holding a lone surrogate, and a last one sent after them.
+// nested 257 deep, one holding a lone surrogate, an array of 1,000 zeros, and a last one sent
+// after them.
 const payloads = [
     ['nested 257 deep', '['.repeat(256) + ']'.repeat(256)],
     ['holding a lone surrogate', '"\\ud800"'],
+    ['of 1,000 zeros', JSON.stringify(new Array(1000).fill(0))],
     ['sent after them', '"plain"'],
 ]
 // The other peer, another page, which sends each payload JSON.parse makes of its text once it

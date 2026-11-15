@@ -119,10 +119,10 @@ its own size: its image grows to at most twice the payload and 64 KiB, so
 that a payload of many small values, each a node of some 200 bytes, costs the
 room no more than a multiple of its length; an array of 345 zeros is read,
 and one of 346 is not, nor one of more than 101 objects such as
-`{"x":12,"y":34}` (<<trystero-differences>>). Its other bounds are the room's
-`max_receive_bytes` and document's defaults, values nested at most 256 deep;
-and document refuses a lone surrogate, `"\ud800"`, which `JSON.parse` takes.
-A payload past any of them is not delivered.
+`{"x":12,"y":34}` (<<trystero-differences-json-refused>>). Its other bounds
+are the room's `max_receive_bytes` and document's defaults, values nested at
+most 256 deep; and document refuses a lone surrogate, `"\ud800"`, which
+`JSON.parse` takes. A payload past any of them is not delivered.
 
 A text the protocol writes is a fixed shape of a few strings and numbers,
 appended field by field, its strings quoted by `webcpp::document::quote`, the

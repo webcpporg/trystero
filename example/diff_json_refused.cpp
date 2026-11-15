@@ -5,9 +5,11 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // A difference from Trystero (doc: #trystero-differences-behaviour): a JSON payload nested deeper
-// than 256, or holding a lone surrogate. Trystero JS delivers both, as JSON.parse reads them; a
-// room here delivers neither, since it reads a JSON payload with webcpp::document's defaults, at
-// most 256 deep, and strings that are UTF-8. A Trystero JS page sends such payloads, and a C++
+// than 256, holding a lone surrogate, or of many small values. Trystero JS delivers all three, as
+// JSON.parse reads them; a room here delivers none, since it reads a JSON payload with
+// webcpp::document's defaults, at most 256 deep, and strings that are UTF-8, into an image of at
+// most twice the payload and 64 KiB, which an array of 1,000 zeros, a node of some 200 bytes each,
+// passes. A Trystero JS page sends such payloads, and a C++
 // peer sends no lone surrogate, which a document's UTF-8 strings cannot hold, so the other peer of
 // this program sends what a page sends: each payload's JSON text, as JSON.stringify writes the
 // value, as a text payload, which the backend its app is given marks as JSON on the wire. This
@@ -237,10 +239,16 @@ int main() {
     };
     // tag::example[]
     // The payloads the other peer sends, as JSON text, each an array of its label and a value: one
-    // nested 257 deep, one holding a lone surrogate, and a last one sent after them.
+    // nested 257 deep, one holding a lone surrogate, an array of 1,000 zeros, and a last one sent
+    // after them.
+    std::string zeros = "[0";
+    for (std::size_t i = 1; i < 1000; ++i) {
+        zeros += ",0";
+    }
     const auto payloads = std::to_array<std::pair<std::string_view, std::string>>({
         {"nested 257 deep", std::string(256, '[') + std::string(256, ']')},
         {"holding a lone surrogate", R"("\ud800")"},
+        {"of 1,000 zeros", zeros + "]"},
         {"sent after them", R"("plain")"},
     });
     // What this room delivers of them, by label, once the last has come.
