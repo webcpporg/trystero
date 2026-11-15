@@ -32,6 +32,8 @@ webcpp.drive quick_start : quick_start.cpp
 # tag::differences[]
 local differences =
     diff_already_joined
+    diff_json_numbers
+    diff_json_refused
     diff_passwords
     diff_peer_join
     diff_peers
