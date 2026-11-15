@@ -301,6 +301,26 @@ inline void memory_relay::close_all() {
     }
 }
 
+/** A subscription of `socket` to the kinds and topics a NIP-01 filter names, in `memory`. */
+inline memory_relay::subscription subscription_of(const std::shared_ptr<memory_websocket>& socket,
+                                                  const protocol::json::const_value& filter,
+                                                  std::pmr::memory_resource* memory) {
+    memory_relay::subscription s{
+        .socket = socket,
+        .kinds = std::pmr::set<std::int64_t>(memory),
+        .topics = std::pmr::set<std::pmr::string, std::less<>>(memory),
+    };
+    for (const protocol::json::const_value k : filter["kinds"]) {
+        if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
+            s.kinds.insert(*kind);
+        }
+    }
+    for (const protocol::json::const_value t : filter["#x"]) {
+        s.topics.emplace(protocol::json::text_of(t));
+    }
+    return s;
+}
+
 inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
                                   std::string_view text) {
     ++texts;
@@ -317,23 +337,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     }
     const std::string_view type = protocol::json::text_of(message.at(0));
     if (type == "REQ" && message.size() >= 3) {
-        subscription s{
-            .socket = from,
-            .kinds = std::pmr::set<std::int64_t>(memory_),
-            .topics = std::pmr::set<std::pmr::string, std::less<>>(memory_),
-        };
-        const protocol::json::const_value filter = message.at(2);
-        for (const protocol::json::const_value k : filter["kinds"]) {
-            if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
-                s.kinds.insert(*kind);
-            }
-        }
-        for (const protocol::json::const_value t : filter["#x"]) {
-            s.topics.emplace(protocol::json::text_of(t));
-        }
         subscriptions_.insert_or_assign(
             key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
-            std::move(s));
+            subscription_of(from, message.at(2), memory_));
         std::pmr::string eose(R"(["EOSE",)", from->memory());
         protocol::json::append_value(eose, message.at(1));
         eose += ']';

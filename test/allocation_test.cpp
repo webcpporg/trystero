@@ -332,10 +332,10 @@ void track(void* pointer) noexcept {
         return;
     }
     std::size_t i = home_of(pointer);
-    while (live.at(i) != nullptr) {
+    while (live[i] != nullptr) {
         i = (i + 1) & (live_slots - 1);
     }
-    live.at(i) = pointer;
+    live[i] = pointer;
     ++live_count;
 }
 
@@ -345,22 +345,22 @@ void untrack(const void* pointer) noexcept {
         return;
     }
     std::size_t i = home_of(pointer);
-    while (live.at(i) != pointer) {
-        if (live.at(i) == nullptr) {
+    while (live[i] != pointer) {
+        if (live[i] == nullptr) {
             return;
         }
         i = (i + 1) & (live_slots - 1);
     }
-    live.at(i) = nullptr;
+    live[i] = nullptr;
     --live_count;
     // Every entry after it in its run moves back unless its own slot lies between them.
-    for (std::size_t j = (i + 1) & (live_slots - 1); live.at(j) != nullptr;
+    for (std::size_t j = (i + 1) & (live_slots - 1); live[j] != nullptr;
          j = (j + 1) & (live_slots - 1)) {
-        const std::size_t k = home_of(live.at(j));
+        const std::size_t k = home_of(live[j]);
         const bool stays = i < j ? (i < k && k <= j) : (i < k || k <= j);
         if (!stays) {
-            live.at(i) = live.at(j);
-            live.at(j) = nullptr;
+            live[i] = live[j];
+            live[j] = nullptr;
             i = j;
         }
     }
@@ -577,7 +577,7 @@ std::size_t document_cost(const trystero::pmr_document& payload,
     global_allocations = 0;
     counting = true;
     tp::json::append_value(text, payload.root());
-    const bool read = tp::json::parse(text, webcpp::document::parse_options{}, memory).has_value();
+    const bool read = tp::json::parse(text, webcpp::document::parse_options(), memory).has_value();
     counting = false;
     BOOST_TEST(read);
     BOOST_TEST_EQ(live_count, 0U);
@@ -598,7 +598,7 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
-    trystero::test::memory_relay& relay_state = network.relay(relay);
+    const trystero::test::memory_relay& relay_state = network.relay(relay);
     trystero::app a_app(io.get_executor(), network,
                         {
                             .app_id = "allocation",
@@ -667,6 +667,8 @@ void exchange_allocates_through_the_rooms_resources(Make make, Cost cost) {
 }
 
 /** How many values a document holds, its own included. */
+// Recursive as deep as the document nests, which its parse bounded.
+// NOLINTNEXTLINE(misc-no-recursion)
 std::size_t values_in(const tp::json::const_value& v) {
     std::size_t n = 1;
     if (v.is_array()) {
@@ -722,13 +724,14 @@ void reading_a_text_costs_the_heap_a_bounded_working_state() {
         std::size_t bound;
     };
 
-    const std::array<text, 5> texts{{
-        {"relay event", relayed, tp::nostr::max_parsed_relay_text_bytes},
-        {"relay OK", ok, tp::nostr::max_parsed_relay_text_bytes},
-        {"signal", signal, tp::max_parsed_signal_bytes},
-        {"handshake", handshake, tp::max_handshake_bytes},
-        {"candidate", candidate, tp::max_sealed_candidate_bytes},
-    }};
+    constexpr std::size_t relay_bound = tp::nostr::max_parsed_relay_text_bytes;
+    const std::array<text, 5> texts{
+        text{.what = "relay event", .json = relayed, .bound = relay_bound},
+        text{.what = "relay OK", .json = ok, .bound = relay_bound},
+        text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
+        text{.what = "handshake", .json = handshake, .bound = tp::max_handshake_bytes},
+        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
+    };
     for (const text& t : texts) {
         const std::size_t outstanding = memory.outstanding;
         global_allocations = 0;
@@ -1095,7 +1098,7 @@ int main() {
         [](std::pmr::memory_resource* memory) {
             auto made = tp::json::parse(
                 R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
-                webcpp::document::parse_options{}, memory);
+                webcpp::document::parse_options(), memory);
             webcpp::test::require(BOOST_TEST(made.has_value()));
             return std::move(made).unsafe_value();
         },
