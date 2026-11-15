@@ -16,13 +16,9 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
-* Changed libsecp256k1 to come from webcpp's `third_party` build,
-  `/third_party//secp256k1`, instead of an external installation (`-sSECP256K1_ROOT`
-  and `-sSECP256K1_EMSCRIPTEN_ROOT` are gone): its tables follow
-  `webcpp-secp256k1-tables`, which with `auto` is window 15 and comb 11x6 natively (a
-  larger program, faster signing and verification) and window 2 and comb 2x5 on
-  emscripten (the same signing, verification a little slower than window 4, a smaller
-  program), where the external build was window 4 and comb 2x5 on both.
+* Changed libsecp256k1 to come from `/third_party//secp256k1`, not an external
+  installation: `-sSECP256K1_ROOT` and `-sSECP256K1_EMSCRIPTEN_ROOT` are gone, and
+  `webcpp-secp256k1-tables` chooses its tables.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]
