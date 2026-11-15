@@ -196,7 +196,7 @@ messages travel and how they are received:
 | `std::pmr::string` | text | a copy of the bytes, in the room's resource
 | `std::string_view` | text | a view of the frame it arrived in, valid during the handler
 | `webcpp::document::document` | JSON | parsed into a document of its own, with the standard allocator
-| `trystero::pmr_document` | JSON | parsed into a buffer of the room's resource
+| `webcpp::document::pmr::document` | JSON | parsed into a document of the room's resource, which holds its image and the parse's working state
 | `trystero::bytes` | binary | a copy of the bytes
 | `trystero::pmr_bytes` | binary | the transfer's buffer, moved when resources match, otherwise copied once into the room's resource
 | `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the handler
@@ -204,8 +204,10 @@ messages travel and how they are received:
 |===
 
 A JSON payload is webcpp::document's: a `webcpp::document::document` the
-program builds or parses, or a `pmr_document`, whose image is a buffer of a
-memory resource, the room's when it is received. A {cpp} peer sends the
+program builds or parses, with the standard allocator, or a
+`webcpp::document::pmr::document`, whose image a memory resource holds, the
+room's when it is received; the pair mirrors `std::string` and
+`std::pmr::string`. A {cpp} peer sends the
 bytes `JSON.stringify` writes of the same value, which Trystero JS sends,
 for every value JavaScript can hold: its strings, booleans and nulls,
 its keys in JavaScript's order, array indices first, and every number a
@@ -214,14 +216,24 @@ hold, an integer past 2^53^ or a decimal of more digits, is sent exact, as
 webcpp::document holds it: a Trystero JS peer reads the nearest double, or
 `Infinity` past a double's range. A text that does not parse is not
 delivered, nor one nested deeper than 256 or holding a lone surrogate,
-which `JSON.parse` takes (<<trystero-protocol-json>>).
+which `JSON.parse` takes, nor one whose document would need more than twice
+its length and 64 KiB of image, an array of more than 345 zeros among them
+(<<trystero-protocol-json>>).
 
 A document is moved, never copied: so `payload`, which may hold one, has no
 copy assignment, and in a build without exceptions no copy constructor
-either; nor has `webcpp::document::document` a default constructor there,
-where a program makes one with `webcpp::document::document::create()` or
-`webcpp::document::parse`, each of which returns a result. The room test
-sends one:
+either; nor has a document a default constructor there, where a program
+makes one with `create()` or `webcpp::document::parse`, each of which
+returns a result, given the resource's allocator for a
+`webcpp::document::pmr::document`. A handle of a document's values refers to
+the document object, as every handle of webcpp::document does: moving the
+document invalidates it, so a handler that keeps a received document moves
+it and reads it through the handles of the document it moved it into. A
+`webcpp::document::pmr::document` move-assigned to one of another resource
+copies its image into that resource, and raises `std::bad_alloc` through
+`boost::throw_exception` when the resource has no room: a program without
+exceptions keeps one by move construction, `std::optional::emplace` for
+one. The room test sends one:
 
 [source]
 ----
@@ -250,7 +262,11 @@ another sends by moving strings, as the chat does
 Messages arrive at the handler `on_message` sets, with a `message_info`: the
 sender's id and the metadata it passed. Without a handler they queue, up to
 1024 per action, the oldest dropped first, for `async_receive`, which needs
-an owning type: a view would outlive the message. Frames of an action that
+an owning type: a view would outlive the message; a message of another
+format, or a JSON text that does not parse, completes it with
+`error::transfer_rejected` and an empty value, in the room's resource for a
+`std::pmr` type, and a document holding `null` for a JSON one, in the room's
+resource for a `webcpp::document::pmr::document`. Frames of an action that
 arrived before it was made are kept, 64 per peer for 120 s, and delivered
 to it once it is.
 

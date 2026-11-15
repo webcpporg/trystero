@@ -634,39 +634,45 @@ holds only what is specific to trystero.
     type-erased executor wraps it with `std::allocator` (measured: telling
     the executor apart through the erased type cost two `operator new` calls
     a completion, and Asio's wrapper a `std::aligned_alloc`).
-  - **webcpp::document** keeps a document's image in one buffer, and its
-    external storage leaves that buffer to its user: every value, strings
-    included, is allocated inside it by Boost.Interprocess's
-    `rbtree_best_fit` heap, with offsets for pointers. trystero gives each
-    text it reads such a buffer of the room's resource
-    (`protocol::json::document`, of the app's for a remote candidate),
-    sized for a text of a few values, twice the text and 4 KiB, and made
-    again twice as large when the parse fills it, up to the caller's bound
-    (`protocol::json::protocol_limits`: twice its text bound and 64 KiB). A
-    text the room writes is appended field by field to a `std::pmr::string`
-    of its resource, its strings quoted by `webcpp::document::quote`, which
-    allocates only through that string, and a JSON payload is written by
+  - **webcpp::document** is allocator-aware: a
+    `webcpp::document::pmr::document` allocates through a
+    `std::pmr::polymorphic_allocator<std::byte>` its image, one buffer in
+    which Boost.Interprocess's `rbtree_best_fit` heap holds every value,
+    strings included, with offsets for pointers, and the working state of
+    what reads or writes it (the parser's state, the path and the pending
+    key and text, the tree's record of each change, the writer's stack),
+    each piece freed before the call that made it returns. trystero reads
+    every text with `webcpp::document::parse(text, options, allocator)` into
+    a document of the room's resource (of the app's for a remote
+    candidate), and keeps no owner of its own around it: the caller's text
+    bound is `parse_options::max_bytes`, and the image, 4 KiB at first,
+    grows in place to at most twice that bound and 64 KiB
+    (`protocol::json::protocol_limits`, as `max_document_bytes`); a JSON
+    payload is bounded the same way by its own size. A text the room writes
+    is appended field by field to a `std::pmr::string` of its resource, its
+    strings quoted by `webcpp::document::quote`, which allocates only
+    through that string, and a JSON payload is written by
     `webcpp::document::stringify_to` in pieces of 8 bytes, which no standard
-    library's string keeps outside its own object. What document's parser
-    and writer use while they work stays in the standard allocator:
-    Boost.JSON's parser stack, the path and the pending key and text of the
-    value being read, the tree's record of each change, which places a
-    value, and the writer's stack. Each is freed before the parse or the
-    write that made it returns, so none is left at any moment the room's
-    executor is between handlers (measured natively with the LLVM standard
-    library: about seven allocations a value for each text a room reads,
-    and 48 to write and read back a JSON payload of 7 values).
+    library's string keeps outside its own object. A `pmr::document` is
+    never move-assigned across resources inside trystero: that copies the
+    image, and raises `std::bad_alloc` through `boost::throw_exception` when
+    the target has no room, which a build without exceptions must not reach;
+    a received one is moved by construction alone.
   - **Payloads.** `detail::payload_traits` has `std::pmr::string` and
     `std::pmr::vector<std::uint8_t>` (`webcpp::trystero::pmr_bytes`) beside
     the standard types, and `decode(incoming& message,
     std::pmr::memory_resource* memory)` takes the resource for every type:
-    the `std::pmr` types are built in it, and `pmr_document` in a buffer of
-    it. `std::string`, `bytes`, `webcpp::document::document` and `payload`
-    stay as they are, with `std::allocator` or document's own
-    `operator new`: the user's choice, and a received `bytes`, or the binary
-    of a `payload`, is a copy of the frame, which starts in the app's
-    resource; a received `webcpp::document::document` is an image of its
-    own, from the global `operator new`, as document's owned documents are.
+    the `std::pmr` types are built in it, `webcpp::document::pmr::document`
+    among them, and a rejected `async_receive` completes with an empty one
+    there (a document holding `null`), through `detail::empty_payload`.
+    `std::string`, `bytes`, `webcpp::document::document` and `payload` stay
+    as they are, with `std::allocator`: the user's choice, and a received
+    `bytes`, or the binary of a `payload`, is a copy of the frame, which
+    starts in the app's resource. The two document types mirror
+    `std::string` and `std::pmr::string`, with no alias of trystero's: a
+    handle of a received document refers to its document object, and
+    moving the document invalidates it, document's own rule, which the
+    action's Doc Comments state.
     An owning pmr binary payload is moved when its message buffer and the
     room use the same resource, and copied once otherwise; chunked transfers
     assemble their buffer in the room's resource. A received
@@ -680,10 +686,7 @@ holds only what is specific to trystero.
   - **Outside the resource**, stated on the page: libdatachannel's and
     OpenSSL's own allocations, with the copy libdatachannel's C API makes of
     a message before webcpp::webrtc reads it; `emscripten::val`'s JavaScript
-    heap; webcpp::document's working state while it reads or writes a JSON
-    text (its parser's stack, path and pending text, its tree's record of
-    each change, its writer's stack), each piece freed before the call
-    returns; Asio's own once-per-context allocations
+    heap; Asio's own once-per-context allocations
     (its services and the scheduler's first operation); the wrapper Asio puts
     around a post through an executor that is not an `io_context`'s, which
     webcpp::webrtc's completions get, through `any_io_executor`;
@@ -701,8 +704,7 @@ holds only what is specific to trystero.
     a message allocates nothing outside it (in a page the stream's own state
     is there too, made with `std::allocator_arg` and the room's allocator);
     the payload types `std::string`, `bytes`, `webcpp::document::document`
-    and `payload`, with `std::allocator` or document's own `operator new`;
-    on Emscripten, the C library's `select()`, which Asio's reactor calls on
+    and `payload`, with `std::allocator`; on Emscripten, the C library's `select()`, which Asio's reactor calls on
     every wait of an io_context with a timer or a socket, and which callocs
     an array on every call (the test replaces it, below), and under Asyncify
     the unwind data of every suspension of the run (the test counts it
@@ -722,26 +724,25 @@ holds only what is specific to trystero.
     reports to none of these. It keeps every global allocation it counts,
     by its address, in a table of a fixed size until it is freed. Two rooms
     over the memory relays exchange a payload, a `std::pmr::string`, a
-    `pmr_bytes` and a `pmr_document` in turn: for the first two
-    `operator new` sees nothing, for the document exactly what writing it
-    and reading its text back cost webcpp::document's working state, counted
-    apart beforehand on the same value, and nothing left; the C library
-    sees nothing, and the counting resources of the two configurations see
-    the rooms'. Each text a room reads (a relay's event carrying an offer, a
-    relay's `OK`, a signal, a handshake message, a candidate) is parsed in a
-    counting resource, which holds its image until the document goes, and
-    document's working state costs `operator new` at most 8 allocations a
-    value and 16 more, none left after the parse. Two rooms with a password,
-    a log sink and the network's state in a resource of its own are made,
-    join, exchange a payload that travels in chunks, measure a round trip,
-    one says goodbye, both are destroyed and the io_context is drained,
-    while `operator new` sees webcpp::document's working state alone, none
-    of it live at the drain, and the C library nothing, and the rooms'
+    `pmr_bytes` and a `webcpp::document::pmr::document` in turn, and
+    neither `operator new` nor the C library sees an allocation, none out
+    when the window closes, while the counting resources of the two
+    configurations see the rooms'; the same exchange with a handler that
+    plants an `operator new`, left out until the window closes, and a call
+    of the C library sees exactly those, so the zeros are not vacuous. Each
+    text a room reads (a relay's event carrying an offer, a relay's `OK`, a
+    signal, a handshake message, a candidate) is parsed into a document of
+    a counting resource, which holds its image until the document goes,
+    with no global allocation. Two rooms with a password, a log sink and the
+    network's state in a resource of its own are made, join, exchange a
+    payload that travels in chunks, measure a round trip, one says goodbye,
+    both are destroyed and the io_context is drained, while neither
+    `operator new` nor the C library sees an allocation, and the rooms'
     resources have nothing out once the io_context has drained. Two apps
     with two rooms each also prove one binary payload copy into a distinct
     room resource, with size-specific counters, and no extra copy when
-    resources match; their global count sees only webcpp::document's working
-    state, nothing live at the drain, and all resources return to zero.
+    resources match; their global counts are zero, and all resources
+    return to zero.
     The counting resources also count a return of memory they
     never gave, a pmr object freed through the wrong resource, which must be
     none. Only the thread `main` runs on is counted: the C library reports

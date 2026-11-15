@@ -121,6 +121,8 @@ has nothing of it to run beside its twin.
 
 | A JSON payload nested deeper than 256, or holding a lone surrogate | delivered: `JSON.parse` takes both | not delivered | webcpp::document's defaults: a bounded depth, and strings that are UTF-8
 
+| A JSON payload whose document needs more than twice its length and 64 KiB of image: an array of more than 345 zeros, 352 numbers of three digits, 287 short strings or 101 objects of two members | delivered: `JSON.parse` takes any | not delivered | each value of a document is a node of some 200 bytes of image, so the image's bound is tied to the payload's length, as a protocol text's to its bound (<<trystero-protocol-json>>), and a payload of many small values costs the room no more than a multiple of its length
+
 | The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
 
 |===
@@ -549,4 +551,7 @@ its reason.
 
 | A JSON payload nested deeper than 256, or holding a lone surrogate
 | What differs is a message the {cpp} room does not deliver, which a program would show only as nothing printed; webcpp::document's `parse` test holds both refusals.
+
+| A JSON payload whose document needs more than twice its length and 64 KiB
+| What differs is a message the {cpp} room does not deliver, which a program would show only as nothing printed; the `room` test holds the bound, an array of 100 zeros delivered and one of 1,000 not.
 |===

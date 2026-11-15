@@ -44,9 +44,11 @@ own state.
   resource; otherwise it is copied once into the room's resource. A chunked
   transfer assembles its buffer in the room's resource. Received
   `std::pmr::string` text is always copied once into the room's resource.
-  A JSON text is parsed into a buffer of the room's resource, a remote
-  candidate into one of the app's, and a `pmr_document` payload into one of
-  the room's resource, every value of the document in that buffer.
+  A JSON text is parsed into a `webcpp::document::pmr::document` of the
+  room's resource, a remote candidate into one of the app's, and a JSON
+  payload received as a `webcpp::document::pmr::document` into one of the
+  room's resource: the document's image, which holds every value, strings
+  included, and the working state of the parse that made it.
 
 All resource access runs on the app's executor. A resource need not be
 thread-safe when that executor runs on one thread; several `io_context`
@@ -67,7 +69,8 @@ include::{library-root}/test/allocation_test.cpp[tag=config]
 The app's resource must outlive its state: the app handle, every room of
 it, retained values allocated there and every pending operation. A room's
 own resource must outlive that room, its retained `std::pmr::string`,
-`pmr_bytes` and `pmr_document` values, and its pending operations.
+`pmr_bytes` and `webcpp::document::pmr::document` values, and its pending
+operations.
 The backend's resource must outlive the backend and every connection of its
 own runtime, which a handler the `io_context` still holds may keep alive.
 Destroying a handle closes its work but queued completions can still free
@@ -136,9 +139,11 @@ user's choice of `std::allocator`: `trystero::bytes`, a
 `std::vector<std::uint8_t>`, and `trystero::payload`, a variant of
 `std::string`, `webcpp::document::document` and `bytes`. A received
 `bytes`, or the binary of a `payload`, is a copy of the frame, which starts
-in the app's resource; a received `webcpp::document::document` is an image
-of its own, from the global `operator new`, as document's owned documents
-are.
+in the app's resource; a received `webcpp::document::document` is in the
+standard allocator, its image and the working state of its parse, as
+document's `document` is. `webcpp::document::pmr::document` is document's
+own allocator-aware type, over `std::pmr::polymorphic_allocator<std::byte>`,
+which receives in the room's resource.
 
 A struct that holds `std::pmr` containers takes the room's
 `std::pmr::polymorphic_allocator<>` in its constructor, and a container of
@@ -217,29 +222,24 @@ targets, makes a backend while a counting resource is the default one, which
 sees none of it, and sees `backend_config::memory` given all of it back once
 the backend is destroyed.
 
-*webcpp::document* keeps a document's image in one buffer, and its external
-storage leaves that buffer to its user: every value, strings included, is
-allocated inside it by Boost.Interprocess's `rbtree_best_fit` heap, with
-offsets for pointers. trystero gives each text it reads such a buffer of the
-room's resource (`protocol::json::document`), sized for a text of a few
-values, twice the text and 4 KiB, and made again twice as large when the
-parse fills it, up to the caller's bound. A text the room writes is appended
-field by field to a `std::pmr::string` of its resource, its strings quoted by
-`webcpp::document::quote`, which allocates only through that string, and a
-JSON payload is written by `webcpp::document::stringify_to` in pieces of 8
-bytes, which no standard library's string keeps outside its own object.
-
-What document's parser and writer use while they work stays in the standard
-allocator: Boost.JSON's parser stack, the path and the pending key and text
-of the value being read, the tree's record of each change, which places a
-value, and the writer's stack. Each is freed before the parse or the write
-that made it returns, so none is left at any moment the room's executor is
-between handlers. Measured natively with the LLVM standard library, each
-text a room reads costs `operator new` about seven allocations a value: a
-relay's event
-carrying an offer, 1,581 bytes and 14 values, 93; a relay's `OK`, 5 values,
-32; a signal, 4 values, 26; a handshake message, 3 values, 20; a candidate,
-5 values, 32. Writing and reading back a JSON payload of 7 values costs 48.
+*webcpp::document* is allocator-aware: a `webcpp::document::pmr::document`
+allocates through a `std::pmr::polymorphic_allocator<std::byte>` its image,
+one buffer in which Boost.Interprocess's `rbtree_best_fit` heap holds every
+value, strings included, with offsets for pointers, and the working state of
+what reads or writes it: the parser's state, the path and the pending key
+and text of the value being read, the tree's record of each change, and the
+writer's stack, each freed before the call that made it returns. trystero
+reads each text with `webcpp::document::parse(text, options, allocator)`
+into a document of the room's resource, of the app's for a remote
+candidate: its image starts at 4 KiB and grows in place, twice as large
+each time, up to twice the caller's bound and 64 KiB; a text given whole
+leaves Boost.JSON's parser no state to suspend. A text the room writes is
+appended field by field to a `std::pmr::string` of its resource, its
+strings quoted by `webcpp::document::quote`, which allocates only through
+that string, and a JSON payload is written by
+`webcpp::document::stringify_to` in pieces of 8 bytes, which no standard
+library's string keeps outside its own object, its writer's stack in the
+document's own allocator.
 
 *The protocol* (`protocol/`) takes a `std::pmr::memory_resource*` as the
 last parameter of every function that returns what it allocates, with the
@@ -255,9 +255,6 @@ nothing.
   natively, webcpp::webrtc's copies of what libdatachannel's threads report,
   in the standard allocator;
 * what `emscripten::val` holds, in the JavaScript heap;
-* webcpp::document's working state while it reads or writes a JSON text,
-  freed before the call returns (above): its parser's stack, path and
-  pending text, its tree's record of each change, its writer's stack;
 * Asio's own once-per-context allocations: its services, in a page
   webcpp::asio's bridge among them, and the scheduler's first operation;
 * the wrapper Asio puts around a post through an executor that is not the
@@ -292,8 +289,7 @@ nothing.
   buffer's, at the first); in a page the stream's own state is there too,
   and the page's `WebSocket` makes the handshake;
 * the payload types `std::string`, `bytes`, `webcpp::document::document` and
-  `payload`, with `std::allocator` or document's own `operator new`, the
-  user's choice;
+  `payload`, with `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on
   every wait of an `io_context` with a timer or a socket, and which callocs
   an array on every call;
@@ -327,36 +323,32 @@ the thread `main` runs on is counted, and every global allocation it counts
 is kept, by its address, in a table of a fixed size until it is freed.
 
 * Two rooms over the memory relays exchange a payload, a
-  `std::pmr::string`, a `pmr_bytes` and a `pmr_document` in turn. For the
-  first two `operator new` sees nothing; for the document, exactly what
-  writing it and reading its text back cost webcpp::document's working
-  state, counted apart beforehand on the same value, and nothing left; the C
-  library sees nothing, and the counting resources of the two
-  configurations see the rooms'. A window in which the relay carried a text,
-  an announcement the rooms read, is opened again.
+  `std::pmr::string`, a `pmr_bytes` and a `webcpp::document::pmr::document`
+  in turn, the document written by the sender and parsed by the receiver:
+  neither `operator new` nor the C library sees an allocation, none is out
+  when the window closes, and the counting resources of the two
+  configurations see the rooms'. The same exchange, with a handler that
+  allocates outside the resources, an `operator new` it leaves out until the
+  window closes and a call of the C library, sees exactly those: the zeros
+  are not for want of counting.
 * Each text a room reads, a relay's event carrying an offer, a relay's
-  `OK`, a signal, a handshake message and a candidate, is parsed in a
-  counting resource: its image is the resource's, and goes back with the
-  document, and document's working state costs `operator new` at most 8
-  allocations a value and 16 more, none left after the parse.
+  `OK`, a signal, a handshake message and a candidate, is parsed into a
+  document of a counting resource: neither `operator new` nor the C library
+  sees an allocation, and the image goes back to the resource with the
+  document.
 * Two rooms with a password, a log sink and the relays' state in a resource
   of its own are made, join, exchange a payload that travels in chunks,
   measure a round trip, one says goodbye, both are destroyed and the
-  `io_context` is drained. From the first construction to the drain,
-  `operator new` sees webcpp::document's working state alone, as the rooms
-  and the relay read and write their JSON texts, and the C library nothing.
-  How many texts they read depends on the timing of the run, so the test
-  asserts no number of allocations: it asserts that none is left at the
-  drain. Once the rooms are destroyed their resources still have memory
-  out, the operations they left pending, and none once the `io_context`
-  has drained.
-
+  `io_context` is drained. From the first construction to the drain, while
+  the rooms and the relay read and write their JSON texts, neither
+  `operator new` nor the C library sees an allocation. Once the rooms are
+  destroyed their resources still have memory out, the operations they left
+  pending, and none once the `io_context` has drained.
 * Two apps with two rooms each exchange binary payloads, one room using the
   app's resource and one its own. Size-specific counters prove one payload
   copy into the distinct room resource, and no extra copy when resources
-  match. From construction through the drain the global counter sees only
-  webcpp::document's working state, none of it left, and every resource
-  ends with nothing out.
+  match. From construction through the drain neither `operator new` nor the
+  C library sees an allocation, and every resource ends with nothing out.
 
 The counting resources also count a return of memory they never gave, a
 `std::pmr` object freed through the wrong resource, which must be none.

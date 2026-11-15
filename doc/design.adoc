@@ -210,14 +210,26 @@ key, a member, a capture of a handler that runs later.
 * The digests the protocol takes are fed the parts of their input: nothing is
   concatenated to hash it.
 * Every JSON text is webcpp::document's. Signals, relay messages, handshake
-  messages and candidates are parsed into a document whose image is a buffer
-  of the room's or the app's resource, and read as views into it; each
-  caller bounds its text (<<trystero-protocol-json>>). The JSON the room
+  messages and candidates are parsed by `webcpp::document::parse` into a
+  `webcpp::document::pmr::document` of the room's or the app's resource,
+  which holds its image and the parse's working state, and read as views
+  into it; each caller bounds its text, and the image grows to at most
+  twice that bound and 64 KiB (<<trystero-protocol-json>>). The JSON the room
   writes goes field by field into one reserved buffer, its strings quoted by
   `webcpp::document::quote`, the quoting of `JSON.stringify` itself, and a
   Nostr event's id is hashed over those same bytes. Building each text as a
   document and writing it again was set aside: it would copy every string
-  into a node of some 200 bytes, then write it once more.
+  into a node of some 200 bytes, then write it once more. trystero keeps no
+  owner of its own around a document: an earlier one, a buffer of the
+  room's resource under an external document, retried twice as large when a
+  parse filled it, gave way to document's own allocator, whose image grows
+  in place.
+* A JSON payload is a document of document's own types,
+  `webcpp::document::document` in the standard allocator, the user's
+  choice, and `webcpp::document::pmr::document`, received in the room's
+  resource, as a text is a `std::string` or a `std::pmr::string`. A handle
+  keeps document's rule: it refers to its document object, and moving the
+  document invalidates it.
 * A frame is written once, inside its room envelope, and shared by every
   target; a received frame becomes the buffer of the message delivered from
   it, and a view handler reads it in place.

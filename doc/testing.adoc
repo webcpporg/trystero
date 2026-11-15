@@ -96,7 +96,8 @@ include::{library-root}/test/Jamfile[tag=allocation]
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
   signals, a relay that closes at once or rate-limits, a three-peer mesh,
-  coroutines and view handlers.
+  coroutines and view handlers, JSON payloads read in the room's resource
+  within their size's bound, and a rejected document receive.
 
 | `app_impl`
 | Configuration copying and validation, a self id that is not UTF-8 set

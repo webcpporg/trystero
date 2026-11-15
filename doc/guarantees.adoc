@@ -44,9 +44,10 @@ bytes, and arrives whole, from either peer. _Held by_ `room`
 file transfers of the `interop` lane.
 . [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
 resources,* but what <<trystero-allocation-outside>> lists: from its
-construction until its `io_context` has drained, the global `operator new`
-sees only webcpp::document's working state while it reads or writes a JSON
-text, each piece freed before that call returns, and the C library nothing.
+construction until its `io_context` has drained, neither the global
+`operator new` nor the C library sees an allocation, while its rooms read
+and write their JSON texts and exchange text, binary and JSON payloads of
+the `std::pmr` types and `webcpp::document::pmr::document`.
 _Held by_ `allocation`, natively and on emscripten, and, for a page's sealer,
 `platform_page_sealer_allocation`.
 . [[trystero-invariant-6]]*No unit test reaches beyond the loopback.* The
