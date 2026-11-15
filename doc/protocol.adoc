@@ -57,10 +57,15 @@ often.
 A relay may repeat an event, and every relay of the room carries it, so a
 room acts on an event once: it remembers the ids of the newest 4096 events it
 received (`detail::nostr_strategy::remembered_events`) and drops one it
-remembers. An id is whatever a relay sends, so the room indexes the ids with
-SipHash under a key it draws when it is made: no relay can choose ids that
-fall together, as it can in the standard library's unseeded hash, where each
-lookup would walk all of them.
+remembers. An id is whatever a relay sends, so the room remembers one only
+once it has checked that it is the event's own, the SHA-256 of the event's
+NIP-01 serialization (`protocol::nostr::has_own_id`), and acts on an event
+whose id is not its own each time it comes, as Trystero acts on every event:
+a relay cannot have the room drop a genuine event by sending a forged one
+under its id first. The room indexes the ids with SipHash under a key it
+draws when it is made: no relay can choose ids that fall together, as it can
+in the standard library's unseeded hash, where each lookup would walk all of
+them.
 
 [#trystero-protocol-signaling]
 === Signaling

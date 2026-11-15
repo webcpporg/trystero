@@ -722,11 +722,13 @@ void recent_event_ids_drop_a_repeat_and_forget_the_oldest() {
 // Trystero takes every event a relay sends, repeats included. The port drops a repeat only of an
 // id NIP-01 defines, 64 lowercase hexadecimal digits: any other id, of any length, is acted on as
 // Trystero acts on it, every time, and never stored, so that a relay cannot fill the room's
-// resource with the 4096 ids remembered.
+// resource with the 4096 ids remembered. What the index holds once made is its own: libstdc++'s
+// deque and MSVC's debug containers allocate even when empty.
 void event_ids_other_than_nip01_ones_are_never_remembered() {
     counting_resource memory;
     const std::array<std::uint8_t, 16> key{};
     trystero::detail::recent_event_ids ids(3, key, &memory);
+    const std::size_t empty = memory.in_use;
     std::string uppercase = event_id_of('a');
     uppercase.back() = 'A';
     std::string not_hex = event_id_of('a');
@@ -743,7 +745,7 @@ void event_ids_other_than_nip01_ones_are_never_remembered() {
         BOOST_TEST(ids.remember(id));
     }
     BOOST_TEST_EQ(ids.size(), 0U);
-    BOOST_TEST_EQ(memory.in_use, 0U);
+    BOOST_TEST_EQ(memory.in_use, empty);
 }
 
 // The ids are whatever a relay sends, so the index hashes them with SipHash under a key of the
@@ -761,18 +763,105 @@ void the_event_id_hash_is_keyed() {
     BOOST_TEST_EQ(under_one(id), trystero::detail::recent_event_ids::keyed_hash(one)(id));
 }
 
-// A strategy draws its index's key from the backend's randomness when it is made, beside its
-// signer's secret: a relay cannot know it.
+// A strategy draws its index's key from the backend's randomness when it is made, after its
+// signer's secret: a relay cannot know it. Its index hashes under those 16 bytes, read again from
+// a twin of the backend's stream, so that strategies over other streams hash an id elsewhere.
 void a_strategy_draws_the_key_of_its_event_ids() {
-    fixture f;
-    const auto before = f.net.random_bytes;
+    constexpr std::size_t key_size = trystero::detail::recent_event_ids::key_size;
+    const auto id = event_id_of('e');
+    std::vector<std::size_t> hashes;
+    for (const std::uint64_t seed : {1U, 2U}) {
+        asio::io_context io;
+        trystero::test::memory_network net(io, seed);
+        const auto strategy = std::make_shared<trystero::detail::nostr_strategy>(
+            net, std::span<const std::pmr::string>(), std::pmr::vector<std::pmr::string>(), "topic",
+            trystero::handler<std::pmr::string()>(),
+            trystero::detail::nostr_strategy::message_handler(), trystero::detail::logger(),
+            std::pmr::get_default_resource());
+        BOOST_TEST_EQ(net.random_bytes, 32U + key_size);  // the secret, the key
+        asio::io_context twin_io;
+        trystero::test::memory_network twin(twin_io, seed);
+        std::array<std::uint8_t, 32> secret{};
+        twin.random(secret);
+        std::array<std::uint8_t, key_size> key{};
+        twin.random(key);
+        const std::size_t hash = strategy->seen().hash_function()(id);
+        BOOST_TEST_EQ(hash, trystero::detail::recent_event_ids::keyed_hash(key)(id));
+        hashes.push_back(hash);
+    }
+    BOOST_TEST_NE(hashes.at(0), hashes.at(1));
+}
+
+/** A client of the relay `url` of `f`, once it is open: another user of the relay, to a room. */
+std::shared_ptr<trystero::backend::websocket> client_of(fixture& f, std::string_view url) {
+    const auto open = std::make_shared<bool>(false);
+    auto socket = f.net.connect(url, {.open = [open] { *open = true; }, .message = {}, .close = {}},
+                                std::pmr::get_default_resource());
+    webcpp::test::require(BOOST_TEST(run_until(f, [&open] { return *open; })));
+    return socket;
+}
+
+/** Where a client's `["EVENT",{...}]`, as event_message writes it, holds its id. */
+std::size_t id_position(std::string_view message) {
+    constexpr std::string_view key = R"("id":")";
+    return message.find(key) + key.size();
+}
+
+// A relay chooses the id it sends with an event, and a strategy acts on an id once. A relay on a
+// peer's list sends a forged event under a genuine event's id before an honest relay carries the
+// genuine one, as it can for a counter-announcement, whose text holds no nonce. The strategy
+// remembers only an id it checked to be its event's own, so it acts on both, as Trystero, which
+// remembers none, does: on the forged one each time it comes, and on the genuine one once.
+void a_forged_event_under_a_genuine_id_hides_nothing() {
+    fixture f(true);
+    const std::string_view topic = "a-topic-of-the-room";
+    std::vector<std::string> heard;
+    const std::array<std::pmr::string, 2> urls{
+        std::pmr::string(relay_a),
+        std::pmr::string(relay_b),
+    };
+    std::pmr::vector<std::pmr::string> topics;
+    topics.emplace_back(topic);
     const auto strategy = std::make_shared<trystero::detail::nostr_strategy>(
-        f.net, std::span<const std::pmr::string>(), std::pmr::vector<std::pmr::string>(), "topic",
-        trystero::handler<std::pmr::string()>(),
-        trystero::detail::nostr_strategy::message_handler(), trystero::detail::logger(),
-        std::pmr::get_default_resource());
-    BOOST_TEST_EQ(f.net.random_bytes - before,
-                  32U + trystero::detail::recent_event_ids::key_size);  // the secret, the key
+        f.net, urls, std::move(topics), "another-topic",
+        trystero::handler<std::pmr::string()>([] { return std::pmr::string("{}"); }),
+        trystero::detail::nostr_strategy::message_handler(
+            [&heard](std::size_t /*relay*/, std::string_view /*topic*/, std::string_view content) {
+                heard.emplace_back(content);
+            }),
+        trystero::detail::logger(), std::pmr::get_default_resource());
+    strategy->start();
+    // A relay that saw the strategy's first announcement saw its subscription, sent before it.
+    webcpp::test::require(BOOST_TEST(run_until(f, [&f] {
+        return f.net.relay(relay_a).events_seen > 0 && f.net.relay(relay_b).events_seen > 0;
+    })));
+    const auto dishonest = client_of(f, relay_a);
+    const auto honest = client_of(f, relay_b);
+    std::array<std::uint8_t, 32> secret{};
+    secret.fill(5);
+    const auto key = trystero::protocol::nostr::signer::from_secret(secret);
+    webcpp::test::require(BOOST_TEST(key.has_value()));
+    const auto event = [&](std::string_view content) {
+        const std::array<std::uint8_t, 32> aux{};
+        return std::string(trystero::protocol::nostr::event_message(
+            *key, trystero::detail::unix_now(f.net), topic, content, aux));
+    };
+    const std::string genuine = event("genuine");
+    std::string forged = event("forged");
+    const std::size_t id_at = id_position(genuine);
+    forged.replace(id_position(forged), trystero::detail::recent_event_ids::id_size, genuine, id_at,
+                   trystero::detail::recent_event_ids::id_size);
+    dishonest->send(forged);
+    webcpp::test::require(BOOST_TEST(run_until(f, [&heard] { return heard.size() == 1; })));
+    honest->send(genuine);
+    BOOST_TEST(run_until(f, [&heard] { return heard.size() == 2; }));
+    dishonest->send(genuine);
+    dishonest->send(forged);
+    dishonest->send(event("later"));
+    BOOST_TEST(run_until(f, [&heard] { return !heard.empty() && heard.back() == "later"; }));
+    const std::array<std::string_view, 4> expected{"forged", "genuine", "forged", "later"};
+    BOOST_TEST_ALL_EQ(heard.begin(), heard.end(), expected.begin(), expected.end());
+    strategy->stop();
 }
 
 // A boost::circular_buffer moves by swapping its allocators, which std::pmr's cannot: the classes
@@ -1525,6 +1614,7 @@ int main() {
     event_ids_other_than_nip01_ones_are_never_remembered();
     the_event_id_hash_is_keyed();
     a_strategy_draws_the_key_of_its_event_ids();
+    a_forged_event_under_a_genuine_id_hides_nothing();
     classes_over_a_pmr_circular_buffer_do_not_move();
     a_replayed_answer_is_refused();
     a_replayed_offer_is_refused();

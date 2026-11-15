@@ -110,6 +110,28 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
     return out;
 }
 
+/** Whether `text` is 32 bytes as NIP-01 writes an id or a public key: 64 lowercase hexadecimal
+ * digits. */
+inline bool is_nip01_hex(std::string_view text) {
+    return text.size() == 64 && std::ranges::all_of(text, [](char c) {
+               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+           });
+}
+
+/** Whether `text` is the lowercase hexadecimal of `data`, as `append_hex` writes it. */
+inline bool is_hex_of(std::string_view text, std::span<const std::uint8_t> data) {
+    constexpr std::string_view digits = "0123456789abcdef";
+    if (text.size() != data.size() * 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        if (text[2 * i] != digits[data[i] >> 4U] || text[(2 * i) + 1] != digits[data[i] & 15U]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace detail
 
 /**
@@ -350,7 +372,39 @@ struct event {
     std::string_view topic;
     /** The event's content. */
     std::string_view content;
+    /** The signer's public key, as the event holds it; empty when it holds no string. */
+    std::string_view pubkey{};
+    /** The event's `created_at`, in whole seconds since the Unix epoch; nothing when it is not an
+     * integer of 64 bits. */
+    std::optional<std::chrono::sys_seconds> created_at{};
+    /** The event's kind; nothing when it is not an integer of 32 bits. */
+    std::optional<std::uint32_t> kind{};
+    /** Whether the event's one tag is its topic's, `["x", <topic>]`, as Trystero writes it. */
+    bool only_topic_tag = false;
 };
+
+/**
+ * Whether an event's id is its own, the SHA-256 of NIP-01's serialization of the event
+ * `[0,<pubkey>,<created_at>,<kind>,<tags>,<content>]`, which @ref event_id computes.
+ *
+ * A relay sends whatever id it chooses, so an id that is not its event's own may be another
+ * event's. Only an event whose one tag is its topic's and whose public key is 64 lowercase
+ * hexadecimal digits is checked, as Trystero writes every event; any other has no id of its own
+ * here, whatever it says.
+ *
+ * @param e The event, as @ref read_relay_message reads it.
+ * @param memory The resource the escaped topic and content are allocated in, during the call.
+ * @return Whether the id is the hexadecimal of the SHA-256 of the event's serialization.
+ */
+inline bool has_own_id(const event& e,
+                       std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    if (!e.only_topic_tag || !e.created_at.has_value() || !e.kind.has_value() ||
+        !detail::is_nip01_hex(e.pubkey) || !detail::is_nip01_hex(e.id)) {
+        return false;
+    }
+    return detail::is_hex_of(
+        e.id, event_id(e.pubkey, *e.created_at, *e.kind, e.topic, e.content, memory));
+}
 
 /** A relay's `["OK", <id>, <accepted>, <reason>]`: whether it took a published event, as views. */
 struct ok {
@@ -401,15 +455,28 @@ inline std::optional<relay_message> read_event(const json::const_value& array) {
     e.subscription = json::text_of(array[1]);
     e.id = json::text_of(o["id"]);
     e.content = json::text_of(o["content"]);
+    e.pubkey = json::text_of(o["pubkey"]);
+    if (const auto created_at = o["created_at"].get<std::int64_t>(); created_at.has_value()) {
+        e.created_at = std::chrono::sys_seconds(std::chrono::seconds(*created_at));
+    }
+    if (const auto kind = o["kind"].get<std::uint32_t>(); kind.has_value()) {
+        e.kind = *kind;
+    }
     // An array is its own range of elements, which the handle, outliving the loop, keeps.
     const json::const_value tags = o["tags"];
+    const auto is_topic_tag = [](const json::const_value& tag) {
+        return tag.is_array() && tag.size() >= 2 && json::text_of(tag[0]) == topic_tag &&
+               tag[1].is_string();
+    };
     for (const json::const_value tag : tags) {
-        if (tag.is_array() && tag.size() >= 2 && json::text_of(tag[0]) == topic_tag &&
-            tag[1].is_string()) {
+        if (is_topic_tag(tag)) {
             e.topic = json::text_of(tag[1]);
             break;
         }
     }
+    // NIP-01 hashes the tags whole, so an id is checked only over tags event_id writes.
+    e.only_topic_tag =
+        tags.is_array() && tags.size() == 1 && is_topic_tag(tags[0]) && tags[0].size() == 2;
     return e;
 }
 

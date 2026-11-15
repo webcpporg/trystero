@@ -109,7 +109,7 @@ has nothing of it to run beside its twin.
 
 | Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
 
-| A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is NIP-01's, 64 lowercase hexadecimal digits; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id of another form would let a relay fill the room's resource with the ids kept
+| A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is checked to be its own, the SHA-256 of its NIP-01 serialization; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id taken unchecked would let a relay hide a genuine event behind a forged one it sends first under the same id, or fill the room's resource with the ids kept
 
 | A relay's text, a signal or a handshake message past its bound | parsed with `JSON.parse` whatever its length, under the relay's own limit | dropped before it is read: 68,608 bytes for a relay's text, 66,560 for a signal, 1,024 for a handshake message (<<trystero-protocol-json>>) | the bounds are those of the fields Trystero sends, so no text a Trystero peer writes is refused; a longer one would cost the room its length to read
 
