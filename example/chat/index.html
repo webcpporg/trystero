@@ -82,7 +82,14 @@ const notice = text => {
     add(p)
 }
 const showPeers = () => ($('peers').textContent = peers.size === 1 ? '1 peer' : `${peers.size} peers`)
+// The program's two calls, which it hands over once its main runs: each posts its work to the
+// program's io_context and returns at once.
+let program = null
 window.chatUi = {
+    ready: (joinRoom, sendText) => {
+        program = {joinRoom, sendText}
+        $('join').disabled = false
+    },
     joined: (self, room) => {
         $('who').innerHTML = ''
         const code = text => Object.assign(document.createElement('code'), {textContent: text})
@@ -110,14 +117,13 @@ window.chatUi = {
     },
     log: (category, text) => $('log').append(`${category}: ${text}\n`),
 }
-var Module = {onRuntimeInitialized: () => ($('join').disabled = false)}
 $('join-form').onsubmit = event => {
     event.preventDefault()
-    Module.join($('app').value.trim(), $('room').value.trim())
+    program.joinRoom({app: $('app').value.trim(), room: $('room').value.trim()})
 }
 $('send-form').onsubmit = event => {
     event.preventDefault()
-    Module.send($('text').value)
+    program.sendText($('text').value)
     $('text').value = ''
 }
 </script>

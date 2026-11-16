@@ -25,9 +25,9 @@
 
 /**
  * The seam between the room and a platform: what a target must provide for a room to run on it. The
- * browser provides it over `emscripten::val` (webcpp/trystero/browser), a native target over
- * libdatachannel, Boost.Beast and OpenSSL (webcpp/trystero/native), and the tests over memory
- * (test/support).
+ * platform backend provides it on both targets (webcpp/trystero/platform), over webcpp::webrtc,
+ * webcpp::beast and webcpp::asio, natively libdatachannel, Boost.Beast and OpenSSL, in a page its
+ * own WebRTC, WebSocket and Web Crypto; the tests provide it over memory (test/support).
  *
  * Tip: every handler a backend invokes runs on the room's executor, one at a time, and may destroy
  * the object that invoked it. A backend whose events arrive on other threads (libdatachannel) posts
@@ -43,13 +43,13 @@
  * The one exception is a data channel message, handed over by value: the receiver keeps the frame,
  * and taking ownership of it is what spares a copy.
  *
- * Tip: every method that makes an object takes the room's memory resource last, and the backend
- * allocates the object, its handlers and what it hands to the room (a frame, a text) through it, on
- * the room's executor only.
+ * Tip: every method that makes an object takes a memory resource last, the app's for a peer
+ * connection and the room's for the rest, and the backend allocates the object, its handlers and
+ * what it hands to the room (a frame, a text) through it, on the room's executor only.
  */
 namespace webcpp::trystero::backend {
 
-/** A data channel frame, in the memory resource of the room it is for. */
+/** A data channel frame in a memory resource: a received one in the app's, as its connection. */
 using bytes = std::pmr::vector<std::uint8_t>;
 
 /** The error code every completion of a backend reports, empty on success. */
@@ -139,7 +139,7 @@ public:
     struct handlers {
         /** The channel opened. */
         handler<void()> open;
-        /** A binary message arrived, handed over in the room's resource. */
+        /** A binary message arrived, handed over in the app's resource. */
         handler<void(bytes)> message;
         /** The channel closed; called once. */
         handler<void()> close;
@@ -319,8 +319,8 @@ public:
  * browser, one per application natively, one per test.
  *
  * Each object it makes is allocated, with its handlers and what it hands to the room, in the memory
- * resource it is given, the room's: that resource must outlive the object and every operation the
- * object leaves pending.
+ * resource it is given, the app's for a peer connection and the room's for the rest: that resource
+ * must outlive the object and every operation the object leaves pending.
  *
  * @see "Allocation", in the guide.
  */
@@ -345,8 +345,8 @@ public:
      * Makes a peer connection that gathers its candidates through `servers`.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The room's resource, which the connection, its channels, its handlers and its
-     * texts are allocated in.
+     * @param memory The app's resource, which the connection, its channels, its handlers and its
+     * texts are allocated in, as the app owns the connection once a room adopted it.
      * @return The connection, or null when the platform refuses to make one: the room then
      * reports the negotiation with that peer as failed, through `room::on_error`.
      */
@@ -381,18 +381,21 @@ public:
     virtual void random(std::span<std::uint8_t> out) = 0;
 
     /**
-     * Wall-clock seconds since the Unix epoch, for Nostr's `created_at` and `since`.
+     * The wall clock, for Nostr's `created_at` and `since`: `Date.now()` in whole seconds.
      *
-     * @return The current time, in whole seconds.
+     * @return The current time, in whole seconds since the Unix epoch.
      */
-    virtual std::int64_t unix_seconds() = 0;
+    virtual std::chrono::sys_seconds unix_now() = 0;
 
     /**
-     * A monotonic clock in milliseconds, for rate limits and timeouts, as `performance.now()`.
+     * A monotonic clock, for rate limits and timeouts, as `performance.now()`.
      *
-     * @return The current time, in milliseconds from an origin of the backend's.
+     * A room only subtracts and compares its times, so the origin is the backend's: the steady
+     * clock's epoch, or where a test's virtual clock starts.
+     *
+     * @return The current time.
      */
-    virtual double now_ms() = 0;
+    virtual std::chrono::steady_clock::time_point steady_now() = 0;  // lint-world: a type only
 };
 
 }  // namespace webcpp::trystero::backend

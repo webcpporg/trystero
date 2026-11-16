@@ -10,18 +10,18 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/json_resource.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
-#include <boost/asio/bind_allocator.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
+#include <webcpp/asio/bind_allocator.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
+#include <webcpp/asio/steady_timer.hpp>
+
+#include <webcpp/document/parse.hpp>
 
 #include <algorithm>
 #include <charconv>
@@ -53,8 +53,8 @@
  * each factory method is given; the network's own state (its relays, their subscriptions, its
  * record of the connections) is in the resource the network is constructed with, and changes only
  * when a room joins, connects or leaves. The state of the hooks a test drives (held frames,
- * deferred opens, a buffering channel's queue, the virtual clock) is in the default resource and is
- * made only when the test sets the hook.
+ * deferred opens, held sealer opens, a buffering channel's queue, the virtual clock) is in the
+ * default resource and is made only when the test sets the hook.
  */
 namespace webcpp::trystero::test {
 
@@ -62,9 +62,9 @@ class memory_network;
 
 /** Posts `f` to `io`, allocated in `memory`. */
 template <class F>
-void post_in(boost::asio::io_context& io, std::pmr::memory_resource* memory, F&& f) {
-    boost::asio::post(io, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
-                                                      std::forward<F>(f)));
+void post_in(webcpp::asio::io_context& io, std::pmr::memory_resource* memory, F&& f) {
+    webcpp::asio::post(io, webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory),
+                                                        std::forward<F>(f)));
 }
 
 class memory_timer;
@@ -74,24 +74,23 @@ class memory_timer;
  * that nothing keeps it, or its memory in the resource of the room or connection that made it,
  * past that call. */
 struct virtual_clock_state {
-    using key = std::pair<double, std::uint64_t>;
+    using key = std::pair<std::chrono::steady_clock::time_point, std::uint64_t>;
     std::map<key, memory_timer*> due;
     std::uint64_t scheduled = 0;
-    double now_ms = 0;
+    std::chrono::steady_clock::time_point now{};
 };
 
-/** An Asio timer, as the native backend's: a wait cancelled, replaced or destroyed never fires,
+/** An Asio timer, as the platform backend's: a wait cancelled, replaced or destroyed never fires,
  * even when Asio had already queued its expiry. On the virtual clock, it waits there instead, until
  * the test moves the clock past its due time. */
 class memory_timer : public backend::timer {
 public:
     /** A timer on the virtual clock `clock`, or on Asio's when `clock` is empty. */
-    memory_timer(boost::asio::io_context& io, std::pmr::memory_resource* memory, int time_scale = 1,
+    memory_timer(webcpp::asio::io_context& io, std::pmr::memory_resource* memory,
                  std::weak_ptr<virtual_clock_state> clock = {})
         : io_(io),
           timer_(io),
           memory_(memory),
-          time_scale_(time_scale),
           on_clock_(!clock.expired()),
           clock_(std::move(clock)),
           waits_(
@@ -108,15 +107,14 @@ public:
             unschedule();  // a restart replaces the pending expiry
             fire_ = std::move(fire);
             if (const auto c = clock_.lock()) {
-                key_ = virtual_clock_state::key{c->now_ms + static_cast<double>(delay.count()),
-                                                c->scheduled++};
+                key_ = virtual_clock_state::key{c->now + delay, c->scheduled++};
                 c->due.emplace(*key_, this);
             }
             return;
         }
         const std::uint64_t wait = ++*waits_;
-        timer_.expires_after(delay / time_scale_);
-        timer_.async_wait(boost::asio::bind_allocator(
+        timer_.expires_after(delay);
+        timer_.async_wait(webcpp::asio::bind_allocator(
             std::pmr::polymorphic_allocator<>(memory_),
             [waits = std::weak_ptr<std::uint64_t>(waits_), wait,
              fire = std::move(fire)](boost::system::error_code ec) mutable {
@@ -156,10 +154,9 @@ private:
         key_.reset();
     }
 
-    boost::asio::io_context& io_;
-    boost::asio::steady_timer timer_;
+    webcpp::asio::io_context& io_;
+    webcpp::asio::steady_timer timer_;
     std::pmr::memory_resource* memory_;
-    int time_scale_;
     bool on_clock_;
     std::weak_ptr<virtual_clock_state> clock_;
     std::optional<virtual_clock_state::key> key_;
@@ -198,8 +195,12 @@ public:
     void close_all();
 
     std::size_t events_seen = 0;
+    /** How many texts went through the relay: each text it received from a socket, and each text
+     * a socket of it handed to its room. A test that measures a window of a room's life reads it
+     * to know whether relay traffic, which parses JSON at both ends, happened in that window. */
+    std::size_t texts = 0;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
-    int rate_limit_next = 0;
+    std::size_t rate_limit_next = 0;
     /** Closes each connection right after its subscription, as a relay does after a text longer
      * than a room reads. */
     bool close_after_subscribe = false;
@@ -214,14 +215,11 @@ private:
 class memory_websocket : public backend::websocket,
                          public std::enable_shared_from_this<memory_websocket> {
 public:
-    memory_websocket(boost::asio::io_context& io, memory_relay* relay, handlers h,
+    memory_websocket(webcpp::asio::io_context& io, memory_relay* relay, handlers h,
                      std::pmr::memory_resource* memory)
-        : io_(io), relay_(relay), h_(std::move(h)), memory_(memory), json_(memory) {}
+        : io_(io), relay_(relay), h_(std::move(h)), memory_(memory) {}
 
     std::pmr::memory_resource* memory() const { return memory_; }
-
-    /** A storage over this socket's resource, for a value parsed and dropped during one call. */
-    boost::json::storage_ptr json() { return {&json_}; }
 
     void open() {
         post_in(io_, memory_, [self = shared_from_this()] {
@@ -250,10 +248,14 @@ public:
         });
     }
 
-    /** Delivers a text the relay made in this socket's resource. */
+    /** Delivers a text the relay made in this socket's resource; the relay counts it in its
+     * `texts` once the socket hands it to its room. */
     void deliver(std::pmr::string text) {
         post_in(io_, memory_, [self = shared_from_this(), text = std::move(text)] {
             if (self->open_ && self->h_.message) {
+                if (self->relay_ != nullptr) {
+                    ++self->relay_->texts;
+                }
                 self->h_.message(text);
             }
         });
@@ -279,11 +281,10 @@ private:
         }
     }
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     memory_relay* relay_;
     handlers h_;
     std::pmr::memory_resource* memory_;
-    json_resource json_;
     bool open_ = false;
     bool closed_ = false;
 };
@@ -300,47 +301,60 @@ inline void memory_relay::close_all() {
     }
 }
 
+/** A subscription of `socket` to the kinds and topics a NIP-01 filter names, in `memory`. */
+inline memory_relay::subscription subscription_of(const std::shared_ptr<memory_websocket>& socket,
+                                                  const protocol::json::const_value& filter,
+                                                  std::pmr::memory_resource* memory) {
+    memory_relay::subscription s{
+        .socket = socket,
+        .kinds = std::pmr::set<std::int64_t>(memory),
+        .topics = std::pmr::set<std::pmr::string, std::less<>>(memory),
+    };
+    for (const protocol::json::const_value k : filter["kinds"]) {
+        if (const auto kind = k.get<std::int64_t>(); kind.has_value()) {
+            s.kinds.insert(*kind);
+        }
+    }
+    for (const protocol::json::const_value t : filter["#x"]) {
+        s.topics.emplace(protocol::json::text_of(t));
+    }
+    return s;
+}
+
 inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
                                   std::string_view text) {
-    boost::system::error_code ec;
-    const auto value = protocol::json::parse(text, from->json(), ec);
-    const auto* message = ec ? nullptr : value.if_array();
-    if (message == nullptr || message->empty() || !message->at(0).is_string()) {
+    ++texts;
+    // The text is read into the sender's resource, as a room reads a relay's, within the longest
+    // text a relay's connection carries.
+    const auto parsed = webcpp::document::parse(
+        text, protocol::json::protocol_limits(protocol::max_relay_message_bytes),
+        std::pmr::polymorphic_allocator<std::byte>(from->memory()));
+    if (!parsed.has_value()) {
         return;
     }
-    const std::string_view type = message->at(0).get_string();
-    if (type == "REQ" && message->size() >= 3) {
-        subscription s{
-            .socket = from,
-            .kinds = std::pmr::set<std::int64_t>(memory_),
-            .topics = std::pmr::set<std::pmr::string, std::less<>>(memory_),
-        };
-        const auto& filter = message->at(2).as_object();
-        for (const auto& k : filter.at("kinds").as_array()) {
-            s.kinds.insert(k.as_int64());
-        }
-        for (const auto& t : filter.at("#x").as_array()) {
-            s.topics.emplace(std::string_view(t.as_string()));
-        }
+    const protocol::json::const_value message = parsed->root();
+    if (!message.at(0).is_string()) {
+        return;
+    }
+    const std::string_view type = protocol::json::text_of(message.at(0));
+    if (type == "REQ" && message.size() >= 3) {
         subscriptions_.insert_or_assign(
-            key{from.get(),
-                std::pmr::string(std::string_view(message->at(1).as_string()), memory_)},
-            std::move(s));
+            key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
+            subscription_of(from, message.at(2), memory_));
         std::pmr::string eose(R"(["EOSE",)", from->memory());
-        protocol::json::append_value(eose, message->at(1));
+        protocol::json::append_value(eose, message.at(1));
         eose += ']';
         from->deliver(std::move(eose));
         if (close_after_subscribe) {
             from->close();
         }
-    } else if (type == "CLOSE" && message->size() >= 2) {
-        subscriptions_.erase(
-            key{from.get(),
-                std::pmr::string(std::string_view(message->at(1).as_string()), from->memory())});
-    } else if (type == "EVENT" && message->size() >= 2) {
-        const auto& event = message->at(1).as_object();
+    } else if (type == "CLOSE" && message.size() >= 2) {
+        subscriptions_.erase(key{
+            from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), from->memory())});
+    } else if (type == "EVENT" && message.size() >= 2) {
+        const protocol::json::const_value event = message.at(1);
         std::pmr::string ok(R"(["OK",)", from->memory());
-        protocol::json::append_value(ok, event.at("id"));
+        protocol::json::append_value(ok, event["id"]);
         if (rate_limit_next > 0) {
             --rate_limit_next;
             ok += R"(,false,"rate-limited: slow down"])";
@@ -350,22 +364,25 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         ++events_seen;
         ok += R"(,true,""])";
         from->deliver(std::move(ok));
-        const auto kind = event.at("kind").as_int64();
+        const auto kind = event["kind"].get<std::int64_t>();
+        if (!kind.has_value()) {
+            return;
+        }
         // The event's first tag, ["x", <topic>].
-        const auto& tags = event.at("tags").as_array();
-        const auto& tag = tags.at(0).as_array();
-        const std::string_view topic = tag.at(1).as_string();
+        const std::string_view topic = protocol::json::text_of(event["tags"].at(0).at(1));
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();
-            if (!socket || !s.kinds.contains(kind) || !s.topics.contains(topic)) {
+            if (!socket || !s.kinds.contains(*kind) || !s.topics.contains(topic)) {
                 continue;
             }
-            // ["EVENT", <subscription>, <event>], as boost::json::serialize writes it, in the
-            // receiver's resource.
+            // ["EVENT", <subscription>, <event>], as JSON.stringify writes it, in the receiver's
+            // resource: the event's bytes are the ones the room sent, since none of its keys is
+            // an integer, which JavaScript's order would move first.
             std::pmr::string forwarded(R"(["EVENT",)", socket->memory());
-            protocol::json::append_string(forwarded, subscribed.second);
+            // The subscription's id was read from the REQ's JSON, so it is UTF-8.
+            protocol::json::detail::append_utf8(forwarded, subscribed.second);
             forwarded += ',';
-            protocol::json::append_value(forwarded, message->at(1));
+            protocol::json::append_value(forwarded, event);
             forwarded += ']';
             socket->deliver(std::move(forwarded));
         }
@@ -416,7 +433,7 @@ struct node_allocator {
 class memory_data_channel : public backend::data_channel,
                             public std::enable_shared_from_this<memory_data_channel> {
 public:
-    memory_data_channel(boost::asio::io_context& io, std::pmr::memory_resource* memory)
+    memory_data_channel(webcpp::asio::io_context& io, std::pmr::memory_resource* memory)
         : io_(io), memory_(memory), queue_(node_allocator<backend::bytes>(memory)) {}
 
     void set_handlers(handlers h) override { h_ = std::move(h); }
@@ -482,7 +499,7 @@ private:
      * receives each frame whose last byte it moved. */
     void drain();
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     std::pmr::memory_resource* memory_;
     std::weak_ptr<memory_data_channel> remote_;
     handlers h_;
@@ -505,7 +522,7 @@ private:
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
-    memory_peer_connection(boost::asio::io_context& io, memory_network& net,
+    memory_peer_connection(webcpp::asio::io_context& io, memory_network& net,
                            std::weak_ptr<connection_registry> registry, std::size_t id,
                            std::pmr::memory_resource* memory)
         : io_(io),
@@ -629,7 +646,7 @@ public:
 private:
     void try_connect();
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     memory_network& net_;
     std::weak_ptr<connection_registry> registry_;
     std::size_t id_;
@@ -655,7 +672,7 @@ public:
  */
 class memory_network : public backend::factory {
 public:
-    explicit memory_network(boost::asio::io_context& io, std::uint64_t seed = 1,
+    explicit memory_network(webcpp::asio::io_context& io, std::uint64_t seed = 1,
                             std::pmr::memory_resource* memory = std::pmr::get_default_resource())
         : io_(io),
           random_(seed),
@@ -714,13 +731,13 @@ public:
     std::shared_ptr<backend::timer> make_timer(std::pmr::memory_resource* memory) override {
         if (!virtual_clock) {
             return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory),
-                                                      io_, memory, time_scale);
+                                                      io_, memory);
         }
         if (!clock_) {
             clock_ = std::make_shared<virtual_clock_state>();
         }
         return std::allocate_shared<memory_timer>(std::pmr::polymorphic_allocator<>(memory), io_,
-                                                  memory, time_scale,
+                                                  memory,
                                                   std::weak_ptr<virtual_clock_state>(clock_));
     }
 
@@ -728,22 +745,26 @@ public:
                                                  std::pmr::memory_resource* memory) override;
 
     void random(std::span<std::uint8_t> out) override {
+        random_bytes += out.size();
         for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
         }
     }
 
-    std::int64_t unix_seconds() override {
-        return 1'759'700'000 + static_cast<std::int64_t>(now_ms() / 1000);
+    /** A wall clock that moves with steady_now(), from 2025-10-05T21:33:20Z at its origin, in whole
+     * seconds. */
+    std::chrono::sys_seconds unix_now() override {
+        return std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)) +
+               std::chrono::floor<std::chrono::seconds>(steady_now().time_since_epoch());
     }
 
-    double now_ms() override {
+    /** The virtual clock's time, or the time since the network was made; from the steady clock's
+     * epoch. */
+    std::chrono::steady_clock::time_point steady_now() override {
         if (virtual_clock) {
-            return clock_ ? clock_->now_ms : 0.0;
+            return clock_ ? clock_->now : std::chrono::steady_clock::time_point();
         }
-        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start_)
-                   .count() *
-               time_scale;
+        return std::chrono::steady_clock::time_point(std::chrono::steady_clock::now() - start_);
     }
 
     std::shared_ptr<memory_peer_connection> find(std::size_t id) {
@@ -751,7 +772,7 @@ public:
         return it == connections_->end() ? nullptr : it->second->shared_from_this();
     }
 
-    boost::asio::io_context& io() { return io_; }
+    webcpp::asio::io_context& io() { return io_; }
 
     /** How many peer connections are open now. */
     [[nodiscard]] std::size_t live_connections() const { return connections_->size(); }
@@ -760,10 +781,10 @@ public:
     std::size_t made_connections = 0;
     /** The most peer connections that were open at once. */
     std::size_t peak_connections = 0;
-    /** How much faster than real time the timers and the clock run, for tests of long timeouts. */
-    int time_scale = 1;
+    /** How many random bytes were drawn. */
+    std::size_t random_bytes = 0;
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
-    int refuse_peer_connections = 0;
+    std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
     bool record_servers = false;
     /** The URLs recorded, in the default resource: only a test that records them allocates. */
@@ -789,6 +810,15 @@ public:
     void open(std::size_t pc);
     /** Delivers `frame` on the channel of `pc`, as if its other end had sent it. */
     void inject(std::size_t pc, std::span<const std::uint8_t> frame);
+    /** When true, every sealer's opens wait until release_sealer_opens(), as Web Crypto's take
+     * their time in a page while the relays' texts keep coming. */
+    bool hold_sealer_opens = false;
+    /** Completes the sealer opens held, in the order they were asked for. */
+    void release_sealer_opens();
+
+    /** How many sealer opens wait to be released. */
+    [[nodiscard]] std::size_t held_sealer_opens() const { return held_sealer_opens_.size(); }
+
     /** Reports `failed` on `pc`, then closes its channel. */
     void fail(std::size_t pc);
     /** Reports `disconnected` on `pc`; its channel stays open. */
@@ -806,8 +836,8 @@ public:
     /** The buffered_amount() of the channel of `pc`, or 0 when it has none. */
     [[nodiscard]] std::size_t buffered(std::size_t pc) const;
 
-    /** Whether the timers made from now on run on the virtual clock, which now_ms() and
-     * unix_seconds() then read, and which moves only through advance() and step(). */
+    /** Whether the timers made from now on run on the virtual clock, which steady_now() and
+     * unix_now() then read, and which moves only through advance() and step(). */
     bool virtual_clock = false;
     /** How many timers one advance() fires at most before it gives up. */
     std::size_t max_steps = 1'000'000;
@@ -819,15 +849,16 @@ public:
     bool poll_ready();
     /** A ready-handler budget was exhausted; the caller must report a test failure. */
     bool handlers_exhausted = false;
-    /** Runs the io_context's ready work, then fires the earliest timer due at or before
-     * `until_ms`, moving the clock to it; false, with the clock at `until_ms`, when none is due. */
-    bool step(double until_ms);
+    /** Runs the io_context's ready work, then fires the earliest timer due at or before `until`,
+     * moving the clock to it; false, with the clock at `until`, when none is due. */
+    bool step(std::chrono::steady_clock::time_point until);
     /** How many timers wait on the virtual clock. */
     [[nodiscard]] std::size_t scheduled() const;
 
 private:
     friend class memory_data_channel;
     friend class memory_peer_connection;
+    friend class memory_sealer;
 
     /** A frame held by the filter, and every frame its sending end sent after it. */
     struct held_frame {
@@ -835,15 +866,24 @@ private:
         std::vector<std::uint8_t> bytes;
     };
 
+    /** A sealer's open held by `hold_sealer_opens`: its result, made when it was asked for, and
+     * what it completes, in the resource of the room that asked. */
+    struct held_open {
+        std::pmr::memory_resource* memory;
+        bool ours;
+        std::pmr::string plain;
+        handler<void(backend::error_code, std::string_view)> done;
+    };
+
     /** Holds, drops or delivers `frame`, as the filter and the frames held before it say. */
     void route(std::size_t from, std::size_t to, std::span<const std::uint8_t> frame);
     /** Hands `frame` to the other end of the channel of `from`, or to that channel's queue when
      * channels buffer. */
     void deliver(std::size_t from, std::span<const std::uint8_t> frame);
-    /** Whether a timer of the virtual clock is due at or before `until_ms`. */
-    [[nodiscard]] bool due_by(double until_ms) const;
+    /** Whether a timer of the virtual clock is due at or before `until`. */
+    [[nodiscard]] bool due_by(std::chrono::steady_clock::time_point until) const;
 
-    boost::asio::io_context& io_;
+    webcpp::asio::io_context& io_;
     std::mt19937_64 random_;
     std::chrono::steady_clock::time_point start_;
     std::pmr::memory_resource* memory_;
@@ -853,6 +893,7 @@ private:
     std::size_t next_pc_ = 0;
     std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end
     std::map<std::size_t, std::weak_ptr<memory_data_channel>> deferred_;  // ends waiting for open()
+    std::deque<held_open> held_sealer_opens_;
     std::shared_ptr<virtual_clock_state> clock_;
 };
 
@@ -981,9 +1022,9 @@ inline void memory_data_channel::drain() {
     }
     draining_ = !queue_.empty();
     if (draining_) {
-        boost::asio::post(
-            io_, boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
-                                             [self = shared_from_this()] { self->drain(); }));
+        webcpp::asio::post(
+            io_, webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(memory_),
+                                              [self = shared_from_this()] { self->drain(); }));
     }
     // Last, since the handler may send again, which queues behind what is left.
     if (above && buffered_ <= low_threshold && h_.buffered_amount_low) {
@@ -1091,8 +1132,8 @@ inline std::size_t memory_network::buffered(std::size_t pc) const {
     return channel ? channel->buffered_amount() : 0;
 }
 
-inline bool memory_network::due_by(double until_ms) const {
-    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until_ms;
+inline bool memory_network::due_by(std::chrono::steady_clock::time_point until) const {
+    return clock_ && !clock_->due.empty() && clock_->due.begin()->first.first <= until;
 }
 
 inline bool memory_network::poll_ready() {
@@ -1109,7 +1150,7 @@ inline bool memory_network::poll_ready() {
     return false;
 }
 
-inline bool memory_network::step(double until_ms) {
+inline bool memory_network::step(std::chrono::steady_clock::time_point until) {
     // The clock moves from the first step, before any timer is made.
     if (virtual_clock && !clock_) {
         clock_ = std::make_shared<virtual_clock_state>();
@@ -1117,14 +1158,14 @@ inline bool memory_network::step(double until_ms) {
     if (!poll_ready()) {
         return false;
     }
-    if (!due_by(until_ms)) {
+    if (!due_by(until)) {
         if (clock_) {
-            clock_->now_ms = std::max(clock_->now_ms, until_ms);
+            clock_->now = std::max(clock_->now, until);
         }
         return false;
     }
     const auto it = clock_->due.begin();
-    clock_->now_ms = std::max(clock_->now_ms, it->first.first);
+    clock_->now = std::max(clock_->now, it->first.first);
     memory_timer* const timer = it->second;
     clock_->due.erase(it);
     timer->expire();
@@ -1132,7 +1173,7 @@ inline bool memory_network::step(double until_ms) {
 }
 
 inline bool memory_network::advance(std::chrono::milliseconds by) {
-    const double until = now_ms() + static_cast<double>(by.count());
+    const auto until = steady_now() + by;
     // A run of exactly max_steps timers is finite: only one more due timer stops it.
     for (std::size_t fired = 0;; ++fired) {
         if (!poll_ready()) {
@@ -1155,9 +1196,18 @@ inline std::size_t memory_network::scheduled() const {
  * opens it. */
 class memory_sealer : public backend::sealer {
 public:
-    memory_sealer(boost::asio::io_context& io, std::array<std::uint8_t, 32> key,
+    memory_sealer(memory_network& net, std::array<std::uint8_t, 32> key,
                   std::pmr::memory_resource* memory)
-        : io_(io), key_(key), memory_(memory) {}
+        : net_(net), io_(net.io()), key_(key), memory_(memory) {}
+
+    /** Posts the completion of an open whose result is known: `plain` when the text was `ours`. */
+    static void complete(webcpp::asio::io_context& io, std::pmr::memory_resource* memory, bool ours,
+                         std::pmr::string plain,
+                         handler<void(backend::error_code, std::string_view)> done) {
+        post_in(io, memory, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
+            done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
+        });
+    }
 
     void seal(std::string_view plaintext,
               handler<void(backend::error_code, std::string_view)> done) override {
@@ -1179,21 +1229,36 @@ public:
         if (ours) {
             plain.assign(parts->ciphertext.begin(), parts->ciphertext.end());
         }
-        post_in(io_, memory_, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
-            done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
-        });
+        if (net_.hold_sealer_opens) {
+            net_.held_sealer_opens_.push_back({
+                .memory = memory_,
+                .ours = ours,
+                .plain = std::move(plain),
+                .done = std::move(done),
+            });
+            return;
+        }
+        complete(io_, memory_, ours, std::move(plain), std::move(done));
     }
 
 private:
-    boost::asio::io_context& io_;
+    memory_network& net_;
+    webcpp::asio::io_context& io_;
     std::array<std::uint8_t, 32> key_;
     std::pmr::memory_resource* memory_;
 };
 
 inline std::shared_ptr<backend::sealer> memory_network::make_sealer(
     std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) {
-    return std::allocate_shared<memory_sealer>(std::pmr::polymorphic_allocator<>(memory), io_, key,
-                                               memory);
+    return std::allocate_shared<memory_sealer>(std::pmr::polymorphic_allocator<>(memory), *this,
+                                               key, memory);
+}
+
+inline void memory_network::release_sealer_opens() {
+    for (auto& held : std::exchange(held_sealer_opens_, {})) {
+        memory_sealer::complete(io_, held.memory, held.ours, std::move(held.plain),
+                                std::move(held.done));
+    }
 }
 
 }  // namespace webcpp::trystero::test

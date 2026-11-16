@@ -10,12 +10,11 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
-
-#include <boost/json/storage_ptr.hpp>
 
 #include <chrono>
 #include <deque>
@@ -37,8 +36,7 @@ namespace webcpp::trystero::detail {
 /**
  * A received action message. It owns one buffer, the data channel frame it arrived in or the
  * payload a transfer assembled, and names its parts as ranges of it: moving a message moves the
- * buffer and copies nothing. It carries the JSON storage of the room that received it, in which a
- * JSON payload is decoded.
+ * buffer and copies nothing.
  */
 struct incoming {  // NOLINT(bugprone-exception-escape)
 
@@ -62,8 +60,6 @@ struct incoming {  // NOLINT(bugprone-exception-escape)
     range payload_at = {};
     /** Where the metadata, JSON text or empty, is in the buffer. */
     range metadata_at = {};
-    /** The receiving room's JSON storage, which a JSON payload is parsed into. */
-    boost::json::storage_ptr json = {};
 
     /** The action's name, a view into the buffer. */
     [[nodiscard]] std::string_view name() const { return text(name_at); }
@@ -180,14 +176,11 @@ public:
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
     };
 
-    /** Every allocation goes through `memory`; a received message carries `json`, a storage of that
-     * resource. */
+    /** Every allocation goes through `memory`. */
     action_wire(backend::factory& factory, std::string_view room_token,
-                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory,
-                boost::json::storage_ptr json)
+                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          json_(std::move(json)),
           token_(room_token, memory),
           max_receive_bytes_(max_receive_bytes),
           cb_(std::move(cb)),
@@ -362,7 +355,7 @@ private:
     // reports.
     struct waiting_inline {  // NOLINT(bugprone-exception-escape)
         incoming message;
-        double arrived_ms = 0;
+        time_point arrived{};
     };
 
     struct peer_in {
@@ -563,7 +556,6 @@ private:
             .name_at = {.offset = offset_of(p.name.data()), .size = p.name.size()},
             .payload_at = {.offset = offset_of(p.payload.data()), .size = p.payload.size()},
             .metadata_at = {.offset = offset_of(p.metadata.data()), .size = p.metadata.size()},
-            .json = json_,
         };
         if (cb_.has_receiver(p.name)) {
             cb_.deliver(std::move(message));
@@ -573,7 +565,7 @@ private:
         if (in.count() >= max_pending_per_peer) {
             return;
         }
-        in.waiting.push_back({.message = std::move(message), .arrived_ms = factory_.now_ms()});
+        in.waiting.push_back({.message = std::move(message), .arrived = steady_now(factory_)});
     }
 
     peer_in& incoming_for(std::string_view peer) {
@@ -608,7 +600,7 @@ private:
         b.name = p.name;
         b.format = p.format;
         b.metadata = p.metadata;
-        b.size = p.size;
+        b.size = static_cast<std::size_t>(p.size);  // within max_receive_bytes_, checked above
         b.timer = factory_.make_timer(memory_);
         arm(peer, p.id, b);
         drain();
@@ -677,7 +669,6 @@ private:
             .name_at = name_at,
             .payload_at = payload_at,
             .metadata_at = metadata_at,
-            .json = json_,
         };
         release_bulk(it->second, b);
         cb_.deliver(std::move(message));
@@ -697,14 +688,14 @@ private:
     /** Delivers inline frames whose action now has a receiver, and accepts the next transfer of
      * each idle peer. */
     void drain() {
-        const double now = factory_.now_ms();
+        const auto now = steady_now(factory_);
         std::pmr::vector<incoming> ready(memory_);
         for (auto& [peer, in] : incoming_) {
             std::pmr::deque<waiting_inline> still_waiting(memory_);
             for (auto& w : in.waiting) {
                 if (cb_.has_receiver(w.message.name())) {
                     ready.push_back(std::move(w.message));
-                } else if (now - w.arrived_ms < static_cast<double>(transfer_timeout.count())) {
+                } else if (now - w.arrived < transfer_timeout) {
                     still_waiting.push_back(std::move(w));
                 }
             }
@@ -731,7 +722,6 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    boost::json::storage_ptr json_;
     std::pmr::string token_;
     std::size_t max_receive_bytes_;
     callbacks cb_;

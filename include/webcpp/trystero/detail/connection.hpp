@@ -62,8 +62,15 @@ class binding;  // NOLINT(cppcoreguidelines-virtual-class-destructor)
  * | presence(1, T), T new               | recorded; a 65th distinct token ends the connection       |
  * | presence(0, T)                      | forgotten; frames kept for T dropped                      |
  * | room frame, T bound                 | to the binding of T                                       |
- * | room frame, T kept by the app       | kept: 64 per connection, all dropped 10 s after the first |
+ * | room frame, T kept by the app       | T recorded, below 64; kept: 64 per connection, all        |
+ * |                                     | dropped 10 s after the first                              |
  * | room frame, any other T             | dropped                                                   |
+ *
+ * A room frame the app keeps advertises its token as presence does: only the remote writes to its
+ * connection, and its presence for a room comes once per connection, which a page can lose, since
+ * Chrome drops what a page sends on an answering channel as it opens (its log says "Send failed
+ * INVALID_STATE"). Without it the room would never bind the remote, whose frames of the room keep
+ * coming.
  *
  * Tip: it holds plain pointers to its bindings, which remove themselves before they go, so that it
  * keeps nothing of a room's resource after the room has ended.
@@ -175,7 +182,8 @@ public:
     /** How many frames are kept for rooms not bound yet. */
     [[nodiscard]] std::size_t kept_count() const { return kept_.size(); }
 
-    /** Whether the remote advertises the room of `token`. */
+    /** Whether the remote advertises the room of `token`: by its presence, or by a room frame of
+     * the token that the app kept. */
     [[nodiscard]] bool advertised(std::string_view token) const {
         return remote_tokens_.contains(token);
     }
@@ -473,10 +481,10 @@ inline void connection::end(std::string_view reason_view) {
     channel_->close();
     pc_->close();
     // The bindings are let go before anyone is told: a room may destroy its binding, or itself,
-    // from inside `ended` (Trystero's clear, C/shared-peer.mjs:170-180). Every attached binding is
-    // told, those of the drain order first, then the others in the order they attached: an end
-    // from inside a drain's turn leaves waiters of that drain in no drain order. A failure may
-    // detach or destroy another binding, so each is looked up before its turn; one attached
+    // from inside `ended` (Trystero's clear, dist/shared-peer.mjs:170-180). Every attached
+    // binding is told, those of the drain order first, then the others in the order they attached:
+    // an end from inside a drain's turn leaves waiters of that drain in no drain order. A failure
+    // may detach or destroy another binding, so each is looked up before its turn; one attached
     // meanwhile finds the connection not live, and fails at once.
     bound_.clear();
     auto order = std::exchange(drain_order_, std::pmr::deque<std::uint64_t>(memory_));
@@ -529,6 +537,11 @@ inline void connection::on_message(backend::bytes&& frame) {
         return;
     }
     if (cb_.keeps(peer_, token) && !ended_) {
+        // The remote's own advertisement, before its room is told: within the bound on tokens,
+        // which a frame never ends the connection for.
+        if (!remote_tokens_.contains(token) && remote_tokens_.size() < max_remote_rooms) {
+            remote_tokens_.emplace(token);
+        }
         keep(token, std::move(frame));
     }
 }
@@ -540,7 +553,7 @@ inline void connection::keep(std::string_view token, backend::bytes&& frame) {
     }
     kept_.emplace_back(std::pmr::string(token, memory_), std::move(frame));
     if (!kept_timer_) {
-        // All kept frames go 10 s after the first, as Trystero's (C/shared-peer.mjs:425-428).
+        // All kept frames go 10 s after the first, as in Trystero's dist/shared-peer.mjs:425-428.
         kept_timer_ = factory_.make_timer(memory_);
         kept_timer_->start(kept_frames_ttl,
                            {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_),
@@ -557,7 +570,7 @@ inline void connection::keep(std::string_view token, backend::bytes&& frame) {
 }
 
 /** With nothing kept, the window stops, so that the next kept frame has 10 s of its own, as
- * Trystero's syncDataTimers (C/shared-peer.mjs:417-422). */
+ * Trystero's syncDataTimers does (dist/shared-peer.mjs:417-422). */
 inline void connection::forget_kept_if_empty() {
     if (!kept_.empty()) {
         return;

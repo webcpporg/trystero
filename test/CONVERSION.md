@@ -35,6 +35,20 @@ build has exceptions is the user's choice and a library supports both (owner dec
 2026-10-10). The lint analyses each test a second time without exceptions, except the two
 that declare them.
 
+Since the backends' WebRTC moved to webcpp::webrtc (2026-11-14), which natively calls
+libdatachannel's C API, `native_peer_connection` and `native_room` declare no exceptions: they
+run as the build asks and once more without them (`native_peer_connection_no_exceptions`,
+`native_room_no_exceptions`). `native_peer_connection` tests the backend's WebRTC
+(`webrtc::peer_connection`, `webrtc::data_channel`) in place of `native::peer_connection` and
+`native::data_channel`, which are gone, with each old assertion kept.
+
+Since one platform backend replaced `native::backend` and `browser::backend` (2026-11-14), the
+four native programs are `platform_sealer_test.cpp`, `platform_websocket_test.cpp`,
+`platform_peer_connection_test.cpp` and `platform_room_test.cpp`, the targets `platform_sealer`,
+`platform_websocket`, `platform_peer_connection` and `platform_room`. The sealer's runs on both
+targets, its steps chained through the `io_context` rather than one `poll()` each, with the cases
+of the browser's sealer test folded in. The tables below keep the names of the conversion.
+
 ## How each form was converted
 
 | Old | New | Why |
@@ -163,6 +177,16 @@ assertion are not listed.
 | helper `run` | same | 1 | 1 | in its callers | in its callers |
 | **3 cases** | **3 functions** | **12** | **12** | **16** | **16** |
 
+The "New function" column is the conversion's. `platform_sealer_test.cpp`, which this file
+became, holds none of these functions: its steps are chained through the `io_context`, each
+started from the completion of the one before, and `verdict` checks what each recorded, so a case
+is now a step and its assertions are in `verdict`. `opens_what_trystero_js_sealed` is
+`open_what_js_sealed`, its assertions `opened_js`'s; `seals_in_trystero_form_and_opens_it_back`
+is `seal` and `open_sealed`, its assertions `sealed`'s and `opened`'s;
+`another_key_is_a_wrong_password` is `refuse`, its assertion `wrong_key`'s; the helper
+`sealed_fixture` is `load` and `state::sealed_by_js`, and the helper `run` is gone, `main`
+running the `io_context` once with `run_for`.
+
 ### native_websocket_test.cpp
 
 | Old case | New function | Static, old | Static, new | Run, old | Run, new |
@@ -258,6 +282,6 @@ was built from scratch (`b2 -a`, native clang) and run, the headers then restore
 | --- | --- | --- | --- | --- |
 | (1) the root topic built from `"Trystero:"` instead of `"Trystero@"` | `protocol/topics.hpp`, `root_topic` | `protocol`: `topics`, 4 failed assertions of 119, the four root topics of the fixture | `protocol`: `topics`, the same 4 failed assertions, at the same values | every test passes |
 | (2) a room that does not answer the password challenge | `room.hpp`, `on_handshake_data`: the responder never sends `"__trystero_pw":"response"` | `room`: `the_same_password_joins_and_another_does_not`, 2 failed assertions (the join, then `a.peers().size() == 1`); `native_room`: `native_rooms_join_and_exchange_every_format`, its required join, which ends the case | `room`: the same case, the same 2 assertions; `native_room`: the same case, the same required join, which returns | every test passes |
-| (3) a sealer whose `open` skips the GCM tag check | `native/sealer.hpp`, `aes_gcm`: no `EVP_CTRL_GCM_SET_TAG` on decryption, and `EVP_CipherFinal_ex`'s result ignored | `native_sealer`: `another_key_is_a_wrong_password`, 1 failed assertion (the intruder's key opens the text); `native_room`: `another_password_never_joins`, 1 failed assertion (`!errors.empty()`) | `native_sealer`: the same case and assertion; `native_room`: the same case and assertion | every test passes |
+| (3) a sealer whose `open` skips the GCM tag check | `native/sealer.hpp`, `aes_gcm` (now `platform/sealer.hpp`, natively): no `EVP_CTRL_GCM_SET_TAG` on decryption, and `EVP_CipherFinal_ex`'s result ignored | `native_sealer`: `another_key_is_a_wrong_password`, 1 failed assertion (the intruder's key opens the text); `native_room`: `another_password_never_joins`, 1 failed assertion (`!errors.empty()`) | `native_sealer`: the same case and assertion (now `platform_sealer`: the step `refuse`, whose `wrong_key` `verdict` checks); `native_room`: the same case and assertion (now `platform_room`) | every test passes |
 
 In every planted run, every other test passed, in both suites.

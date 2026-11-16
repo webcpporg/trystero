@@ -12,17 +12,24 @@
 
 #include <webcpp/trystero.hpp>
 
+#include "cases.hpp"
 #include "require.hpp"
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/bind_allocator.hpp>
-#include <boost/asio/io_context.hpp>
-#include <boost/asio/post.hpp>
-#include <boost/asio/steady_timer.hpp>
+#include <webcpp/asio/bind_allocator.hpp>
+#include <webcpp/asio/io_context.hpp>
+#include <webcpp/asio/post.hpp>
+#include <webcpp/asio/steady_timer.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
+
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json/storage_ptr.hpp>
-#include <boost/json/value.hpp>
 #include <boost/throw_exception.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <atomic>
@@ -43,7 +50,8 @@
 #else
 #include <pthread.h>
 #endif
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+#include <emscripten/em_asm.h>
 #include <emscripten/heap.h>
 #include <poll.h>
 #include <sys/select.h>
@@ -52,6 +60,8 @@
 #endif
 
 namespace trystero = webcpp::trystero;
+namespace tp = webcpp::trystero::protocol;
+using namespace std::chrono_literals;
 
 namespace {
 
@@ -68,10 +78,32 @@ std::array<std::size_t, 32> global_sizes{};
 std::size_t c_allocations = 0;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool counting = false;
+
+// The global allocations counted and not freed yet, by address, in a table of a fixed size that
+// allocates nothing: open addressing, linear probing, and deletion by shifting back.
+constexpr std::size_t live_slots = std::size_t{1} << 16U;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::array<void*, live_slots> live{};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t live_count = 0;
+// Set when the table was full: an allocation then went untracked, which fails the test.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+bool live_overflow = false;
 // Set while operator new takes its memory from the C library, which then
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+// Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
+// emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
+// platform's (webcpp::asio's page "Allocation"), counted apart. A char, which JavaScript writes
+// through HEAPU8.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::uint8_t inside_runtime = 0;
+// The C library's allocations made while inside_runtime is set.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t runtime_allocations = 0;
+#endif
 
 #ifdef _MSC_VER
 /** Whether the calling thread is the one the test counts on: MSVC counts every thread. */
@@ -117,7 +149,7 @@ void count_this_thread() noexcept {
 // any under AddressSanitizer.
 #ifdef WEBCPP_TEST_TRYSTERO_ADDRESS_SANITIZER
 // Nothing of the C library is counted.
-#elif defined(__GLIBC__) || defined(__EMSCRIPTEN__)
+#elif defined(__GLIBC__) || defined(WEBCPP_TARGET_EMSCRIPTEN)
 #define WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS 1
 #ifdef __GLIBC__
 extern "C" {
@@ -144,7 +176,11 @@ namespace {
 
 void* counted(void* pointer) {
     if (on_counted_thread() && counting && !inside_operator_new) {
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
+#else
         ++c_allocations;
+#endif
     }
     return pointer;
 }
@@ -187,60 +223,69 @@ int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
 }
 // NOLINTEND(readability-inconsistent-declaration-parameter-name,cert-dcl58-cpp)
 
-#ifdef __EMSCRIPTEN__
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
 // Emscripten's select() is a poll() over an array of pollfd it callocs on every
 // call (system/lib/libc/musl/src/select/select.c), and Asio's reactor calls it on
 // every wait of the io_context the test drives: measured, thousands of calls
 // while two rooms exchange one payload. This one keeps the array on the stack, so
 // that the count sees the rooms' allocations rather than the C library's wait.
+namespace {
+
+/** The poll() event `event` when `set` holds `fd`, else none. */
+std::uint32_t requested_event(int fd, const fd_set* set, std::uint32_t event) {
+    return set != nullptr && FD_ISSET(fd, set) ? event : 0U;
+}
+
+void clear_set(fd_set* set) {
+    if (set != nullptr) {
+        FD_ZERO(set);
+    }
+}
+
+/** Adds the descriptor to `set` when poll() reported one of `events` on it; 1 when it did. */
+int ready_event(const pollfd& descriptor, fd_set* set, std::uint32_t events) {
+    if (set != nullptr && (static_cast<std::uint32_t>(descriptor.revents) & events) != 0) {
+        FD_SET(descriptor.fd, set);
+        return 1;
+    }
+    return 0;
+}
+
+}  // namespace
+
+// select's C declaration requires a mutable timeval pointer, although this implementation
+// does not change it.
 extern "C" int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
-                      timeval* timeout) {
+                      timeval* timeout) {  // NOLINT(misc-const-correctness)
     if (nfds < 0 || nfds > FD_SETSIZE) {
         errno = EINVAL;
         return -1;
     }
     std::array<pollfd, FD_SETSIZE> fds{};
-    int n = 0;
+    std::size_t n = 0;
     for (int fd = 0; fd < nfds; ++fd) {
-        short events = 0;
-        events |= readfds != nullptr && FD_ISSET(fd, readfds) ? POLLIN : 0;
-        events |= writefds != nullptr && FD_ISSET(fd, writefds) ? POLLOUT : 0;
-        events |= exceptfds != nullptr && FD_ISSET(fd, exceptfds) ? POLLPRI : 0;
+        const std::uint32_t events = requested_event(fd, readfds, POLLIN) |
+                                     requested_event(fd, writefds, POLLOUT) |
+                                     requested_event(fd, exceptfds, POLLPRI);
         if (events != 0) {
-            fds[n++] = pollfd{fd, events, 0};
+            fds[n++] = pollfd{.fd = fd, .events = static_cast<short>(events), .revents = 0};
         }
     }
     const int milliseconds =
         timeout == nullptr ? -1
-                           : static_cast<int>(timeout->tv_sec * 1000 + timeout->tv_usec / 1000);
+                           : static_cast<int>((timeout->tv_sec * 1000) + (timeout->tv_usec / 1000));
     const int ready = poll(fds.data(), static_cast<nfds_t>(n), milliseconds);
     if (ready < 0) {
         return ready;
     }
-    if (readfds != nullptr) {
-        FD_ZERO(readfds);
-    }
-    if (writefds != nullptr) {
-        FD_ZERO(writefds);
-    }
-    if (exceptfds != nullptr) {
-        FD_ZERO(exceptfds);
-    }
+    clear_set(readfds);
+    clear_set(writefds);
+    clear_set(exceptfds);
     int count = 0;
-    for (int i = 0; i < n && ready > 0; ++i) {
-        const short got = fds[i].revents;
-        if (readfds != nullptr && (got & (POLLIN | POLLHUP | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, readfds);
-            ++count;
-        }
-        if (writefds != nullptr && (got & (POLLOUT | POLLERR)) != 0) {
-            FD_SET(fds[i].fd, writefds);
-            ++count;
-        }
-        if (exceptfds != nullptr && (got & POLLPRI) != 0) {
-            FD_SET(fds[i].fd, exceptfds);
-            ++count;
-        }
+    for (std::size_t i = 0; i < n && ready > 0; ++i) {
+        count += ready_event(fds[i], readfds, POLLIN | POLLHUP | POLLERR);
+        count += ready_event(fds[i], writefds, POLLOUT | POLLERR);
+        count += ready_event(fds[i], exceptfds, POLLPRI);
     }
     return count;
 }
@@ -276,6 +321,54 @@ void count_c_allocation(std::uint32_t type, std::uintptr_t /*zone*/, std::uintpt
 
 namespace {
 
+/** The slot an address is first looked for in. */
+std::size_t home_of(const void* pointer) noexcept {
+    const auto bits = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(pointer));
+    return static_cast<std::size_t>(((bits >> 4U) * 0x9E3779B97F4A7C15ULL) >> 48U) &
+           (live_slots - 1);
+}
+
+/** Records a counted allocation as live. */
+void track(void* pointer) noexcept {
+    if (live_count + 1 >= live_slots) {
+        live_overflow = true;
+        return;
+    }
+    std::size_t i = home_of(pointer);
+    while (live[i] != nullptr) {
+        i = (i + 1) & (live_slots - 1);
+    }
+    live[i] = pointer;
+    ++live_count;
+}
+
+/** Forgets a live allocation when it is freed; one never counted is not in the table. */
+void untrack(const void* pointer) noexcept {
+    if (pointer == nullptr || live_count == 0) {
+        return;
+    }
+    std::size_t i = home_of(pointer);
+    while (live[i] != pointer) {
+        if (live[i] == nullptr) {
+            return;
+        }
+        i = (i + 1) & (live_slots - 1);
+    }
+    live[i] = nullptr;
+    --live_count;
+    // Every entry after it in its run moves back unless its own slot lies between them.
+    for (std::size_t j = (i + 1) & (live_slots - 1); live[j] != nullptr;
+         j = (j + 1) & (live_slots - 1)) {
+        const std::size_t k = home_of(live[j]);
+        const bool stays = i < j ? (i < k && k <= j) : (i < k || k <= j);
+        if (!stays) {
+            live[i] = live[j];
+            live[j] = nullptr;
+            i = j;
+        }
+    }
+}
+
 /** Memory for operator new, from the C library, uncounted there. */
 void* take(std::size_t size, std::size_t alignment) {
 #ifdef _MSC_VER
@@ -291,6 +384,9 @@ void* take(std::size_t size, std::size_t alignment) {
 }
 
 void release(void* pointer) noexcept {
+    if (on_counted_thread()) {
+        untrack(pointer);
+    }
 #ifdef _MSC_VER
     _aligned_free(pointer);
 #elif defined(WEBCPP_TEST_C_FREE)
@@ -323,6 +419,9 @@ void* allocate(std::size_t size, std::size_t alignment) {
     void* pointer = take(rounded, alignment);
     if (pointer == nullptr) {
         boost::throw_exception(std::bad_alloc());
+    }
+    if (on_counted_thread() && counting) {
+        track(pointer);
     }
     return pointer;
 }
@@ -362,8 +461,15 @@ public:
     std::size_t sized = 0;
 
 private:
-    std::vector<std::byte> storage_ = std::vector<std::byte>(std::size_t{64} << 20U);
-    std::pmr::monotonic_buffer_resource buffer_{storage_.data(), storage_.size(),
+    static constexpr std::size_t capacity = std::size_t{64} << 20U;
+
+    // Left uninitialized: a std::vector would set its bytes one at a time and destroy them one at
+    // a time, a call each in a debug build, and under Asyncify, built with Emscripten's exceptions
+    // in JavaScript, each call inside a try crosses into JavaScript and back: 96 s of the test's
+    // 118 (measured with node's profiler).
+    using arena = std::array<std::byte, capacity>;
+    std::unique_ptr<arena> storage_ = std::make_unique_for_overwrite<arena>();
+    std::pmr::monotonic_buffer_resource buffer_{storage_->data(), storage_->size(),
                                                 std::pmr::null_memory_resource()};
 
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
@@ -375,7 +481,7 @@ private:
 
     void do_deallocate(void* pointer, std::size_t bytes, std::size_t /*alignment*/) override {
         const auto* at = static_cast<const std::byte*>(pointer);
-        if (at < storage_.data() || at >= storage_.data() + storage_.size()) {
+        if (at < storage_->data() || at >= storage_->data() + storage_->size()) {
             ++foreign;
             return;
         }
@@ -387,12 +493,15 @@ private:
     }
 };
 
+/** How long each run of the io_context the test drives lasts. */
+constexpr std::chrono::milliseconds slice = 10ms;
+
 /** Runs io in slices of 10 ms until done holds, for 5 s at most. */
 template <class Predicate>
-bool run_until(boost::asio::io_context& io, Predicate done) {
-    for (int slice = 0; slice < 500 && !done(); ++slice) {
+bool run_until(webcpp::asio::io_context& io, Predicate done) {
+    for (auto ran = 0ms; ran < 5s && !done(); ran += slice) {
         io.restart();
-        io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
+        io.run_for(slice);  // lint-run: the memory relays post to it
     }
     return done();
 }
@@ -420,13 +529,16 @@ void the_replaced_operators_serve_every_alignment() {
 
 /**
  * What the counts can see, so that a zero below means something: a counted
- * operator new, and a counted call of the C library where it is counted.
+ * operator new, kept live until it is freed, and a counted call of the C
+ * library where it is counted.
  */
 void the_counts_see_an_allocation() {
     counting = true;
     void* pointer = ::operator new(40);
     counting = false;
+    BOOST_TEST_EQ(live_count, 1U);
     ::operator delete(pointer);
+    BOOST_TEST_EQ(live_count, 0U);
     explain_global_allocations(1U);
     BOOST_TEST_EQ(global_allocations, 1U);
 #ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
@@ -460,20 +572,51 @@ trystero::room join(trystero::app& a, std::string_view room_id,
     return std::move(*r);
 }
 
-/** Two rooms exchange two payloads that make builds; the second is counted. */
+/** What the global counts saw in a window: operator new's, the C library's, and what is still out.
+ */
+struct seen {
+    std::size_t global = 0;
+    std::size_t c = 0;
+    std::size_t live = 0;
+};
+
+// The operator new `plant` leaves out, which `free_planted` frees once the window is closed.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+void* planted = nullptr;
+
+/**
+ * Allocates outside every resource, as a room must not, from a handler the io_context runs: an
+ * operator new it leaves out, and a call of the C library, freed at once.
+ */
+void plant() {
+    planted = ::operator new(24);
+    // The C library's allocation, on purpose.
+    void* volatile memory = std::malloc(40);
+    std::free(memory);
+}
+
+/** Frees what `plant` left out. */
+void free_planted() {
+    ::operator delete(planted);
+    planted = nullptr;
+}
+
+/**
+ * Two rooms exchange two payloads that make builds; the second is counted, and the global counts
+ * seen in its window returned. With `planting`, the receiving handler plants allocations outside
+ * the resources, which the window must see (doc: #trystero-allocation).
+ */
 template <class Payload, class Make>
-void exchange_allocates_through_the_rooms_resources(Make make) {
+seen exchange_through_the_rooms_resources(Make make, bool planting = false) {
     // The resources outlive the io_context, whose pending operations they hold.
     counting_resource a_memory;
     counting_resource z_memory;
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::test::memory_network network{io};
     // The rooms meet on a relay the memory network has: one that names none
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
-    const boost::json::storage_ptr json_storage =
-        boost::json::make_shared_resource<trystero::json_resource>(&a_memory);
     trystero::app a_app(io.get_executor(), network,
                         {
                             .app_id = "allocation",
@@ -491,44 +634,174 @@ void exchange_allocates_through_the_rooms_resources(Make make) {
     auto a = join(a_app, "room");
     auto z = join(z_app, "room");
     std::size_t received = 0;
+    bool plant_next = false;
     auto from_a = a.make_action<Payload>("chat");
     z.make_action<Payload>("chat").on_message(
-        [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) { ++received; });
+        [&](const Payload& /*payload*/, const trystero::message_info& /*info*/) {
+            ++received;
+            if (std::exchange(plant_next, false)) {
+                plant();
+            }
+        });
     const auto send = [&] {
-        from_a.async_send(make(&a_memory, json_storage),
-                          boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
-                                                      [](boost::system::error_code /*ec*/) {}));
+        from_a.async_send(make(&a_memory),
+                          webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                                       [](boost::system::error_code /*ec*/) {}));
     };
     // Joined, connected and one payload through, before the window opens: a
     // payload sent before the peers meet reaches nobody.
     if (!BOOST_TEST(
             run_until(io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; }))) {
-        return;
+        return {};
     }
     send();
     if (!BOOST_TEST(run_until(io, [&] { return received == 1; }))) {
-        return;
+        return {};
     }
     const std::size_t before = a_memory.allocations + z_memory.allocations;
+    global_allocations = 0;
+    c_allocations = 0;
+    plant_next = planting;
     counting = true;
     send();
     const bool arrived = run_until(io, [&] { return received == 2; });
     counting = false;
     BOOST_TEST(arrived);
-    explain_global_allocations(0U);
-    BOOST_TEST_EQ(global_allocations, 0U);
-    BOOST_TEST_EQ(c_allocations, 0U);
+    explain_global_allocations(planting ? 1U : 0U);
+    const seen window{
+        .global = std::exchange(global_allocations, 0),
+        .c = std::exchange(c_allocations, 0),
+        .live = live_count,
+    };
+    if (planted != nullptr) {
+        free_planted();
+    }
     BOOST_TEST_GT(a_memory.allocations + z_memory.allocations, before);
     BOOST_TEST_EQ(a_memory.foreign + z_memory.foreign, 0U);
-    global_allocations = 0;
-    c_allocations = 0;
+    return window;
 }
 
-/** Runs io for about `milliseconds`, whatever happens. */
-void run_for(boost::asio::io_context& io, int milliseconds) {
-    for (int slice = 0; slice < milliseconds / 10; ++slice) {
+/** Checks that a window saw no global allocation. */
+void nothing_global(const seen& window) {
+    BOOST_TEST_EQ(window.global, 0U);
+    BOOST_TEST_EQ(window.c, 0U);
+    BOOST_TEST_EQ(window.live, 0U);
+}
+
+/**
+ * Exchanging each payload type that receives in the room's resource sees no global allocation, a
+ * JSON document's write and parse included; and a window in which the receiving handler allocates
+ * outside the resources sees it, so that the zeros are not vacuous (doc: #trystero-allocation).
+ */
+void exchanges_allocate_through_the_rooms_resources() {
+    nothing_global(exchange_through_the_rooms_resources<std::pmr::string>(
+        [](std::pmr::memory_resource* memory) {
+            return std::pmr::string("a text that no small string holds", memory);
+        }));
+    nothing_global(exchange_through_the_rooms_resources<trystero::pmr_bytes>(
+        [](std::pmr::memory_resource* memory) { return trystero::pmr_bytes(4096, 7, memory); }));
+    nothing_global(exchange_through_the_rooms_resources<webcpp::document::pmr::document>(
+        [](std::pmr::memory_resource* memory) {
+            auto made = webcpp::document::parse(
+                R"({"drink":"a text that no small string holds","ice":[1,2.5,true,null]})",
+                webcpp::document::parse_options(),
+                std::pmr::polymorphic_allocator<std::byte>(memory));
+            webcpp::test::require(BOOST_TEST(made.has_value()));
+            return std::move(made).unsafe_value();
+        }));
+    // A planted operator new and C library call, seen, and the operator new seen still out.
+    const seen planted_window = exchange_through_the_rooms_resources<std::pmr::string>(
+        [](std::pmr::memory_resource* memory) {
+            return std::pmr::string("a text that no small string holds", memory);
+        },
+        true);
+    BOOST_TEST_EQ(planted_window.global, 1U);
+#ifdef WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS
+    BOOST_TEST_EQ(planted_window.c, 1U);
+#endif
+    BOOST_TEST_EQ(planted_window.live, 1U);
+    BOOST_TEST_EQ(live_count, 0U);
+}
+
+/**
+ * Each text a room reads is parsed into a document of the room's resource without a global
+ * allocation: its image and the parse's working state are the resource's, and the image goes back
+ * with the document (doc: #trystero-allocation).
+ */
+void reading_a_text_allocates_through_its_resource() {
+    counting_resource memory;
+    std::array<std::uint8_t, 32> secret{};
+    secret.fill(7);
+    const auto key = tp::nostr::signer::from_secret(secret, &memory);
+    webcpp::test::require(BOOST_TEST(key.has_value()));
+    const std::array<std::uint8_t, 32> aux{};
+    const std::pmr::string sealed(1100, 'A', &memory);
+    const auto signal = tp::write_signal(
+        {.peer_id = "AAAAAAAAAAAAAAAAAAAA", .offer_id = "BBBBBBBBBBBBBBBBBBBB", .offer = sealed},
+        {}, &memory);
+    const auto message = tp::nostr::event_message(
+        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal, aux,
+        &memory);
+    // A relay's text of that event: `["EVENT","<subscription>",<event>]`.
+    const std::string_view written = message;
+    std::pmr::string relayed(R"(["EVENT","CCCCCCCCCCCCCCCCCCCC",)", &memory);
+    relayed += written.substr(9, written.size() - 10);
+    relayed += ']';
+    const std::pmr::string ok(
+        R"(["OK","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",true,""])",
+        &memory);
+    const std::pmr::string handshake(
+        R"({"__trystero_pw":"response","h":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})",
+        &memory);
+    const std::pmr::string candidate(
+        R"({"candidate":"candidate:1 1 UDP 2122317823 192.168.1.10 54321 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":"abcd"})",
+        &memory);
+
+    struct text {
+        std::string_view what;
+        std::string_view json;
+        std::size_t bound;
+    };
+
+    constexpr std::size_t relay_bound = tp::nostr::max_parsed_relay_text_bytes;
+    const std::array<text, 5> texts{
+        text{.what = "relay event", .json = relayed, .bound = relay_bound},
+        text{.what = "relay OK", .json = ok, .bound = relay_bound},
+        text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
+        text{.what = "handshake", .json = handshake, .bound = tp::max_handshake_bytes},
+        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
+    };
+    for (const text& t : texts) {
+        const std::size_t outstanding = memory.outstanding;
+        global_allocations = 0;
+        c_allocations = 0;
+        counting = true;
+        {
+            const auto document =
+                webcpp::document::parse(t.json, tp::json::protocol_limits(t.bound),
+                                        std::pmr::polymorphic_allocator<std::byte>(&memory));
+            // The image is the resource's, and goes back with the document.
+            BOOST_TEST(document.has_value());
+            BOOST_TEST_GT(memory.outstanding, outstanding);
+        }
+        counting = false;
+        BOOST_TEST_EQ(memory.outstanding, outstanding);
+        if (global_allocations != 0) {
+            std::cerr << t.what << ": ";
+        }
+        explain_global_allocations(0U);
+        nothing_global({.global = global_allocations, .c = c_allocations, .live = live_count});
+        global_allocations = 0;
+        c_allocations = 0;
+    }
+    BOOST_TEST_EQ(memory.foreign, 0U);
+}
+
+/** Runs io for about `duration`, whatever happens, in slices of 10 ms. */
+void run_for(webcpp::asio::io_context& io, std::chrono::milliseconds duration) {
+    for (auto ran = 0ms; ran + slice <= duration; ran += slice) {
         io.restart();
-        io.run_for(std::chrono::milliseconds(10));  // lint-run: the memory relays post to it
+        io.run_for(slice);  // lint-run: the memory relays post to it
     }
 }
 
@@ -537,17 +810,17 @@ void run_for(boost::asio::io_context& io, int milliseconds) {
  * the timer service and the reactor, the scheduler's first operation, and room
  * in the timer queue for more waits at once than two rooms keep.
  */
-void warm(boost::asio::io_context& io) {
-    std::vector<std::unique_ptr<boost::asio::steady_timer>> timers;
-    for (int i = 0; i < 256; ++i) {
-        timers.push_back(std::make_unique<boost::asio::steady_timer>(io, std::chrono::hours(1)));
+void warm(webcpp::asio::io_context& io) {
+    std::vector<std::unique_ptr<webcpp::asio::steady_timer>> timers;
+    for (std::size_t i = 0; i < 256; ++i) {
+        timers.push_back(std::make_unique<webcpp::asio::steady_timer>(io, std::chrono::hours(1)));
         timers.back()->async_wait([](boost::system::error_code /*ec*/) {});
     }
     for (auto& timer : timers) {
         timer->cancel();
     }
-    boost::asio::post(io, [] {});
-    run_for(io, 20);
+    webcpp::asio::post(io, [] {});
+    run_for(io, 20ms);
 }
 
 // tag::config[]
@@ -582,15 +855,15 @@ trystero::room_options options_in(counting_resource& memory) {
  * Two apps, each with a log and a relay of its own, are made one after the other
  * and join a room with a password, whose two sides exchange a payload that travels
  * in chunks, measure a round trip, and one says goodbye; both are destroyed and the
- * io_context drained. From the first construction to the drain, operator new sees
- * the two rooms' JSON storage counters alone, which Boost.JSON allocates once per
- * room, and the C library nothing (doc: #trystero-allocation).
+ * io_context drained. From the first construction to the drain, while the rooms and
+ * the relay read and write their JSON texts, neither operator new nor the C library
+ * sees an allocation (doc: #trystero-allocation).
  */
 void a_room_allocates_through_its_resource_from_join_to_destruction() {
     counting_resource network_memory;
     counting_resource a_memory;
     counting_resource z_memory;
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     trystero::test::memory_network network{io, 1, &network_memory};
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
@@ -619,7 +892,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         trystero::app z_app(io.get_executor(), network,
                             app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines));
         auto z = join(z_app, "room", options_in(z_memory));
-        run_for(io, 100);
+        run_for(io, 100ms);
         {
             trystero::app a_app(io.get_executor(), network,
                                 app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
@@ -633,16 +906,17 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
             // tag::bind-allocator[]
             a.make_action<trystero::pmr_bytes>("file").async_send(
                 trystero::pmr_bytes(100'000, 7, &a_memory),
-                boost::asio::bind_allocator(in(a_memory), [](boost::system::error_code /*ec*/) {}));
+                webcpp::asio::bind_allocator(in(a_memory),
+                                             [](boost::system::error_code /*ec*/) {}));
             a.async_ping(z.self_id(),
-                         boost::asio::bind_allocator(
+                         webcpp::asio::bind_allocator(
                              in(a_memory),
                              [&pings](boost::system::error_code ec,
                                       std::chrono::milliseconds /*rtt*/) { pings += ec ? 0 : 1; }));
             // end::bind-allocator[]
             exchanged = run_until(io, [&] { return files == 1 && pings == 1; });
             bool gone = false;
-            z.async_leave(boost::asio::bind_allocator(
+            z.async_leave(webcpp::asio::bind_allocator(
                 in(z_memory), [&gone](boost::system::error_code /*ec*/) { gone = true; }));
             farewell = run_until(io, [&] { return gone && left == 1; });
         }
@@ -652,7 +926,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     // #trystero-allocation). The order that holds:
     //
     //     std::pmr::unsynchronized_pool_resource memory;  // first: destroyed last
-    //     boost::asio::io_context io;                     // destroyed before the resource
+    //     webcpp::asio::io_context io;                     // destroyed before the resource
     //     {
     //         trystero::app app(io.get_executor(), factory, {.memory = &memory});
     //         auto room = app.join("id");
@@ -660,7 +934,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //     }
     //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
     const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
-    run_for(io, 300);
+    run_for(io, 300ms);
     counting = false;
     BOOST_TEST_GT(left_behind, 0U);
     BOOST_TEST_EQ(a_memory.outstanding, 0U);
@@ -671,8 +945,10 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(farewell);
     BOOST_TEST_GT(a_lines, 0U);
     BOOST_TEST_GT(z_lines, 0U);
-    explain_global_allocations(2U);
-    BOOST_TEST_EQ(global_allocations, 2U);
+    explain_global_allocations(0U);
+    BOOST_TEST_EQ(global_allocations, 0U);
+    BOOST_TEST_EQ(live_count, 0U);
+    BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
     global_allocations = 0;
@@ -681,11 +957,10 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 
 /**
  * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
- * exchange binary payloads: from construction until the io_context drains, operator new sees only
- * the rooms' JSON storage counters and the C library nothing. A payload received by the room with
- * its own resource is copied into that resource once, the received frame staying the app's; by the
- * room in the app's resource, the payload taken out of the frame is moved into the value (doc:
- * #trystero-allocation).
+ * exchange binary payloads: from construction until the io_context drains, neither operator new nor
+ * the C library sees an allocation. A payload received by the room with its own resource is copied
+ * into that resource once, the received frame staying the app's; by the room in the app's resource,
+ * the payload taken out of the frame is moved into the value (doc: #trystero-allocation).
  */
 void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource network_memory;
@@ -708,7 +983,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
         const trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
         const trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
         {
-            boost::asio::io_context io;  // after the resources: destroyed before them
+            webcpp::asio::io_context io;  // after the resources: destroyed before them
             trystero::test::memory_network network{io, 1, &network_memory};
             network.relay("wss://relay.test");
             warm(io);
@@ -741,25 +1016,27 @@ void rooms_of_one_app_allocate_through_their_resources() {
                 }
                 a2.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_own, &a_room_memory),
-                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
-                                                [](boost::system::error_code) {}));
+                    webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
+                                                 [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 1; }));
                 BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
                 BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
                 z_memory.sized = 0;
                 a1.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_shared, &a_memory),
-                    boost::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
-                                                [](boost::system::error_code) {}));
+                    webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
+                                                 [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 2; }));
                 BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
-            run_for(io, 300);  // the io_context runs out of the rooms' work
+            run_for(io, 300ms);  // the io_context runs out of the rooms' work
         }
         counting = false;
     }
-    explain_global_allocations(4U);
-    BOOST_TEST_EQ(global_allocations, 4U);  // the four rooms' JSON storage counters
+    explain_global_allocations(0U);
+    BOOST_TEST_EQ(global_allocations, 0U);
+    BOOST_TEST_EQ(live_count, 0U);
+    BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
         BOOST_TEST_EQ(m->outstanding, 0U);
@@ -804,28 +1081,52 @@ void operator delete(void* pointer, std::size_t /*size*/, std::align_val_t /*ali
     release(pointer);
 }
 
+namespace {
+
+/**
+ * Marks Asyncify's allocation of a suspension's unwind data, on emscripten under Asyncify, as
+ * webcpp::asio's own allocation test does: the C library's allocations made during it are counted
+ * apart, since a suspension of webcpp::asio's run family makes one, which is no room's.
+ */
+void mark_the_runtime_allocations() {
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+    // clang-format off
+    EM_ASM({
+        if (typeof Asyncify !== 'object' || typeof Asyncify.allocateData !== 'function') {
+            return;
+        }
+        const flag = $0;
+        const allocate = Asyncify.allocateData;
+        Asyncify.allocateData = function(...values) {
+            const previous = HEAPU8[flag];
+            HEAPU8[flag] = 1;
+            try {
+                return allocate.apply(this, values);
+            } finally {
+                HEAPU8[flag] = previous;
+            }
+        };
+    }, &inside_runtime);
+    // clang-format on
+#endif
+}
+
+}  // namespace
+
 int main() {
     count_this_thread();
+    mark_the_runtime_allocations();
 #if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
-    !defined(__EMSCRIPTEN__)
+    !defined(WEBCPP_TARGET_EMSCRIPTEN)
     malloc_logger = &count_c_allocation;
 #endif
-    the_replaced_operators_serve_every_alignment();
-    the_counts_see_an_allocation();
-    exchange_allocates_through_the_rooms_resources<std::pmr::string>(
-        [](std::pmr::memory_resource* memory, const boost::json::storage_ptr& /*storage*/) {
-            return std::pmr::string("a text that no small string holds", memory);
-        });
-    exchange_allocates_through_the_rooms_resources<std::pmr::vector<std::uint8_t>>(
-        [](std::pmr::memory_resource* memory, const boost::json::storage_ptr& /*storage*/) {
-            return std::pmr::vector<std::uint8_t>(4096, 7, memory);
-        });
-    exchange_allocates_through_the_rooms_resources<boost::json::value>(
-        [](std::pmr::memory_resource* /*memory*/, const boost::json::storage_ptr& storage) {
-            return boost::json::value(std::string_view("a text that no small string holds"),
-                                      storage);
-        });
-    a_room_allocates_through_its_resource_from_join_to_destruction();
-    rooms_of_one_app_allocate_through_their_resources();
-    return boost::report_errors();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(the_replaced_operators_serve_every_alignment);
+    run_case(the_counts_see_an_allocation);
+    run_case(exchanges_allocate_through_the_rooms_resources);
+    run_case(reading_a_text_allocates_through_its_resource);
+    run_case(a_room_allocates_through_its_resource_from_join_to_destruction);
+    run_case(rooms_of_one_app_allocate_through_their_resources);
+    return webcpp::test::exit_status(boost::report_errors());
 }

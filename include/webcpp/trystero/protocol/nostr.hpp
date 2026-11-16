@@ -10,6 +10,8 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <secp256k1.h>
@@ -17,11 +19,11 @@
 #include <secp256k1_preallocated.h>
 #include <secp256k1_schnorrsig.h>
 #include <boost/hash2/sha2.hpp>
-#include <boost/json/value.hpp>
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -36,6 +38,19 @@
 
 namespace webcpp::trystero::protocol::nostr {
 
+/**
+ * The longest text of a relay a room reads, in bytes: a longer one is dropped before it is read,
+ * and the connection goes on; one longer than @ref max_relay_message_bytes closes the connection
+ * instead.
+ *
+ * The longest text measured is an event that carries an answer, 1,244 bytes, among Trystero JS in
+ * Chrome and both backends. The bound is an event that carries the longest signal a room reads
+ * (@ref max_parsed_signal_bytes), with 2 KiB for the event's other fields, the subscription id and
+ * the escaping of the signal's quotes, which take some 600 bytes.
+ */
+inline constexpr std::size_t max_parsed_relay_text_bytes = max_parsed_signal_bytes + 2048;
+static_assert(max_parsed_relay_text_bytes < max_relay_message_bytes);
+
 /** The tag a Trystero event carries its topic in, its `tag`: "x". */
 inline constexpr std::string_view topic_tag = "x";
 
@@ -44,10 +59,10 @@ inline constexpr std::string_view topic_tag = "x";
  * forward the events and keep none.
  *
  * @param topic The topic's name.
- * @return 20000 plus `str_to_num(topic, 10000)`.
+ * @return 20000 plus `str_to_num(topic, 10000)`, below 30000.
  */
-inline int topic_kind(std::string_view topic) {
-    return static_cast<int>(str_to_num(topic, 10000)) + 20000;
+inline std::uint32_t topic_kind(std::string_view topic) {
+    return static_cast<std::uint32_t>(str_to_num(topic, 10000)) + 20000;
 }
 
 namespace detail {
@@ -57,11 +72,13 @@ namespace detail {
  * canonical
  * `[0,"<pubkey>",<created_at>,<kind>,[["x",<topic>]],<content>]`, fed to the hash piece by piece.
  */
-inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey, std::int64_t created_at,
-                                             int kind, std::string_view quoted_topic,
+inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey,
+                                             std::chrono::sys_seconds created_at,
+                                             std::uint32_t kind, std::string_view quoted_topic,
                                              std::string_view quoted_content) {
     std::array<char, 48> buffer{};
-    char* end = std::to_chars(buffer.data(), buffer.data() + 24, created_at).ptr;
+    const auto seconds = created_at.time_since_epoch().count();
+    char* end = std::to_chars(buffer.data(), buffer.data() + 24, seconds).ptr;
     *end++ = ',';
     end = std::to_chars(end, buffer.data() + buffer.size(), kind).ptr;
     const std::string_view numbers(buffer.data(), static_cast<std::size_t>(end - buffer.data()));
@@ -89,8 +106,30 @@ inline std::array<std::uint8_t, 32> event_id(std::string_view pubkey, std::int64
 inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource* memory) {
     std::pmr::string out(memory);
     out.reserve(text.size() + 8);
-    json::append_string(out, text);
+    json::detail::append_utf8(out, text);
     return out;
+}
+
+/** Whether `text` is 32 bytes as NIP-01 writes an id or a public key: 64 lowercase hexadecimal
+ * digits. */
+inline bool is_nip01_hex(std::string_view text) {
+    return text.size() == 64 && std::ranges::all_of(text, [](char c) {
+               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+           });
+}
+
+/** Whether `text` is the lowercase hexadecimal of `data`, as `append_hex` writes it. */
+inline bool is_hex_of(std::string_view text, std::span<const std::uint8_t> data) {
+    constexpr std::string_view digits = "0123456789abcdef";
+    if (text.size() != data.size() * 2) {
+        return false;
+    }
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        if (text[2 * i] != digits[data[i] >> 4U] || text[(2 * i) + 1] != digits[data[i] & 15U]) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace detail
@@ -100,7 +139,7 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
  * `[0, pubkey, created_at, kind, [["x", topic]], content]`.
  *
  * @param pubkey The signer's x-only public key, in hexadecimal.
- * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param created_at The event's time, in whole seconds since the Unix epoch.
  * @param kind The event's kind, @ref topic_kind of its topic.
  * @param topic The topic, the value of its tag "x".
  * @param content The content.
@@ -108,8 +147,8 @@ inline std::pmr::string quoted(std::string_view text, std::pmr::memory_resource*
  * @return The id.
  */
 inline std::array<std::uint8_t, 32> event_id(
-    std::string_view pubkey, std::int64_t created_at, int kind, std::string_view topic,
-    std::string_view content,
+    std::string_view pubkey, std::chrono::sys_seconds created_at, std::uint32_t kind,
+    std::string_view topic, std::string_view content,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     return detail::event_id(pubkey, created_at, kind, detail::quoted(topic, memory),
                             detail::quoted(content, memory));
@@ -228,18 +267,20 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * over those same bytes.
  *
  * @param key The signer.
- * @param created_at The event's time, in seconds since the Unix epoch.
+ * @param created_at The event's time, in whole seconds since the Unix epoch.
  * @param topic The topic, the value of the event's tag "x".
  * @param content The content, a signal's JSON text.
  * @param aux 32 random bytes for the signature.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `topic` and `content` are UTF-8, as a room's are: a topic is ASCII, a content a signal's
+ * text.
  */
 inline std::pmr::string event_message(
-    const signer& key, std::int64_t created_at, std::string_view topic, std::string_view content,
-    std::span<const std::uint8_t, 32> aux,
+    const signer& key, std::chrono::sys_seconds created_at, std::string_view topic,
+    std::string_view content, std::span<const std::uint8_t, 32> aux,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    const int kind = topic_kind(topic);
+    const auto kind = topic_kind(topic);
     const auto quoted_topic = detail::quoted(topic, memory);
     const auto quoted_content = detail::quoted(content, memory);
     const auto id = detail::event_id(key.pubkey(), created_at, kind, quoted_topic, quoted_content);
@@ -251,7 +292,7 @@ inline std::pmr::string event_message(
     out += R"(,"tags":[["x",)";
     out += quoted_topic;
     out += R"(]],"created_at":)";
-    json::append_integer(out, created_at);
+    json::append_integer(out, created_at.time_since_epoch().count());
     out += R"(,"content":)";
     out += quoted_content;
     out += R"(,"pubkey":")";
@@ -270,36 +311,39 @@ inline std::pmr::string event_message(
  *
  * @param subscription The subscription's id.
  * @param topics The topics, whose kinds the filter lists once each, in increasing order.
- * @param since The earliest `created_at` of the events wanted.
+ * @param since The earliest `created_at` of the events wanted, in whole seconds since the Unix
+ * epoch.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `subscription` and the topics are UTF-8, as a room's, which are ASCII, are.
  */
 inline std::pmr::string subscribe_message(
-    std::string_view subscription, std::span<const std::pmr::string> topics, std::int64_t since,
+    std::string_view subscription, std::span<const std::pmr::string> topics,
+    std::chrono::sys_seconds since,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::set<int> kinds(memory);
+    std::pmr::set<std::uint32_t> kinds(memory);
     for (const auto& t : topics) {
         kinds.insert(topic_kind(t));
     }
     std::pmr::string out(memory);
     out.reserve(96 + subscription.size() + (topics.size() * 48));
     out += R"(["REQ",)";
-    json::append_string(out, subscription);
+    json::detail::append_utf8(out, subscription);
     out += R"(,{"kinds":[)";
-    for (const int k : kinds) {
+    for (const std::uint32_t k : kinds) {
         if (out.back() != '[') {
             out += ',';
         }
         json::append_integer(out, k);
     }
     out += R"(],"since":)";
-    json::append_integer(out, since);
+    json::append_integer(out, since.time_since_epoch().count());
     out += R"(,"#x":[)";
     for (std::size_t i = 0; i < topics.size(); ++i) {
         if (i != 0) {
             out += ',';
         }
-        json::append_string(out, topics[i]);
+        json::detail::append_utf8(out, topics[i]);
     }
     out += "]}]";
     return out;
@@ -311,12 +355,13 @@ inline std::pmr::string subscribe_message(
  * @param subscription The subscription's id.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
+ * @pre `subscription` is UTF-8, as a room's, which is ASCII, is.
  */
 inline std::pmr::string close_message(
     std::string_view subscription,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     std::pmr::string out(R"(["CLOSE",)", memory);
-    json::append_string(out, subscription);
+    json::detail::append_utf8(out, subscription);
     out += ']';
     return out;
 }
@@ -331,7 +376,39 @@ struct event {
     std::string_view topic;
     /** The event's content. */
     std::string_view content;
+    /** The signer's public key, as the event holds it; empty when it holds no string. */
+    std::string_view pubkey{};
+    /** The event's `created_at`, in whole seconds since the Unix epoch; nothing when it is not an
+     * integer of 64 bits. */
+    std::optional<std::chrono::sys_seconds> created_at{};
+    /** The event's kind; nothing when it is not an integer of 32 bits. */
+    std::optional<std::uint32_t> kind{};
+    /** Whether the event's one tag is its topic's, `["x", <topic>]`, as Trystero writes it. */
+    bool only_topic_tag = false;
 };
+
+/**
+ * Whether an event's id is its own, the SHA-256 of NIP-01's serialization of the event
+ * `[0,<pubkey>,<created_at>,<kind>,<tags>,<content>]`, which @ref event_id computes.
+ *
+ * A relay sends whatever id it chooses, so an id that is not its event's own may be another
+ * event's. Only an event whose one tag is its topic's and whose public key is 64 lowercase
+ * hexadecimal digits is checked, as Trystero writes every event; any other has no id of its own
+ * here, whatever it says.
+ *
+ * @param e The event, as @ref read_relay_message reads it.
+ * @param memory The resource the escaped topic and content are allocated in, during the call.
+ * @return Whether the id is the hexadecimal of the SHA-256 of the event's serialization.
+ */
+inline bool has_own_id(const event& e,
+                       std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    if (!e.only_topic_tag || !e.created_at.has_value() || !e.kind.has_value() ||
+        !detail::is_nip01_hex(e.pubkey) || !detail::is_nip01_hex(e.id)) {
+        return false;
+    }
+    return detail::is_hex_of(
+        e.id, event_id(e.pubkey, *e.created_at, *e.kind, e.topic, e.content, memory));
+}
 
 /** A relay's `["OK", <id>, <accepted>, <reason>]`: whether it took a published event, as views. */
 struct ok {
@@ -372,64 +449,66 @@ using relay_message = std::variant<event, ok, eose, closed, notice>;
 
 namespace detail {
 
-/** The text a JSON value holds, or an empty view when it holds none. */
-inline std::string_view text_of(const boost::json::value& v) {
-    const auto* s = v.if_string();
-    return s != nullptr ? std::string_view(s->data(), s->size()) : std::string_view();
-}
-
-/** The event of a relay's `["EVENT", <subscription>, <event>]`, as views into `array`. */
-inline std::optional<relay_message> read_event(const boost::json::array& array) {
-    if (array.size() < 3 || !array.at(2).is_object()) {
+/** The event of a relay's `["EVENT", <subscription>, <event>]`, as views into its document. */
+inline std::optional<relay_message> read_event(const json::const_value& array) {
+    const json::const_value o = array[2];
+    if (!o.is_object()) {
         return std::nullopt;
     }
-    const auto& o = array.at(2).get_object();
     event e;
-    e.subscription = text_of(array.at(1));
-    if (const auto* id = o.if_contains("id")) {
-        e.id = text_of(*id);
+    e.subscription = json::text_of(array[1]);
+    e.id = json::text_of(o["id"]);
+    e.content = json::text_of(o["content"]);
+    e.pubkey = json::text_of(o["pubkey"]);
+    if (const auto created_at = o["created_at"].get<std::int64_t>(); created_at.has_value()) {
+        e.created_at = std::chrono::sys_seconds(std::chrono::seconds(*created_at));
     }
-    if (const auto* c = o.if_contains("content")) {
-        e.content = text_of(*c);
+    if (const auto kind = o["kind"].get<std::uint32_t>(); kind.has_value()) {
+        e.kind = *kind;
     }
-    if (const auto* tags = o.if_contains("tags"); tags != nullptr && tags->is_array()) {
-        for (const auto& tag : tags->get_array()) {
-            const auto* pair = tag.if_array();
-            if (pair != nullptr && pair->size() >= 2 && text_of(pair->at(0)) == topic_tag &&
-                pair->at(1).is_string()) {
-                e.topic = text_of(pair->at(1));
-                break;
-            }
+    // An array is its own range of elements, which the handle, outliving the loop, keeps.
+    const json::const_value tags = o["tags"];
+    const auto is_topic_tag = [](const json::const_value& tag) {
+        return tag.is_array() && tag.size() >= 2 && json::text_of(tag[0]) == topic_tag &&
+               tag[1].is_string();
+    };
+    for (const json::const_value tag : tags) {
+        if (is_topic_tag(tag)) {
+            e.topic = json::text_of(tag[1]);
+            break;
         }
     }
+    // NIP-01 hashes the tags whole, so an id is checked only over tags event_id writes.
+    e.only_topic_tag =
+        tags.is_array() && tags.size() == 1 && is_topic_tag(tags[0]) && tags[0].size() == 2;
     return e;
 }
 
 }  // namespace detail
 
 /**
- * The message a parsed relay text holds, as views into `document`.
+ * The message a parsed relay text holds, as views into its document.
  *
- * @param document The parsed text, which the caller keeps alive while it reads the views.
+ * A key written twice is read as JavaScript reads it, the last value, which the parse keeps.
+ *
+ * @param document The root of the parsed text, whose document the caller keeps alive and unchanged
+ * while it reads the views.
  * @return The message, or nothing when Trystero would ignore it: not an array, or not one of the
  * messages of @ref relay_message.
  */
-inline std::optional<relay_message> read_relay_message(const boost::json::value& document) {
-    const auto* array = document.if_array();
-    if (array == nullptr || array->empty() || !array->at(0).is_string()) {
+inline std::optional<relay_message> read_relay_message(const json::const_value& document) {
+    if (!document.is_array() || !document[0].is_string()) {
         return std::nullopt;
     }
-    const auto text_at = [array](std::size_t i) {
-        return i < array->size() ? detail::text_of(array->at(i)) : std::string_view();
-    };
+    const auto text_at = [&document](std::uint64_t i) { return json::text_of(document[i]); };
     const std::string_view type = text_at(0);
     if (type == "EVENT") {
-        return detail::read_event(*array);
+        return detail::read_event(document);
     }
     if (type == "OK") {
         return ok{
             .id = text_at(1),
-            .accepted = array->size() > 2 && array->at(2).is_bool() && array->at(2).get_bool(),
+            .accepted = document[2].value_or(false),
             .reason = text_at(3),
         };
     }

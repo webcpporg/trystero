@@ -16,10 +16,37 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
-* Changed libsecp256k1 to come from `/third_party//secp256k1`, not an external
-  installation: `-sSECP256K1_ROOT` and `-sSECP256K1_EMSCRIPTEN_ROOT` are gone, and
-  `webcpp-secp256k1-tables` chooses its tables.
-* Changed `app::join` to `+[[nodiscard]]+`, so a dropped room or its refusal is diagnosed.
+* *Breaking change:* Changed `native::` and `browser::` to one
+`platform::backend` (link `/webcpp/trystero//platform`), and a backend's
+`now_ms()` and `unix_seconds()` to `steady_now()` and `unix_now()`, of
+`std::chrono`.
+* *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
+runs its `io_context` under a work guard, and calls in through
+`platform::page_call` of `platform/page.hpp`.
+* *Breaking change:* Changed JSON payloads to `webcpp::document::document`
+and `webcpp::document::pmr::document`, sent as `JSON.stringify` writes them,
+for `boost::json::value` and `json_resource`; `payload` has no copy
+assignment, and programs link Boost.Charconv too.
+* *Breaking change:* Changed relays to verify TLS in any verify mode, drop
+binary messages, and refuse URLs a page reads otherwise and TLS contexts a
+page cannot honour.
+* *Breaking change:* Changed `protocol::` to take webcpp::document's values,
+removing `json::parse` and `make_id`; `append_string` returns its error, and
+`proposal::size` is a `std::uint64_t`.
+* *Breaking change:* Changed libsecp256k1 to `/third_party//secp256k1`, with
+`webcpp-secp256k1-tables` for its tables and no `-sSECP256K1_ROOT`, and
+`app::join` to `+[[nodiscard]]+`.
+* Fixed relays hiding a genuine Nostr event, slowing rooms with colliding ids
+or making them read an 8 MiB refusal, and rooms dropping or piling up
+simultaneous offers.
+* Added `room_options::max_json_document_bytes` for a received JSON payload;
+every JSON text is read in the room's resource within bounds, and a self id
+not UTF-8 is replaced by a random one.
+* Fixed unreachable IPv6 relays, signals unlike Trystero's, 32-bit receivers
+misreading 4 GiB offers, pages ignoring a failing `crypto.getRandomValues` or
+dropping early frames, and rooms never binding after a lost presence.
+* Changed the quick start to one native program, and added programs showing
+differences beside Trystero JS's output.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]

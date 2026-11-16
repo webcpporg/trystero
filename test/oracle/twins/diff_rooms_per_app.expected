@@ -1,0 +1,4 @@
+joins 1 to 64: 64 rooms
+join 65: a room
+join 66, while room 1 is leaving: a room
+join 67, once room 1 has left: a room

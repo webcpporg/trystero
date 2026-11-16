@@ -17,8 +17,10 @@
 
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <chrono>
@@ -33,9 +35,10 @@
 #include <utility>
 #include <vector>
 
+#include "cases.hpp"
 #include "require.hpp"
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 namespace detail = webcpp::trystero::detail;
 using namespace std::chrono_literals;
@@ -276,6 +279,33 @@ void what_no_peer_could_use_is_set_aside() {
     BOOST_TEST(log == logged);
 }
 
+// A self id that is not UTF-8, which a signal could not write as a JSON string, is set aside for a
+// random one, reported and logged; one in UTF-8 past ASCII is kept as it is.
+void a_self_id_that_is_not_utf8_is_set_aside() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    for (const std::string_view id :
+         {std::string_view("peer\xff"), std::string_view("\xc3\xa9t\xc3\xa9")}) {
+        lines log;
+        const auto app = make_app(io, net, log, [&](trystero::app_config& c) { c.self_id = id; });
+        const auto reports = app->setup_reports();
+        if (id == "peer\xff") {
+            BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
+            BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::id_alphabet),
+                          std::string_view::npos);
+            const std::vector<std::string> expected{
+                "self_id is not UTF-8, which no peer reads, so the app uses a random one",
+            };
+            BOOST_TEST(std::vector<std::string>(reports.begin(), reports.end()) == expected);
+            BOOST_TEST(log == lines{"app: " + expected[0]});
+        } else {
+            BOOST_TEST_EQ(app->self_id(), id);
+            BOOST_TEST(reports.empty());
+            BOOST_TEST(log.empty());
+        }
+    }
+}
+
 // Every allocation of the app's construction, of its registry, of an adoption, of a stale
 // connection's replacement and end, of the list of live connections and of the last user's release
 // goes through its resource: the default resource refuses every request meanwhile.
@@ -454,7 +484,7 @@ void the_last_user_ends_every_connection() {
 }
 
 // A connection whose channel is closing is not reused; the connection that replaces it ends it
-// first, as Trystero clears a stale peer (C/shared-peer.mjs:142-149), so the rooms hear its end
+// first, as Trystero clears a stale peer (dist/shared-peer.mjs:142-149), so the rooms hear its end
 // before the new one is adopted, and its later close event ends nothing.
 void a_stale_connection_ends_before_its_replacement() {
     asio::io_context io;
@@ -481,7 +511,7 @@ void a_stale_connection_ends_before_its_replacement() {
 
 // A room that adopts a connection to the peer from inside the stale connection's end: the
 // replacement the outer adoption brought is closed, and the room's is the one kept, so the peer
-// has one connection, whose end leaves none (Trystero's owns(), C/shared-peer.mjs:210-212).
+// has one connection, whose end leaves none (Trystero's owns(), dist/shared-peer.mjs:210-212).
 void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -575,7 +605,7 @@ void an_adoption_from_inside_an_end_under_way() {
         m);
     net.channel_capacity = 1;
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         webcpp::test::require(
             BOOST_TEST(b->send(trystero::protocol::room_frame("T9", payload, m))));
     }
@@ -677,20 +707,24 @@ void the_apps_destruction_is_quiet() {
 }  // namespace
 
 int main() {
-    the_configuration_is_copied_and_completed();
-    what_the_configuration_names_is_kept();
-    what_no_peer_could_use_is_set_aside();
-    every_allocation_goes_through_the_apps_resource();
-    the_registry_holds_rooms_by_a_weak_reference();
-    adopt_starts_one_connection_per_peer();
-    the_connections_events_reach_the_rooms();
-    the_last_user_ends_every_connection();
-    a_stale_connection_ends_before_its_replacement();
-    an_adoption_from_inside_a_stale_end_is_the_one_kept();
-    a_nested_adoption_gone_stale_ends_before_the_outer_one();
-    an_adoption_from_inside_an_end_under_way();
-    an_end_takes_only_its_own_entry();
-    a_view_into_the_stale_connection_names_its_replacement();
-    the_apps_destruction_is_quiet();
-    return boost::report_errors();
+    // Each case in a frame of its own, which main's never holds (cases.hpp).
+    using webcpp::test::run_case;
+    run_case(the_configuration_is_copied_and_completed);
+    run_case(what_the_configuration_names_is_kept);
+    run_case(what_no_peer_could_use_is_set_aside);
+    run_case(a_self_id_that_is_not_utf8_is_set_aside);
+    run_case(every_allocation_goes_through_the_apps_resource);
+    run_case(the_registry_holds_rooms_by_a_weak_reference);
+    run_case(adopt_starts_one_connection_per_peer);
+    run_case(the_connections_events_reach_the_rooms);
+    run_case(the_last_user_ends_every_connection);
+    run_case(a_stale_connection_ends_before_its_replacement);
+    run_case(an_adoption_from_inside_a_stale_end_is_the_one_kept);
+    run_case(a_nested_adoption_gone_stale_ends_before_the_outer_one);
+    run_case(an_adoption_from_inside_an_end_under_way);
+    run_case(an_end_takes_only_its_own_entry);
+    run_case(a_view_into_the_stale_connection_names_its_replacement);
+    run_case(the_apps_destruction_is_quiet);
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

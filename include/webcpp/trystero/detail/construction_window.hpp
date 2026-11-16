@@ -9,11 +9,13 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/detail/clock.hpp>
+
+#include <boost/circular_buffer.hpp>
+
 #include <chrono>
 #include <cstddef>
-#include <limits>
 #include <memory_resource>
-#include <vector>
 
 namespace webcpp::trystero::detail {
 
@@ -30,24 +32,27 @@ public:
     /** No construction yet; the times are allocated in `memory`. */
     construction_window(std::size_t limit, std::chrono::milliseconds window,
                         std::pmr::memory_resource* memory)
-        : times_(limit, -std::numeric_limits<double>::infinity(), memory),
-          window_ms_(static_cast<double>(window.count())) {}
+        : times_(limit, memory), window_(window) {}
 
-    /** Takes a construction at `now_ms`, or returns false and takes none when `limit` were
-     * allowed in the window that ends then. */
-    bool take(double now_ms) {
-        if (times_.empty() || now_ms - times_[next_] < window_ms_) {
+    /** Deleted: a boost::circular_buffer moves by swapping its allocator, which std::pmr's
+     * cannot. */
+    construction_window(construction_window&&) = delete;
+    /** Deleted, as the move constructor is. */
+    construction_window& operator=(construction_window&&) = delete;
+
+    /** Takes a construction at `now`, or returns false and takes none when `limit` were allowed in
+     * the window that ends then. */
+    bool take(time_point now) {
+        if (times_.capacity() == 0 || (times_.full() && now - times_.front() < window_)) {
             return false;
         }
-        times_[next_] = now_ms;
-        next_ = (next_ + 1) % times_.size();
+        times_.push_back(now);  // in the oldest's place once full
         return true;
     }
 
 private:
-    std::pmr::vector<double> times_;  // a ring; times_[next_] is the oldest
-    std::size_t next_ = 0;
-    double window_ms_;
+    boost::circular_buffer<time_point, std::pmr::polymorphic_allocator<time_point>> times_;
+    std::chrono::milliseconds window_;
 };
 
 }  // namespace webcpp::trystero::detail

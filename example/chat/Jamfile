@@ -9,7 +9,7 @@
 # site/ beside the program, under the build directory, out of the tree, and
 # prints that directory, for any static server on localhost.
 
-project : requirements <library>/webcpp/trystero//trystero ;
+project : requirements <library>/webcpp/trystero//platform ;
 
 import errors ;
 import notfile ;
@@ -19,8 +19,12 @@ webcpp.targets emscripten ;
 
 path-constant HERE : . ;
 
+# The page's program, linked for the web with a memory that grows
+# (doc: #trystero-building-project).
+# tag::page[]
 webcpp.link chat : chat.cpp
   : <linkflags>-sENVIRONMENT=web <linkflags>-sALLOW_MEMORY_GROWTH : emscripten ;
+# end::page[]
 
 # The page is for a browser, built on emscripten alone: asked for on another
 # toolset, site stops the build saying so, where b2 would otherwise skip it
@@ -35,15 +39,20 @@ rule emscripten-only ( properties * )
     }
 }
 
-# A copy action rather than install, which knows chat-program.js but not the
-# chat-program.wasm em++ writes beside it. The site is site/ beside the
-# program, under its own target path, so that each variant has its own.
+# A copy action rather than install, which knows the program's JavaScript but
+# not the WebAssembly em++ writes beside it. webcpp::asio names the program
+# after its suspension variant (chat-program-60-d-jspi.js) and the JavaScript
+# loads its WebAssembly by that name: the JavaScript is copied as
+# chat-program.js, which the page loads, and the WebAssembly as it is. The
+# site is site/ beside the program, under its own target path, so that each
+# variant has its own.
 actions site
 {
     set -e
     site="`dirname "$(>[1])"`/site"
     mkdir -p "$site"
-    cp "$(>[1])" "`dirname "$(>[1])"`/chat-program.wasm" "$(HERE)/index.html" "$site/"
+    cp "$(>[1])" "$site/chat-program.js"
+    cp "`echo "$(>[1])" | sed 's/\.js$/.wasm/'`" "$(HERE)/index.html" "$site/"
     echo "$site"
 }
 

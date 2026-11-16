@@ -63,6 +63,9 @@ These features of Trystero are not ported, each for its reason:
   Trystero's defaults; and the backend is what a polyfill would be.
 |===
 
+A feature not ported has no program among the differences below: trystero
+has nothing of it to run beside its twin.
+
 [#trystero-differences-behaviour]
 === Where a ported feature behaves otherwise
 
@@ -78,6 +81,8 @@ These features of Trystero are not ported, each for its reason:
 
 | Reuse over a live connection | binds on any signal of that peer id | binds only a peer that advertised the room's token itself, and by reuse only on their first meeting over that connection | a forged announcement must not bind an innocent peer
 
+| A room frame before the peer's presence for the room | kept until the room binds by presence or by reuse | also taken as the peer's advertisement of the room, which binds it | a forged announcement cannot reuse, so a presence that Chrome dropped as the page's channel opened would otherwise leave the room unbound for good; only the peer writes its connection's frames
+
 | Announcements after a peer leaves | restarted after every leave | restarted only when no live connection to that peer remains | over a live connection, rebinding goes through the connection
 
 | Presence after binding | sent when a room registers | also sent again when a room binds by reuse or at its rebinding time | it makes the other side, Trystero JS included, bind at once
@@ -90,9 +95,9 @@ These features of Trystero are not ported, each for its reason:
 
 | Rooms per app | unbounded; a peer advertising a 65th is dropped by the other side | `join` refuses the 65th, counting rooms in their farewell | the 65th would cost every connection of the app
 
-| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection, as today
+| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection
 
-| Relay sockets and the Nostr key | shared by the rooms of the page, topics batched per socket | per room, as today | not part of this decision; invisible to peers; shared through the app in a later change
+| Relay sockets and the Nostr key | shared by the rooms of the page, topics batched per socket | per room | not part of this decision; invisible to peers; shared through the app in a later change
 
 | Relay and ICE configuration | the first room's relays; each negotiating room's RTC configuration | the app's, for every room | one configuration for what the rooms share
 
@@ -102,27 +107,542 @@ These features of Trystero are not ported, each for its reason:
 
 | Renegotiation and media over a shared connection | routed through a control room, streams owned per room; a connection with any media is destroyed when its last room goes | not ported | media is on the roadmap (<<trystero-roadmap>>)
 
-| Passive rooms | presence only for active rooms | not ported | as today
+| Passive rooms | presence only for active rooms | not ported | not ported yet: a room always announces itself
 
 | Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
 
+| A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is checked to be its own, the SHA-256 of its NIP-01 serialization; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id taken unchecked would let a relay hide a genuine event behind a forged one it sends first under the same id, or fill the room's resource with the ids kept
+
+| A relay's text, a signal or a handshake message past its bound | parsed with `JSON.parse` whatever its length, under the relay's own limit | dropped before it is read: 68,608 bytes for a relay's text, 66,560 for a signal, 1,024 for a handshake message (<<trystero-protocol-json>>) | the bounds are those of the fields Trystero sends, so no text a Trystero peer writes is refused; a longer one would cost the room its length to read
+
+| A protocol text of thousands of values | parsed | refused once its image passes twice its bound and 64 KiB | no Trystero message holds more than a few dozen values, and a document's value takes some 200 bytes of image
+
+| A protocol text nested deeper than 16 | parsed | dropped as a malformed one is | no Trystero message nests deeper than 4, a relay's event and its tags, and each level of a parse is a level of recursion, which a hostile relay would otherwise take to 256
+
+| A self id that is not UTF-8 | impossible: a JavaScript string | set aside for a random one, with a configuration report | JSON carries UTF-8 alone, and a signal writes the id as a JSON string
+
+| A JSON payload's number that a double cannot hold: an integer past 2^53^, a decimal of more digits, one past a double's range | sent as the nearest double, and one past a double's range as `null`: a JavaScript number is a double | sent exact, as webcpp::document holds it; a Trystero JS peer reads the nearest double, or `Infinity` | webcpp::document keeps every number exact, and writes each one a double holds as JavaScript does
+
+| A JSON payload nested deeper than 256, or holding a lone surrogate | delivered: `JSON.parse` takes both | not delivered | webcpp::document's defaults: a bounded depth, and strings that are UTF-8
+
+| A JSON payload whose document passes the room's `room_options::max_json_document_bytes`, 64 MiB by default: some 350,000 values of one character | delivered: `JSON.parse` has no bound but the page's memory | not delivered (<<trystero-differences-json-refused>>) | each value of a document is a node of 192 bytes of image, 96 times its text at most, so a program bounds what a peer's JSON may take of its room's resource; every payload within the bound is delivered
+
+| The characters of a random id (the self id, offer ids, nonces, subscription ids) | each of the 62 alike, from `Math.random` | one random byte each, at its remainder in 62: each of the first eight characters from 5 of the 256 bytes, each other from 4, about 5.95 bits a character | the bytes come from the backend's secure randomness, not `Math.random`; the bias costs about 0.005 bits a character, below log2(62)
+
 |===
 
-*`on_peer_join` does not replay the joined peers.* Trystero calls a newly
-assigned `onPeerJoin` with each peer already joined. A room reports a join
-from its executor, after the call to `join` has returned, so a
-handler set right after `join` sees every join; `peers()` lists the
-joined peers for a handler set later.
+Each difference a program can show has one, `example/diff_<topic>.cpp`,
+with its twin, the same program on Trystero 0.26.0, in `test/oracle/twins/`
+(<<trystero-differences-shown>>); <<trystero-differences-unshown>> gives the
+reason of each other row.
 
-*`peers()` lists ids.* Trystero's `getPeers` maps each id to its
-`RTCPeerConnection`. A connection is the backend's, a page's object in the
-browser and libdatachannel's natively, and the room does not hand it out.
+[#trystero-differences-shown]
+=== The differences, shown
 
-*A send to a peer that has not joined fails.* Trystero warns on the console
-and resolves; `async_send` completes with `error::no_such_peer`, since an
-operation that fails says so with its error code.
+Each difference below is shown by a {cpp} program and, but for the last,
+its twin, the same program written for Trystero JS: the part of the {cpp}
+program that differs, the twin whole, then what the twin printed on Trystero
+0.26.0, then what the {cpp} program printed. Both ran, and the outputs are
+theirs: a program and its twin each join over a Nostr relay of their own on
+127.0.0.1, whose URL is in their environment, `TRYSTERO_RELAY_URL`, and two
+peers of one program meet there, as two apps in {cpp} and as two pages in
+Trystero JS (<<trystero-testing-twins>>). The lane `relayed` runs the
+programs again, and the oracle lane the twins, and each fails when its
+program no longer prints what is shown here. The twins of the programs of
+`example/` agree with {n-twins-agreeing} of them, the quick start among them
+(<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
+difference below; {n-examples-without-twin} programs have no twin, the last
+difference below and the chat page, each with its reason in
+`test/oracle/twins/without-twin.txt`.
 
-No example of trystero runs under the build, since each needs the public
-relays or a browser, so none has a twin in Trystero's language, and the
-interop lane, not a twin, compares trystero with Trystero
-(<<trystero-testing-lanes>>).
+[#trystero-differences-already-joined]
+==== Joining a room already joined
+
+Trystero JS:: `joinRoom` with the id of a room the page holds returns that
+room.
+trystero:: `app::join` refuses with `error::already_joined` while a room of
+that id is joined.
+Why:: A `room` is a handle whose destruction leaves the room: two handles of
+one room would leave it twice.
+
+[source]
+----
+include::{examples}/diff_already_joined.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_already_joined.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_already_joined.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_already_joined.expected[]
+----
+
+[#trystero-differences-rooms]
+==== Rooms per app
+
+Trystero JS:: `joinRoom` joins every room a page asks for: the 65th, 66th and
+67th rooms of one `appId` are each a room. It advertises every room of the
+app over every connection of the app, and a peer that is advertised a 65th
+room token over one connection drops that connection, "too many advertised
+rooms" (`dist/shared-peer.mjs:457`).
+trystero:: `app::join` refuses a 65th room with `error::too_many_rooms`. A
+room still in its farewell, the 99 ms of `async_leave`, counts, so another
+room can be joined once that leave has completed.
+Why:: A 65th room would be advertised over every connection of the app, and
+each Trystero JS peer at the other end would drop the connection.
+
+[source]
+----
+include::{examples}/diff_rooms_per_app.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_rooms_per_app.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_rooms_per_app.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_rooms_per_app.expected[]
+----
+
+[#trystero-differences-self-id]
+==== The self id
+
+Trystero JS:: A page has one `selfId`, drawn once when Trystero's module
+loads, and every room of every app announces it, so a peer that meets the
+page in two apps sees the same id in both. Its one manager of shared
+connections keys them by app id, so the two apps share the id and not their
+connections.
+trystero:: Each app draws its own self id and holds its own connections, so a
+peer that meets the program in rooms of two apps sees two ids, and two rooms
+of one app show one. A program that wants one id across apps names it,
+`app_config::self_id`.
+Why:: No static state, so that one process holds several peers; an id shared
+across apps is the program's choice, and never reaches another app's wire
+unless the program chooses it.
+
+[source]
+----
+include::{examples}/diff_self_id.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_self_id.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_self_id.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_self_id.expected[]
+----
+
+[#trystero-differences-passwords]
+==== Passwords across rooms
+
+Trystero JS:: Each `joinRoom` takes its own password, so one page joins a
+lobby with one password and a kitchen with another, and a peer that joins
+both meets the page as one peer, over one connection that carries both
+rooms' password handshakes.
+trystero:: A password is an app's, `app_config::password`, the same for every
+room of the app and never changed: rooms of different passwords are rooms of
+separate apps, each with its own self id and connections, so the other peer
+meets two peers.
+Why:: The sealed negotiation that makes a connection authenticates one
+password before any room of the app reuses it; the wire stays Trystero's.
+
+[source]
+----
+include::{examples}/diff_passwords.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_passwords.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_passwords.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_passwords.expected[]
+----
+
+[#trystero-differences-relay-config]
+==== Relay and ICE configuration
+
+Trystero JS:: The first room a page joins, while it holds no other, opens the
+relays, and every room joined while one remains uses them, whatever relays
+it was given. A connection is made with the RTC configuration of the room
+that negotiates it, and a room that binds over it later shares it. So a
+kitchen joined with a second configuration after the lobby uses the lobby's
+relays and the lobby's ICE servers.
+trystero:: Relays and ICE servers are the app's, for every room of the app: a
+room with another configuration is a room of another app, which uses its
+own. A room hands out neither its relays' sockets nor its connections, so
+the program gives each app a backend that records what the app asks of the
+platform's.
+Why:: One configuration for what the rooms of an app share.
+
+[source]
+----
+include::{examples}/diff_relay_config.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_relay_config.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_relay_config.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_relay_config.expected[]
+----
+
+[#trystero-differences-relay-sockets]
+==== Relay sockets
+
+Trystero JS:: A page opens one WebSocket per relay, which every room of the
+page shares, its topics batched on it; `getRelaySockets` returns them.
+trystero:: Each room opens its own. The program counts the WebSockets its app
+asks of the backend, since a room hands out none.
+Why:: Not part of the decision that shares connections between rooms; peers
+see no difference. The rooms of an app may share their relays' sockets in a
+later change.
+
+[source]
+----
+include::{examples}/diff_relay_sockets.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_relay_sockets.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_relay_sockets.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_relay_sockets.expected[]
+----
+
+[#trystero-differences-peer-join]
+==== `on_peer_join` does not replay the joined peers
+
+Trystero JS:: A newly set `onPeerJoin` is called at once with each peer
+already joined.
+trystero:: A room reports a join from its executor, after the call to `join`
+has returned, to the handler set then, so a handler set right after `join`
+sees every join; `peers()` lists the joined peers for a handler set later.
+Why:: A join is an event, reported once; the peers joined are the room's
+state, which `peers()` reads.
+
+[source]
+----
+include::{examples}/diff_peer_join.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_peer_join.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_peer_join.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_peer_join.expected[]
+----
+
+[#trystero-differences-peers]
+==== `peers()` lists ids
+
+Trystero JS:: `getPeers` returns an object that maps each joined peer's id to
+its `RTCPeerConnection`, of the class given as `rtcPolyfill` when one is
+given.
+trystero:: `peers()` returns the joined peers' ids.
+Why:: A connection is the backend's, webcpp::webrtc's over a page's object in
+the browser and over libdatachannel's natively, shared by the app's rooms,
+and the room does not hand it out.
+
+[source]
+----
+include::{examples}/diff_peers.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_peers.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_peers.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_peers.expected[]
+----
+
+[#trystero-differences-send]
+==== A send to a peer that has not joined fails
+
+Trystero JS:: The send warns on the console, "no peer with id ... found",
+and resolves.
+trystero:: `async_send` completes with `error::no_such_peer`. With several
+targets, the send still goes to the others, and completes with the first
+failure.
+Why:: An operation that fails says so with its error code, which a program
+can act on, and a console's warning is not.
+
+[source]
+----
+include::{examples}/diff_send_to_absent_peer.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_send_to_absent_peer.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_send_to_absent_peer.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_send_to_absent_peer.expected[]
+----
+
+[#trystero-differences-json-numbers]
+==== A JSON payload's numbers that a double cannot hold
+
+Trystero JS:: A JSON payload is sent as `JSON.stringify` writes a JavaScript
+value, whose numbers are doubles: `JSON.parse` reads an integer past 2^53^,
+or a decimal of more digits than a double keeps, as the nearest double, and a
+number past a double's range as `Infinity`, which `JSON.stringify` writes as
+`null`.
+trystero:: A `webcpp::document::document` holds each number exactly, and a room
+sends it as the document writes it, each number a double holds as JavaScript
+writes it. A Trystero JS peer that receives the payload reads the nearest
+double, or `Infinity`.
+Why:: webcpp::document keeps every number exact, and writes each one a double
+holds as JavaScript does.
+
+[source]
+----
+include::{examples}/diff_json_numbers.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_json_numbers.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_json_numbers.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_json_numbers.expected[]
+----
+
+[#trystero-differences-json-refused]
+==== A JSON payload nested deeper than 256, holding a lone surrogate, or past the room's bound
+
+Trystero JS:: `JSON.parse` reads a payload nested deeper than 256, a string
+that holds a lone surrogate, `"\ud800"`, as `JSON.stringify` writes one, and
+an array of any length, so a room delivers all three.
+trystero:: A room reads a JSON payload with webcpp::document's defaults, into
+an image of at most `room_options::max_json_document_bytes`, 64 MiB by
+default, and delivers none: a text nested deeper than 256 is refused, and so
+is a lone surrogate, and an array of 1,000 zeros, whose nodes need some
+190 KB, in a room whose bound is 64 KiB. The room goes on, and delivers the
+payloads sent after them.
+Why:: webcpp::document's defaults: a bounded depth, and strings that are
+UTF-8; and each value of a document is a node of 192 bytes of image, 96
+times its text at most, so a program bounds what a peer's JSON may take of
+its room's resource. Every payload within the bound is delivered: its image
+is first bounded by 96 times its length and 64 KiB, which every valid text
+fits (<<trystero-protocol-json>>).
+
+The program's room sets the bound:
+
+[source]
+----
+include::{examples}/diff_json_refused.cpp[tag=bound,indent=0]
+----
+
+A Trystero JS page sends such payloads, and no {cpp} peer sends a lone
+surrogate, which a document's UTF-8 strings cannot hold. So the program's
+other peer sends what a page sends: each payload's JSON text, as
+`JSON.stringify` writes the value, as a text payload, which the backend its
+app is given marks as JSON on the wire.
+
+[source]
+----
+include::{examples}/diff_json_refused.cpp[tag=example,indent=0]
+----
+
+.The twin, on Trystero JS
+[source,javascript]
+----
+include::{twins}/diff_json_refused.mjs[lines=7..]
+----
+
+.Trystero JS prints
+[listing]
+----
+include::{twins}/diff_json_refused.expected[]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_json_refused.expected[]
+----
+
+[#trystero-differences-self-id-not-utf8]
+==== A self id that is not UTF-8
+
+Trystero JS:: Has none: it draws its `selfId` when its module loads and takes
+none from a program.
+trystero:: An app given a self id that is not UTF-8 sets it aside for 20
+random characters, and reports `error::invalid_configuration` to
+`app::on_error`.
+Why:: JSON carries UTF-8 alone, and a signal writes the id as a JSON string.
+
+This program has no twin, since no program of Trystero's can give it an id
+(`test/oracle/twins/without-twin.txt`), and it joins no room, so it needs no
+relay: it runs with the ordinary examples.
+
+[source]
+----
+include::{examples}/diff_self_id_not_utf8.cpp[tag=example,indent=0]
+----
+
+.trystero prints
+[listing]
+----
+include::{examples}/diff_self_id_not_utf8.expected[]
+----
+
+[#trystero-differences-unshown]
+=== The differences no program shows
+
+These rows of <<trystero-differences-behaviour>> have no program, each for
+its reason.
+
+[cols="2,5",options="header"]
+|===
+| Behaviour | Why no program shows it
+
+| A peer kicked from a room, or that kicked us, over a live connection; frames after the higher id's own kick; a connection whose last room was kicked
+| A kick follows a room proof that fails over a live connection, and two {cpp} apps never send one: an app has one password for every room, and apps of different passwords share no connection. A Trystero JS page that mixes passwords does, so the interop lane's wrong room proofs show trystero's side, against a page and not a twin (<<trystero-testing-lanes>>), and the `shared` test holds the rest over the memory relays.
+
+| Reuse over a live connection
+| Only a forged announcement shows it: a third party that publishes, in a peer's name, a room token that peer never advertised, which neither API publishes. The `shared` test forges one over the memory relays.
+
+| A room frame before the peer's presence for the room
+| Both APIs advertise a room before its first frame on a connection, so only a presence lost on the way shows it: Chrome drops it, rarely, when a page sends as its answering channel opens, and the interop lane's delayed-open scenario met it; the `connection` and `shared` tests drop it over the memory relays.
+
+| Announcements after a peer leaves
+| What differs is what a room publishes to its relays after a peer leaves it while their connection stays, which neither API reports: the peers see the same joins and leaves.
+
+| Presence after binding
+| A frame on the connection, which neither API reports; what it changes is how soon the other side binds, a time that no two runs print alike.
+
+| An answer to an earlier challenge
+| It needs a handshake answer that arrives after a newer challenge, a race between two bindings that no program sets up on a real network; the `shared` test holds it over the memory relays, whose frames it holds and releases.
+
+| Relay sockets and the Nostr key: the key
+| Which key signs a room's events only the relay sees; neither a room nor a peer reports it. The sockets are shown (<<trystero-differences-relay-sockets>>).
+
+| `idle_timeout`
+| Not a behaviour: both keep an idle connection 123,333 ms, and Trystero JS takes the same setting under its test-only name, so a program and its twin would agree.
+
+| Frames waiting for a bound room's handler
+| A state Trystero JS passes through between a binding and its room's data handler, which its rooms set as they bind; no program reaches it through the API.
+
+| Renegotiation and media over a shared connection; passive rooms
+| Not ported: trystero has nothing of them to run.
+
+| Crossed duplicate connections
+| Not a difference: both keep the connection registered first.
+
+| A Nostr event a relay repeats, or that several relays carry
+| What an event changes when it comes twice is the signaling's work, offers and answers made again, which neither API reports: a program sees one join either way, and over honest relays an event's id is always its own. The `protocol` and `room` tests hold the dedup, forged ids included.
+
+| A relay's text, a signal or a handshake message past its bound; a protocol text of thousands of values, or nested deeper than 16
+| No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` and `signaling` tests hold the bounds.
+
+| The characters of a random id
+| A bias of about 0.005 bits a character, which only a count over many ids shows, and a count of random characters prints something else on every run.
+|===

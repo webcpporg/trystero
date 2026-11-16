@@ -13,8 +13,10 @@
 
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <chrono>
@@ -31,7 +33,7 @@
 
 #include "require.hpp"
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 namespace detail = webcpp::trystero::detail;
 using namespace std::chrono_literals;
@@ -272,12 +274,47 @@ void a_withdrawn_token_drops_its_kept_frames() {
     BOOST_TEST_EQ(p.b.c->take_kept("T3").size(), 1U);
 }
 
+// A room frame the app keeps advertises its token, as the remote's presence does, and reports no
+// presence: only the remote writes to its connection, and its presence for a room comes once per
+// connection, which a page can lose (Chrome drops what a page sends on an answering channel as it
+// opens). A frame the app does not keep advertises nothing.
+void a_kept_frame_advertises_its_token() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    auto* m = std::pmr::get_default_resource();
+    const std::array<std::uint8_t, 2> action{2, 0};
+    p.a.c->send(trystero::protocol::room_frame("nobody", action, m));
+    p.a.c->send(trystero::protocol::room_frame("T2", action, m));
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 1; })));
+    BOOST_TEST(p.b.c->advertised("T2"));
+    BOOST_TEST(!p.b.c->advertised("nobody"));
+    BOOST_TEST(p.b.presence == (std::vector<std::string>{"+T1"}));
+}
+
+// A kept frame never advertises a 65th token, nor ends the connection as a 65th presence does:
+// it is kept, and its token is not advertised.
+void a_kept_frame_never_advertises_a_65th_token() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    auto* m = std::pmr::get_default_resource();
+    for (std::size_t i = 0; i < 63; ++i) {
+        p.a.c->send(trystero::protocol::presence_frame("X" + std::to_string(i), true, m));
+    }
+    const std::array<std::uint8_t, 2> action{2, 0};
+    p.a.c->send(trystero::protocol::room_frame("T2", action, m));
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 1; })));
+    BOOST_TEST_EQ(p.b.presence.size(), 64U);
+    BOOST_TEST(!p.b.c->advertised("T2"));
+    BOOST_TEST(p.b.ended.empty());
+    BOOST_TEST(p.b.c->live());
+}
+
 void a_65th_advertised_token_ends_the_connection() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
     auto* m = std::pmr::get_default_resource();
     // T1 and 63 more: 64 tokens, the most a remote may advertise.
-    for (int i = 0; i < 63; ++i) {
+    for (std::size_t i = 0; i < 63; ++i) {
         p.a.c->send(trystero::protocol::presence_frame("X" + std::to_string(i), true, m));
     }
     webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.presence.size() == 64; })));
@@ -308,7 +345,7 @@ void kept_frames_are_bounded_and_dropped_after_10_s() {
     const std::vector<std::uint8_t> action(trystero::protocol::max_action_frame_bytes, 0);
     const auto frame = trystero::protocol::room_frame(token, action, m);
     BOOST_TEST_EQ(frame.size(), 16'515U);
-    for (int i = 0; i < 65; ++i) {
+    for (std::size_t i = 0; i < 65; ++i) {
         p.a.c->send(trystero::protocol::room_frame(token, action, m));
     }
     BOOST_TEST(run_until(p.io, [&] { return p.b.kept.size() == 64; }));
@@ -345,7 +382,7 @@ void drain_turns_follow_the_order_of_waiting() {
     auto* m = std::pmr::get_default_resource();
     // Frames the other side drops, past the threshold: 5 x 16,000 bytes.
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         BOOST_TEST(t1->send(trystero::protocol::room_frame("nobody", payload, m)));
     }
     webcpp::test::require(
@@ -379,7 +416,7 @@ void the_end_fails_every_drain_waiter() {
     p.net.channel_capacity = 1;
     auto* m = std::pmr::get_default_resource();
     const std::vector<std::uint8_t> payload(16'000, 0);
-    for (int i = 0; i < 5; ++i) {
+    for (std::size_t i = 0; i < 5; ++i) {
         t1->send(trystero::protocol::room_frame("nobody", payload, m));
     }
     std::vector<std::string> turns;
@@ -729,7 +766,7 @@ void taking_every_kept_frame_restarts_the_window() {
 }
 
 // A withdrawal that leaves nothing kept stops the window too, as Trystero's syncDataTimers does
-// (C/shared-peer.mjs:417-422, 468-472).
+// (dist/shared-peer.mjs:417-422, 468-472).
 void a_withdrawal_that_empties_the_kept_frames_restarts_the_window() {
     const std::array<std::string_view, 1> tokens{"T1"};
     link_pair p(tokens, tokens);
@@ -830,6 +867,8 @@ int main() {
     a_withdrawn_token_is_forgotten();
     a_bound_token_reaches_its_binding_and_another_is_kept();
     a_withdrawn_token_drops_its_kept_frames();
+    a_kept_frame_advertises_its_token();
+    a_kept_frame_never_advertises_a_65th_token();
     a_65th_advertised_token_ends_the_connection();
     a_malformed_frame_ends_the_connection();
     kept_frames_are_bounded_and_dropped_after_10_s();
@@ -855,5 +894,6 @@ int main() {
     kept_may_take_its_frame();
     the_end_closes_the_connection_and_frees_the_kept_frames();
     a_disconnection_ends_after_5_s_unless_it_reconnects();
-    return boost::report_errors();
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

@@ -10,9 +10,11 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/replay_cache.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
@@ -20,7 +22,7 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/json/storage_ptr.hpp>
+#include <webcpp/document/parse.hpp>
 
 #include <algorithm>
 #include <array>
@@ -28,14 +30,15 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
-#include <limits>
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -48,8 +51,9 @@ namespace webcpp::trystero::detail {
  * | announcement | the lower peer id offers on the relay that carried it; the higher one asks the |
  * |              | other to offer by announcing itself on the other's topic, at most once a       |
  * |              | second per peer and once in 5.3 s per relay for the whole room                 |
- * | offer        | answers it, unless it already answers one, or offers itself and its id is      |
- * |              | lower                                                                          |
+ * | offer        | answers it, unless it already answers or opens one, or offers itself and its   |
+ * |              | id is lower; the same offer through another relay, while it is opened, has the |
+ * |              | answer sent there too                                                          |
  * | answer       | applies it to the matching offer                                               |
  * | candidate    | adds it to the connection its offer id names, or keeps it until that           |
  * |              | connection has a remote description                                            |
@@ -73,14 +77,15 @@ namespace webcpp::trystero::detail {
  * for as long as it keeps at it, though it can neither read nor join anything, nor touch joined
  * peers. Only a wire that seals the offer id and both peer ids closes this. The negotiations under
  * way are bounded (`max_unconnected_peers`): a negotiation is dropped when its offer and its answer
- * expire without a connection, an idle one gives its place to a new peer, and beyond the bound a
- * new peer is refused, logged once. The connections made are bounded too
- * (`max_connections_per_window`), however soon they end, since a browser counts a closed one until
- * its garbage collector runs. Joined peers, memory and connections stay safe under a flood; new
- * peers do not: a flooder who keeps sending fresh ids takes each place, and each connection of the
- * window, as it frees, and keeps new peers out for as long as the flood lasts. A joined peer whose
- * connection drops is a new peer when it comes back, with the same id, and is kept out the same
- * way: there is no renegotiation of a joined peer's connection. Trystero bounds none of this.
+ * expire without a connection, an idle one (no connection, no offer being opened) gives its place
+ * to a new peer, and beyond the bound a new peer is refused, logged once. The connections made are
+ * bounded too (`max_connections_per_window`), however soon they end, since a browser counts a
+ * closed one until its garbage collector runs. Joined peers, memory and connections stay safe
+ * under a flood; new peers do not: a flooder who keeps sending fresh ids takes each place, and each
+ * connection of the window, as it frees, and keeps new peers out for as long as the flood lasts. A
+ * joined peer whose connection drops is a new peer when it comes back, with the same id, and is
+ * kept out the same way: there is no renegotiation of a joined peer's connection. Trystero bounds
+ * none of this.
  *
  * Tip: a peer id is copied once, into the map's key, and every asynchronous handler captures its
  * own copy, in the room's resource, because it may outlive the entry. The entry points a handler
@@ -91,7 +96,8 @@ class signaling : public std::enable_shared_from_this<signaling> {
 public:
     /**
      * The most negotiations a room holds at once with peers it is not connected to, each with at
-     * most two pending connections: a peer beyond it waits for its next announcement.
+     * most two pending connections: a peer beyond it waits for its next announcement, or its offer
+     * sent again. It bounds the offers opened at once too, one per negotiation.
      */
     static constexpr std::size_t max_unconnected_peers = 32;
 
@@ -131,18 +137,16 @@ public:
             failed;
     };
 
-    /** Every allocation goes through `memory`, the parsed signals through `json`, a storage of that
-     * resource, but the peer connections, which are made in `connection_memory`, the app's: the
+    /** Every allocation goes through `memory`, the parsed signals' documents included, but the
+     * peer connections, which are made in `connection_memory`, the app's: the
      * one a negotiation opens becomes the app's connection. */
     signaling(backend::factory& factory, std::shared_ptr<backend::sealer> sealer,
               std::string_view app_id, std::string_view room_id, std::string_view self_id,
               std::span<const backend::ice_server> ice_servers, callbacks cb, logger log,
-              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory,
-              boost::json::storage_ptr json)
+              std::pmr::memory_resource* memory, std::pmr::memory_resource* connection_memory)
         : factory_(factory),
           memory_(memory),
           connection_memory_(connection_memory),
-          json_(std::move(json)),
           sealer_(std::move(sealer)),
           app_id_(app_id, memory),
           room_id_(room_id, memory),
@@ -157,9 +161,12 @@ public:
         if (closed_) {
             return;
         }
-        boost::system::error_code ec;
-        const auto document = protocol::json::parse(content, json_, ec);
-        const auto message = ec ? std::nullopt : protocol::read_signal(document);
+        // A signal past its bound is dropped as a malformed one is, before it is read.
+        const auto document = webcpp::document::parse(
+            content, protocol::json::protocol_limits(protocol::max_parsed_signal_bytes),
+            std::pmr::polymorphic_allocator<std::byte>(memory_));
+        const auto message =
+            document.has_value() ? protocol::read_signal(document->root()) : std::nullopt;
         if (!message || message->peer_id == self_id_) {
             return;
         }
@@ -171,14 +178,14 @@ public:
             if (!make_room_for(message->peer_id)) {
                 return;
             }
-            it = peers_.try_emplace(std::pmr::string(message->peer_id, memory_), allocator()).first;
+            it = admit(message->peer_id);
         }
         const std::string_view peer = it->first;
         auto& n = it->second;
         if (n.connected) {
             return;
         }
-        n.last_ms = factory_.now_ms();
+        n.last_message = steady_now(factory_);
         if (message->is_announcement()) {
             on_announcement(relay, peer, n);
         } else if (!message->offer.empty()) {
@@ -204,7 +211,7 @@ public:
     void bound(std::string_view peer) {
         auto it = peers_.find(peer);
         if (it == peers_.end()) {
-            it = peers_.try_emplace(std::pmr::string(peer, memory_), allocator()).first;
+            it = admit(peer);
         }
         reset_offer(it->second);
         reset_answer(it->second);
@@ -229,8 +236,11 @@ private:
     static constexpr auto answering_ttl = std::chrono::milliseconds(23'333);
     static constexpr auto first_offer_retry = std::chrono::milliseconds(2'000);
     static constexpr auto later_offer_retry = std::chrono::milliseconds(4'800);
-    static constexpr int max_offer_retries = 2;
+    static constexpr std::uint32_t max_offer_retries = 2;
     static constexpr std::size_t max_pending_candidates = 128;
+    /** The least time between two counter-announcements to one peer on a relay, and between two
+     * replays of an answer on a relay: Trystero's second, for each. */
+    static constexpr auto per_peer_interval = std::chrono::milliseconds(1'000);
     /** The least time between two counter-announcements of the room on a relay: Trystero's
      * `announceIntervalMs`, the pace at which it announces. */
     static constexpr auto counter_announce_interval = std::chrono::milliseconds(5'333);
@@ -250,8 +260,12 @@ private:
     };
 
     struct negotiation {
-        explicit negotiation(pmr_allocator a)
-            : offer(a),
+        negotiation(pmr_allocator a, std::uint64_t admitted)
+            : admitted(admitted),
+              opening_offer_id(a),
+              opening_offer(a),
+              opening_relays(a),
+              offer(a),
               offer_id(a),
               sealed_offer(a),
               offer_relays(a),
@@ -264,12 +278,23 @@ private:
               answer_messages(a),
               answer_relays(a),
               answer_candidates(a),
-              answer_replayed_ms(a),
-              counter_announced_ms(a) {}
+              answer_replayed(a),
+              counter_announced(a) {}
 
+        // Its place in the order the room took its negotiations in: of two idle as long, the one
+        // taken first gives its place first, and an opened offer finds by it the very negotiation
+        // it came to, not a later one with the same peer.
+        std::uint64_t admitted;
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
-        double last_ms = 0;
+        time_point last_message{};
+        // The peer's offer the sealer is opening, one at a time, as Trystero answers one at a
+        // time: its id, its sealed text, empty when none is being opened, and the relays it came
+        // through, where the answer goes. Until it is opened, the negotiation is not idle, and
+        // keeps its place.
+        std::pmr::string opening_offer_id;
+        std::pmr::string opening_offer;
+        std::pmr::set<std::size_t> opening_relays;
         // Whether a signal of this negotiation that did not open was reported.
         bool failed_open_reported = false;
         // Whether an offer or an answer of this negotiation that the room had used before was
@@ -285,7 +310,7 @@ private:
             offer_candidates;  // plaintext, gathered before the offer went out
         std::shared_ptr<backend::timer> offer_expiry;
         std::pmr::map<std::size_t, std::shared_ptr<backend::timer>> offer_retry;
-        std::pmr::map<std::size_t, int> offer_retries;
+        std::pmr::map<std::size_t, std::uint32_t> offer_retries;
         // Our answer to their offer.
         side answer;
         std::pmr::string answered_offer_id;
@@ -296,11 +321,13 @@ private:
         std::pmr::set<std::size_t> answer_relays;
         std::pmr::vector<std::pmr::string>
             answer_candidates;  // plaintext, gathered before the answer went out
-        std::pmr::map<std::size_t, double> answer_replayed_ms;
+        std::pmr::map<std::size_t, time_point> answer_replayed;
         std::shared_ptr<backend::timer> answer_expiry;
         // Counter-announcements, per relay.
-        std::pmr::map<std::size_t, double> counter_announced_ms;
+        std::pmr::map<std::size_t, time_point> counter_announced;
     };
+
+    using negotiations = std::pmr::map<std::pmr::string, negotiation, std::less<>>;
 
     pmr_allocator allocator() const { return {memory_}; }
 
@@ -316,45 +343,62 @@ private:
         return protocol::peer_topic(app_id_, room_id_, peer, memory_);
     }
 
-    std::pmr::string make_id(std::size_t n) {
-        std::array<std::uint8_t, 32> random{};
-        factory_.random(std::span(random).first(n));
-        std::pmr::string id(n, '0', memory_);
-        for (std::size_t i = 0; i < n; ++i) {
-            id[i] = protocol::id_alphabet[random[i] % protocol::id_alphabet.size()];
-        }
-        return id;
-    }
-
     negotiation* find(std::string_view peer) {
         const auto it = peers_.find(peer);
         return it == peers_.end() ? nullptr : &it->second;
     }
 
+    /** The negotiation with `peer` that the room took in `admitted`-th, if it still holds it. */
+    negotiation* find(std::string_view peer, std::uint64_t admitted) {
+        auto* n = find(peer);
+        return n != nullptr && n->admitted == admitted ? n : nullptr;
+    }
+
+    /** Starts a negotiation with `peer`, which has none. */
+    negotiations::iterator admit(std::string_view peer) {
+        return peers_.try_emplace(std::pmr::string(peer, memory_), allocator(), admissions_++)
+            .first;
+    }
+
+    /**
+     * Whether a negotiation waits on nothing: it is not connected, holds no connection, and no
+     * offer of its peer is being opened.
+     */
+    static bool idle(const negotiation& n) {
+        return !n.connected && !n.offer.pc && !n.answer.pc && n.opening_offer.empty();
+    }
+
     /**
      * Whether a negotiation may start with a new peer: the room holds fewer than
-     * `max_unconnected_peers` unconnected negotiations, or one of them holds no connection and is
-     * dropped, the one idle longest. Otherwise the peer is refused, and logged once.
+     * `max_unconnected_peers` unconnected negotiations, or one of them is idle and is dropped, the
+     * one idle longest, and of those idle as long the one taken first. Otherwise the peer is
+     * refused, and logged once.
+     *
+     * Tip: the sealer opens an offer in a step that takes its time (Web Crypto's, in a page), and
+     * new ids keep arriving meanwhile, at one instant of a page's coarse clock, where no
+     * negotiation is idle longer than another: an offer being opened holds its negotiation's
+     * place, so that none of them has the room drop it unopened.
      */
     bool make_room_for(std::string_view peer) {
         std::size_t unconnected = 0;
-        auto idle = peers_.end();
+        auto evicted = peers_.end();
         for (auto it = peers_.begin(); it != peers_.end(); ++it) {
             const auto& n = it->second;
             if (n.connected) {
                 continue;
             }
             ++unconnected;
-            if (!n.offer.pc && !n.answer.pc &&
-                (idle == peers_.end() || n.last_ms < idle->second.last_ms)) {
-                idle = it;
+            if (idle(n) && (evicted == peers_.end() ||
+                            std::tie(n.last_message, n.admitted) <
+                                std::tie(evicted->second.last_message, evicted->second.admitted))) {
+                evicted = it;
             }
         }
         if (unconnected < max_unconnected_peers) {
             return true;
         }
-        if (idle != peers_.end()) {
-            peers_.erase(idle);
+        if (evicted != peers_.end()) {
+            peers_.erase(evicted);
             return true;
         }
         if (first_refusal(peer)) {
@@ -381,7 +425,7 @@ private:
      * null beyond it, logged once per peer, or when the backend makes none, reported.
      */
     std::shared_ptr<backend::peer_connection> make_connection(std::string_view peer) {
-        if (!constructions_.take(factory_.now_ms())) {
+        if (!constructions_.take(steady_now(factory_))) {
             if (first_refusal(peer)) {
                 log_("signal", "refusing ", peer, ": ", max_connections_per_window,
                      " connections were made in the last ", offer_ttl.count(),
@@ -396,10 +440,9 @@ private:
         return pc;
     }
 
-    /** Drops a negotiation that holds no connection any more and is not connected. */
+    /** Drops a negotiation that is idle: no connection, and no offer being opened. */
     void drop_if_done(std::string_view peer) {
-        if (const auto it = peers_.find(peer); it != peers_.end() && !it->second.connected &&
-                                               !it->second.offer.pc && !it->second.answer.pc) {
+        if (const auto it = peers_.find(peer); it != peers_.end() && idle(it->second)) {
             peers_.erase(it);
         }
     }
@@ -412,20 +455,19 @@ private:
             if (n.offer.pc) {
                 return;
             }
-            const double now = factory_.now_ms();
-            if (const auto it = n.counter_announced_ms.find(relay);
-                it != n.counter_announced_ms.end() && now - it->second < 1000) {
+            const auto now = steady_now(factory_);
+            if (const auto it = n.counter_announced.find(relay);
+                it != n.counter_announced.end() && now - it->second < per_peer_interval) {
                 return;
             }
             // Room-wide too: a flood of fresh ids below ours must not have the relay rate-limit
             // the room. A peer not asked offers on our next announcement instead.
-            if (const auto it = counter_announced_ms_.find(relay);
-                it != counter_announced_ms_.end() &&
-                now - it->second < static_cast<double>(counter_announce_interval.count())) {
+            if (const auto it = counter_announced_.find(relay);
+                it != counter_announced_.end() && now - it->second < counter_announce_interval) {
                 return;
             }
-            counter_announced_ms_[relay] = now;
-            n.counter_announced_ms[relay] = now;
+            counter_announced_[relay] = now;
+            n.counter_announced[relay] = now;
             log_("signal", "announcement from ", peer, ": their id is lower, asking them to offer");
             cb_.publish(relay, peer_topic(peer),
                         protocol::write_signal({.peer_id = self_id_}, {}, memory_));
@@ -444,7 +486,7 @@ private:
     }
 
     void start_offer(std::string_view peer, negotiation& n) {
-        n.offer_id = make_id(protocol::offer_id_size);
+        n.offer_id = random_id(factory_, protocol::offer_id_size, memory_);
         n.offer.pc = make_connection(peer);
         if (!n.offer.pc) {
             reset_offer(n);
@@ -572,31 +614,56 @@ private:
         if (n.offer.pc && self_id_ < peer) {
             return;  // we lead; our offer stands
         }
+        // One offer of a peer is opened at a time, as Trystero answers one at a time, ignoring
+        // another until the first fails (dist/signal-handler.mjs:264-323): so offers sent in one
+        // name hold one open and one copy. The same offer through another relay has the answer
+        // sent there too, as Trystero's replay records its relay.
+        if (!n.opening_offer.empty()) {
+            if (offer == n.opening_offer && offer_id == n.opening_offer_id) {
+                n.opening_relays.insert(relay);
+            }
+            return;
+        }
         // Nothing changes until the offer opens with the room key: a forged one, which anyone who
         // reads the relays can send in any peer's name, makes no connection and resets no offer.
+        // Until it opens, the negotiation keeps its place.
+        n.opening_offer_id = offer_id;
+        n.opening_offer = offer;
+        n.opening_relays.insert(relay);
         const auto weak = weak_from_this();
-        sealer_->open(
-            offer, bind<void(boost::system::error_code, std::string_view)>(
-                       [weak, relay, peer = copy(peer), offer_id = copy(offer_id),
-                        offer = copy(offer)](boost::system::error_code ec, std::string_view sdp) {
-                           if (const auto self = weak.lock()) {
-                               self->on_offer_opened(relay, peer, offer_id, offer, ec, sdp);
-                           }
-                       }));
+        sealer_->open(n.opening_offer, bind<void(boost::system::error_code, std::string_view)>(
+                                           [weak, peer = copy(peer), admitted = n.admitted](
+                                               boost::system::error_code ec, std::string_view sdp) {
+                                               if (const auto self = weak.lock()) {
+                                                   self->on_offer_opened(peer, admitted, ec, sdp);
+                                               }
+                                           }));
     }
 
     /**
-     * Answers an offer the sealer opened: makes the answering connection and applies the offer as
-     * its remote description. An offer that did not open changes nothing.
+     * Answers the offer the sealer opened for the negotiation taken in `admitted`-th: makes the
+     * answering connection and applies the offer as its remote description, and the next offer of
+     * the peer may be opened. An offer that did not open changes nothing, nor one whose
+     * negotiation the room no longer holds: the peer left, or the room closed.
      */
-    void on_offer_opened(std::size_t relay, std::string_view peer, std::string_view offer_id,
-                         std::string_view offer, boost::system::error_code ec,
-                         std::string_view sdp) {
-        auto* found = find(peer);
-        if (found == nullptr || found->connected) {
+    void on_offer_opened(std::string_view peer, std::uint64_t admitted,
+                         boost::system::error_code ec, std::string_view sdp) {
+        auto* found = find(peer, admitted);
+        if (found == nullptr) {
             return;
         }
         auto& n = *found;
+        // Taken out of the negotiation, which then opens none: the same resource on both sides,
+        // so each swap only exchanges what the two hold.
+        std::pmr::string offer_id(memory_);
+        std::pmr::string offer(memory_);
+        std::pmr::set<std::size_t> relays(memory_);
+        offer_id.swap(n.opening_offer_id);
+        offer.swap(n.opening_offer);
+        relays.swap(n.opening_relays);
+        if (n.connected) {
+            return;
+        }
         if (ec) {
             failed_open(peer, n, "offer");
             return;
@@ -608,21 +675,35 @@ private:
             replayed(peer, n, "offer");
             return;
         }
-        auto made = make_connection(peer);
+        const auto made = make_connection(peer);
         if (!made) {
             return;
         }
+        start_answer(peer, n, made, std::move(offer_id), std::move(offer), relays, sdp);
+    }
+
+    /**
+     * Answers the offer `offer_id`, sealed as `offer` and opened as `sdp`, through the connection
+     * `pc`: it becomes the negotiation's answering one, the offer its remote description, and the
+     * answer goes through every relay the offer came through.
+     */
+    void start_answer(std::string_view peer, negotiation& n,
+                      const std::shared_ptr<backend::peer_connection>& pc,
+                      std::pmr::string offer_id, std::pmr::string offer,
+                      const std::pmr::set<std::size_t>& relays, std::string_view sdp) {
         used_.insert(sdp);
         if (n.offer.pc) {
             reset_offer(n);
         }
         log_("signal", "offer ", offer_id, " from ", peer);
-        n.answer.pc = std::move(made);
-        n.answered_offer_id = offer_id;
-        n.answered_offer = offer;
-        n.answer_relays.insert(relay);
-        n.answer_replayed_ms[relay] = factory_.now_ms();
-        const auto pc = n.answer.pc;
+        n.answer.pc = pc;
+        n.answered_offer_id = std::move(offer_id);
+        n.answered_offer = std::move(offer);
+        const auto now = steady_now(factory_);
+        for (const auto relay : relays) {
+            n.answer_relays.insert(relay);
+            n.answer_replayed[relay] = now;
+        }
         const auto weak = weak_from_this();
         pc->set_handlers({
             .ice_candidate = bind<void(std::string_view)>(
@@ -672,13 +753,13 @@ private:
     /** The same offer again: Trystero replays its answer on that relay, at most once a second. */
     void replay_answer(std::size_t relay, std::string_view peer, std::string_view offer_id,
                        std::string_view offer, negotiation& n) {
-        const double now = factory_.now_ms();
-        const auto last = n.answer_replayed_ms.find(relay);
+        const auto now = steady_now(factory_);
+        const auto last = n.answer_replayed.find(relay);
         if (!n.answer.pc || n.answered_offer != offer || n.answered_offer_id != offer_id ||
-            (last != n.answer_replayed_ms.end() && now - last->second < 1000)) {
+            (last != n.answer_replayed.end() && now - last->second < per_peer_interval)) {
             return;
         }
-        n.answer_replayed_ms[relay] = now;
+        n.answer_replayed[relay] = now;
         n.answer_relays.insert(relay);
         const auto topic = peer_topic(peer);
         for (const auto& message : n.answer_messages) {
@@ -746,6 +827,7 @@ private:
                                     .peer_id = self_id_,
                                     .offer_id = m->answered_offer_id,
                                     .answer = sealed,
+                                    .answering = true,
                                 },
                                 {}, memory_));
         m->answer_sent = true;
@@ -847,10 +929,11 @@ private:
         }
         log_("signal", "could not open the ", what, " from ", peer,
              ": another password, or forged in its name; ignored");
-        const double now = factory_.now_ms();
-        const auto interval = static_cast<double>(failed_open_report_interval.count());
-        if (unreported_failed_opens_ == 0 && now - failed_open_reported_ms_ >= interval) {
-            failed_open_reported_ms_ = now;
+        const auto now = steady_now(factory_);
+        if (unreported_failed_opens_ == 0 &&
+            (!failed_open_reported_ ||
+             now - *failed_open_reported_ >= failed_open_report_interval)) {
+            failed_open_reported_ = now;
             cb_.failed(peer, make_error_code(error::wrong_password), {});
             return;
         }
@@ -858,8 +941,11 @@ private:
             return;  // the report of the interval is already due
         }
         failed_open_report_ = factory_.make_timer(memory_);
-        const auto delay = std::chrono::milliseconds(
-            static_cast<long long>(std::max(0.0, failed_open_reported_ms_ + interval - now)));
+        // The interval runs from the last report, which there always is by now.
+        const auto due = failed_open_reported_.value_or(now) + failed_open_report_interval;
+        const auto delay =
+            std::max(std::chrono::milliseconds::zero(),
+                     std::chrono::duration_cast<std::chrono::milliseconds>(due - now));
         failed_open_report_->start(delay, bind<void()>([weak = weak_from_this()] {
                                        if (const auto self = weak.lock()) {
                                            self->report_failed_opens();
@@ -873,11 +959,13 @@ private:
         if (closed_ || count == 0) {
             return;
         }
-        failed_open_reported_ms_ = factory_.now_ms();
+        failed_open_reported_ = steady_now(factory_);
         std::pmr::string what(memory_);
         protocol::json::append_integer(what, static_cast<std::int64_t>(count));
         what += " more peers sent signals that did not open with the room key, in the last ";
-        protocol::json::append_integer(what, failed_open_report_interval.count() / 1000);
+        protocol::json::append_integer(
+            what,
+            std::chrono::duration_cast<std::chrono::seconds>(failed_open_report_interval).count());
         what += " s: another password, or forged in their names";
         cb_.failed({}, make_error_code(error::wrong_password), what);
     }
@@ -1015,6 +1103,7 @@ private:
                                                          .peer_id = self->self_id_,
                                                          .offer_id = m->answered_offer_id,
                                                          .candidate = sealed,
+                                                         .answering = true,
                                                      },
                                                      {}, self->memory_));
                                          }
@@ -1130,14 +1219,13 @@ private:
         n.answer_messages.clear();
         n.answer_relays.clear();
         n.answer_candidates.clear();
-        n.answer_replayed_ms.clear();
+        n.answer_replayed.clear();
         n.answer_expiry.reset();
     }
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
     std::pmr::memory_resource* connection_memory_;
-    boost::json::storage_ptr json_;
     std::shared_ptr<backend::sealer> sealer_;
     std::pmr::string app_id_;
     std::pmr::string room_id_;
@@ -1145,16 +1233,17 @@ private:
     std::pmr::vector<backend::ice_server> ice_servers_;
     callbacks cb_;
     logger log_;
-    std::pmr::map<std::pmr::string, negotiation, std::less<>> peers_;
+    negotiations peers_;
+    std::uint64_t admissions_ = 0;  // the negotiations the room took in, the next one's place
     std::pmr::deque<std::pmr::string> refused_{memory_};
     construction_window constructions_{max_connections_per_window, offer_ttl, memory_};
-    std::pmr::map<std::size_t, double> counter_announced_ms_{memory_};  // per relay
+    std::pmr::map<std::size_t, time_point> counter_announced_{memory_};  // per relay
     replay_cache used_{remembered_descriptions, memory_};
     std::size_t failed_opens_ = 0;
-    // Negotiations whose failed open waits for the next report, when it was last made, and the
-    // timer of the next.
+    // Negotiations whose failed open waits for the next report, when it was last made (never
+    // yet, when empty), and the timer of the next.
     std::size_t unreported_failed_opens_ = 0;
-    double failed_open_reported_ms_ = -std::numeric_limits<double>::infinity();
+    std::optional<time_point> failed_open_reported_;
     std::shared_ptr<backend::timer> failed_open_report_;
     std::size_t replayed_ = 0;
     bool closed_ = false;

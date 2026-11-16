@@ -26,8 +26,9 @@ namespace webcpp::trystero::protocol {
  * protocol (an event's content is a signal, whose SDP is a few KiB) and of what public relays
  * accept (their events are capped at 64 to 512 KiB).
  *
- * Both backends close a relay's connection that sends a longer one, before copying it, and the
- * room reconnects as it does to a relay that went away.
+ * The platform backend closes, on both targets, a relay's connection that sends a longer one,
+ * before copying it, in a page before it enters WebAssembly, and the room reconnects as it does to
+ * a relay that went away.
  */
 inline constexpr std::size_t max_relay_message_bytes = std::size_t{1} << 20U;
 
@@ -35,8 +36,8 @@ inline constexpr std::size_t max_relay_message_bytes = std::size_t{1} << 20U;
  * The most text a room holds unsent for one relay, in UTF-8 bytes: 4 MiB, a thousand signals and
  * more.
  *
- * A relay that stops reading lets the texts pile up; beyond this, both backends drop its
- * connection, which reports a close, and the room reconnects with its backoff.
+ * A relay that stops reading lets the texts pile up; beyond this, the platform backend drops its
+ * connection on both targets, which reports a close, and the room reconnects with its backoff.
  */
 inline constexpr std::size_t max_queued_relay_bytes = std::size_t{4} << 20U;
 
@@ -80,7 +81,8 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
  * Trystero's `shuffle`: Fisher-Yates driven by `sin(seed++) * 10000`, so every peer of an app picks
  * the same order.
  *
- * Tip: `std::sin` and V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
+ * Tip: the seed and the draws are doubles, JavaScript's Numbers, as in Trystero; `std::sin` and
+ * V8's `Math.sin` agree on these inputs; the oracle's fixtures check it.
  *
  * @tparam Sequence A sequence with `size()` and random access, as `std::pmr::vector`.
  * @param items The items, shuffled in the copy returned.

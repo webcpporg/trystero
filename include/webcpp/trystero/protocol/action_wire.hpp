@@ -11,6 +11,9 @@
 
 #include <webcpp/trystero/protocol/envelope.hpp>
 
+#include <boost/assert.hpp>
+#include <boost/endian/conversion.hpp>
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -90,25 +93,45 @@ inline constexpr std::size_t chunk_size = max_action_frame_bytes - chunk_header_
 inline constexpr std::size_t max_action_name_bytes = 32;
 /** The longest reason a rejected frame carries, in UTF-8 bytes. */
 inline constexpr std::size_t max_reject_reason_bytes = 200;
+/** The largest size an offer may announce, JavaScript's `Number.MAX_SAFE_INTEGER`, 2^53 - 1. */
+inline constexpr std::uint64_t max_offer_size = 9007199254740991;
 
 namespace detail {
 
-/** Reads a big-endian uint32 at `at`. */
-inline std::uint32_t get_u32(std::span<const std::uint8_t> in, std::size_t at) {
-    std::uint32_t v = 0;
-    for (int i = 0; i < 4; ++i) {
-        v = (v << 8U) | in[at + i];
-    }
-    return v;
+/** Reads the big-endian uint16 at `at`, as `DataView`'s `getUint16`. */
+inline std::uint16_t get_u16(std::span<const std::uint8_t> in, std::size_t at) {
+    BOOST_ASSERT(at + 2 <= in.size());
+    return boost::endian::load_big_u16(in.data() + at);
 }
 
-/** Reads a big-endian float64 at `at`. */
+/** Reads the big-endian uint32 at `at`, as `DataView`'s `getUint32`. */
+inline std::uint32_t get_u32(std::span<const std::uint8_t> in, std::size_t at) {
+    BOOST_ASSERT(at + 4 <= in.size());
+    return boost::endian::load_big_u32(in.data() + at);
+}
+
+/** Reads the big-endian float64 at `at`, as `DataView`'s `getFloat64`. */
 inline double get_f64(std::span<const std::uint8_t> in, std::size_t at) {
-    std::uint64_t bits = 0;
-    for (int i = 0; i < 8; ++i) {
-        bits = (bits << 8U) | in[at + i];
-    }
-    return std::bit_cast<double>(bits);
+    BOOST_ASSERT(at + 8 <= in.size());
+    return std::bit_cast<double>(boost::endian::load_big_u64(in.data() + at));
+}
+
+/** Writes `value` as a big-endian uint16 at `at`, as `DataView`'s `setUint16`. */
+inline void set_u16(bytes& out, std::size_t at, std::uint16_t value) {
+    BOOST_ASSERT(at + 2 <= out.size());
+    boost::endian::store_big_u16(out.data() + at, value);
+}
+
+/** Writes `value` as a big-endian uint32 at `at`, as `DataView`'s `setUint32`. */
+inline void set_u32(bytes& out, std::size_t at, std::uint32_t value) {
+    BOOST_ASSERT(at + 4 <= out.size());
+    boost::endian::store_big_u32(out.data() + at, value);
+}
+
+/** Writes `value` as a big-endian float64 at `at`, as `DataView`'s `setFloat64`. */
+inline void set_f64(bytes& out, std::size_t at, double value) {
+    BOOST_ASSERT(at + 8 <= out.size());
+    boost::endian::store_big_u64(out.data() + at, std::bit_cast<std::uint64_t>(value));
 }
 
 }  // namespace detail
@@ -145,19 +168,18 @@ inline void append_header(bytes& out, frame_kind kind, std::string_view name, pa
     out.resize(at + header_size, 0);
     out[at] = action_wire_version;
     out[at + 1] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(kind) |
-                                            (static_cast<unsigned>(format) << 4U));
+                                            (static_cast<std::uint32_t>(format) << 4U));
     std::memcpy(out.data() + at + 2, name.data(), name.size());
-    out[at + 34] = static_cast<std::uint8_t>(metadata.size() >> 8U);
-    out[at + 35] = static_cast<std::uint8_t>(metadata.size() & 0xffU);
+    set_u16(out, at + 34, static_cast<std::uint16_t>(metadata.size()));
 }
 
 /** Appends the header of a chunk or a transfer's answer: version, kind, transfer id. */
 inline void append_control(bytes& out, frame_kind kind, std::uint32_t id) {
-    out.push_back(action_wire_version);
-    out.push_back(static_cast<std::uint8_t>(kind));
-    for (int i = 0; i < 4; ++i) {
-        out.push_back(static_cast<std::uint8_t>(id >> (24U - (8 * i))));
-    }
+    const auto at = out.size();
+    out.resize(at + control_header_size);
+    out[at] = action_wire_version;
+    out[at + 1] = static_cast<std::uint8_t>(kind);
+    set_u32(out, at + 2, id);
 }
 
 }  // namespace detail
@@ -197,13 +219,8 @@ inline void append_offer(bytes& out, std::string_view name, payload_format forma
     out.reserve(out.size() + offer_header_size + metadata.size());
     const auto at = out.size();
     detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size);
-    for (int i = 0; i < 4; ++i) {
-        out[at + 36 + i] = static_cast<std::uint8_t>(id >> (24U - (8 * i)));
-    }
-    const auto bits = std::bit_cast<std::uint64_t>(static_cast<double>(size));
-    for (int i = 0; i < 8; ++i) {
-        out[at + 40 + i] = static_cast<std::uint8_t>(bits >> (56U - (8 * i)));
-    }
+    detail::set_u32(out, at + 36, id);
+    detail::set_f64(out, at + 40, static_cast<double>(size));
     out.insert(out.end(), metadata.begin(), metadata.end());
 }
 
@@ -219,10 +236,9 @@ inline void append_chunk(bytes& out, std::uint32_t id, std::size_t offset,
                          std::span<const std::uint8_t> data) {
     out.reserve(out.size() + chunk_header_size + data.size());
     detail::append_control(out, frame_kind::chunk, id);
-    const auto bits = std::bit_cast<std::uint64_t>(static_cast<double>(offset));
-    for (int i = 0; i < 8; ++i) {
-        out.push_back(static_cast<std::uint8_t>(bits >> (56U - (8 * i))));
-    }
+    const auto at = out.size();
+    out.resize(at + chunk_header_size - control_header_size);
+    detail::set_f64(out, at, static_cast<double>(offset));
     out.insert(out.end(), data.begin(), data.end());
 }
 
@@ -373,8 +389,13 @@ struct proposal {
     std::string_view metadata;
     /** The transfer's id; offers only. */
     std::uint32_t id = 0;
-    /** The payload's size; for an inline frame, the bytes that follow the metadata. */
-    std::size_t size = 0;
+    /**
+     * The payload's size; for an inline frame, the bytes that follow the metadata.
+     *
+     * An offer's is a float64 on the wire, up to @ref max_offer_size, so it is 64 bits wide even
+     * where `std::size_t` is 32: a receiver compares it with its bound before it allocates.
+     */
+    std::uint64_t size = 0;
     /** The payload; inline frames only. */
     std::span<const std::uint8_t> payload;
 };
@@ -477,7 +498,7 @@ inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, fra
     const auto* name = reinterpret_cast<const char*>(bytes_in.data() + 2);
     p.name = std::string_view(
         name, static_cast<std::size_t>(std::find(name, name + max_action_name_bytes, '\0') - name));
-    const std::size_t metadata_size = (std::size_t{bytes_in[34]} << 8U) | bytes_in[35];
+    const std::size_t metadata_size = get_u16(bytes_in, 34);
     const std::size_t payload_index = header_size + metadata_size;
     if (p.name.empty() || payload_index > bytes_in.size()) {
         result.error = wire_error::invalid_proposal;
@@ -488,13 +509,13 @@ inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, fra
         p.payload = bytes_in.subspan(payload_index);
     } else {
         const double size = get_f64(bytes_in, 40);
-        if (size < 1 || size > 9007199254740991.0 || std::floor(size) != size ||
+        if (size < 1 || size > static_cast<double>(max_offer_size) || std::floor(size) != size ||
             payload_index != bytes_in.size()) {
             result.error = wire_error::invalid_proposal;
             return result;
         }
         p.id = get_u32(bytes_in, 36);
-        p.size = static_cast<std::size_t>(size);
+        p.size = static_cast<std::uint64_t>(size);
     }
     p.metadata = std::string_view(reinterpret_cast<const char*>(bytes_in.data() + header_size),
                                   metadata_size);

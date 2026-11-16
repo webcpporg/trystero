@@ -12,8 +12,11 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 
+#include <webcpp/document/parse.hpp>
+
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <memory_resource>
 #include <string>
 #include <string_view>
@@ -117,6 +120,17 @@ struct room_options {
      * Trystero's `maxReceiveBytes`.
      */
     std::size_t max_receive_bytes = std::size_t{256} * 1024 * 1024;
+    /**
+     * The largest image a received JSON payload's document may take in the room, webcpp::document's
+     * own default, 64 MiB, which Trystero JS, reading with `JSON.parse`, does not have.
+     *
+     * A payload's document grows to at most 96 times its text and 64 KiB, which every valid text
+     * fits, and this bounds it whatever the text: each value is a node of 192 bytes, so a payload
+     * of one-character values past some 350,000 of them is not delivered with the default.
+     *
+     * @see "JSON texts", in the guide.
+     */
+    std::uint64_t max_json_document_bytes = webcpp::document::parse_options().max_document_bytes;
     /**
      * The resource every allocation of the room goes through: its state, bindings, negotiations,
      * relays, actions, sent frames, transfers and JSON.

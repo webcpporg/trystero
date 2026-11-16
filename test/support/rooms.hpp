@@ -13,14 +13,19 @@
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
+#include <webcpp/trystero/detail/clock.hpp>
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
+#include <webcpp/document/document.hpp>
+#include <webcpp/document/parse.hpp>
+
 #include <boost/core/lightweight_test.hpp>
-#include <boost/json/parse.hpp>
-#include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <array>
@@ -39,9 +44,9 @@
 #include <utility>
 
 // The rooms' shared test helpers: a memory network with two relays, an app over them and a join
-// that must succeed, a watcher of a room's relay traffic, a flood of announcements, and the virtual
-// clock's own waits. A case of room_test.cpp, connection_test.cpp or shared_test.cpp includes this
-// header for them.
+// that must succeed, a watcher of a room's relay traffic, a flood of announcements, the virtual
+// clock's own waits, and a JSON document to send. A case of room_test.cpp, connection_test.cpp or
+// shared_test.cpp includes this header for them.
 namespace webcpp::trystero::test {
 
 using namespace std::chrono_literals;
@@ -66,6 +71,14 @@ inline trystero::app_config app_config(std::string_view self_id, std::string_vie
     return c;
 }
 
+/** The owned document of a JSON text, as an action of JSON sends it; a text that does not parse
+ * ends the test. */
+inline webcpp::document::document document_of(std::string_view text) {
+    auto parsed = webcpp::document::parse(text);
+    webcpp::test::require(BOOST_TEST(parsed.has_value()));
+    return std::move(*parsed);
+}
+
 /** Joins `room_id`, which must succeed: a failure ends the test. */
 inline trystero::room join(trystero::app& a, std::string_view room_id,
                            trystero::room_options options = {}) {
@@ -75,7 +88,7 @@ inline trystero::room join(trystero::app& a, std::string_view room_id,
 }
 
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
-inline bool run_until(boost::asio::io_context& io, const std::function<bool()>& done,
+inline bool run_until(webcpp::asio::io_context& io, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = 10s) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
@@ -88,7 +101,7 @@ inline bool run_until(boost::asio::io_context& io, const std::function<bool()>& 
 }
 
 struct fixture {
-    boost::asio::io_context io;
+    webcpp::asio::io_context io;
     memory_network net{io};
 
     /** A memory network with two relays; with `virtual_time`, on the virtual clock. */
@@ -108,7 +121,7 @@ inline bool run_until(fixture& f, const std::function<bool()>& done,
     if (!f.net.virtual_clock) {
         return run_until(f.io, done, limit);
     }
-    const double end = f.net.now_ms() + static_cast<double>(limit.count());
+    const auto end = f.net.steady_now() + limit;
     for (std::size_t steps = 0; !done(); ++steps) {
         if (steps == f.net.max_steps) {
             BOOST_ERROR("the virtual clock fired max_steps timers without moving past them");
@@ -160,11 +173,13 @@ private:
     }
 };
 
-/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own. */
+/** Announcements of fresh peer ids on a room's topic, signed, through a socket of their own to one
+ * relay, the first unless another is named. */
 class flooder {
 public:
-    flooder(fixture& f, std::string_view room) : f_(f), topic_(protocol::root_topic(app_id, room)) {
-        socket_ = f.net.connect(relay_a,
+    flooder(fixture& f, std::string_view room, std::string_view relay = relay_a)
+        : f_(f), topic_(protocol::root_topic(app_id, room)) {
+        socket_ = f.net.connect(relay,
                                 {
                                     .open = [this] { open_ = true; },
                                     .message =
@@ -189,14 +204,15 @@ public:
     void watch(std::string_view topic) {
         const std::array<std::pmr::string, 1> topics{std::pmr::string(topic)};
         socket_->send(
-            protocol::nostr::subscribe_message("watch" + std::to_string(next_++), topics, 0));
+            protocol::nostr::subscribe_message("watch" + std::to_string(next_++), topics, {}));
     }
 
-    /** Publishes a signal on a topic, in any peer's name. */
-    void publish(std::string_view topic, const protocol::signal_message& m) {
+    /** Publishes a signal on a topic, in any peer's name; with a nonce, as an event of its own. */
+    void publish(std::string_view topic, const protocol::signal_message& m,
+                 std::string_view nonce = {}) {
         const std::array<std::uint8_t, 32> aux{};
-        socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic,
-                                                     protocol::write_signal(m), aux));
+        socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic,
+                                                     protocol::write_signal(m, nonce), aux));
     }
 
     /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
@@ -209,12 +225,12 @@ public:
     }
 
     /** Announces one id `times` times. */
-    void announce_as(std::string_view id, int times) {
+    void announce_as(std::string_view id, std::size_t times) {
         const std::array<std::uint8_t, 32> aux{};
-        for (int i = 0; i < times; ++i) {
+        for (std::size_t i = 0; i < times; ++i) {
             const auto nonce = std::to_string(next_++);
             const auto content = protocol::write_signal({.peer_id = id}, nonce);
-            socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic_,
+            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
                                                          content, aux));
         }
     }
@@ -226,7 +242,7 @@ public:
             std::pmr::string id(prefix);
             id += std::to_string(next_++);
             const auto content = protocol::write_signal({.peer_id = id});
-            socket_->send(protocol::nostr::event_message(*signer_, f_.net.unix_seconds(), topic_,
+            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
                                                          content, aux));
         }
     }
@@ -250,17 +266,21 @@ struct relayed {
     bool announcement = false;
 };
 
-/** The topic and the signal of a relay's text, when it is an event that carries one. */
+/** The topic and the signal of a relay's text, when it is an event that carries one. Both texts
+ * are read within the relay's bound, wider than a room's, so that the watcher sees whatever a room
+ * could be sent. */
 inline std::optional<relayed> relayed_signal(std::string_view text) {
-    boost::system::error_code ec;
-    const auto document = boost::json::parse(text, ec);
-    const auto message = ec ? std::nullopt : protocol::nostr::read_relay_message(document);
+    const auto limits = protocol::json::protocol_limits(protocol::max_relay_message_bytes);
+    const std::pmr::polymorphic_allocator<std::byte> memory(std::pmr::get_default_resource());
+    const auto parsed = webcpp::document::parse(text, limits, memory);
+    const auto message =
+        parsed.has_value() ? protocol::nostr::read_relay_message(parsed->root()) : std::nullopt;
     const auto* event = message ? std::get_if<protocol::nostr::event>(&*message) : nullptr;
     if (event == nullptr) {
         return std::nullopt;
     }
-    const auto content = boost::json::parse(event->content, ec);
-    const auto signal = ec ? std::nullopt : protocol::read_signal(content);
+    const auto content = webcpp::document::parse(event->content, limits, memory);
+    const auto signal = content.has_value() ? protocol::read_signal(content->root()) : std::nullopt;
     if (!signal) {
         return std::nullopt;
     }

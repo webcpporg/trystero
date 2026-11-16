@@ -60,8 +60,8 @@ enum class error {
     /** The browser or the native stack refused an operation. */
     backend_failure,
     /**
-     * The room's configuration names something no backend can use, as an ICE server whose URL
-     * WebRTC refuses; the room goes on without it, and `room::on_error` reports it with no peer.
+     * The app's configuration holds something it cannot use, as an ICE server whose URL WebRTC
+     * refuses; the app goes on without it, and `app::on_error` reports it with no peer.
      */
     invalid_configuration,
     /** The app already holds a room of that id; a room is joined once per app. */

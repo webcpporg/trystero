@@ -10,11 +10,14 @@
 
 #include "support/memory_backend.hpp"
 
-#include <boost/asio/io_context.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <boost/core/lightweight_test.hpp>
+#include <webcpp/test/exit_status.hpp>
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -24,7 +27,7 @@
 
 #include "require.hpp"
 
-namespace asio = boost::asio;
+namespace asio = webcpp::asio;
 namespace trystero = webcpp::trystero;
 using trystero::test::memory_network;
 using namespace std::chrono_literals;
@@ -250,7 +253,7 @@ void a_frame_is_delivered_once_its_last_byte_drained() {
     // Each poll_one runs one drain step, the only handler queued, which posts the next.
     io.poll_one();
     BOOST_TEST_EQ(net.buffered(p.offerer_id), frame.size() - 1024);
-    for (int step = 1; step < 15; ++step) {
+    for (std::size_t step = 1; step < 15; ++step) {
         io.poll_one();
     }
     BOOST_TEST_EQ(net.buffered(p.offerer_id), 1024U);
@@ -350,13 +353,13 @@ void a_release_after_the_sender_went_drops_its_frames() {
 }
 
 // The virtual clock: a timer fires only when the test advances the clock to it, in order, and
-// now_ms is the clock's.
+// steady_now and unix_now are the clock's.
 void the_virtual_clock_moves_only_when_advanced() {
     asio::io_context io;
     memory_network net{io};
     net.virtual_clock = true;
     auto* m = std::pmr::get_default_resource();
-    std::vector<int> fired;
+    std::vector<std::uint32_t> fired;
     const auto t10 = net.make_timer(m);
     const auto t5 = net.make_timer(m);
     const auto cancelled = net.make_timer(m);
@@ -366,20 +369,22 @@ void the_virtual_clock_moves_only_when_advanced() {
     cancelled->cancel();
     io.poll();
     BOOST_TEST(fired.empty());
-    BOOST_TEST_EQ(net.now_ms(), 0.0);
+    BOOST_TEST(net.steady_now().time_since_epoch() == 0s);
+    BOOST_TEST(net.unix_now() == std::chrono::sys_seconds(1'759'700'000s));
     net.advance(7s);
-    BOOST_TEST(fired == std::vector<int>{5});
-    BOOST_TEST_EQ(net.now_ms(), 7000.0);
+    BOOST_TEST(fired == std::vector<std::uint32_t>{5});
+    BOOST_TEST(net.steady_now().time_since_epoch() == 7s);
+    BOOST_TEST(net.unix_now() == std::chrono::sys_seconds(1'759'700'007s));
     net.advance(3s);
-    BOOST_TEST((fired == std::vector<int>{5, 10}));
-    BOOST_TEST_EQ(net.now_ms(), 10000.0);
+    BOOST_TEST((fired == std::vector<std::uint32_t>{5, 10}));
+    BOOST_TEST(net.steady_now().time_since_epoch() == 10s);
     // Two timers due at the same instant both fire, in the order they were started, not made.
     const auto made_first = net.make_timer(m);
     const auto made_second = net.make_timer(m);
     made_second->start(2s, [&fired] { fired.push_back(21); });
     made_first->start(2s, [&fired] { fired.push_back(22); });
     net.advance(2s);
-    BOOST_TEST((fired == std::vector<int>{5, 10, 21, 22}));
+    BOOST_TEST((fired == std::vector<std::uint32_t>{5, 10, 21, 22}));
 }
 
 // The clock moves from the first advance, before any timer is made, and a timer made then starts
@@ -389,7 +394,7 @@ void the_virtual_clock_moves_before_any_timer() {
     memory_network net{io};
     net.virtual_clock = true;
     BOOST_TEST(net.advance(5s));
-    BOOST_TEST_EQ(net.now_ms(), 5000.0);
+    BOOST_TEST(net.steady_now().time_since_epoch() == 5s);
     const auto t = net.make_timer(std::pmr::get_default_resource());
     bool fired = false;
     t->start(1s, [&fired] { fired = true; });
@@ -397,7 +402,7 @@ void the_virtual_clock_moves_before_any_timer() {
     BOOST_TEST(!fired);
     net.advance(1ms);
     BOOST_TEST(fired);
-    BOOST_TEST_EQ(net.now_ms(), 6000.0);
+    BOOST_TEST(net.steady_now().time_since_epoch() == 6s);
 }
 
 /** Counts the bytes it has out, from the default resource. */
@@ -477,7 +482,7 @@ void a_run_of_max_steps_timers_reaches_the_end() {
     t3->start(3s, [&fired] { ++fired; });
     BOOST_TEST(net.advance(5s));
     BOOST_TEST_EQ(fired, 3U);
-    BOOST_TEST_EQ(net.now_ms(), 5000.0);
+    BOOST_TEST(net.steady_now().time_since_epoch() == 5s);
 }
 
 void a_buffering_channel_drains_and_says_so() {
@@ -543,5 +548,6 @@ int main() {
     a_timer_rearmed_without_delay_stops_the_clock();
     a_run_of_max_steps_timers_reaches_the_end();
     ready_work_is_bounded();
-    return boost::report_errors();
+    // Under Asyncify, a main that suspended loses what it returns: the status goes first.
+    return webcpp::test::exit_status(boost::report_errors());
 }

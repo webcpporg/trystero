@@ -94,6 +94,9 @@ moved, or build it in place. Each room adds `room_options`:
 | `max_receive_bytes`
 | The most bytes the room reserves for incoming transfers across peers, 256 MiB.
 
+| `max_json_document_bytes`
+| The largest image a received JSON payload's document may take of the room's resource, webcpp::document's default, 64 MiB; a payload past it is not delivered (<<trystero-protocol-json>>).
+
 | `memory`
 | The room's own resource; null uses the app's resource.
 |===
@@ -172,7 +175,8 @@ plus 1 s, doubling after each further end to at most 5 minutes. A completed
 handshake or the connection's end resets the count. After its own kick the
 lower id refuses bindings until that time and keeps frames; the higher id
 drops frames until it sends presence, but accepts the lower id's presence.
-A binding also requires the peer to have advertised the token itself.
+A binding also requires the peer to have advertised the token itself, by
+its presence or by a frame of the room on its connection.
 A peer on a protected app's shared connection already authenticated with
 that app's password through the initial sealed negotiation. A peer that
 knows it can still send a wrong room proof: only the lower id reports that
@@ -195,22 +199,80 @@ messages travel and how they are received:
 | `std::string` | text | a copy of the bytes
 | `std::pmr::string` | text | a copy of the bytes, in the room's resource
 | `std::string_view` | text | a view of the frame it arrived in, valid during the handler
-| `boost::json::value` | JSON | parsed, in the room's JSON storage
+| `webcpp::document::document` | JSON | parsed into a document of its own, with the standard allocator
+| `webcpp::document::pmr::document` | JSON | parsed into a document of the room's resource, which holds its image and the parse's working state
 | `trystero::bytes` | binary | a copy of the bytes
 | `trystero::pmr_bytes` | binary | the transfer's buffer, moved when resources match, otherwise copied once into the room's resource
 | `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the handler
-| `trystero::payload` | any | a `std::variant` of `std::string`, `boost::json::value` and `bytes`, by format
+| `trystero::payload` | any | a `std::variant` of `std::string`, `webcpp::document::document` and `bytes`, by format
 |===
+
+A JSON payload is webcpp::document's: a `webcpp::document::document` the
+program builds or parses, with the standard allocator, or a
+`webcpp::document::pmr::document`, whose image a memory resource holds, the
+room's when it is received; the pair mirrors `std::string` and
+`std::pmr::string`. A {cpp} peer sends the
+bytes `JSON.stringify` writes of the same value, which Trystero JS sends,
+for every value JavaScript can hold: its strings, booleans and nulls,
+its keys in JavaScript's order, array indices first, and every number a
+double holds, written as JavaScript writes it. A number a double cannot
+hold, an integer past 2^53^ or a decimal of more digits, is sent exact, as
+webcpp::document holds it: a Trystero JS peer reads the nearest double, or
+`Infinity` past a double's range. A text that does not parse is not
+delivered, nor one nested deeper than 256 or holding a lone surrogate,
+which `JSON.parse` takes, nor one whose document passes the room's
+`room_options::max_json_document_bytes`, 64 MiB of image by default, some
+350,000 values of one character, which a program lowers to bound what a
+peer's JSON may take of its room's resource (<<trystero-protocol-json>>).
+
+A document is moved, never copied: so `payload`, which may hold one, has no
+copy assignment, and in a build without exceptions no copy constructor
+either; nor has a document a default constructor there, where a program
+makes one with `create()` or `webcpp::document::parse`, each of which
+returns a result, given the resource's allocator for a
+`webcpp::document::pmr::document`. A handle of a document's values refers to
+the document object, as every handle of webcpp::document does: moving the
+document invalidates it, so a handler that keeps a received document moves
+it and reads it through the handles of the document it moved it into. A
+`webcpp::document::pmr::document` move-assigned to one of another resource
+copies its image into that resource, and raises `std::bad_alloc` through
+`boost::throw_exception` when the resource has no room: a program without
+exceptions keeps one by move construction, `std::optional::emplace` for
+one. The room test sends one:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-send,indent=0]
+----
+
+receives it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-receive,indent=0]
+----
+
+and reads it:
+
+[source]
+----
+include::{library-root}/test/room_test.cpp[tag=json-read,indent=0]
+----
 
 A message of another format than the action's type is not delivered to it.
 Several actions of different types may share a name: one receives as views,
 another sends by moving strings, as the chat does
-(<<trystero-browser-chat>>).
+(<<trystero-platform-chat>>).
 
 Messages arrive at the handler `on_message` sets, with a `message_info`: the
 sender's id and the metadata it passed. Without a handler they queue, up to
 1024 per action, the oldest dropped first, for `async_receive`, which needs
-an owning type: a view would outlive the message. Frames of an action that
+an owning type: a view would outlive the message; a message of another
+format, or a JSON text that does not parse, completes it with
+`error::transfer_rejected` and an empty value, which allocates nothing: an
+empty container, in the room's resource for a `std::pmr` type, and for a JSON
+one webcpp::document's `nothing()`, a document with no image whose root reads
+`undefined`. Frames of an action that
 arrived before it was made are kept, 64 per peer for 120 s, and delivered
 to it once it is.
 
@@ -231,16 +293,17 @@ peers.
 === Completion tokens and ownership
 
 Every asynchronous operation is an Asio initiating function. With a callback
-it calls it on the room's executor; with `boost::asio::use_awaitable` it
-resumes a coroutine; with `boost::asio::deferred` it returns an operation
-started later.
+it calls it on the room's executor; with `webcpp::asio::use_awaitable` it
+resumes a coroutine; with `webcpp::asio::deferred` it returns an operation
+started later. webcpp::asio is Boost.Asio itself natively, so Boost.Asio's
+tokens are the same there; on emscripten they are webcpp::asio's.
 
 Because a deferred operation starts after the call, the arguments of an
 asynchronous operation are owned: `async_send` takes its value by value,
 moved when the type owns its storage, copied once at the call into the room's
-resource when it is a view, and serialized at once when it is a
-`boost::json::value`; `send_options` owns its strings; and `async_ping`
-copies the peer id at the call. Everything else that only reads text takes a
+resource when it is a view, and written at once, into the room's resource,
+when it is a JSON document; `send_options` owns its strings; and
+`async_ping` copies the peer id at the call. Everything else that only reads text takes a
 `std::string_view`.
 
 [#trystero-usage-errors]

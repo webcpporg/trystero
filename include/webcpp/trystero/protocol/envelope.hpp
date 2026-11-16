@@ -11,6 +11,8 @@
 
 #include <webcpp/trystero/protocol/text.hpp>
 
+#include <boost/endian/conversion.hpp>
+
 #include <cstdint>
 #include <memory_resource>
 #include <optional>
@@ -44,9 +46,9 @@ inline bytes begin_room_frame(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
     out.reserve(3 + token.size() + payload_size);
-    out.push_back(1);
-    out.push_back(static_cast<std::uint8_t>((token.size() >> 8U) & 0xffU));
-    out.push_back(static_cast<std::uint8_t>(token.size() & 0xffU));
+    out.resize(3);
+    out[0] = 1;
+    boost::endian::store_big_u16(out.data() + 1, static_cast<std::uint16_t>(token.size()));
     out.insert(out.end(), token.begin(), token.end());
     return out;
 }
@@ -78,10 +80,10 @@ inline bytes presence_frame(std::string_view token, bool present,
                             std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
     out.reserve(4 + token.size());
-    out.push_back(2);
-    out.push_back(present ? 1 : 0);
-    out.push_back(static_cast<std::uint8_t>((token.size() >> 8U) & 0xffU));
-    out.push_back(static_cast<std::uint8_t>(token.size() & 0xffU));
+    out.resize(4);
+    out[0] = 2;
+    out[1] = present ? 1 : 0;
+    boost::endian::store_big_u16(out.data() + 2, static_cast<std::uint16_t>(token.size()));
     out.insert(out.end(), token.begin(), token.end());
     return out;
 }
@@ -129,7 +131,7 @@ inline std::optional<envelope> decode_envelope(std::span<const std::uint8_t> fra
     if (offset == 0 || frame.size() < offset + 2) {
         return std::nullopt;
     }
-    const std::size_t token_size = (std::size_t{frame[offset]} << 8U) | frame[offset + 1];
+    const std::size_t token_size = boost::endian::load_big_u16(frame.data() + offset);
     const std::size_t header_size = offset + 2 + token_size;
     if (token_size == 0 || token_size > max_room_token_bytes || frame.size() < header_size) {
         return std::nullopt;

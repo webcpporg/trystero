@@ -26,7 +26,10 @@ The memory network identifies connection ends with `std::size_t` ids.
 paired end. A `filter` delivers, drops or holds frames; a held frame holds
 all later frames from its sending end behind it, preserving channel order
 until `release`. Deferred `open` calls open each end separately; `inject`
-and `fail` supply malformed frames and transport failure.
+and `fail` supply malformed frames and transport failure. With
+`hold_sealer_opens`, every sealer's opens wait, as Web Crypto's take their
+time in a page, until `release_sealer_opens` completes them in order;
+`held_sealer_opens` counts them.
 
 With `channel_capacity` enabled, the channel queues bytes and drains up to
 `drain_per_post` per post. It delivers a frame only after its last byte
@@ -37,11 +40,12 @@ backoffs and late frames are tested without wall-clock sleeps. Optional
 fault hooks allocate outside the measured resources only when enabled;
 the allocation test leaves them disabled.
 
-A test of the native backend's own WebRTC binds its connections to the
-loopback, `native::backend_config::bind_address` set to `"127.0.0.1"`, and
-names a STUN server where nothing answers, `stun:127.0.0.1:9`, in place of
-Trystero's public ones: the loopback's host candidate is then the only one,
-and it is enough.
+A native test of the platform backend's own WebRTC binds its connections to
+the loopback, `platform::backend_config::bind_address` set to
+`"127.0.0.1"`, and names a STUN server where nothing answers,
+`stun:127.0.0.1:9`, in place of Trystero's public ones: the loopback's host
+candidate is then the only one, and it is enough. A page cannot bind, and
+leaves `bind_address` empty (<<trystero-platform-config>>).
 
 [#trystero-testing-library]
 === How trystero is tested
@@ -49,8 +53,9 @@ and it is enough.
 trystero's tests are under `test/`, each declared in `test/Jamfile`, and each
 guarantee of <<trystero-guarantees>> names the tests that hold it. They run
 on two targets: {n-tests} tests in all, {n-tests-native} natively and
-{n-tests-emscripten} on emscripten, under node. The protocol, the rooms and
-the allocation test run on both:
+{n-tests-emscripten} on emscripten, under node, each in both of webcpp::asio's
+suspension variants, JSPI and Asyncify. The protocol, the rooms, the timer
+and the allocation test run on both:
 
 [listing]
 ----
@@ -58,14 +63,20 @@ include::{library-root}/test/Jamfile[tag=both-targets]
 include::{library-root}/test/Jamfile[tag=allocation]
 ----
 
+The timer's test, of a part that parses no JSON, links `parts` (`$(part)`)
+in place of the rooms, the Jamfile's own requirement, without their Asyncify
+list (<<trystero-building-project>>).
+
 [cols="1,3",options="header"]
 |===
 | Test | What it checks
 
 | the public headers
-| Each compiled alone, on each target that builds it: the core on both, the
-  native backend natively, against libdatachannel and OpenSSL, and the
-  browser backend on emscripten.
+| Each compiled alone, on each target that builds it: the core, and the
+  platform backend's `backend.hpp`, `entropy.hpp`, `sealer.hpp` and
+  `websocket.hpp` with the backend's WebRTC, on both, natively against
+  webcpp::webrtc's libdatachannel and OpenSSL and in a page over its own
+  objects; and `platform/page.hpp`, on emscripten alone.
 
 | `config`, `config_developer_defined`, `config_all_off`
 | `<webcpp/trystero/config.hpp>` defines `WEBCPP_TRYSTERO_NO_EXCEPTIONS`
@@ -77,19 +88,30 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | `protocol`
 | The protocol against values Trystero JS 0.26.0 computed itself: topics,
   room tokens, the relay shuffle, sealed text, Nostr event ids, inline and
-  chunked action frames, control frames, envelopes and presence, and the
-  bounds of a signal's fields.
+  chunked action frames, control frames, envelopes and presence, a JSON
+  payload's numbers and key order, and the bounds of a signal's fields.
 
-| `room`
+| `signaling`
+| The signaling and the Nostr strategy alone: as an answerer, the signals
+  Trystero JS 0.26.0's own signal handler published for the same offers,
+  byte for byte, a signal or a relay's text read at its bound and
+  dropped one byte past it, and a relay's text read 16 deep and dropped one
+  level deeper.
+
+| `room`, `room_asyncify_release`
 | Whole rooms in one process, over the memory relays: every payload format,
   100 KB transfers both ways, ping, passwords right and wrong, leaving and
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
-  signals, a relay that closes at once or rate-limits, a three-peer mesh,
-  coroutines and view handlers.
+  signals, offers being opened that keep their places when new ids arrive
+  at the same instant, one offer of a peer opened at a time, a relay that
+  closes at once or rate-limits, a three-peer mesh, coroutines and view
+  handlers, JSON payloads read in the room's resource up to its bound, and a
+  rejected document receive.
 
-| `app_impl`
-| Configuration copying and validation, resource ownership, weak room
+| `app_impl`, `app_impl_asyncify_release`
+| Configuration copying and validation, a self id that is not UTF-8 set
+  aside, resource ownership, weak room
   registration, shared adoption, stale replacement, reentrant adoption,
   last-user closure and quiet destruction with pending work.
 
@@ -105,51 +127,162 @@ include::{library-root}/test/Jamfile[tag=allocation]
 | Multiple apps and rooms with one connection per remote peer, adoption
   races, presence and reuse, room isolation, departures, idle connections,
   password-domain isolation, invalid room proofs, transient handshake recovery,
-  fairness, bounds and
-  resource ownership. The suite also runs without exceptions and with
+  fairness, bounds, a handshake message read at its bound and failing one
+  byte past it, and resource ownership. The suite also runs without exceptions and with
   standard-library hardening; sanitizers check lifetimes and detachment.
 
-| `allocation`
+| `allocation`, `allocation_asyncify_release`
 | Every allocation of two apps and their rooms goes through their resources
   (<<trystero-allocation-proof>>).
 
-| `native_sealer`, `native_websocket`, `native_timer`
-| The native backend, part by part, natively: the sealer opens what Trystero
-  JS sealed with Web Crypto; the WebSocket, against a Beast server in the
-  same process, opens, sends in order, closes once, and drops a relay that
-  sends too much, stops reading or stops answering, while one that answers
-  its pings stays; the timer never fires once cancelled, restarted or
-  destroyed.
+| `timer`
+| The timer over webcpp::asio's `steady_timer`, which the platform backend
+  makes on both targets: a wait fires once, in the timer's resource, and one
+  cancelled, restarted or destroyed never fires, even when its expiry was
+  already queued.
 
-| `native_peer_connection`, `native_room`
-| Two libdatachannel connections wired to each other, each handler on the
-  executor, and whole native rooms over real libdatachannel connections,
-  bound to 127.0.0.1. A controlled executor holds real channel callbacks to
-  prove pre-handler FIFO delivery, a 65th message ahead of the posted flush,
+| `platform_backend`, `platform_sealer`, `platform_websocket_unreachable`,
+  `platform_websocket_url`, and each `_no_exceptions`
+| The platform backend on both targets, natively and on emscripten under
+  node, which has the page's WebSocket and Web Crypto but no WebRTC. The
+  backend itself keeps its own state, its copy of `bind_address`, its window
+  of constructions and its own runtime, in `backend_config::memory`, none of
+  it in the default resource, and gives it all back when it is destroyed
+  (<<trystero-allocation-resource>>); its clocks are the standard library's,
+  its randomness fills what it is given, differently each time, beyond a
+  piece of its source too (65536 bytes in a page), its executor is the one
+  it was given and its TLS context is made. The sealer opens what Trystero JS
+  sealed with Web Crypto, seals a text that opens again in Trystero's form,
+  takes a text sealed under another key, or no sealed text, for a wrong
+  password, completes after the call that started it, never inside it, and
+  completes each of two seals and two opens given in one call, which in a
+  page wait while it imports its key; in a page without `crypto.subtle` it
+  fails with `error::backend_failure`. A relay it cannot reach, of a URL the
+  session refuses, `http://` and `https://` among them, reports exactly one
+  close, after the call that made it, and so does one of a port on 127.0.0.1
+  or `::1` where nothing listens, which is attempted: natively its TCP
+  connection fails, and in a page node's `WebSocket` is made and closes
+  before it opens. A relay's URL is read as a page reads it, and what a
+  page's URL parser reads otherwise is refused, by the same rules on both
+  targets.
+
+| `platform_websocket`
+| The relays' WebSocket natively, built with the standard libraries' checks,
+  against Beast servers in the same process: it opens, sends in order,
+  closes once, reaches a relay at an IPv6 address (where the kernel opens a
+  socket of IPv6's family; elsewhere the case prints that it does not apply
+  and checks nothing), opens over TLS with the relay's name sent (SNI)
+  against a test authority, refuses a certificate for another name or of an
+  authority not trusted, also with a program's context whose verify mode is
+  `verify_none`, keeps a TLS context's error in the backend, drops a binary
+  message, closes once when the connection ends during a write, and drops a
+  relay that sends too much, stops reading or stops answering, while one
+  that answers its pings stays.
+
+| `platform_websocket_allocation`, `platform_websocket_allocation_no_exceptions`
+| Natively, a relay's message allocates nothing outside the room's resource:
+  from the send of a text to the receipt of its echo, ten times, the global
+  `operator new` counts none on the room's thread
+  (<<trystero-allocation-outside>>); and a relay that refuses the upgrade
+  with a body of 4 MiB has its response's header read alone, the room's
+  thread allocating less than 64 KiB until the close.
+
+| `platform_peer_connection`, `platform_room`, and each `_no_exceptions`
+| Natively, two connections of the backend's WebRTC, over webcpp::webrtc's
+  libdatachannel, wired to each other, each handler on the executor, and
+  whole rooms over the platform backend and real connections, bound to
+  127.0.0.1. A controlled executor holds the offerer's events to prove
+  pre-handler FIFO delivery, a 65th message read ahead of the posted flush,
   handler replacement and destruction, the 64-frame and 10-second bounds,
-  and allocation and release through the channel's resource.
+  and allocation and release through the connection's resource; a peer of
+  webcpp::webrtc's own sends a text, which is dropped between two frames;
+  malformed candidates and descriptions fail without throwing, and so does a
+  candidate one byte past its bound, which at the bound is added; a local
+  candidate that is not UTF-8 is not written; the backend
+  makes at most its budget in a minute, holds at most its runtime's cap at
+  once, and leaves out a URL libdatachannel cannot parse. Both run once more
+  without exceptions.
 
-| `browser_event_loop`, `browser_websocket`, `browser_websocket_bound`, `browser_websocket_late_events`, `browser_sealer`, `browser_data_channel`, `browser_peer_connection`
-| The browser backend, on emscripten under node, which has the page's
-  WebSocket, Web Crypto and microtasks but no WebRTC: the loop and its
-  recovery from exceptions that escape a callback, the WebSocket's URLs, its
-  bound on what a relay holds unsent and its silence once dropped, the
-  sealer's completions, a data channel's refusal of what is no frame, and
-  the page's peer connections, made or refused, and their census.
+| `platform_page_websocket_bound`, `platform_page_websocket_late_events`,
+  `platform_page_websocket_ingress`, `platform_page_websocket_tls`,
+  `platform_page_data_channel`, `platform_page_peer_connection`,
+  `platform_page`, `platform_page_call`, `platform_page_handlers`,
+  `platform_page_sealer`, `platform_page_sealer_allocation`,
+  `platform_page_relay_allocation`, and each `_no_exceptions`
+| The platform backend in a page, on emscripten under node, each test's
+  `main` running its `io_context` as a page's program does: the relays'
+  WebSocket, its bound on what a relay holds unsent, both the session's own
+  queue and the page's `bufferedAmount`, which webcpp::beast's send limit
+  bounds, and its silence once dropped; its refusal of a text past 1 MiB that
+  a relay sends in the same task as its open, and of a binary message; a
+  program's context of `tls_client`, whose verify mode is `verify_none`,
+  reaching a `wss://` relay, and the contexts a page cannot honour refused;
+  what a relay's connection and each of its messages allocate outside the
+  room's resource, exactly; over webcpp::webrtc's browser
+  objects and a page's `RTCPeerConnection` of the test's, a data channel's
+  refusal of what is no frame, and the page's peer connections, made or
+  refused, webcpp::webrtc's census of them and the backend's window of
+  constructions, which holds in a page as natively; and the shape of a
+  page's program, whose work guard keeps a page with no room yet running,
+  and whose `platform::page_call` functions, called from JavaScript while
+  `run` is suspended, return at once, only post, and reach the room, twice
+  in a row under Asyncify too, while a value of the wrong type is ignored
+  and breaks nothing; a call through a function the page kept after its
+  `page_call`, or its `io_context`, was destroyed reaches nothing, and the
+  handler reads the page's value as it is when it runs, and a number within
+  its range; the relay socket's and the sealer's handlers run outside the
+  page's events; a page whose `crypto.getRandomValues` throws or is missing
+  has no randomness and fails a seal, and one whose `crypto.subtle` settles
+  with something other than an `ArrayBuffer` fails a seal and an open, with
+  `error::backend_failure`, no JavaScript exception entering WebAssembly; and
+  a seal and an open allocate nothing outside the room's resource, neither
+  with `operator new` nor with the C library's functions.
 |===
 
-The native backend's connections need exceptions whatever the build asks
-(<<trystero-native-exceptions>>), and each browser test is also built
-without exceptions, as a program that uses the browser backend may be:
+The platform backend's tests run on each target that builds them, and once
+more without exceptions (<<trystero-platform-exceptions>>), as a program
+that uses the backend may be built, but for `platform_websocket`, which
+runs once, with the standard libraries' checks. The tests of a relay's URL,
+a page's calls and the sealer in a page, parts that parse no JSON, link
+`platform-parts` (`$(platform-part)`) in place of the backend and the rooms:
 
 [listing]
 ----
-include::{library-root}/test/Jamfile[tag=browser]
+include::{library-root}/test/Jamfile[tag=platform]
+include::{library-root}/test/Jamfile[tag=page]
 include::{library-root}/test/Jamfile[tag=no-exceptions]
 ----
 
-From the root of a webcpp checkout, with the three libraries of
-<<trystero-building>> found, each of these builds and runs the tests,
+Under Asyncify each suspension saves the frames from `main` down to the call
+that suspends, in webcpp::asio's 8,192 bytes (webcpp::asio's guide,
+"Asyncify's stack"). A room's own work is never among those frames
+(<<trystero-platform-needs>>), but a test's cases are: each case calls the
+run family itself. So a test whose cases suspend runs each through
+`webcpp::test::run_case` (`test/cases.hpp`), in a frame of its own, which
+the frame of `main` never holds, whatever the link. At `-O3` a case that
+`main` alone calls is inlined into it, and a program linked without
+optimization, as b2 linked a `release` build until 2026-11-15 and as
+`<linkflags>-O0` still links one, then saves every case's locals in the
+frame of `main` at each suspension: the room test's `main` saved 29,776
+bytes so, and the test stopped at its first suspension. b2 links a `release`
+build at `-O3` now, where even a `main` with every case inlined fits, and
+the deepest build is `debug`. The room, `app_impl` and allocation tests,
+whose cases hold whole apps, run once more under Asyncify in a `release`
+build, as a page ships them, in the own lane `asyncify` on emscripten, which
+the CI's emscripten lane, building JSPI, runs no other way (a target that
+names `<webcpp-suspend>asyncify` belongs in a lane of emscripten's, since a
+build with no emscripten configured cannot expand that feature); their
+deepest suspensions wrote 564, 440 and 408 bytes
+there, and 2,344, 2,068 and 2,020 in `debug` (measured on 2026-11-15 with
+Emscripten 6.0.11):
+
+[listing]
+----
+include::{library-root}/test/Jamfile[tag=asyncify-release]
+----
+
+From the root of a webcpp checkout, with libsecp256k1 found
+(<<trystero-building>>), each of these builds and runs the tests,
 natively, under AddressSanitizer and UndefinedBehaviorSanitizer, and on
 emscripten:
 
@@ -160,16 +293,19 @@ b2 libs/trystero/test address-sanitizer=norecover undefined-sanitizer=norecover
 b2 toolset=emscripten libs/trystero/test
 ----
 
-The {n-linked} examples are linked and never run, since each needs the
-public relays or a browser. b2 compares timestamps, so a result that counts
-is built from scratch, with `b2 -a`.
+The chat page's program is linked and never run, since it is a page; the
+quick start and the programs of the appendix "Differences" run over a relay
+of their own in the lane `relayed` (<<trystero-testing-twins>>), and the one
+of them that needs no relay with the ordinary examples, `b2
+libs/trystero/example`. b2 compares timestamps, so a result that counts is
+built from scratch, with `b2 -a`.
 
 [#trystero-testing-lanes]
 === The oracle and the interop lanes
 
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
 against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
-`package-lock.json`, with Node:
+`package-lock.json`, with Node, run as `node --conditions=development`:
 
 [listing]
 ----
@@ -179,8 +315,9 @@ include::{library-root}/test/oracle/Jamfile[tag=oracle]
 `oracle`, which names no target, runs Trystero's own functions over the
 inputs of `test/fixtures/cases/protocol.json` and checks that they still
 write `test/fixtures/expected/expected.json` byte for byte, the values the
-`protocol` and `native_sealer` tests reproduce; `update-expected` is its only
-writer.
+`protocol` and `platform_sealer` tests reproduce, and runs the twins of the
+examples (<<trystero-testing-twins>>); `update-expected` is the only writer
+of the expected values and of each divergent twin's output.
 
 [listing]
 ----
@@ -254,6 +391,49 @@ b2 -a --dump-tests --out-xml=native.trystero.interop.xml libs/trystero/test/orac
 b2 -a --dump-tests --out-xml=emscripten.trystero.interop.xml toolset=emscripten libs/trystero/test/oracle//interop
 ----
 
+[#trystero-testing-twins]
+=== The examples over a relay, and their twins
+
+The quick start and each program of the appendix "Differences"
+(<<trystero-differences-shown>>) meet over a Nostr relay of their own, the
+interop's `test/oracle/interop/relay.mjs` on 127.0.0.1, in the lane
+`relayed`, natively, which `example/Jamfile` declares: its driver,
+`example/run_over_relay.mjs`, starts the relay, runs the program with the
+relay's URL in its environment, `TRYSTERO_RELAY_URL`, which the program
+reads, and passes when the program exits with 0 having printed its
+`.expected`.
+
+[listing]
+----
+include::{library-root}/example/Jamfile[tag=quick-start]
+include::{library-root}/example/Jamfile[tag=differences]
+----
+
+Each of these programs has its twin in `test/oracle/twins/`, the same
+program on Trystero 0.26.0, which the oracle lane runs through
+`test/oracle/run_twin.mjs`: a relay of its own, its URL in
+`TRYSTERO_RELAY_URL`, and the twin, whose output must be the program's
+`.expected`, or, for a difference, its own `.expected`, which must differ.
+The twins agree with {n-twins-agreeing} of the programs and diverge from
+{n-twins-divergent}; {n-examples-without-twin} have none, each with its
+reason in `test/oracle/twins/without-twin.txt`: the chat, a page that prints
+nothing, and a difference whose original has no counterpart.
+
+Trystero JS has one self id per page, so a twin whose room meets a peer, as
+a {cpp} program's second app does, runs that peer as a second page, a worker
+thread with Trystero's modules of its own (`test/oracle/page.mjs`). Node has
+no WebRTC: Trystero JS takes werift's `RTCPeerConnection` as `rtcPolyfill`,
+the WebRTC for Node that Trystero 0.26.0's own README names, pinned at 0.24.4
+in `test/oracle/package.json` for the twins alone. The {cpp} programs whose
+apps meet bind their connections to 127.0.0.1 with `stun:127.0.0.1:9`, and
+the twins have no ICE server, so every peer stays on the machine.
+
+[source,bash]
+----
+b2 -a --dump-tests --out-xml=native.trystero.relayed.xml libs/trystero/example//relayed
+b2 -a libs/trystero/test/oracle//twins
+----
+
 [#trystero-testing-container]
 === The container lanes
 
@@ -270,20 +450,24 @@ runtime and static link configuration. These builds need no network access.
 === The common OpenSSL provider
 
 The native `provider-integration` lane builds and runs one application that
-uses Asio TLS, Beast and Trystero's native backend together. It compares the
-compiled OpenSSL version with the loaded implementation and constructs TLS
-and WebRTC state. The run is bounded to 45 seconds and uses the threaded
-release profile. The superproject's source dependency tests also check that
-the final Unix executable has no dynamic OpenSSL or libdatachannel provider,
-that each static archive occurs once and that dependent archives precede
-OpenSSL in the link order.
+uses Asio TLS, Beast and Trystero's platform backend together, natively. It
+compares the compiled OpenSSL version with the loaded implementation, makes
+its WebRTC state through trystero's backend, a peer connection and a data
+channel, and checks the backend's relay TLS context, all over the one
+provider. The run is bounded to 45 seconds and uses the threaded release
+profile, with exceptions as the build asks. The superproject's source
+dependency tests also check that the final Unix executable has no dynamic
+OpenSSL or libdatachannel provider, that each static archive occurs once and
+that dependent archives precede OpenSSL in the link order.
 
 [#trystero-testing-report]
 === The test matrix
 
 The continuous integration runs trystero's tests in lanes, one toolset each,
-and its own lanes, the oracle once and the interop natively and on
-emscripten, as `native.trystero.interop` and `emscripten.trystero.interop`, plus the
+and its own lanes, the oracle once, the examples over a relay natively, as
+`native.trystero.relayed`, and the interop natively and on emscripten, as
+`native.trystero.interop` and `emscripten.trystero.interop`, the release
+Asyncify tests as `emscripten.trystero.asyncify`, plus the
 native `provider-integration` lane for the common TLS provider.
 Each lane builds from scratch and records what b2 built and ran; webcpp's
 `tools/report/report.py` merges the files of every lane into a matrix, where

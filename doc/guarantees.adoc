@@ -26,15 +26,15 @@ and chunked action frames, control frames, envelopes and presence are what
 Trystero's own functions compute from the same inputs, byte for byte. _Held
 by_ `protocol`, against the values the `oracle` lane has Trystero 0.26.0
 write, and by the `oracle` lane, which fails when Trystero would write
-other values than those committed; and by `native_sealer`, which opens what
-Trystero JS sealed with Web Crypto.
+other values than those committed; and by `platform_sealer`, natively and on
+emscripten, which opens what Trystero JS sealed with Web Crypto.
 . [[trystero-invariant-3]]*A peer with another password never joins a
 protected {cpp} app's rooms.* Its initial signals do not open under the
 app's password, so it obtains no shared connection into that domain. Every
 room of that app uses the same immutable password. This promise concerns
 the {cpp} app's admission; an upstream JS page that mixes passwords retains
 its one-way handshake exposure (<<trystero-protocol-limitations>>). _Held
-by_ `room` (`the_same_password_joins_and_another_does_not`), `native_room`
+by_ `room` (`the_same_password_joins_and_another_does_not`), `platform_room`
 (`another_password_never_joins`), and password-domain tests of `shared` and
 `interop`.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
@@ -44,9 +44,18 @@ bytes, and arrives whole, from either peer. _Held by_ `room`
 file transfers of the `interop` lane.
 . [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
 resources,* but what <<trystero-allocation-outside>> lists: from its
-construction until its `io_context` has drained, the global `operator new`
-sees only the room's JSON storage counter, and the C library nothing. _Held
-by_ `allocation`, natively and on emscripten.
+construction until its `io_context` has drained, neither the global
+`operator new` nor the C library sees an allocation, while its rooms read
+and write their JSON texts and exchange text, binary and JSON payloads of
+the `std::pmr` types and `webcpp::document::pmr::document`; over the
+platform backend's relays, natively a message adds nothing, and in a page
+each of a relay's connections adds its resolver's results and each event of
+its `WebSocket` embind's string of the event's type, two for a message.
+_Held by_ `allocation`, natively and on emscripten; for a page's sealer,
+`platform_page_sealer_allocation`; and for the relays,
+`platform_websocket_allocation` natively and
+`platform_page_relay_allocation` in a page, which counts exactly what is
+listed.
 . [[trystero-invariant-6]]*No unit test reaches beyond the loopback.* The
 rooms of the unit tests meet over the memory relays, the native tests' peer
 connections bind to 127.0.0.1 and gather their candidates there alone, and
@@ -66,11 +75,14 @@ reflection scenarios of the `interop` lane.
 . [[trystero-invariant-8]]*A relay that stops reading is dropped.* Once the
 text held unsent for it would pass 4 MiB, the connection is dropped, and
 reports one close, after which the room reconnects with its backoff, as it
-does to any relay that closes. _Held by_ `native_websocket`
+does to any relay that closes. _Held by_ `platform_websocket`
 (`a_relay_that_stops_reading_is_dropped_at_the_queue_bound`, a close before
-2000 texts of 64 KiB, and one only) natively, and `browser_websocket_bound`
-on emscripten, with exceptions and without them, which also checks that the
-socket never holds more than 4 MiB; the reconnection by `room`
+2000 texts of 64 KiB, and one only) natively, and on emscripten, with
+exceptions and without them, by `platform_page_websocket_bound`, where the
+page's `WebSocket` holds what is unsent, which also checks that it never
+holds more than 4 MiB, and `platform_page_websocket_late_events`, where the
+session's queue does, which checks one close and no message after it; the
+reconnection by `room`
 (`a_relay_that_closes_at_once_is_tried_less_and_less_often`).
 
 . [[trystero-invariant-9]]*One connection per remote peer per app is shared

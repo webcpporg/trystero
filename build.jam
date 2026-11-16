@@ -5,47 +5,82 @@
 # https://www.boost.org/LICENSE_1_0.txt)
 #
 # trystero, serverless WebRTC rooms, wire compatible with Trystero. A program
-# uses /webcpp/trystero//trystero, the rooms and the browser backend, or
-# /webcpp/trystero//native for the native backend.
+# uses /webcpp/trystero//platform, the rooms and the platform backend, on
+# both targets; /webcpp/trystero//trystero is the rooms alone, over a backend
+# of the program's own, as the tests' memory relays are.
 
 project /webcpp/trystero ;
 
 # libsecp256k1 (every room) is webcpp's build of it, /third_party//secp256k1:
 # v0.8.0 from the submodule third_party/libs/secp256k1, with the tables the
 # feature webcpp-secp256k1-tables chooses (small on emscripten, large natively;
-# CODING-GUIDELINES.md chapter 5). Native WebRTC and OpenSSL are pinned source
-# dependencies too, built together for the consumer's B2 variant.
+# CODING-GUIDELINES.md chapter 5). WebRTC is webcpp::webrtc's, whose native
+# libdatachannel and its OpenSSL are pinned source dependencies, built
+# together for the consumer's B2 variant.
 import errors ;
 
-# The native backend's own dependencies, checked only when a target that
-# uses it is built.
-rule native-dependencies ( properties * )
+# The platform backend's own dependencies, checked only when a target that
+# uses it is built: natively its WebRTC, libdatachannel's through
+# webcpp::webrtc, runs on worker threads.
+rule platform-dependencies ( properties * )
 {
-    if <threading>single in $(properties)
+    if <threading>single in $(properties) && ! <toolset>emscripten in $(properties)
     {
-        errors.user-error "Trystero's native backend uses worker threads. Add <threading>multi to the consuming target or pass threading=multi." ;
+        errors.user-error "Trystero's platform backend uses worker threads natively. Add <threading>multi to the consuming target or pass threading=multi." ;
     }
 }
 
-# On emscripten, the browser has no threads (the event loop drives Asio), and
-# the browser backend reaches the page through embind: -lembind, what b2's
-# <embind>on links, which as a usage requirement it would drop (measured: a
-# program then fails to link, undefined _embind_register_function), since
-# b2 takes only free features from usage requirements.
+# The rooms: Asio is webcpp::asio, natively Boost.Asio itself, on emscripten
+# the shipped backend, without threads (main runs it), which links embind.
+# Every JSON text the rooms read or write is webcpp::document's, which brings
+# Boost.JSON's parser and Boost.Charconv's definitions.
+#
+# Under Asyncify, Boost.JSON's recursive descent, basic_parser's parse_*
+# functions, is left uninstrumented (asyncify-remove.json), since none
+# suspends. Instrumented, a level of a parse took some 6.5 KB of node's
+# stack in a debug build before the engine optimized it, so that a peer's
+# first JSON payload nested 256 deep, document's default, overflowed node's
+# 984 KB at about 150 levels; uninstrumented, at 400, and in a release build
+# past 1,000 (measured). A program whose own parse suspends from a
+# selector's callback cannot link trystero under Asyncify; under JSPI
+# nothing is left out.
+#
+# trystero is parts and that list. parts, the same headers and dependencies
+# without it, is for a program of a part that parses no JSON, as trystero's
+# tests of the timer, a relay's URL, a page's calls and the sealer are
+# (test/Jamfile): such a program has none of the parser's functions, and
+# Binaryen warns of a pattern of the list that names none.
+path-constant WEBCPP_TRYSTERO_ROOT : . ;
 # tag::trystero[]
-alias trystero : :
-  : : <include>include <library>/boost//headers <library>/webcpp//boost_json
-  <library>/webcpp/config//config <library>/third_party//secp256k1
-  <toolset>emscripten:<define>BOOST_ASIO_DISABLE_THREADS
-  <toolset>emscripten:<linkflags>-lembind ;
+alias parts : :
+  : : <include>include <library>/boost//headers <library>/webcpp/document//document
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/third_party//secp256k1 ;
+alias trystero : : : : <library>parts
+  <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
+  ;
 # end::trystero[]
 
-# The native backend needs exceptions: libdatachannel reports errors by
-# throwing, and data_channel.hpp and peer_connection.hpp catch them. Each
-# headers-alone call, test and program of it declares
-# <exception-handling>on itself, since b2 lets no usage requirement override
-# a build's exception-handling=off.
-# tag::native[]
-alias native : : <conditional>@native-dependencies
-  : : <library>trystero <library>/webcpp/third_party//libdatachannel ;
-# end::native[]
+# The platform backend, one for both targets: its WebRTC is webcpp::webrtc's,
+# its relays' WebSockets webcpp::beast's, their URLs read with Boost.URL,
+# built from Boost's sources once per variant. Natively webcpp::webrtc brings
+# the pinned libdatachannel and OpenSSL, and works with exceptions on and
+# off, through libdatachannel's C API; so does the backend. Its relays run
+# over the same OpenSSL (//tls), and webcpp::asio's //tls adds webcpp's
+# embedded authorities, which a program may trust in place of the system's
+# (make_tls_client_context). On emscripten webcpp::webrtc and webcpp::beast
+# bind the page's RTCPeerConnection and WebSocket (//browser), and no
+# OpenSSL is linked.
+#
+# platform is platform-parts and the rooms. platform-parts, the backend over
+# parts, without the rooms' Asyncify list, is for trystero's tests of the
+# backend's parts that parse no JSON (above).
+# tag::platform[]
+alias platform-parts : : <toolset>emscripten
+  : : <library>parts <library>/webcpp/webrtc//webrtc
+  <library>/webcpp/beast//browser <library>/webcpp//boost_url ;
+alias platform-parts : : <conditional>@platform-dependencies
+  : : <library>parts <library>/webcpp/webrtc//webrtc
+  <library>/webcpp/beast//tls <library>/webcpp/asio//tls
+  <library>/webcpp//boost_url ;
+alias platform : : : : <library>platform-parts <library>trystero ;
+# end::platform[]

@@ -8,15 +8,17 @@
 // It joins over Trystero's public Nostr relays, so Trystero JS peers with the same app id and room
 // id are in the same chat.
 #include <webcpp/trystero.hpp>
-#include <webcpp/trystero/browser/backend.hpp>
-#include <webcpp/trystero/browser/src.hpp>  // once per program: the JavaScript export
+#include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/platform/page.hpp>
 
-#include <emscripten/bind.h>
+#include <webcpp/asio/executor_work_guard.hpp>
+#include <webcpp/asio/io_context.hpp>
+
 #include <emscripten/val.h>
-#include <boost/asio/io_context.hpp>
 
 #include <memory>
 #include <string>
+#include <utility>
 
 using emscripten::val;
 namespace trystero = webcpp::trystero;
@@ -25,9 +27,8 @@ namespace {
 
 // tag::state[]
 struct chat {
-    boost::asio::io_context io;
-    trystero::browser::event_loop loop{io};
-    trystero::browser::backend backend{loop};
+    webcpp::asio::io_context io;
+    trystero::platform::backend backend{io.get_executor()};
     std::unique_ptr<trystero::app> app;  // made at the first join, with that join's app id
     std::unique_ptr<trystero::room> room;
     // The action "chat" twice: received as views of the frame, and sent by moving the text.
@@ -37,13 +38,8 @@ struct chat {
 
 // end::state[]
 
-chat& the_chat() {
-    static chat c;  // the page's one chat; it lives as long as the tab
-    return c;
-}
-
 val js(std::string_view text) {
-    return the_chat().loop.text(text);
+    return trystero::platform::js_string(text);
 }
 
 val js(bool value) {
@@ -57,19 +53,26 @@ void ui(const char* name, const Args&... args) {
 }
 
 // tag::join[]
-void join_room(const std::string& app_id, const std::string& room_id) {
-    auto& c = the_chat();
-    if (c.room) {
+void join_room(chat& c, const val& form) {
+    // The page's value is checked before it is read: a page_call's handler lets no JavaScript
+    // error out of the run, which reading a field of null or undefined (a TypeError) or converting
+    // what is not a string (embind's BindingError) would.
+    if (c.room || form.isNull() || form.isUndefined()) {
         return;
     }
+    const val app_field = form["app"];
+    const val room_field = form["room"];
+    if (!app_field.isString() || !room_field.isString()) {
+        return;
+    }
+    const auto room_id = room_field.as<std::string>();
     if (!c.app) {
         trystero::app_config config;
-        config.app_id = app_id;
+        config.app_id = app_field.as<std::string>();
         config.log = [](std::string_view category, std::string_view text) {
             ui("log", category, text);
         };
-        c.app =
-            std::make_unique<trystero::app>(c.loop.get_executor(), c.backend, std::move(config));
+        c.app = std::make_unique<trystero::app>(c.io.get_executor(), c.backend, std::move(config));
     }
     auto joined = c.app->join(room_id);
     if (!joined) {
@@ -94,9 +97,12 @@ void join_room(const std::string& app_id, const std::string& room_id) {
 // end::join[]
 
 // tag::send[]
-void send_message(std::string text) {
-    auto& c = the_chat();
-    if (!c.room || text.empty()) {
+void send_message(chat& c, const val& message) {
+    if (!c.room || !message.isString()) {
+        return;
+    }
+    auto text = message.as<std::string>();
+    if (text.empty()) {
         return;
     }
     ui("message", c.room->self_id(), std::string_view(text), true);
@@ -111,10 +117,19 @@ void send_message(std::string text) {
 
 }  // namespace
 
-// tag::bindings[]
-EMSCRIPTEN_BINDINGS(chat_example) {
-    emscripten::function("join", &join_room);
-    emscripten::function("send", &send_message);
+// tag::main[]
+int main() {
+    chat c;  // the page's one chat, which lives as long as the tab, in main's run
+    // The page's two calls, functions of webcpp::asio's bridge that post their work to the
+    // io_context: joinRoom with the form's app and room, sendText with the text its user wrote.
+    const trystero::platform::page_call join(c.io.get_executor(),
+                                             [&c](const val& form) { join_room(c, form); });
+    const trystero::platform::page_call send(c.io.get_executor(),
+                                             [&c](const val& text) { send_message(c, text); });
+    val::global("chatUi").call<void>("ready", join.function(), send.function());
+    // The page waits for its user with no work at all: the guard keeps the run going.
+    const auto guard = webcpp::asio::make_work_guard(c.io);
+    c.io.run();  // lint-run: the page's program, suspended into the browser's event loop
 }
 
-// end::bindings[]
+// end::main[]
