@@ -18,8 +18,8 @@ of every version are on webcpp's index page.
 // tag::unreleased[]
 * *Breaking change:* Changed `native::` and `browser::` to one
 `platform::backend` (link `/webcpp/trystero//platform`), and a backend's
-`now_ms()` and `unix_seconds()` to `std::chrono`'s `steady_now()` and
-`unix_now()`.
+`now_ms()` and `unix_seconds()` to `steady_now()` and `unix_now()`, of
+`std::chrono`.
 * *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
 runs its `io_context` under a work guard, and calls in through
 `platform::page_call` of `platform/page.hpp`.
