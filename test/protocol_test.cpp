@@ -44,6 +44,8 @@
 #include <variant>
 #include <vector>
 
+#include "bookkeeping.hpp"
+
 namespace wd = webcpp::document;
 namespace tp = webcpp::trystero::protocol;
 
@@ -87,7 +89,7 @@ wd::result<wd::pmr::document> parse_text(
  */
 class counting_resource final : public std::pmr::memory_resource {
 public:
-    /** How many allocations it made. */
+    /** How many allocations it made, a standard container's own (bookkeeping.hpp) left out. */
     std::size_t allocations = 0;
     /** The bytes of its largest allocation. */
     std::size_t largest = 0;
@@ -100,7 +102,9 @@ public:
 
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-        ++allocations;
+        if (!webcpp::test::is_bookkeeping(bytes, alignment)) {
+            ++allocations;
+        }
         largest = std::max(largest, bytes);
         bytes_out += bytes;
         peak = std::max(peak, bytes_out);

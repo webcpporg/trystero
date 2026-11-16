@@ -37,6 +37,7 @@
 #include <span>
 #include <vector>
 
+#include "bookkeeping.hpp"
 #include "cases.hpp"
 
 namespace asio = webcpp::asio;
@@ -48,14 +49,17 @@ namespace {
 /** A resource that counts what it gives, and what is still out. */
 class counting_resource final : public std::pmr::memory_resource {
 public:
-    /** How many allocations it made. */
+    /** How many allocations it made, a standard container's own (bookkeeping.hpp) left out: a
+     * moved string's proxy, on MSVC's debug STL, is no state of the backend's. */
     std::size_t allocations = 0;
-    /** How many of them are not yet returned. */
+    /** How many of them are not yet returned, every one counted. */
     std::size_t outstanding = 0;
 
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-        ++allocations;
+        if (!webcpp::test::is_bookkeeping(bytes, alignment)) {
+            ++allocations;
+        }
         ++outstanding;
         return std::pmr::new_delete_resource()->allocate(bytes, alignment);
     }
