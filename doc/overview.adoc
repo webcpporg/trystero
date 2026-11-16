@@ -85,7 +85,8 @@ on both. Every name is in the namespace `webcpp::trystero`.
   (<<trystero-building>>).
 * https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
   `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
-  events: every room needs it.
+  events: every room needs it. webcpp builds it from its pinned
+  source, `/third_party//secp256k1`.
 * In the browser: Emscripten 6.0.11, the version webcpp pins, a page
   served from a secure context (https, or http on `localhost`), where
   `crypto.subtle` exists, and a program whose `main` runs its `io_context`

@@ -6,8 +6,8 @@
 
 # trystero's CI: the superproject's reusable workflow, which builds this commit inside a checkout of
 # webcpp, on every lane trystero declares and its own lanes, oracle and interop, with libsecp256k1,
-# libdatachannel and OpenSSL, which the workflow's actions install, its page, the lint and the test
-# matrix.
+# libdatachannel and OpenSSL, all built from the superproject's pinned sources, its page, the lint
+# and the test matrix.
 name: CI
 
 on:

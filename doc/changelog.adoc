@@ -17,9 +17,9 @@ of every version are on webcpp's index page.
 
 // tag::unreleased[]
 * *Breaking change:* Changed `native::` and `browser::` to one
-`platform::backend`, with `backend_config::memory` and `runtime`, whose
-`tls_context()` is a `boost::system::result`; include
-`<webcpp/trystero/platform/backend.hpp>`, link `/webcpp/trystero//platform`.
+`platform::backend` (link `/webcpp/trystero//platform`), and a backend's
+`now_ms()` and `unix_seconds()` to `std::chrono`'s `steady_now()` and
+`unix_now()`.
 * *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
 runs its `io_context` under a work guard, and calls in through
 `platform::page_call` of `platform/page.hpp`.
@@ -30,11 +30,12 @@ assignment, and programs link Boost.Charconv too.
 * *Breaking change:* Changed relays to verify TLS in any verify mode, drop
 binary messages, and refuse URLs a page reads otherwise and TLS contexts a
 page cannot honour.
-* *Breaking change:* Changed a backend's clocks to `std::chrono`:
-`steady_now()` and `unix_now()` replace `now_ms()` and `unix_seconds()`.
 * *Breaking change:* Changed `protocol::` to take webcpp::document's values,
 removing `json::parse` and `make_id`; `append_string` returns its error, and
 `proposal::size` is a `std::uint64_t`.
+* *Breaking change:* Changed libsecp256k1 to `/third_party//secp256k1`, with
+`webcpp-secp256k1-tables` for its tables and no `-sSECP256K1_ROOT`, and
+`app::join` to `+[[nodiscard]]+`.
 * Fixed relays hiding a genuine Nostr event, slowing rooms with colliding ids
 or making them read an 8 MiB refusal, and rooms dropping or piling up
 simultaneous offers.

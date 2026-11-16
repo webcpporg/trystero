@@ -139,13 +139,11 @@ holds only what is specific to trystero.
   fits (616 bytes for the room test), so they no longer catch one. There is
   one timer, the core's `detail::timer` over webcpp::asio's `steady_timer`,
   on both targets, which `timer` tests on both.
-- **The dependencies.** libsecp256k1 (every room) remains an external
-  installation, found through `webcpp.external` and `webcpp.external-found`
-  at `-sSECP256K1_ROOT=<dir>` or `-sSECP256K1_EMSCRIPTEN_ROOT=<dir>`, then
-  `.local/secp256k1-native` or `.local/secp256k1-emscripten`. Native system
-  fallback outside Windows is allowed only for this dependency. A missing
-  installation leaves trystero out unless `webcpp-require-external=on`.
-  MSVC links its static `libsecp256k1.lib` with `SECP256K1_STATIC`.
+- **The dependencies.** libsecp256k1 (every room) is webcpp's own build,
+  `/third_party//secp256k1` (v0.8.0, from `third_party/libs/secp256k1`), which
+  `/webcpp/trystero//trystero` names; its tables come from
+  `webcpp-secp256k1-tables` (see `doc/building.adoc`). Nothing is installed
+  outside the checkout, once the pinned submodules are initialised.
   `/webcpp/trystero//trystero` (`build.jam`'s `tag::trystero[]`) is the
   rooms alone, the core: `parts`, its headers, Boost, webcpp::document
   (`/webcpp/document//document`, with Boost.JSON's and Boost.Charconv's
@@ -175,7 +173,8 @@ holds only what is specific to trystero.
   `/webcpp/beast//browser` and `/webcpp//boost_url`, with no OpenSSL. No
   `LIBDATACHANNEL_ROOT`, `OPENSSL_ROOT` or installed binary is consulted.
   Initialize their sources with `git submodule update --init --recursive
-  third_party/libs/libdatachannel third_party/libs/openssl`. Native builds
+  third_party/libs/libdatachannel third_party/libs/openssl
+  third_party/libs/secp256k1`. Native builds
   need CMake 3.21 or newer in addition to OpenSSL's Perl and Make/nmake.
   B2 forwards the configured compiler, C++ ABI, runtime and optimization
   flags, and isolates artifacts by their effective configuration. The

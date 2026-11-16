@@ -183,7 +183,8 @@ public:
      * @return The room, or `error::already_joined` while a room of that id is joined in the app,
      * or `error::too_many_rooms` when `max_rooms` rooms count.
      */
-    boost::system::result<room> join(std::string_view room_id, room_options options = {}) {
+    [[nodiscard]] boost::system::result<room> join(std::string_view room_id,
+                                                   room_options options = {}) {
         BOOST_ASSERT(impl_);
         if (const auto existing = impl_->find_room(room_id)) {
             if (!existing->leaving()) {
