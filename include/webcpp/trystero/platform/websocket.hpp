@@ -121,7 +121,7 @@ inline boost::system::error_code openssl_error() {
  * authorities.
  * @see "The relays", in the guide.
  */
-inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
+[[nodiscard]] inline boost::system::result<webcpp::asio::ssl::context> make_tls_context() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
     // What an earlier call left in OpenSSL's queue is not this one's error.
     ERR_clear_error();

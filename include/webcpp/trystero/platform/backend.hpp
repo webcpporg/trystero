@@ -218,7 +218,7 @@ public:
      * @return The context every `wss://` connection of the backend is made with, or the error that
      * kept it from being made.
      */
-    boost::system::result<webcpp::asio::ssl::context&> tls_context() {
+    [[nodiscard]] boost::system::result<webcpp::asio::ssl::context&> tls_context() {
         if (!tls_) {
             return tls_.error();
         }

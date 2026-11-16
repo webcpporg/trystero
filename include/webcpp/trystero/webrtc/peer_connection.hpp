@@ -155,7 +155,7 @@ public:
      * `operation_error` for another refusal.
      */
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    static boost::system::result<std::shared_ptr<peer_connection>> make(
+    [[nodiscard]] static boost::system::result<std::shared_ptr<peer_connection>> make(
         std::shared_ptr<::webcpp::webrtc::runtime> runtime, const executor_type& ex,
         std::span<const backend::ice_server> servers, std::string_view bind_address,
         backend::factory& factory, std::pmr::memory_resource* memory) {
@@ -181,7 +181,7 @@ public:
      * @param memory The resource of the connection, and of the call's own lists.
      * @return The connection, or webcpp::webrtc's error, as `make` says.
      */
-    static boost::system::result<connection_type> make_connection(
+    [[nodiscard]] static boost::system::result<connection_type> make_connection(
         ::webcpp::webrtc::runtime& runtime, const executor_type& ex,
         std::span<const backend::ice_server> servers, std::string_view bind_address,
         std::pmr::memory_resource* memory) {
