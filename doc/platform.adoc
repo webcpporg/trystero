@@ -128,9 +128,8 @@ Asio and OpenSSL allocate of their own, which takes no allocator (their
 streams' state, the resolver's, the handshake's request and response, the
 verify callback, their timers' waits and each keep-alive ping's frame), and
 a message allocates nothing more than the wait of the idle timer, from
-Asio's per-thread cache; in a page, for each connection, the resolver's
-results, and for each event of the page's `WebSocket` the string embind makes
-of its type, two for a message. A write that fails ends the connection,
+Asio's per-thread cache; in a page, for each event of the page's
+`WebSocket`, the string embind makes of its type, two for a message. A write that fails ends the connection,
 which reports its close at once. A relay's messages are texts (NIP-01): a
 binary one is dropped, on both targets. The WebSockets are Beast's rather
 than libdatachannel's own, so the relays run on the room's executor like
