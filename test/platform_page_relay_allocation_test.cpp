@@ -10,11 +10,10 @@
 // exactly what the guide's "What stays outside the resource" lists, no more and no fewer, so that a
 // change either way is seen:
 //
-// - a connection, from the call that makes it to its open: three `operator new` of the page's
-//   resolver for its results (Asio's list of one entry, its shared count and the entry's storage),
-//   two more for the host's two copies when it is longer than a short string holds (10 bytes in a
-//   page), and one C library allocation, embind's for the type of the open event, which
-//   webcpp::beast's page stream reads as a `std::string`;
+// - a connection, from the call that makes it to its open: one C library allocation, embind's for
+//   the type of the open event, which webcpp::beast's page stream reads as a `std::string`, and no
+//   `operator new`, whatever the host's length: webcpp::asio's page resolver holds its results'
+//   one entry, the host and the service, in place;
 // - each message the relay sends, to its arrival in the room: two C library allocations, embind's
 //   for the event's type and for the type of its data, which the stream reads as `std::string`s;
 // - the close, from the call to the page's close event, delivered after the room was told: one C
@@ -331,7 +330,10 @@ struct connection_counts {
     counts close;
 };
 
-/** The relays of the rounds: the first warms up, uncounted; the third's host is a long string. */
+/**
+ * The relays of the rounds: the first warms up, uncounted; the third's host is longer than a short
+ * string holds (10 bytes in a page), which the resolver's results hold in place too.
+ */
 constexpr std::array<std::string_view, 3> relays{
     "wss://relay.test",
     "wss://relay.test",
@@ -472,9 +474,9 @@ void expect(const counts& got, std::size_t global, std::size_t c_library, const 
     BOOST_TEST_GT(got.room, 0U);
 }
 
-/** Checks a counted round, whose host's two copies take `host_copies` more `operator new`. */
-void expect_round(const connection_counts& got, std::size_t host_copies) {
-    expect(got.open, 3 + host_copies, 1, "a connection did not open");
+/** Checks a counted round. */
+void expect_round(const connection_counts& got) {
+    expect(got.open, 0, 1, "a connection did not open");
     expect(got.one_message, 0, 2, "a message did not reach the room");
     expect(got.ten_messages, 0, 20, "ten messages did not reach the room");
     expect(got.close, 0, 1, "a connection did not close");
@@ -492,7 +494,7 @@ int main() {
     if (!s.done) {
         BOOST_ERROR("the rounds stopped before the last");
     }
-    expect_round(s.rounds.at(1), 0);  // relay.test, a short string
-    expect_round(s.rounds.at(2), 2);  // relay.example.org, longer
+    expect_round(s.rounds.at(1));  // relay.test, a short string
+    expect_round(s.rounds.at(2));  // relay.example.org, longer
     return webcpp::test::exit_status(boost::report_errors());
 }

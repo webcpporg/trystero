@@ -49,8 +49,8 @@ construction until its `io_context` has drained, neither the global
 and write their JSON texts and exchange text, binary and JSON payloads of
 the `std::pmr` types and `webcpp::document::pmr::document`; over the
 platform backend's relays, natively a message adds nothing, and in a page
-each of a relay's connections adds its resolver's results and each event of
-its `WebSocket` embind's string of the event's type, two for a message.
+each event of a relay's `WebSocket` adds embind's string of the event's
+type, two for a message.
 _Held by_ `allocation`, natively and on emscripten; for a page's sealer,
 `platform_page_sealer_allocation`; and for the relays,
 `platform_websocket_allocation` natively and

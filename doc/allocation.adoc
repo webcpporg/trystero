@@ -300,15 +300,11 @@ nothing.
   completion in a function object of its recycling cache (measured: six
   `operator new` and four of its blocks for a text sent and its echo
   received);
-* in a page, for each relay connection, the results webcpp::asio's page
-  resolver makes with `new`, which takes no allocator: Asio's list of one
-  entry, its shared count and the entry's storage, three allocations, and two
-  copies of the host when it is longer than a short string holds (10 bytes
-  in a page: `relay.damus.io`, of 14, is longer); and, for each event of the page's
-  `WebSocket`, its open, each message and its close, the C library's
-  allocation embind makes for the `std::string` into which webcpp::beast's
-  page stream reads the event's type (`event["type"].as<std::string>()` in
-  its `deliver`), and for a message a second, for the type of its data
+* in a page, for each event of a relay's `WebSocket`, its open, each message
+  and its close, the C library's allocation embind makes for the
+  `std::string` into which webcpp::beast's page stream reads the event's
+  type (`event["type"].as<std::string>()` in its `deliver`), and for a
+  message a second, for the type of its data
   (`data.typeOf().as<std::string>()` in its `receive_message`), each freed
   before the call that made it returns: two for each message a relay sends.
   The test `platform_page_relay_allocation` counts exactly these, no more
@@ -316,8 +312,11 @@ nothing.
   for ten, and from its close to the page's close event. The stream's own
   state, its operations, the messages it holds and the read buffer are in
   the room's resource, and the page's `WebSocket` makes the handshake;
-  avoiding embind's strings, and the resolver's results, needs a change to
-  webcpp::beast's page stream and to webcpp::asio's page resolver;
+  webcpp::asio's page resolver holds its results, the host and the service,
+  in place, and allocates nothing, whatever the host's length. Embind's
+  strings stay: they are freed at once, and avoiding them would need
+  webcpp::beast's page stream to read an event's type without a
+  `std::string`;
 * the payload types `std::string`, `bytes`, `webcpp::document::document` and
   `payload`, with `std::allocator`, the user's choice;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on

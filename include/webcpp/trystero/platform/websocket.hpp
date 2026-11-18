@@ -319,11 +319,9 @@ inline std::optional<url_parts> parse_url(
  * cache (the TCP stream's deadline over the connection and the TLS handshake, the WebSocket's
  * handshake, idle and close timeouts, the idle one started again at each read); and each
  * keep-alive ping's frame. On Emscripten the page's stream keeps its state in the room's resource
- * too, and its `WebSocket` makes the handshake; what stays outside is, for each connection, the
- * results webcpp::asio's page resolver makes with `new` (Asio's list of one entry, its shared count
- * and the entry's storage, and two copies of the host when it is longer than a short string holds,
- * 10 bytes in a page), and, for each event of the page's `WebSocket` (its open, each message and
- * its close), the C library's allocation embind makes for the `std::string` into which
+ * too, its `WebSocket` makes the handshake, and webcpp::asio's page resolver holds its results in
+ * place; what stays outside is, for each event of the page's `WebSocket` (its open, each message
+ * and its close), the C library's allocation embind makes for the `std::string` into which
  * webcpp::beast's page stream reads the event's type, and for a message a second, for the type of
  * its data, each freed before the call that made it returns.
  */
@@ -785,10 +783,10 @@ private:
  * response, the verify callback, their timers' waits, the idle timer's again at each read, and
  * each keep-alive ping's frame; a relay that answers the handshake with a status other than 101
  * has its response's header read, at most 8 KiB, and no byte of its body, through webcpp::beast's
- * bounded handshake layer, before the connection reports its close. In a page, the page
- * resolver's results, made with `new`, and, for each event of the page's `WebSocket`, the open,
- * each message and the close, the C library's allocation embind makes for its type, and for a
- * message a second, for the type of its data, each freed before the call that made it returns.
+ * bounded handshake layer, before the connection reports its close. In a page, for each event of
+ * the page's `WebSocket`, the open, each message and the close, the C library's allocation embind
+ * makes for its type, and for a message a second, for the type of its data, each freed before the
+ * call that made it returns.
  *
  * @param ex The executor every handler runs on.
  * @param tls The TLS context of `wss://`, which must outlive the connection, or null when the
