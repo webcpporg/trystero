@@ -269,71 +269,84 @@ private:
         return *std::launder(reinterpret_cast<T**>(storage));
     }
 
-    // A target is destroyed with std::destroy_at: MSVC 14.3 and 14.5 refuse `p->~T()` in these
-    // functions when T is a closure type (C2300, "class does not have a destructor called '~T'").
+    // The functions of the two tables below are static member functions, never lambdas: once a
+    // handler of one signature has a second target type, MSVC 14.52 converts to a function pointer
+    // no lambda of the table whose parameters expand Args (C2440, "no user-defined-conversion
+    // operator available"). A target is destroyed with std::destroy_at: MSVC 14.3 and 14.5 refuse
+    // `p->~T()` in these functions when T is a closure type (C2300, "class does not have a
+    // destructor called '~T'").
+
+    /** What a target of type `T` held inline in the handler's storage does. */
     template <class T>
-    static constexpr operations operations_of = [] {
-        if constexpr (fits_inline<T>) {
-            return operations{
-                .invoke = [](unsigned char* storage, Args&&... args) -> R {
-                    return static_cast<R>(
-                        (*inline_target<T>(storage))(std::forward<Args>(args)...));
-                },
-                // Each of these functions constructs a target in to's storage with placement new,
-                // which readability-non-const-parameter does not count as a write, from the
-                // source, which it moves: misc-const-correctness, seeing a target that a move
-                // copies (a function pointer), would make the source const and every move a copy.
-                .move =
-                    [](unsigned char* from,
-                       unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
-                        T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
-                        ::new (static_cast<void*>(to)) T(std::move(*source));
-                        std::destroy_at(source);
-                    },
-                .rehome =
-                    [](unsigned char* from, std::pmr::memory_resource& /*from_resource*/,
-                       unsigned char* to,  // NOLINT(readability-non-const-parameter)
-                       std::pmr::memory_resource& /*to_resource*/) {
-                        T* const source = inline_target<T>(from);  // NOLINT(misc-const-correctness)
-                        ::new (static_cast<void*>(to)) T(std::move(*source));
-                        std::destroy_at(source);
-                    },
-                .destroy =
-                    [](unsigned char* storage, std::pmr::memory_resource& /*resource*/) noexcept {
-                        std::destroy_at(inline_target<T>(storage));
-                    },
-            };
-        } else {
-            return operations{
-                .invoke = [](unsigned char* storage, Args&&... args) -> R {
-                    return static_cast<R>(
-                        (*allocated_target<T>(storage))(std::forward<Args>(args)...));
-                },
-                // As above, each constructs in to's storage with placement new.
-                .move =
-                    [](unsigned char* from,
-                       unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
-                        ::new (static_cast<void*>(to)) T*(allocated_target<T>(from));
-                    },
-                .rehome =
-                    [](unsigned char* from, std::pmr::memory_resource& from_resource,
-                       unsigned char* to,  // NOLINT(readability-non-const-parameter)
-                       std::pmr::memory_resource& to_resource) {
-                        T* const source = allocated_target<T>(from);
-                        ::new (static_cast<void*>(to))
-                            T*(make<T>(allocator_type(&to_resource), std::move(*source)));
-                        std::destroy_at(source);
-                        allocator_type(&from_resource).deallocate_object(source);
-                    },
-                .destroy =
-                    [](unsigned char* storage, std::pmr::memory_resource& resource) noexcept {
-                        T* const target = allocated_target<T>(storage);
-                        std::destroy_at(target);
-                        allocator_type(&resource).deallocate_object(target);
-                    },
-            };
+    struct inline_operations {
+        static R invoke(unsigned char* storage, Args&&... args) {
+            return static_cast<R>((*inline_target<T>(storage))(std::forward<Args>(args)...));
         }
-    }();
+
+        // Each of these functions constructs a target in to's storage with placement new, which
+        // readability-non-const-parameter does not count as a write, from the source, which it
+        // moves: misc-const-correctness, seeing a target that a move copies (a function pointer),
+        // would make the source const and every move a copy.
+        static void move(unsigned char* from,
+                         unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
+            T* const source = inline_target<T>(from);   // NOLINT(misc-const-correctness)
+            ::new (static_cast<void*>(to)) T(std::move(*source));
+            std::destroy_at(source);
+        }
+
+        // A target held inline is in no resource: it moves as it does between equal resources.
+        static void rehome(unsigned char* from, std::pmr::memory_resource& /*from_resource*/,
+                           unsigned char* to, std::pmr::memory_resource& /*to_resource*/) {
+            move(from, to);
+        }
+
+        static void destroy(unsigned char* storage,
+                            std::pmr::memory_resource& /*resource*/) noexcept {
+            std::destroy_at(inline_target<T>(storage));
+        }
+    };
+
+    /** What a target of type `T` allocated from the handler's resource does. */
+    template <class T>
+    struct allocated_operations {
+        static R invoke(unsigned char* storage, Args&&... args) {
+            return static_cast<R>((*allocated_target<T>(storage))(std::forward<Args>(args)...));
+        }
+
+        // As in inline_operations, each constructs in to's storage with placement new.
+        static void move(unsigned char* from,
+                         unsigned char* to) noexcept {  // NOLINT(readability-non-const-parameter)
+            ::new (static_cast<void*>(to)) T*(allocated_target<T>(from));
+        }
+
+        static void rehome(unsigned char* from, std::pmr::memory_resource& from_resource,
+                           unsigned char* to,  // NOLINT(readability-non-const-parameter)
+                           std::pmr::memory_resource& to_resource) {
+            T* const source = allocated_target<T>(from);
+            ::new (static_cast<void*>(to))
+                T*(make<T>(allocator_type(&to_resource), std::move(*source)));
+            std::destroy_at(source);
+            allocator_type(&from_resource).deallocate_object(source);
+        }
+
+        static void destroy(unsigned char* storage, std::pmr::memory_resource& resource) noexcept {
+            T* const target = allocated_target<T>(storage);
+            std::destroy_at(target);
+            allocator_type(&resource).deallocate_object(target);
+        }
+    };
+
+    template <class T>
+    using operations_for =
+        std::conditional_t<fits_inline<T>, inline_operations<T>, allocated_operations<T>>;
+
+    template <class T>
+    static constexpr operations operations_of{
+        .invoke = &operations_for<T>::invoke,
+        .move = &operations_for<T>::move,
+        .rehome = &operations_for<T>::rehome,
+        .destroy = &operations_for<T>::destroy,
+    };
 
     void reset() noexcept {
         if (operations_ != nullptr) {
