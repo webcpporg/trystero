@@ -1337,12 +1337,16 @@ void a_kept_leave_discards_what_came_before() {
     BOOST_TEST_EQ(gone, 1);
 }
 
-// crossed connections recover: A's end of r1's pair and B's end of r2's open first; both
-// sides lose both, then both rooms join again within 15 s of virtual time, over one connection.
+// crossed connections recover: A's end of r1's pair and B's end of r2's open first, so each side
+// keeps another connection and holds the other as its second. B, the higher id, takes its second
+// once A sends on it, and its first's end closes A's second: both rooms join within 15 s of
+// virtual time, over one connection, and A never loses the peer.
 void crossed_connections_recover() {
     fixture f{true};
     auto a_config = app_config("AAAAAAAAAAAAAAAAAAF1");
     a_config.ice_servers = {{.urls = {"stun:a.test"}, .username = {}, .credential = {}}};
+    std::vector<std::string> a_log;
+    a_config.log = [&a_log](std::string_view, std::string_view text) { a_log.emplace_back(text); };
     auto b_config = app_config("ZZZZZZZZZZZZZZZZZZF2");
     b_config.ice_servers = {{.urls = {"stun:b.test"}, .username = {}, .credential = {}}};
     trystero::app a(f.io.get_executor(), f.net, std::move(a_config));
@@ -1382,6 +1386,8 @@ void crossed_connections_recover() {
         15s));
     BOOST_TEST(f.net.steady_now() - opened <= 15s);
     BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == 2U; }));
+    BOOST_TEST(std::ranges::none_of(
+        a_log, [](const std::string& line) { return line.find(" gone: ") != std::string::npos; }));
 }
 
 // A native channel can close on its transport thread during the adoption log, before the

@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <memory_resource>
@@ -72,6 +73,7 @@ struct side {
     /** `kept` takes the kept frames of its token, then reads the token. */
     bool take_in_kept = false;
     std::size_t taken = 0;
+    std::size_t used = 0;  // the calls of `used`
 };
 
 detail::connection_callbacks callbacks(side& s) {
@@ -113,6 +115,12 @@ detail::connection_callbacks callbacks(side& s) {
                 std::allocator_arg,
                 a,
                 [&s](std::string_view, std::string_view why) { s.ended = why; },
+            },
+        .used =
+            {
+                std::allocator_arg,
+                a,
+                [&s](std::string_view) { ++s.used; },
             },
     };
 }
@@ -837,6 +845,43 @@ void the_end_closes_the_connection_and_frees_the_kept_frames() {
     BOOST_TEST(refused && *refused == make_error_code(trystero::error::backend_failure));
 }
 
+// The remote's first frame says it uses the connection, once; an end by this side is not the
+// transport's, and a channel the remote closes is.
+void the_first_frame_says_the_remote_uses_it() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.presence.size() == 1; })));
+    BOOST_TEST(p.b.c->used());
+    BOOST_TEST_EQ(p.b.used, 1U);
+    p.a.c->send_presence("T2", true);
+    BOOST_TEST(run_until(p.io, [&] { return p.b.presence.size() == 2; }));
+    BOOST_TEST_EQ(p.b.used, 1U);
+    p.a.c->end("test");
+    BOOST_TEST(!p.a.c->ended_by_transport());
+    BOOST_TEST(run_until(p.io, [&] { return !p.b.ended.empty(); }));
+    BOOST_TEST_EQ(p.b.ended, "data channel closed");
+    BOOST_TEST(p.b.c->ended_by_transport());
+}
+
+// Frames replayed are handled in their order as if they came now, and stop at an end.
+void replayed_frames_are_handled_in_order() {
+    const std::array<std::string_view, 1> tokens{"T1"};
+    link_pair p(tokens, tokens);
+    webcpp::test::require(BOOST_TEST(run_until(p.io, [&] { return p.b.presence.size() == 1; })));
+    auto* m = std::pmr::get_default_resource();
+    std::pmr::deque<trystero::backend::bytes> frames(m);
+    for (const auto* token : {"T2", "T3"}) {
+        const auto f = trystero::protocol::presence_frame(token, true, m);
+        frames.emplace_back(f.begin(), f.end());
+    }
+    frames.emplace_back(3, std::uint8_t{9});  // malformed: ends the connection
+    const auto t4 = trystero::protocol::presence_frame("T4", true, m);
+    frames.emplace_back(t4.begin(), t4.end());
+    p.b.c->replay(std::move(frames));
+    BOOST_TEST(p.b.presence == (std::vector<std::string>{"+T1", "+T2", "+T3"}));
+    BOOST_TEST_EQ(p.b.ended, "invalid or incompatible room frame");
+}
+
 // A disconnection ends the connection after 5 s, as Trystero's; a reconnection before then
 // cancels it.
 void a_disconnection_ends_after_5_s_unless_it_reconnects() {
@@ -864,6 +909,8 @@ void a_disconnection_ends_after_5_s_unless_it_reconnects() {
 
 int main() {
     start_advertises_every_token();
+    the_first_frame_says_the_remote_uses_it();
+    replayed_frames_are_handled_in_order();
     a_withdrawn_token_is_forgotten();
     a_bound_token_reaches_its_binding_and_another_is_kept();
     a_withdrawn_token_drops_its_kept_frames();

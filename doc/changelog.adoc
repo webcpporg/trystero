@@ -43,8 +43,9 @@ offers, and MSVC 14.52 builds.
 every JSON text is read in the room's resource within bounds, and a self id
 not UTF-8 is replaced by a random one.
 * Fixed unreachable IPv6 relays, signals unlike Trystero's, 32-bit receivers
-misreading 4 GiB offers, pages ignoring a failing `crypto.getRandomValues` or
-dropping early frames, and rooms never binding after a lost presence.
+misreading 4 GiB offers, pages ignoring failing `crypto.getRandomValues` or
+dropping early frames, unbound rooms after lost presence, and crossed-connection
+peer errors.
 * Changed the quick start to one native program, and added programs showing
 differences beside Trystero JS's output.
 // end::unreleased[]

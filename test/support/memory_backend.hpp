@@ -487,8 +487,15 @@ public:
 
     void opened() {
         open_ = true;
+        opened_ = true;
         if (h_.open) {
             h_.open();
+        }
+        // What arrived before this end opened, in its order, as a real channel delivers what the
+        // other end sent once it opened: the opening message comes first on the stream.
+        for (auto& frame :
+             std::exchange(early_, decltype(early_)(node_allocator<backend::bytes>(memory_)))) {
+            receive(std::move(frame));
         }
     }
 
@@ -504,6 +511,10 @@ private:
     std::weak_ptr<memory_data_channel> remote_;
     handlers h_;
     bool open_ = false;
+    bool opened_ = false;
+    // The frames that arrived before this end opened, delivered once it opens.
+    std::list<backend::bytes, node_allocator<backend::bytes>> early_{
+        node_allocator<backend::bytes>(memory_)};
     memory_network* net_ = nullptr;
     // Alive exactly while the network is: a channel that outlives it sends nothing.
     std::weak_ptr<connection_registry> registry_;
@@ -804,7 +815,8 @@ public:
     /** Delivers the frames held for `to`, in the order they were sent, each then filtered again;
      * those whose sending end is gone are dropped. */
     void release(std::size_t to);
-    /** When true, a pair's channels open only through open(), one end at a time. */
+    /** When true, a pair's channels open only through open(), one end at a time; what reaches an
+     * end before it opens waits for it. */
     bool defer_opens = false;
     /** Opens the channel of `pc`, whose pair is connected. */
     void open(std::size_t pc);
@@ -971,6 +983,10 @@ inline void memory_data_channel::send(std::span<const std::uint8_t> frame) {
 }
 
 inline void memory_data_channel::receive(backend::bytes frame) {
+    if (!opened_) {
+        early_.push_back(std::move(frame));
+        return;
+    }
     post_in(io_, memory_, [self = shared_from_this(), frame = std::move(frame)]() mutable {
         if (self->open_ && self->h_.message) {
             self->h_.message(std::move(frame));

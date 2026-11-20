@@ -370,8 +370,8 @@ before a shared-binding scenario begins;
 the proof-pacing scenario first authenticates the shared password domain,
 then corrupts room proofs after the initial announcement burst.
 
-The adoption scenarios allow crossed duplicates to retry, but fail with
-connection counts if either side constructs more than four. Transient
+The adoption scenarios allow a crossed pair of connections to resolve, but
+fail with connection counts if either side constructs more than four. Transient
 recovery accounts for JS reuse during the higher id's dropping window
 (<<trystero-protocol-limitations>>).
 
