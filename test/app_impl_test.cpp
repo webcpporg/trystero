@@ -375,7 +375,8 @@ void the_registry_holds_rooms_by_a_weak_reference() {
 }
 
 // An adopted connection advertises every registered room's token, is found by its peer and is
-// live; a second connection to the same peer is closed, and the first returned.
+// live; a second connection to the same peer is held, and the first returned; once the peer sends
+// on the first, the second is closed.
 void adopt_starts_one_connection_per_peer() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -397,14 +398,131 @@ void adopt_starts_one_connection_per_peer() {
                                                                           presence("T2", true)}));
     const auto second = negotiate(io, net);
     BOOST_TEST(app->adopt("B", second.local_pc, second.local) == c);
-    BOOST_TEST(!second.local->is_open());
+    settle(io);
+    BOOST_TEST(second.local->is_open());
     BOOST_TEST(c->live());
     BOOST_TEST_EQ(app->live_connections().size(), 1U);
+    first.remote->send(trystero::protocol::presence_frame("T1", true));
+    BOOST_TEST(run_until(io, [&] { return !second.local->is_open(); }));
+    BOOST_TEST(c->live());
+    BOOST_TEST(app->find("B") == c);
+    BOOST_TEST(
+        log ==
+        (lines{
+            "webrtc: connection with B adopted",
+            "webrtc: a second connection with B held until the peer shows which one it keeps",
+            "webrtc: the second connection with B closed: the peer keeps the first",
+        }));
+    BOOST_TEST(r1->events == (std::vector<std::string>{"+B"}));
+    BOOST_TEST(r2->events.empty());
+}
+
+// A connection opened once the peer sent on the first is closed at once: the peer keeps the
+// first, and closes its own other one.
+void another_connection_after_the_peers_first_frame_is_closed() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    app->register_room("r1", "T1", std::make_shared<fake_room>());
+    const auto first = negotiate(io, net);
+    const auto c = app->adopt("B", first.local_pc, first.local);
+    first.remote->send(trystero::protocol::presence_frame("T1", true));
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return c->used(); })));
+    const auto second = negotiate(io, net);
+    BOOST_TEST(app->adopt("B", second.local_pc, second.local) == c);
+    BOOST_TEST(!second.local->is_open());
     BOOST_TEST(log == (lines{
                           "webrtc: connection with B adopted",
-                          "webrtc: a second connection with B closed: the first is shared",
+                          "webrtc: another connection with B closed: the peer keeps the first",
                       }));
-    BOOST_TEST(r1->events.empty() && r2->events.empty());
+}
+
+/** An app of self id `self`, whose timers run on the virtual clock of `net`. */
+std::shared_ptr<detail::app_impl> make_app_as(asio::io_context& io,
+                                              trystero::test::memory_network& net, lines& log,
+                                              std::string_view self) {
+    net.virtual_clock = true;
+    return make_app(io, net, log, [self](trystero::app_config& c) { c.self_id = self; });
+}
+
+// The lower id holds the second until the peer closes the first, as Trystero JS closes the other
+// connection of a crossed pair: the second then takes the first's place, after the rooms heard
+// the first's end, and hands them the frames it received meanwhile.
+void the_second_replaces_a_first_the_peer_closes() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app_as(io, net, log, "A");
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto first = negotiate(io, net);
+    const auto c = app->adopt("B", first.local_pc, first.local);
+    const auto second = negotiate(io, net);
+    app->adopt("B", second.local_pc, second.local);
+    second.remote->send(trystero::protocol::presence_frame("T1", true));
+    settle(io);
+    BOOST_TEST(app->find("B") == c);  // the lower id waits for the peer
+    BOOST_TEST(room->events.empty());
+    first.remote->close();
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return app->find("B") != c; })));
+    const auto replacement = app->find("B");
+    webcpp::test::require(BOOST_TEST(replacement != nullptr));
+    BOOST_TEST(replacement->live());
+    BOOST_TEST(replacement->advertised("T1"));
+    BOOST_TEST(room->events == (std::vector<std::string>{"ended B: data channel closed", "+B"}));
+    BOOST_TEST(run_until(io, [&] { return second.received->size() == 1; }));
+    BOOST_TEST(second.received->at(0) == presence("T1", true));  // the replacement advertises
+    BOOST_TEST_EQ(app->live_connections().size(), 1U);
+}
+
+// The higher id gives way: the peer's first frame on the second makes the second replace the
+// first, which ends and so closes the peer's second.
+void the_higher_id_takes_the_second_the_peer_sends_on() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app_as(io, net, log, "Z");
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    const auto first = negotiate(io, net);
+    const auto c = app->adopt("B", first.local_pc, first.local);
+    const auto second = negotiate(io, net);
+    app->adopt("B", second.local_pc, second.local);
+    second.remote->send(trystero::protocol::presence_frame("T1", true));
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return app->find("B") != c; })));
+    BOOST_TEST(!c->live());
+    BOOST_TEST(run_until(io, [&] { return !first.remote->is_open(); }));
+    BOOST_TEST(app->find("B")->advertised("T1"));
+    BOOST_TEST(room->events ==
+               (std::vector<std::string>{"ended B: the peer keeps the second connection", "+B"}));
+    BOOST_TEST_EQ(app->live_connections().size(), 1U);
+}
+
+// A second the peer neither sends on nor closes, while it sends nothing on the first either, is
+// closed after 2 s by the higher id and after 10 s by the lower id; the first stays.
+void a_second_the_peer_leaves_alone_is_closed_in_time() {
+    for (const auto& [self, wait] :
+         {std::pair{std::string_view("Z"), 2'000ms}, std::pair{std::string_view("A"), 10'000ms}}) {
+        asio::io_context io;
+        trystero::test::memory_network net(io);
+        lines log;
+        const auto app = make_app_as(io, net, log, self);
+        app->register_room("r1", "T1", std::make_shared<fake_room>());
+        const auto first = negotiate(io, net);
+        const auto c = app->adopt("B", first.local_pc, first.local);
+        const auto second = negotiate(io, net);
+        app->adopt("B", second.local_pc, second.local);
+        BOOST_TEST(net.advance(wait - 1ms));
+        settle(io);
+        BOOST_TEST(second.local->is_open());
+        BOOST_TEST(net.advance(1ms));
+        settle(io);
+        BOOST_TEST(!second.local->is_open());
+        BOOST_TEST(c->live());
+        BOOST_TEST_EQ(log.back(),
+                      "webrtc: the second connection with B closed: the peer kept neither");
+    }
 }
 
 // The remote's presence reaches the room of its token, a frame of a room not bound is kept when
@@ -510,8 +628,9 @@ void a_stale_connection_ends_before_its_replacement() {
 }
 
 // A room that adopts a connection to the peer from inside the stale connection's end: the
-// replacement the outer adoption brought is closed, and the room's is the one kept, so the peer
-// has one connection, whose end leaves none (Trystero's owns(), dist/shared-peer.mjs:210-212).
+// replacement the outer adoption brought is held as the second, and the room's is the one kept,
+// so the peer has one connection, whose end by this side closes the second too and leaves none
+// (Trystero's owns(), dist/shared-peer.mjs:210-212).
 void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -533,7 +652,7 @@ void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     const auto outer = app->adopt("B", second.local_pc, second.local);
     webcpp::test::require(BOOST_TEST(nested != nullptr));
     BOOST_TEST(outer == nested);
-    BOOST_TEST(!second.local->is_open());
+    BOOST_TEST(second.local->is_open());
     BOOST_TEST(nested->live());
     BOOST_TEST_EQ(app->live_connections().size(), 1U);
     settle(io);
@@ -542,6 +661,7 @@ void an_adoption_from_inside_a_stale_end_is_the_one_kept() {
     nested->end("test");
     BOOST_TEST(app->find("B") == nullptr);
     BOOST_TEST(app->live_connections().empty());
+    BOOST_TEST(!second.local->is_open());
     BOOST_TEST_EQ(room->events.back(), "ended B: test");
 }
 
@@ -716,6 +836,10 @@ int main() {
     run_case(every_allocation_goes_through_the_apps_resource);
     run_case(the_registry_holds_rooms_by_a_weak_reference);
     run_case(adopt_starts_one_connection_per_peer);
+    run_case(another_connection_after_the_peers_first_frame_is_closed);
+    run_case(the_second_replaces_a_first_the_peer_closes);
+    run_case(the_higher_id_takes_the_second_the_peer_sends_on);
+    run_case(a_second_the_peer_leaves_alone_is_closed_in_time);
     run_case(the_connections_events_reach_the_rooms);
     run_case(the_last_user_ends_every_connection);
     run_case(a_stale_connection_ends_before_its_replacement);

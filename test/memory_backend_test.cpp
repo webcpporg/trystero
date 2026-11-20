@@ -177,6 +177,28 @@ void deferred_opens_open_one_end_at_a_time() {
     BOOST_TEST(run_until(io, [&] { return p.answer_end && p.answer_end->is_open(); }));
 }
 
+// What one end sends before the other end opened reaches it once it opens, in order, as a real
+// channel's opening message comes first on its stream.
+void a_frame_before_the_far_end_opens_waits_for_it() {
+    asio::io_context io;
+    memory_network net{io};
+    net.defer_opens = true;
+    pair p;
+    connect(net, p);
+    run_until(io, [] { return false; }, 100ms);
+    net.open(p.offerer_id);
+    webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
+    const std::array<std::uint8_t, 1> a{'A'};
+    const std::array<std::uint8_t, 1> b{'B'};
+    p.offer_end->send(a);
+    p.offer_end->send(b);
+    run_until(io, [] { return false; }, 100ms);
+    BOOST_TEST(p.at_answerer.empty());
+    net.open(p.answerer_id);
+    BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 2; }));
+    BOOST_TEST(p.at_answerer.at(0).at(0) == 'A' && p.at_answerer.at(1).at(0) == 'B');
+}
+
 void an_injected_frame_reaches_the_end_named() {
     asio::io_context io;
     memory_network net{io};
@@ -533,6 +555,7 @@ int main() {
     a_held_frame_holds_every_later_frame_of_its_end();
     a_dropped_frame_is_gone();
     deferred_opens_open_one_end_at_a_time();
+    a_frame_before_the_far_end_opens_waits_for_it();
     an_injected_frame_reaches_the_end_named();
     a_failed_connection_reports_failed_then_closes();
     a_disconnection_and_a_reconnection_are_reported();

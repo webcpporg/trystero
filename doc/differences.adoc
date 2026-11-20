@@ -109,7 +109,7 @@ has nothing of it to run beside its twin.
 
 | Passive rooms | presence only for active rooms | not ported | not ported yet: a room always announces itself
 
-| Crossed duplicate connections | first registered wins at each side; crossed, both lose and meet again | the same | matching Trystero's rule is what keeps a {cpp} and a Trystero JS side agreeing
+| Duplicate connections | the first registered wins at each side and the other is closed at once; crossed, both lose and meet again | the first registered wins at each side; the other is held, unused, until the peer shows which it keeps: closed once the peer sends on the first, or after 2 s (higher id) or 10 s (lower id) when the peer does neither; it replaces the first when the peer closes the first, or, for the higher id, when the peer sends on it | libdatachannel ends an association with a stream reset and a SHUTDOWN, its ABORT a moment later, where a browser's ABORT follows its reset at once: closing at once the connection a Trystero JS peer kept, as it starts sending on it, made Chrome fail those sends and Trystero JS report a peer error. Following the peer's choice closes no connection the peer uses, keeps a crossed pair's rooms on the connection the peer kept, and still agrees with Trystero's rule
 
 | A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is checked to be its own, the SHA-256 of its NIP-01 serialization; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id taken unchecked would let a relay hide a genuine event behind a forged one it sends first under the same id, or fill the room's resource with the ids kept
 
@@ -634,8 +634,8 @@ its reason.
 | Renegotiation and media over a shared connection; passive rooms
 | Not ported: trystero has nothing of them to run.
 
-| Crossed duplicate connections
-| Not a difference: both keep the connection registered first.
+| Duplicate connections
+| Only two connections whose channels open within a millisecond of each other, from two rooms meeting the peer at once, make a pair that is crossed, which no program sets up on demand: the interop lane's two-room scenarios meet one now and then, and the `app_impl` and `shared` tests hold each outcome over the memory relays.
 
 | A Nostr event a relay repeats, or that several relays carry
 | What an event changes when it comes twice is the signaling's work, offers and answers made again, which neither API reports: a program sees one join either way, and over honest relays an event's id is always its own. The `protocol` and `room` tests hold the dedup, forged ids included.

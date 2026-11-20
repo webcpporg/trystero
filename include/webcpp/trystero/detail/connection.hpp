@@ -46,6 +46,9 @@ struct connection_callbacks {
     handler<void(std::string_view peer, std::string_view token)> kept;
     /** The connection ended, with the reason; called once. */
     handler<void(std::string_view peer, std::string_view reason)> ended;
+    /** The remote sent its first frame, which shows that it keeps this connection; called once,
+     * and may be empty. */
+    handler<void(std::string_view peer)> used;
 };
 
 // clang-tidy reports a class's destructor at its first declaration: binding is final, and nothing
@@ -135,7 +138,7 @@ public:
                     allocator,
                     [weak] {
                         if (const auto self = weak.lock()) {
-                            self->end("data channel closed");
+                            self->end_by_transport("data channel closed");
                         }
                     },
                 },
@@ -246,6 +249,25 @@ public:
      * connection and its channel closed, `ended` called last. */
     void end(std::string_view reason);
 
+    /** Whether the remote sent a frame on it, which shows that it keeps it. */
+    [[nodiscard]] bool used() const { return used_; }
+
+    /** Whether it ended because its channel or its connection closed or failed, which the remote
+     * or the network did, rather than because this side ended it. */
+    [[nodiscard]] bool ended_by_transport() const { return ended_by_transport_; }
+
+    /** Handles, in their order, the frames its channel received before `start`, as if they came
+     * now: those a second connection received while the app held it for the remote's choice. */
+    void replay(std::pmr::deque<backend::bytes> frames) {
+        const auto self = shared_from_this();
+        for (auto& frame : frames) {
+            if (ended_) {
+                return;
+            }
+            on_message(std::move(frame));
+        }
+    }
+
 private:
     friend class binding;
     void remove(binding& b);
@@ -254,6 +276,13 @@ private:
     void on_drained(bool open);
     void keep(std::string_view token, backend::bytes&& frame);
     void forget_kept_if_empty();
+
+    void end_by_transport(std::string_view reason) {
+        if (!ended_) {
+            ended_by_transport_ = true;
+        }
+        end(reason);
+    }
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
@@ -274,6 +303,8 @@ private:
     std::pmr::map<std::uint64_t, binding*> attached_;  // by id: in the order of attachment
     std::uint64_t next_binding_id_ = 0;
     bool ended_ = false;
+    bool ended_by_transport_ = false;
+    bool used_ = false;
 };
 
 /**
@@ -506,6 +537,14 @@ inline void connection::end(std::string_view reason_view) {
 
 /** Routes a decoded envelope to presence handling, its binding or the bounded keep queue. */
 inline void connection::on_message(backend::bytes&& frame) {
+    if (!std::exchange(used_, true) && cb_.used) {
+        // The app may end this connection from inside the call.
+        const auto self = shared_from_this();
+        cb_.used(peer_);
+        if (ended_) {
+            return;
+        }
+    }
     const auto envelope = protocol::decode_envelope(frame);
     if (!envelope) {
         end("invalid or incompatible room frame");
@@ -584,7 +623,8 @@ inline void connection::forget_kept_if_empty() {
 inline void connection::on_state(backend::connection_state state) {
     using backend::connection_state;
     if (state == connection_state::failed || state == connection_state::closed) {
-        end(state == connection_state::failed ? "connection failed" : "connection closed");
+        end_by_transport(state == connection_state::failed ? "connection failed"
+                                                           : "connection closed");
     } else if (state == connection_state::disconnected) {
         // Trystero waits five seconds before treating a disconnection as the end.
         if (!disconnect_timer_) {
@@ -594,7 +634,7 @@ inline void connection::on_state(backend::connection_state state) {
                                  {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_),
                                   [weak = weak_from_this()] {
                                       if (const auto self = weak.lock()) {
-                                          self->end("connection lost");
+                                          self->end_by_transport("connection lost");
                                       }
                                   }});
     } else if (disconnect_timer_) {

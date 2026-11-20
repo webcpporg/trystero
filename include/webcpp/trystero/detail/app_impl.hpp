@@ -32,6 +32,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -101,7 +102,8 @@ public:
           idle_timeout_(config.idle_timeout),
           setup_reports_(memory_),
           rooms_(memory_),
-          connections_(memory_) {
+          connections_(memory_),
+          seconds_(memory_) {
         if (self_id_.size() > protocol::max_peer_id_bytes) {
             self_id_.clear();
             set_aside("self_id is longer than any peer accepts, so the app uses a random one");
@@ -178,6 +180,13 @@ public:
     /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
 
+    /** How long the higher id holds a second connection to a peer that neither sends on it nor
+     * closes it (`hold_second`). */
+    static constexpr std::chrono::milliseconds second_wait_higher{2'000};
+    /** How long the lower id holds a second connection to a peer that neither sends on the first
+     * nor closes one of them (`hold_second`). */
+    static constexpr std::chrono::milliseconds second_wait_lower{10'000};
+
     /** The validated ICE servers used for every negotiation. */
     [[nodiscard]] std::span<const backend::ice_server> ice_servers() const { return ice_servers_; }
 
@@ -242,6 +251,10 @@ public:
         for (auto& [peer, c] : connections) {
             c->end("the app has no room left");
         }
+        auto seconds = std::exchange(seconds_, decltype(seconds_)(memory_));
+        for (auto& [peer, second] : seconds) {
+            close_second(*second);
+        }
     }
 
     /** How many rooms the registry holds. */
@@ -283,8 +296,9 @@ public:
     }
 
     /** The connection a room's negotiation opened becomes the app's, or, when the app already has
-     * a live one to that peer, is closed and the existing one returned, as in Trystero's
-     * dist/shared-peer.mjs:105-108.
+     * a live one to that peer, the existing one is returned, as in Trystero's
+     * dist/shared-peer.mjs:105-108, and the new one is held as the peer's second connection
+     * (`hold_second`).
      *
      * Tip: a stale connection to the peer, one whose channel is closing, ends first, as Trystero
      * clears it (dist/shared-peer.mjs:142-149): the rooms hear its end before the new
@@ -309,6 +323,16 @@ public:
     }
 
 private:
+    /** A second connection to a peer, held unused until the peer shows which of the two it keeps:
+     * the frames its channel received meanwhile, in their order, and its deadline. */
+    struct second_connection {
+        std::pmr::string peer;
+        std::shared_ptr<backend::peer_connection> pc;
+        std::shared_ptr<backend::data_channel> channel;
+        std::pmr::deque<backend::bytes> frames;
+        std::shared_ptr<backend::timer> deadline;
+    };
+
     // Its implicit move assignment, which insert_or_assign uses, may allocate: a std::pmr member
     // copies when the two resources differ, which bugprone-exception-escape reports. Every entry
     // is in the app's resource, so it never does.
@@ -325,11 +349,7 @@ private:
                                                std::shared_ptr<backend::data_channel> channel) {
         // NOLINTEND(performance-unnecessary-value-param)
         if (auto existing = find(peer)) {
-            channel->set_handlers({});
-            pc->set_handlers({});
-            channel->close();
-            pc->close();
-            log_("webrtc", "a second connection with ", peer, " closed: the first is shared");
+            hold_or_close(peer, *existing, std::move(pc), std::move(channel));
             return existing;
         }
         const auto weak = weak_from_this();
@@ -367,6 +387,13 @@ private:
                             self->on_connection_end(owner->lock(), p, reason);
                         }
                     }),
+                .used = bind<void(std::string_view)>([weak](std::string_view p) {
+                    if (const auto self = weak.lock()) {
+                        if (const auto it = self->seconds_.find(p); it != self->seconds_.end()) {
+                            self->forget_second(*it->second, "the peer keeps the first");
+                        }
+                    }
+                }),
             },
             log_, memory_);
         *owner = c;
@@ -377,6 +404,167 @@ private:
         }
         c->start(tokens);
         return c;
+    }
+
+    /** A connection to `peer` opened while `first` is live: held as the second
+     * (`hold_second`) while the peer has sent nothing on the first and none is held, else
+     * closed. */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
+    void hold_or_close(std::string_view peer, const connection& first,
+                       std::shared_ptr<backend::peer_connection> pc,
+                       std::shared_ptr<backend::data_channel> channel) {
+        // NOLINTEND(performance-unnecessary-value-param)
+        if (!first.used() && !seconds_.contains(peer)) {
+            hold_second(peer, std::move(pc), std::move(channel));
+            return;
+        }
+        channel->set_handlers({});
+        pc->set_handlers({});
+        channel->close();
+        pc->close();
+        log_("webrtc", "another connection with ", peer,
+             " closed: ", first.used() ? "the peer keeps the first" : "a second is held already");
+    }
+
+    /** Holds a second connection to `peer`, opened while the first was live and before the peer
+     * sent anything on the first, until the peer shows which of the two it keeps, rather than
+     * closing it at once as Trystero does.
+     *
+     * Each side keeps the connection whose channel opened first on its side (Trystero's
+     * dist/shared-peer.mjs:105-108), so the two sides of a crossed pair keep different ones, and
+     * a side sends only on the one it keeps. A frame on the first shows the peer keeps it: the
+     * second is closed, as the peer closes its own. Trystero JS closes its other connection at
+     * once, so that in a crossed pair the first ends, and the second, the one the peer keeps,
+     * replaces it (`on_connection_end`) with the frames it received meanwhile. A peer that holds
+     * its second, as this app does, closes neither, so the higher id gives way: a frame on its
+     * second makes the second replace its first (`switch_to_second`), whose end closes the lower
+     * id's second. A second the peer neither sends on nor closes is closed after
+     * `second_wait_higher` by the higher id, and after `second_wait_lower` by the lower id.
+     *
+     * Closing the second at once, as Trystero does, closes in a crossed pair the connection the
+     * peer keeps, just as the peer starts sending on it. libdatachannel ends an association with
+     * a stream reset and a SHUTDOWN, and its ABORT comes a moment later, where a browser's ABORT
+     * follows its reset at once: Chrome fails a send made in between and closes the channel with
+     * that failure, which Trystero JS reports as a peer error. */
+    void hold_second(std::string_view peer, std::shared_ptr<backend::peer_connection> pc,
+                     std::shared_ptr<backend::data_channel> channel) {
+        auto second = std::allocate_shared<second_connection>(
+            allocator(), second_connection{
+                             .peer = std::pmr::string(peer, memory_),
+                             .pc = std::move(pc),
+                             .channel = std::move(channel),
+                             .frames = std::pmr::deque<backend::bytes>(memory_),
+                             .deadline = factory_.make_timer(memory_),
+                         });
+        const auto weak = weak_from_this();
+        const std::weak_ptr<second_connection> held = second;
+        second->channel->set_handlers({
+            .open = {},
+            .message = bind<void(backend::bytes)>([weak, held](backend::bytes frame) {
+                const auto self = weak.lock();
+                const auto s = held.lock();
+                if (!self || !s) {
+                    return;
+                }
+                if (s->frames.size() >= connection::max_kept_frames) {
+                    self->forget_second(*s, "it received more frames than are kept");
+                    return;
+                }
+                s->frames.push_back(std::move(frame));
+                // Posted: the switch replaces the handlers this call runs in.
+                if (std::string_view(self->self_id_) > s->peer && s->frames.size() == 1) {
+                    post(self->ex_, self->memory_, [weak, held] {
+                        const auto app = weak.lock();
+                        if (const auto second = held.lock(); app && second) {
+                            app->switch_to_second(*second);
+                        }
+                    });
+                }
+            }),
+            .close = bind<void()>([weak, held] {
+                const auto self = weak.lock();
+                const auto s = held.lock();
+                if (self && s) {
+                    self->forget_second(*s, "its channel closed");
+                }
+            }),
+            .buffered_amount_low = {},
+        });
+        second->pc->set_handlers({
+            .ice_candidate = {},
+            .data_channel = {},
+            .state = bind<void(backend::connection_state)>(
+                [weak, held](backend::connection_state state) {
+                    const auto self = weak.lock();
+                    const auto s = held.lock();
+                    if (self && s &&
+                        (state == backend::connection_state::failed ||
+                         state == backend::connection_state::closed)) {
+                        self->forget_second(*s, "its connection ended");
+                    }
+                }),
+        });
+        second->deadline->start(
+            std::string_view(self_id_) > peer ? second_wait_higher : second_wait_lower,
+            bind<void()>([weak, held] {
+                const auto self = weak.lock();
+                const auto s = held.lock();
+                if (self && s) {
+                    self->forget_second(*s, "the peer kept neither");
+                }
+            }));
+        seconds_.insert_or_assign(std::pmr::string(peer, memory_), second);
+        log_("webrtc", "a second connection with ", peer,
+             " held until the peer shows which one it keeps");
+    }
+
+    /** The peer sends on the second connection the higher id holds, which it keeps: the second
+     * replaces the first, which ends, and takes the frames it received. As in
+     * `on_connection_end`, the second takes the first's place before the rooms hear of the end,
+     * and its frames come after. */
+    void switch_to_second(second_connection& s) {
+        const auto it = seconds_.find(s.peer);
+        if (it == seconds_.end() || it->second.get() != &s) {
+            return;
+        }
+        const auto second = it->second;
+        seconds_.erase(it);
+        const std::pmr::string peer(second->peer, memory_);
+        second->deadline.reset();
+        auto frames = std::exchange(second->frames, std::pmr::deque<backend::bytes>(memory_));
+        std::shared_ptr<connection> first;
+        if (const auto at = connections_.find(peer); at != connections_.end()) {
+            first = at->second;
+            connections_.erase(at);
+        }
+        log_("webrtc", "the second connection with ", peer,
+             " replaces the first: the peer keeps it");
+        const auto replacement = share_or_adopt(peer, second->pc, second->channel);
+        if (first) {
+            first->end("the peer keeps the second connection");
+        }
+        replacement->replay(std::move(frames));
+    }
+
+    /** Closes a held second connection and forgets it, if it is still the one held. */
+    void forget_second(second_connection& s, std::string_view why) {
+        const auto it = seconds_.find(s.peer);
+        if (it == seconds_.end() || it->second.get() != &s) {
+            return;
+        }
+        const auto keep = it->second;  // `s` lives until this call returns
+        seconds_.erase(it);
+        log_("webrtc", "the second connection with ", keep->peer, " closed: ", why);
+        close_second(*keep);
+    }
+
+    /** Closes a second connection without reporting its close. */
+    static void close_second(second_connection& s) {
+        s.deadline.reset();
+        s.channel->set_handlers({});
+        s.pc->set_handlers({});
+        s.channel->close();
+        s.pc->close();
     }
 
     [[nodiscard]] std::shared_ptr<room_endpoint> room_of(std::string_view token) const {
@@ -396,6 +584,26 @@ private:
             it != connections_.end() && it->second == ended) {
             connections_.erase(it);
         }
+        // The second connection held to the peer replaces the first when the peer or the network
+        // ended the first, which is how Trystero JS keeps the second of a crossed pair; it is
+        // closed when this side ended the first. It takes the first's place before the rooms hear
+        // of the end, so that none looks for the peer again, and its frames come after, once the
+        // rooms let the peer go, so that they bind it again over the second.
+        std::shared_ptr<connection> replacement;
+        std::pmr::deque<backend::bytes> frames(memory_);
+        if (const auto it = seconds_.find(peer); it != seconds_.end()) {
+            const auto second = it->second;
+            seconds_.erase(it);
+            if (ended->ended_by_transport() && second->channel->is_open() && !find(peer)) {
+                second->deadline.reset();
+                frames = std::move(second->frames);
+                log_("webrtc", "the second connection with ", peer, " replaces the first");
+                replacement = share_or_adopt(peer, second->pc, second->channel);
+            } else {
+                log_("webrtc", "the second connection with ", peer, " closed: the first ended");
+                close_second(*second);
+            }
+        }
         // A room may leave the registry from inside the call: the rooms are locked first, each
         // kept alive across its call.
         std::pmr::vector<std::shared_ptr<room_endpoint>> rooms(memory_);
@@ -406,6 +614,9 @@ private:
         }
         for (const auto& room : rooms) {
             room->connection_ended(ended, peer, reason);
+        }
+        if (replacement) {
+            replacement->replay(std::move(frames));
         }
     }
 
@@ -442,6 +653,7 @@ private:
     std::size_t delivered_reports_ = 0;  // the setup reports handed to a handler, in their order
     std::pmr::map<std::pmr::string, entry, std::less<>> rooms_;
     std::pmr::map<std::pmr::string, std::shared_ptr<connection>, std::less<>> connections_;
+    std::pmr::map<std::pmr::string, std::shared_ptr<second_connection>, std::less<>> seconds_;
     std::size_t users_ = 0;
 };
 
