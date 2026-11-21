@@ -9,6 +9,7 @@
 // The fixture's path is the test's one argument, as webcpp.run passes its input file. The
 // fixture is read with webcpp::document; section(name) gives a case the named section of it.
 
+#include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
@@ -37,6 +38,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "cases.hpp"
@@ -576,6 +578,139 @@ void signal_aad_matches() {
     }
 }
 
+/** The payload of an action frames case: its text, its bytes, or (i * 31) mod 256 of its size. */
+tp::bytes payload_of(const fixture_value& entry) {
+    if (const auto text = entry["payload_text"].value_or(std::string_view()); !text.empty()) {
+        return {text.begin(), text.end()};
+    }
+    if (entry["payload_hex"].is_string()) {
+        return bytes_of(entry["payload_hex"]);
+    }
+    tp::bytes out(integer(entry["payload_size"]));
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = static_cast<std::uint8_t>(i * 31);
+    }
+    return out;
+}
+
+/** The text of a fixture value, or empty for null. */
+std::string_view text_or_empty(const fixture_value& v) {
+    return v.value_or(std::string_view());
+}
+
+/** Whether `encoded` is the recorded frame: its hex, or, for a chunk, its header, size and
+ * SHA-256. */
+bool is_recorded(const tp::bytes& encoded, const fixture_value& frame) {
+    if (frame["hex"].is_string()) {
+        const auto expected = bytes_of(frame["hex"]);
+        return BOOST_TEST_ALL_EQ(encoded.begin(), encoded.end(), expected.begin(), expected.end());
+    }
+    const auto head = bytes_of(frame["head"]);
+    const auto digest =
+        tp::sha256(std::string_view(reinterpret_cast<const char*>(encoded.data()), encoded.size()));
+    return BOOST_TEST_EQ(encoded.size(), integer(frame["size"])) &&
+           BOOST_TEST(std::ranges::equal(std::span(encoded).first(head.size()), head)) &&
+           BOOST_TEST_EQ(tp::to_hex(digest), str(frame["sha256"]));
+}
+
+// Each frame Trystero 0.27.0's action-wire.ts sent between two of its managers: the port writes it
+// from the same inputs, and reads it back to the same message. A case's first frame is the sender's
+// inline frame or offer of the case's action, format, metadata and payload; a request's answer is
+// the receiver's inline frame of "@_response".
+void action_frames_match() {
+    for (const auto entry : section("action_frames")) {
+        const auto name = str(entry["case"]);
+        const auto payload = payload_of(entry);
+        const auto format = static_cast<tp::payload_format>(integer(entry["format"]));
+        const auto metadata = text_or_empty(entry["metadata"]);
+        const bool wide = entry["wide"].value_or(false);
+        const auto chunk = wide ? tp::wide_chunk_size : tp::chunk_size;
+        std::size_t chunks = 0;
+        for (const auto frame : entry["frames"]) {
+            const bool from_sender = str(frame["from"]) == "A";
+            const auto kind = static_cast<tp::frame_kind>(frame["hex"].is_string()
+                                                              ? bytes_of(frame["hex"])[1] & 15U
+                                                              : bytes_of(frame["head"])[1] & 15U);
+            tp::bytes encoded;
+            switch (kind) {
+                case tp::frame_kind::inline_payload: {
+                    const auto answer = entry["answer"];
+                    if (from_sender) {
+                        encoded =
+                            tp::encode_inline(str(entry["action"]), format, metadata, payload);
+                    } else {
+                        const auto text = str(answer["payload_text"]);
+                        encoded = tp::encode_inline(
+                            str(answer["action"]),
+                            static_cast<tp::payload_format>(integer(answer["format"])),
+                            str(answer["metadata"]), tp::bytes(text.begin(), text.end()));
+                    }
+                    break;
+                }
+                case tp::frame_kind::offer:
+                    encoded =
+                        tp::encode_offer(str(entry["action"]), format, metadata,
+                                         static_cast<std::uint32_t>(integer(frame["transfer_id"])),
+                                         payload.size(), wide);
+                    break;
+                case tp::frame_kind::chunk: {
+                    const auto offset = chunks++ * chunk;
+                    const auto length = std::min(chunk, payload.size() - offset);
+                    encoded =
+                        tp::encode_chunk(static_cast<std::uint32_t>(integer(frame["transfer_id"])),
+                                         offset, std::span(payload).subspan(offset, length));
+                    break;
+                }
+                case tp::frame_kind::accepted: encoded = tp::encode_accepted(0); break;
+                case tp::frame_kind::cancelled: encoded = tp::encode_cancelled(0); break;
+                case tp::frame_kind::rejected:
+                    encoded = tp::encode_rejected(0, "payload rejected by receiver");
+                    break;
+            }
+            if (!is_recorded(encoded, frame)) {
+                BOOST_ERROR(std::string("case ").append(name).c_str());
+                continue;
+            }
+            const auto decoded = tp::decode_action(encoded);
+            if (!BOOST_TEST(decoded.frame.has_value())) {
+                continue;
+            }
+            if (const auto* p = std::get_if<tp::proposal>(&*decoded.frame)) {
+                BOOST_TEST(p->kind == kind);
+                if (from_sender) {
+                    BOOST_TEST_EQ(p->name, str(entry["action"]));
+                    BOOST_TEST(p->format == format);
+                    BOOST_TEST_EQ(p->metadata, metadata);
+                    BOOST_TEST_EQ(p->size, payload.size());
+                }
+                if (kind == tp::frame_kind::offer) {
+                    BOOST_TEST_EQ(p->wide, wide);
+                    BOOST_TEST_EQ(p->id, integer(frame["transfer_id"]));
+                } else if (from_sender) {
+                    BOOST_TEST(std::ranges::equal(p->payload, payload));
+                } else {
+                    BOOST_TEST_EQ(p->name, "@_response");
+                    BOOST_TEST_EQ(p->metadata, str(entry["answer"]["metadata"]));
+                }
+            } else if (const auto* c = std::get_if<tp::chunk>(&*decoded.frame)) {
+                BOOST_TEST_EQ(c->offset, static_cast<double>((chunks - 1) * chunk));
+                BOOST_TEST_EQ(c->id, integer(frame["transfer_id"]));
+            } else {
+                const auto& m = std::get<tp::control_message>(*decoded.frame);
+                BOOST_TEST(m.kind == kind);
+                BOOST_TEST_EQ(m.id, 0U);
+                if (kind == tp::frame_kind::rejected) {
+                    BOOST_TEST_EQ(m.reason, "payload rejected by receiver");
+                }
+            }
+        }
+        if (chunks != 0 && name != "cancelled") {
+            BOOST_TEST_EQ(chunks, (payload.size() + chunk - 1) / chunk);
+        }
+    }
+    BOOST_TEST_EQ(section("action_frames").size(), 10U);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -618,5 +753,6 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(open_refuses_another_aad);
     webcpp::test::run_case(open_refuses_a_plaintext_that_is_not_utf8);
     webcpp::test::run_case(signal_aad_matches);
+    webcpp::test::run_case(action_frames_match);
     return boost::report_errors();
 }

@@ -351,88 +351,54 @@ void event_ids_are_their_own(const fixture_value& fixture) {
     BOOST_TEST(!own_id(replaced(message, id_in(message), uppercase(id_in(message)))));
 }
 
-void inline_frames(const fixture_value& fixture) {
-    const auto actions = fixture["actions"];
-    const auto encode = [](std::string_view name, tp::payload_format format,
-                           std::string_view metadata, std::string_view payload) {
-        return tp::encode_inline(
-            name, format, metadata,
-            std::span(reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size()));
-    };
-    const auto text = encode("chat", tp::payload_format::text, "", "hello from Trystero JS");
-    const auto expected_text = hex(actions["text"][0]);
-    BOOST_TEST_ALL_EQ(text.begin(), text.end(), expected_text.begin(), expected_text.end());
-    const auto json_frame = encode("drink", tp::payload_format::json, "",
-                                   R"({"drink":"negroni","withIce":true,"n":[1,2.5,null]})");
-    const auto expected_json = hex(actions["json"][0]);
-    BOOST_TEST_ALL_EQ(json_frame.begin(), json_frame.end(), expected_json.begin(),
-                      expected_json.end());
-    const tp::bytes binary{0, 1, 2, 253, 254, 255};
-    const auto binary_frame = tp::encode_inline("pic", tp::payload_format::binary, "", binary);
-    const auto expected_binary = hex(actions["binary"][0]);
-    BOOST_TEST_ALL_EQ(binary_frame.begin(), binary_frame.end(), expected_binary.begin(),
-                      expected_binary.end());
-    const auto with_metadata =
-        encode("chat", tp::payload_format::text, R"({"from":"js","n":7})", "hi");
-    const auto expected_with_metadata = hex(actions["text_with_metadata"][0]);
-    BOOST_TEST_ALL_EQ(with_metadata.begin(), with_metadata.end(), expected_with_metadata.begin(),
-                      expected_with_metadata.end());
-    const auto empty = encode("@_hsready", tp::payload_format::text, "", "");
-    const auto expected_empty = hex(actions["empty_text"][0]);
-    BOOST_TEST_ALL_EQ(empty.begin(), empty.end(), expected_empty.begin(), expected_empty.end());
-    const auto long_name =
-        encode("abcdefghijklmnopqrstuvwxyz012345", tp::payload_format::text, "", "x");
-    const auto expected_long_name = hex(actions["thirty_two_byte_name"][0]);
-    BOOST_TEST_ALL_EQ(long_name.begin(), long_name.end(), expected_long_name.begin(),
-                      expected_long_name.end());
-
-    const auto frame = hex(actions["text_with_metadata"][0]);
-    const auto decoded = tp::decode_action(frame);
-    const auto& p = std::get<tp::proposal>(*decoded.frame);
-    BOOST_TEST_EQ(p.name, "chat");
-    BOOST_TEST(p.kind == tp::frame_kind::inline_payload);
-    BOOST_TEST(p.format == tp::payload_format::text);
-    BOOST_TEST_EQ(p.metadata, R"({"from":"js","n":7})");
-    BOOST_TEST_EQ(std::string(p.payload.begin(), p.payload.end()), "hi");
+// The frames of Trystero 0.27.0's action wire are proven against its recorded frames in
+// crypto_layer_test.cpp (action_frames_match); these are the rules no recorded frame shows.
+void action_names() {
     BOOST_TEST(tp::valid_action_name("abcdefghijklmnopqrstuvwxyz012345"));
     BOOST_TEST(!tp::valid_action_name("abcdefghijklmnopqrstuvwxyz0123456"));
     BOOST_TEST(!tp::valid_action_name(""));
+    BOOST_TEST(!tp::valid_action_name(std::string_view("a\0b", 3)));
 }
 
-void chunked_frames(const fixture_value& fixture) {
-    const auto chunked = fixture["actions"]["chunked"];
-    const auto payload = hex(chunked["payload"]);
-    const auto frames = chunked["frames"];
-    const auto offer = hex(frames[0]);
-    const auto decoded = tp::decode_action(offer);
-    const auto& p = std::get<tp::proposal>(*decoded.frame);
-    BOOST_TEST(p.kind == tp::frame_kind::offer);
-    BOOST_TEST_EQ(p.size, payload.size());
-    BOOST_TEST_EQ(p.metadata, R"({"name":"big.bin"})");
-    const auto encoded_offer = tp::encode_offer("file", tp::payload_format::binary,
-                                                R"({"name":"big.bin"})", p.id, payload.size());
-    BOOST_TEST_ALL_EQ(encoded_offer.begin(), encoded_offer.end(), offer.begin(), offer.end());
-    std::size_t offset = 0;
-    for (std::size_t i = 1; i < frames.size(); ++i) {
-        const auto length = std::min(tp::chunk_size, payload.size() - offset);
-        const auto expected = hex(frames[i]);
-        const auto encoded =
-            tp::encode_chunk(p.id, offset, std::span(payload).subspan(offset, length));
-        BOOST_TEST_ALL_EQ(encoded.begin(), encoded.end(), expected.begin(), expected.end());
-        const auto c = std::get<tp::chunk>(*tp::decode_action(expected).frame);
-        BOOST_TEST_EQ(c.offset, static_cast<double>(offset));
-        BOOST_TEST_EQ(c.data.size(), length);
-        offset += length;
+// Only a chunk may be longer than 16 KiB, up to 64 KiB, and only an offer may carry the wide flag,
+// as 0.27.0's handleData checks: any other frame, or any other flag, is invalid.
+void wide_bulk_frames_are_bounded() {
+    const auto is_invalid = [](const tp::bytes& frame) {
+        const auto decoded = tp::decode_action(frame);
+        return !decoded.frame.has_value() && decoded.error == tp::wire_error::invalid_frame;
+    };
+    const auto wide_offer =
+        tp::encode_offer("file", tp::payload_format::binary, "", 1, 200'000, true);
+    BOOST_TEST_EQ(wide_offer[1], 0x61U);
+    const auto offer = tp::decode_action(wide_offer);
+    if (BOOST_TEST(offer.frame.has_value())) {
+        BOOST_TEST(std::get<tp::proposal>(*offer.frame).wide);
     }
-    BOOST_TEST_EQ(offset, payload.size());
-    const auto rejected = hex(fixture["controls"]["rejected_too_large"]);
-    const auto encoded_rejected = tp::encode_rejected(p.id, "payload exceeds receiver size limit");
-    BOOST_TEST_ALL_EQ(encoded_rejected.begin(), encoded_rejected.end(), rejected.begin(),
-                      rejected.end());
-    const auto control = std::get<tp::control_message>(*tp::decode_action(rejected).frame);
-    BOOST_TEST(control.kind == tp::frame_kind::rejected);
-    BOOST_TEST_EQ(control.reason, "payload exceeds receiver size limit");
-    BOOST_TEST_EQ(tp::encode_accepted(p.id).size(), tp::control_header_size);
+    BOOST_TEST(!std::get<tp::proposal>(
+                    *tp::decode_action(
+                         tp::encode_offer("file", tp::payload_format::binary, "", 1, 200'000))
+                         .frame)
+                    .wide);
+    auto high_flag = wide_offer;
+    high_flag[1] = static_cast<std::uint8_t>(high_flag[1] | 0x80U);
+    BOOST_TEST(is_invalid(high_flag));
+    auto flagged_inline = tp::encode_inline("chat", tp::payload_format::text, "", tp::bytes{65});
+    flagged_inline[1] = static_cast<std::uint8_t>(flagged_inline[1] | tp::wide_bulk_flag);
+    BOOST_TEST(is_invalid(flagged_inline));
+    auto flagged_accepted = tp::encode_accepted(1);
+    flagged_accepted[1] = static_cast<std::uint8_t>(flagged_accepted[1] | tp::wide_bulk_flag);
+    BOOST_TEST(is_invalid(flagged_accepted));
+
+    const tp::bytes wide_data(tp::wide_chunk_size, 7);
+    const auto widest = tp::encode_chunk(1, 0, wide_data);
+    BOOST_TEST_EQ(widest.size(), tp::max_bulk_frame_bytes);
+    const auto chunk = tp::decode_action(widest);
+    if (BOOST_TEST(chunk.frame.has_value())) {
+        BOOST_TEST_EQ(std::get<tp::chunk>(*chunk.frame).data.size(), tp::wide_chunk_size);
+    }
+    BOOST_TEST(is_invalid(tp::encode_chunk(1, 0, tp::bytes(tp::wide_chunk_size + 1, 7))));
+    const tp::bytes long_payload(tp::max_action_frame_bytes - tp::inline_header_size + 1, 7);
+    BOOST_TEST(is_invalid(tp::encode_inline("chat", tp::payload_format::binary, "", long_payload)));
 }
 
 void envelopes(const fixture_value& fixture) {
@@ -554,14 +520,14 @@ void wide_fields_are_big_endian() {
     const tp::bytes data{9};
     const auto chunk = tp::encode_chunk(0x0a0b0c0d, 0x12345678, data);
     const tp::bytes expected_chunk{
-        2, 2, 0x0a, 0x0b, 0x0c, 0x0d, 0x41, 0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 9,
+        3, 2, 0x0a, 0x0b, 0x0c, 0x0d, 0x41, 0xb2, 0x34, 0x56, 0x78, 0x00, 0x00, 0x00, 9,
     };
     BOOST_TEST_ALL_EQ(chunk.begin(), chunk.end(), expected_chunk.begin(), expected_chunk.end());
     const auto c = std::get<tp::chunk>(*tp::decode_action(chunk).frame);
     BOOST_TEST_EQ(c.id, 0x0a0b0c0dU);
     BOOST_TEST_EQ(c.offset, 305419896.0);
     const auto accepted = tp::encode_accepted(0xfffefdfc);
-    const tp::bytes expected_accepted{2, 3, 0xff, 0xfe, 0xfd, 0xfc};
+    const tp::bytes expected_accepted{3, 3, 0xff, 0xfe, 0xfd, 0xfc};
     BOOST_TEST_ALL_EQ(accepted.begin(), accepted.end(), expected_accepted.begin(),
                       expected_accepted.end());
 
@@ -1131,8 +1097,8 @@ int main(int argc, char* argv[]) {
     nostr_events(fixture);
     nostr_message_fields(fixture);
     event_ids_are_their_own(fixture);
-    inline_frames(fixture);
-    chunked_frames(fixture);
+    action_names();
+    wide_bulk_frames_are_bounded();
     envelopes(fixture);
     offer_sizes_at_two_to_the_53();
     wide_fields_are_big_endian();

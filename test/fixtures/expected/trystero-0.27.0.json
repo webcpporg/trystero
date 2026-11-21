@@ -1054,5 +1054,363 @@
    "offer_id": "y",
    "aad": "answer|x|y"
   }
+ ],
+ "action_frames": [
+  {
+   "case": "text",
+   "action": "chat",
+   "format": 0,
+   "metadata": null,
+   "payload_text": "hello, café",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "hex": "03006368617400000000000000000000000000000000000000000000000000000000000068656c6c6f2c20636166c3a9"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "json",
+   "action": "json",
+   "format": 1,
+   "metadata": null,
+   "payload_text": "{\"n\":1,\"list\":[true,null,\"x\"]}",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "hex": "03106a736f6e0000000000000000000000000000000000000000000000000000000000007b226e223a312c226c697374223a5b747275652c6e756c6c2c2278225d7d"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "binary",
+   "action": "bin",
+   "format": 2,
+   "metadata": null,
+   "payload_hex": "00010203040506070809",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 46,
+     "hex": "032062696e0000000000000000000000000000000000000000000000000000000000000000010203040506070809"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "metadata",
+   "action": "chat",
+   "format": 0,
+   "metadata": "{\"a\":1}",
+   "payload_text": "hi",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 45,
+     "hex": "0300636861740000000000000000000000000000000000000000000000000000000000077b2261223a317d6869"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "bulk",
+   "action": "file",
+   "format": 2,
+   "metadata": "{\"name\":\"big.bin\"}",
+   "payload_size": 204800,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c650000000000000000000000000000000000000000000000000000000000120000000041090000000000007b226e616d65223a226269672e62696e227d"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "6c243b9f165ea104ddf836b0f2afa49a144fd823ca4fe2c6bc9fb3a0d33532d7"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040cff90000000000",
+     "sha256": "1e35919dfaa348b7d73dfd0ebac70968b275742d11ca5a83806d2756b1136e7e"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040dff90000000000",
+     "sha256": "06a46e6b3baeb5e2cdc9befbcbb358e09c4b0a9bb41187e84072c1a56efae2d1"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040e7fac000000000",
+     "sha256": "fe71da8c0b320218c2668f3148eb914054bd0036012a578287e5c98aff518777"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040eff90000000000",
+     "sha256": "6fe28af7e9e2aed6c27ba118bd71169a8fe13e2d82233c21ed78240e60f86e5f"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040f3fba000000000",
+     "sha256": "33ce5c4ab83c93a9217f6f12226a8a41adac9f0d56d4fde4f30b65207bd2028c"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040f7fac000000000",
+     "sha256": "3816c7ebae0828e2edb81a0852db1edbd008a12f387d84143c01a5f733184a84"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040fbf9e000000000",
+     "sha256": "d38dbacfb1e191f3a694236a79c2a55ffbe0638c9f13f2c34d128daa7f8b8a73"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040fff90000000000",
+     "sha256": "cd290e22efacc8ef21d1dc5915bdf7fbecf590a29641177bc4f73334c66006e2"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004101fc1000000000",
+     "sha256": "71cf9ff89b10340e20111791467df9056241658498da1e56e15e6d219d836b12"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004103fba000000000",
+     "sha256": "0de88995f2916480ac8e98b6c73cf304b53eb4283c6aa878fa82d4ac7dad7bbc"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004105fb3000000000",
+     "sha256": "3ceb883b35f71d9526a71ba9e0b8a0f69622783e14d8a59fc51c83ec1d506aec"
+    },
+    {
+     "from": "A",
+     "size": 8374,
+     "transfer_id": 0,
+     "head": "0302000000004107fac000000000",
+     "sha256": "1d0504952ba84c434f8d3dd7c8726f4a1c5b8717f2ed4ecb871e4e8e4b4f8616"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "bulk_wide",
+   "action": "file",
+   "format": 2,
+   "metadata": "{\"name\":\"big.bin\"}",
+   "payload_size": 204800,
+   "wide": true,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "036166696c650000000000000000000000000000000000000000000000000000000000120000000041090000000000007b226e616d65223a226269672e62696e227d"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "08c4d25d142279a04f2230a4d58c4960fe80a7aafbdf1fa35165a93ca79c9436"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "03020000000040effe4000000000",
+     "sha256": "4be38fbee0a587e6eb6057c7db3e052dc2209e0e3d2a7790fdc536aa89cf604d"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "03020000000040fffe4000000000",
+     "sha256": "de7250e6ca73c65fd70b192f7b0e1702b62cbbd87222c2b349f3b2ae17578958"
+    },
+    {
+     "from": "A",
+     "size": 8248,
+     "transfer_id": 0,
+     "head": "0302000000004107feb000000000",
+     "sha256": "16206adfc7c0ccb7139c8564814bd983e6a2d4c25771412f40553162ab2f30dd"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "declined",
+   "action": "file",
+   "format": 2,
+   "metadata": null,
+   "payload_size": 20000,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c650000000000000000000000000000000000000000000000000000000000000000000040d3880000000000"
+    },
+    {
+     "from": "B",
+     "size": 34,
+     "transfer_id": 0,
+     "hex": "0304000000007061796c6f61642072656a6563746564206279207265636569766572"
+    }
+   ],
+   "delivered": false,
+   "send_error": "Trystero: payload rejected by receiver"
+  },
+  {
+   "case": "cancelled",
+   "action": "file",
+   "format": 2,
+   "metadata": null,
+   "payload_size": 204800,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c65000000000000000000000000000000000000000000000000000000000000000000004109000000000000"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "6c243b9f165ea104ddf836b0f2afa49a144fd823ca4fe2c6bc9fb3a0d33532d7"
+    },
+    {
+     "from": "A",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030500000000"
+    }
+   ],
+   "delivered": false,
+   "send_error": "Trystero: operation aborted"
+  },
+  {
+   "case": "request",
+   "action": "ask",
+   "format": 0,
+   "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"m\":{\"x\":1}}",
+   "payload_text": "ping",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 96,
+     "hex": "030061736b000000000000000000000000000000000000000000000000000000000000387b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c226d223a7b2278223a317d7d70696e67"
+    },
+    {
+     "from": "B",
+     "size": 89,
+     "hex": "0300405f726573706f6e736500000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d706f6e673a70696e67"
+    }
+   ],
+   "response": "pong:ping",
+   "send_error": null,
+   "answer": {
+    "action": "@_response",
+    "format": 0,
+    "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\"}",
+    "payload_text": "pong:ping"
+   }
+  },
+  {
+   "case": "request_failed",
+   "action": "ask",
+   "format": 0,
+   "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"m\":{\"x\":1}}",
+   "payload_text": "ping",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 96,
+     "hex": "030061736b000000000000000000000000000000000000000000000000000000000000387b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c226d223a7b2278223a317d7d70696e67"
+    },
+    {
+     "from": "B",
+     "size": 100,
+     "hex": "0310405f726573706f6e736500000000000000000000000000000000000000000000003c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c2265223a226e6f20616e73776572227d6e756c6c"
+    }
+   ],
+   "response": null,
+   "send_error": "Trystero: no answer",
+   "answer": {
+    "action": "@_response",
+    "format": 1,
+    "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"e\":\"no answer\"}",
+    "payload_text": "null"
+   }
+  }
  ]
 }

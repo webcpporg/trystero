@@ -1,10 +1,11 @@
 // Records webcpp::trystero's Phase 1 test vectors from Trystero 0.27.0's own code, run in Node
 // (>= 23.6, which strips TypeScript's types). Usage:
 //   node record.mjs <trystero-0.27.0 checkout> > phase1.json
-// It imports packages/core/src/{primitives,crypto,utils}.ts and packages/nostr/src/protocol.ts
-// unchanged; extensionless relative imports are resolved to .ts by the hook below. Randomness is
-// pinned only around the calls whose output it decides (the GCM IV, genId's bytes), by replacing
-// crypto.getRandomValues for that call and restoring it after.
+// It imports packages/core/src/{primitives,crypto,utils,action-wire,actions}.ts and
+// packages/nostr/src/protocol.ts unchanged; extensionless relative imports are resolved to .ts by
+// the hook below. Randomness is pinned only around the calls whose output it decides (the GCM IV,
+// genId's bytes, a request's id), by replacing crypto.getRandomValues or crypto.randomUUID for that
+// call and restoring it after.
 import {registerHooks} from 'node:module'
 import {pathToFileURL} from 'node:url'
 import path from 'node:path'
@@ -194,5 +195,119 @@ for (const t of refusals) {
 const sh = await import(src('packages/core/src/signal-handler.ts')).catch(() => null)
 out.signal_aad = sh ? [['offer', 'AbCdEfGhIjKlMnOpQrSt', '0123456789ab'], ['answer', 'x', 'y']]
   .map(([t, p, o]) => ({type: t, peer_id: p, offer_id: o, aad: sh.buildSignalAad(t, p, o)})) : null
+
+// The action wire: frames of packages/core/src/action-wire.ts, between two of its managers, A and
+// B, whose transports record each frame and hand it to the other manager's handleData a microtask
+// later. A transport reports maxBulkFrameBytes only in the wide cases, as a connection whose SCTP
+// takes 64 KiB messages does. A frame is recorded as hex, a chunk as its 14-byte header, its size
+// and the SHA-256 of the whole frame, which proves it as well as its hex and keeps the fixture
+// small; a payload of more than 64 bytes is named by its size, its bytes being (i * 31) mod 256.
+const wire = await import(src('packages/core/src/action-wire.ts'))
+const actionsMod = await import(src('packages/core/src/actions.ts'))
+const patterned = n => Uint8Array.from({length: n}, (_, i) => (i * 31) & 255)
+const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+const recordFrame = async (from, bytes, transferId, isOffer) => {
+  const entry = {from, size: bytes.length}
+  if (transferId !== undefined) entry.transfer_id = transferId
+  if (isOffer) entry.is_offer = true
+  if ((bytes[1] & 15) === 2) {
+    entry.head = hex(bytes.subarray(0, 14))
+    entry.sha256 = hex(await cry.sha256(bytes))
+  } else {
+    entry.hex = hex(bytes)
+  }
+  return entry
+}
+
+// Two peers whose managers (made by `make`, given its dependencies) exchange frames.
+const wirePair = (make, wide, onFrame = () => {}) => {
+  const frames = []
+  const pending = []
+  const managers = {}
+  const transport = (from, to) => ({
+    isOpen: true,
+    bufferedAmount: 0,
+    ...(wide ? {maxBulkFrameBytes: 64 * 1024} : {}),
+    sendFrame: (bytes, transferId, isOffer) => {
+      const copy = bytes.slice()
+      const at = frames.push(null) - 1
+      pending.push(recordFrame(from, copy, transferId, isOffer).then(e => { frames[at] = e }))
+      onFrame(from, copy)
+      queueMicrotask(() => managers[to].handleData(from, copy.buffer))
+    },
+    waitForDrain: () => true
+  })
+  const deps = (self, other) => ({
+    resolveTransport: id => (id === other ? transport(self, other) : undefined),
+    getTransport: id => (id === other ? transport(self, other) : undefined),
+    getPeerIds: () => [other],
+    canReceiveFromPeer: () => true,
+    onPeerError: (id, e) => { throw new Error(`${self} dropped ${id}: ${e.message}`) }
+  })
+  managers.A = make(deps('A', 'B'))
+  managers.B = make(deps('B', 'A'))
+  return {managers, frames: async () => { await settle(); await Promise.all(pending); return frames }}
+}
+
+const payloadOf = (format, data) => format === 2
+  ? (data.length > 64 ? {payload_size: data.length} : {payload_hex: hex(data)})
+  : {payload_text: format === 0 ? data : prim.toJson(data)}
+
+out.action_frames = []
+const recordSend = async (name, action, data, format, {metadata, wide = false, gate, abortAfterChunk = false} = {}) => {
+  const controller = new AbortController()
+  const pair = wirePair(d => wire.createActionWireManager(d), wide, (from, bytes) => {
+    if (abortAfterChunk && from === 'A' && (bytes[1] & 15) === 2) controller.abort()
+  })
+  const a = pair.managers.A.makeWireAction(action)
+  const b = pair.managers.B.makeWireAction(action)
+  let received = null
+  b.onMessage((value, peer, meta) => { received = {value, peer, meta} })
+  if (gate) b.onReceive(gate)
+  let error = null
+  await a.send(data, 'B', metadata, undefined, controller.signal).catch(e => { error = e.message })
+  const frames = await pair.frames()
+  out.action_frames.push({case: name, action, format, metadata: metadata === undefined ? null : prim.toJson(metadata),
+    ...payloadOf(format, data), wide, frames, delivered: received !== null, send_error: error})
+}
+
+await recordSend('text', 'chat', 'hello, café', 0)
+await recordSend('json', 'json', {n: 1, list: [true, null, 'x']}, 1)
+await recordSend('binary', 'bin', Uint8Array.from({length: 10}, (_, i) => i), 2)
+await recordSend('metadata', 'chat', 'hi', 0, {metadata: {a: 1}})
+await recordSend('bulk', 'file', patterned(200 * 1024), 2, {metadata: {name: 'big.bin'}})
+await recordSend('bulk_wide', 'file', patterned(200 * 1024), 2, {metadata: {name: 'big.bin'}, wide: true})
+await recordSend('declined', 'file', patterned(20000), 2, {gate: () => false})
+await recordSend('cancelled', 'file', patterned(200 * 1024), 2, {abortAfterChunk: true})
+
+// A request and its response, through actions.ts's request action: the request's metadata names
+// its id (crypto.randomUUID, pinned here), the response travels as the internal action
+// "@_response" with that id, and a failure as a JSON null with the error's text.
+const requestId = '0b1c2d3e-4f50-4617-8899-aabbccddeeff'
+for (const [name, fails] of [['request', false], ['request_failed', true]]) {
+  const pair = wirePair(d => actionsMod.createActionManager(d), false)
+  const asker = pair.managers.A.makeAction('ask', {kind: 'request'})
+  const answerer = pair.managers.B.makeAction('ask', {kind: 'request'})
+  answerer.onRequest(async data => {
+    if (fails) throw new Error('no answer')
+    return `pong:${data}`
+  })
+  const uuid = crypto.randomUUID
+  crypto.randomUUID = () => requestId
+  let response = null
+  let error = null
+  try {
+    response = await asker.request('ping', {target: 'B', metadata: {x: 1}})
+  } catch (e) {
+    error = e.message
+  } finally {
+    crypto.randomUUID = uuid
+  }
+  out.action_frames.push({case: name, action: 'ask', format: 0, metadata: prim.toJson({r: requestId, m: {x: 1}}),
+    payload_text: 'ping', wide: false, frames: await pair.frames(), response, send_error: error,
+    answer: {action: '@_response', format: fails ? 1 : 0,
+      metadata: prim.toJson(fails ? {r: requestId, e: 'no answer'} : {r: requestId}),
+      payload_text: fails ? 'null' : 'pong:ping'}})
+}
 
 process.stdout.write(JSON.stringify(out, null, 1) + '\n')

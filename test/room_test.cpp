@@ -203,6 +203,199 @@ void large_payloads_travel_in_chunks_both_ways() {
     BOOST_TEST_EQ(meta_b, R"({"name":"big.bin"})");
 }
 
+// The action wire of a room alone, fed a peer's frames as a data channel hands them over: what it
+// sends back, what it delivers, and the peers it drops.
+struct wire_bench {
+    // A channel whose buffered bytes the case sets; channel_link's destructor is protected.
+    struct link final : trystero::detail::channel_link {
+        std::vector<trystero::backend::bytes> sent;
+        std::size_t buffered = 0;
+
+        bool send(std::span<const std::uint8_t> frame) override {
+            sent.emplace_back(frame.begin(), frame.end());
+            return true;
+        }
+
+        [[nodiscard]] std::size_t buffered_amount() const override { return buffered; }
+
+        void wait_drained(trystero::handler<void(bool)> done) override { done(true); }
+    };
+
+    fixture f{true};
+    std::shared_ptr<link> channel = std::make_shared<link>();
+    std::set<std::string, std::less<>> receivers{"file"};
+    std::vector<trystero::detail::incoming> delivered;
+    std::vector<std::string> dropped;
+    std::shared_ptr<trystero::detail::action_wire> wire;
+    // The virtual clock starts with the network's first timer: one made here, so that the clock
+    // the wire reads moves with advance() before the wire makes a timer of its own.
+    std::shared_ptr<trystero::backend::timer> clock_start;
+
+    wire_bench() {
+        using trystero::detail::action_wire;
+        const auto memory = std::pmr::get_default_resource();
+        clock_start = f.net.make_timer(memory);
+        wire = std::make_shared<action_wire>(
+            f.net, "token", trystero::room_options{}.max_receive_bytes,
+            action_wire::callbacks{
+                .find_link = [this](std::string_view, bool) -> std::optional<action_wire::link> {
+                    return action_wire::link{
+                        std::weak_ptr<trystero::detail::channel_link>(channel)};
+                },
+                .peers = [memory](bool) { return std::pmr::vector<std::string_view>(memory); },
+                .may_receive = [](std::string_view, std::string_view) { return true; },
+                .has_receiver = [this](std::string_view name) { return receivers.contains(name); },
+                .deliver =
+                    [this](trystero::detail::incoming&& m) { delivered.push_back(std::move(m)); },
+                .fail_peer = [this](std::string_view,
+                                    std::string_view reason) { dropped.emplace_back(reason); },
+            },
+            memory);
+    }
+
+    /** Hands the wire an action frame of `peer`. */
+    void receive(std::string_view peer, trystero::backend::bytes frame) {
+        const auto view = std::span<const std::uint8_t>(frame);
+        wire->handle(peer, std::move(frame), view);
+    }
+
+    /** The action frames the wire sent, out of their room envelopes. */
+    [[nodiscard]] std::vector<trystero::protocol::decoded_action> sent() const {
+        std::vector<trystero::protocol::decoded_action> out;
+        for (const auto& frame : channel->sent) {
+            const auto envelope = trystero::protocol::decode_envelope(frame);
+            out.push_back(*trystero::protocol::decode_action(envelope->payload).frame);
+        }
+        return out;
+    }
+};
+
+// A transfer offered with 0.27.0's wide flag arrives in chunks of 65,522 bytes, which may come in
+// any order, each once; a chunk of another length, or one that came already, drops the peer.
+void a_wide_transfer_arrives_in_wide_chunks_in_any_order() {
+    namespace tp = trystero::protocol;
+    trystero::bytes payload(200 * 1024);
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::uint8_t>(i * 31);
+    }
+    wire_bench b;
+    b.receive("A", tp::encode_offer("file", tp::payload_format::binary, R"({"n":1})", 5,
+                                    payload.size(), true));
+    const auto answers = b.sent();
+    if (!BOOST_TEST_EQ(answers.size(), 1U)) {
+        return;
+    }
+    const auto& accepted = std::get<tp::control_message>(answers[0]);
+    BOOST_TEST(accepted.kind == tp::frame_kind::accepted);
+    BOOST_TEST_EQ(accepted.id, 5U);
+    for (const std::size_t index : {3U, 1U, 0U, 2U}) {
+        const auto offset = index * tp::wide_chunk_size;
+        const auto length = std::min(tp::wide_chunk_size, payload.size() - offset);
+        b.receive("A", tp::encode_chunk(5, offset, std::span(payload).subspan(offset, length)));
+    }
+    BOOST_TEST(b.dropped.empty());
+    if (BOOST_TEST_EQ(b.delivered.size(), 1U)) {
+        const auto got = b.delivered[0].payload();
+        BOOST_TEST_ALL_EQ(got.begin(), got.end(), payload.begin(), payload.end());
+        BOOST_TEST_EQ(b.delivered[0].metadata(), R"({"n":1})");
+        BOOST_TEST_EQ(b.delivered[0].name(), "file");
+    }
+
+    wire_bench narrow;
+    narrow.receive(
+        "A", tp::encode_offer("file", tp::payload_format::binary, "", 6, payload.size(), true));
+    narrow.receive("A", tp::encode_chunk(6, 0, std::span(payload).first(tp::chunk_size)));
+    BOOST_TEST_EQ(narrow.dropped.size(), 1U);
+
+    wire_bench twice;
+    twice.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 7, payload.size()));
+    twice.receive("A",
+                  tp::encode_chunk(7, tp::chunk_size,
+                                   std::span(payload).subspan(tp::chunk_size, tp::chunk_size)));
+    BOOST_TEST(twice.dropped.empty());
+    twice.receive("A",
+                  tp::encode_chunk(7, tp::chunk_size,
+                                   std::span(payload).subspan(tp::chunk_size, tp::chunk_size)));
+    BOOST_TEST_EQ(twice.dropped.size(), 1U);
+    if (!twice.dropped.empty()) {
+        BOOST_TEST_EQ(twice.dropped[0], "invalid action chunk");
+    }
+}
+
+// 0.27.0 keeps at most 1024 transfers pending across peers and 64 of one peer, and rejects the
+// next offer as "too many pending transfers"; it keeps at most 32 messages of one action and peer
+// until the action can take them, a newer one dropping the oldest, for 10 s.
+void the_wire_keeps_0_27_0s_bounds() {
+    namespace tp = trystero::protocol;
+    const auto rejections = [](const wire_bench& b) {
+        std::size_t n = 0;
+        for (const auto& frame : b.sent()) {
+            const auto* m = std::get_if<tp::control_message>(&frame);
+            n += m != nullptr && m->kind == tp::frame_kind::rejected &&
+                         m->reason == "too many pending transfers"
+                     ? 1
+                     : 0;
+        }
+        return n;
+    };
+    {
+        wire_bench b;
+        for (std::uint32_t id = 0; id <= tp::max_pending_transfers_per_peer; ++id) {
+            b.receive("A", tp::encode_offer("later", tp::payload_format::binary, "", id, 20000));
+        }
+        BOOST_TEST_EQ(rejections(b), 1U);
+        for (std::size_t peer = 1;
+             peer < tp::max_pending_transfers / tp::max_pending_transfers_per_peer; ++peer) {
+            for (std::uint32_t id = 0; id < tp::max_pending_transfers_per_peer; ++id) {
+                b.receive("P" + std::to_string(peer),
+                          tp::encode_offer("later", tp::payload_format::binary, "", id, 20000));
+            }
+        }
+        BOOST_TEST_EQ(rejections(b), 1U);
+        b.receive("Z", tp::encode_offer("later", tp::payload_format::binary, "", 0, 20000));
+        BOOST_TEST_EQ(rejections(b), 2U);
+        BOOST_TEST(b.dropped.empty());
+    }
+    {
+        wire_bench b;
+        for (std::size_t i = 0; i <= tp::max_pre_listener_messages; ++i) {
+            b.receive("A", tp::encode_inline("later", tp::payload_format::binary, "",
+                                             trystero::bytes{static_cast<std::uint8_t>(i)}));
+        }
+        b.receive("A",
+                  tp::encode_inline("other", tp::payload_format::binary, "", trystero::bytes{99}));
+        b.receivers.insert("later");
+        b.wire->receiver_added();
+        if (BOOST_TEST_EQ(b.delivered.size(), tp::max_pre_listener_messages)) {
+            for (std::size_t i = 0; i < b.delivered.size(); ++i) {
+                BOOST_TEST_EQ(b.delivered[i].payload()[0], i + 1);
+            }
+        }
+        advance(b.f, 10'001ms);
+        b.receivers.insert("other");
+        b.wire->receiver_added();
+        BOOST_TEST_EQ(b.delivered.size(), tp::max_pre_listener_messages);
+    }
+}
+
+// A control frame goes out only while the channel buffers at most 1 MiB, as 0.27.0's
+// sendControlFrame checks: past it, the peer is dropped.
+void a_control_frame_into_a_full_channel_drops_the_peer() {
+    namespace tp = trystero::protocol;
+    wire_bench b;
+    b.channel->buffered = tp::max_control_buffered_bytes + 1;
+    b.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 1, 20000));
+    BOOST_TEST(b.channel->sent.empty());
+    if (BOOST_TEST_EQ(b.dropped.size(), 1U)) {
+        BOOST_TEST_EQ(b.dropped[0], "unable to send action control");
+    }
+    wire_bench at_bound;
+    at_bound.channel->buffered = tp::max_control_buffered_bytes;
+    at_bound.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 1, 20000));
+    BOOST_TEST_EQ(at_bound.channel->sent.size(), 1U);
+    BOOST_TEST(at_bound.dropped.empty());
+}
+
 void ping_measures_a_round_trip() {
     fixture f;
     trystero::app a_app(f.io.get_executor(), f.net, app_config("DDDDDDDDDDDDDDDDDDDD"));
@@ -2176,6 +2369,9 @@ int main() {
     run_case(a_json_payload_nested_256_deep_is_delivered);
     run_case(two_peers_join_and_exchange_every_payload_format);
     run_case(large_payloads_travel_in_chunks_both_ways);
+    run_case(a_wide_transfer_arrives_in_wide_chunks_in_any_order);
+    run_case(the_wire_keeps_0_27_0s_bounds);
+    run_case(a_control_frame_into_a_full_channel_drops_the_peer);
     run_case(ping_measures_a_round_trip);
     run_case(the_same_password_joins_and_another_does_not);
     run_case(password_room_keys_complete_after_the_join_returns);
