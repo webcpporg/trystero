@@ -577,6 +577,10 @@ private:
              r.retry.count(), " ms");
         if (!r.opened_before && !std::exchange(r.boot_failed, true)) {
             report_if_all_failed();
+            // The report reaches the user's log sink, which may leave the room and so stop this.
+            if (stopped_) {
+                return;
+            }
         }
         std::array<std::uint8_t, 2> random{};
         factory_.random(random);

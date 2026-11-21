@@ -968,7 +968,7 @@ void a_flood_of_announcements_is_bounded() {
 
 // A watcher without the room key answers every offer of A to B with garbage, in B's name, before
 // B's own answer: A opens an answer before acting on it, so the forged ones change nothing, A and
-// B join, and A reports the failed open at most once for B.
+// B join, and A reports the failed open once for B, at the answer stage, with 0.27.0's message.
 void a_forged_answer_changes_nothing() {
     fixture f;
     const std::string_view a_id = "AAAAAAAAAAAAAAAAAAAA";
@@ -977,8 +977,18 @@ void a_forged_answer_changes_nothing() {
     auto a = join(a_app, "forged");
     std::vector<std::string> joined;
     a.on_peer_join([&](const trystero::peer_event& e) { joined.emplace_back(e.peer_id); });
-    std::vector<boost::system::error_code> errors;
-    a.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
+
+    struct report {
+        boost::system::error_code code;
+        std::string message;
+        std::string peer_id;
+        std::optional<trystero::signal_stage> stage;
+    };
+
+    std::vector<report> errors;
+    a.on_error([&](const trystero::room_error& e) {
+        errors.push_back({e.code, std::string(e.message), std::string(e.peer_id), e.stage});
+    });
     flooder attacker(f, "forged");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "forged", a_id);
     std::size_t forged = 0;
@@ -996,7 +1006,15 @@ void a_forged_answer_changes_nothing() {
     const auto b = join(b_app, "forged");
     BOOST_TEST(run_until(f.io, [&] { return joined.size() == 1; }));
     BOOST_TEST_GE(forged, 1U);
-    BOOST_TEST_LE(errors.size(), 1U);
+    // The forged answers reach A before B's own, so the first one is reported, and only it.
+    BOOST_TEST_EQ(errors.size(), 1U);
+    for (const auto& e : errors) {
+        BOOST_TEST(e.code == trystero::error::decrypt_failed);
+        BOOST_TEST_EQ(e.peer_id, b_id);
+        BOOST_TEST(e.stage == trystero::signal_stage::answer);
+        BOOST_TEST_EQ(e.message,
+                      "failed to decrypt answer (incorrect password or corrupted signal)");
+    }
 }
 
 // Offers from fresh ids that are not sealed with the room key make no connection: a negotiation
@@ -3057,16 +3075,23 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
         BOOST_TEST_EQ(reports[i].peer_id, "0garbage" + std::to_string(i));
         BOOST_TEST(reports[i].stage == trystero::signal_stage::offer);
     }
-    // One more id makes the room forget the first, which it then reports again, within the minute.
+    // An id seen again within the minute becomes the most recent: offered alone now, the first is
+    // not reported, and the second is the least recent.
+    offer(0);
+    advance(f, 100ms);
+    BOOST_TEST_EQ(reports.size(), remembered);
+    // One more id makes the room forget the second, which it then reports again within the minute,
+    // and not the first, which the room would forget were the ids kept in the order they came.
     offer(remembered);
     BOOST_TEST(run_until(f, [&] { return reports.size() == remembered + 1; }));
-    offer(1);
     offer(0);
+    offer(1);
     BOOST_TEST(run_until(f, [&] { return reports.size() == remembered + 2; }));
     advance(f, 1s);
     BOOST_TEST_EQ(reports.size(), remembered + 2);
     if (reports.size() == remembered + 2) {
-        BOOST_TEST_EQ(reports.back().peer_id, "0garbage0");
+        BOOST_TEST_EQ(reports[remembered].peer_id, "0garbage" + std::to_string(remembered));
+        BOOST_TEST_EQ(reports.back().peer_id, "0garbage1");
     }
 }
 
@@ -3183,7 +3208,7 @@ void error_names_match_trystero() {
     BOOST_TEST_EQ(make_error_code(error::relay_failed).message(), "all signaling relays failed");
     BOOST_TEST_EQ(make_error_code(error::peer_connect_failed).message(),
                   "could not connect to peer after exchanging SDP");
-    BOOST_TEST_EQ(make_error_code(error::handshake_failed).message(), "the handshake failed");
+    BOOST_TEST_EQ(make_error_code(error::handshake_failed).message(), "handshake failed");
 }
 
 // Messages that queued for async_receive when the room was left go with it, as 0.27.0 drops each
@@ -3228,6 +3253,40 @@ void messages_waiting_at_a_leave_are_dropped() {
             received = true;
         });
     BOOST_TEST(run_until(f.io, [&] { return received; }));
+}
+
+// A message posted to its listener before the room ended, whose listener is gone once the post
+// runs, goes with the room as well: a progress listener removes the message listener and drops
+// the room's handle, which ends it at once, before the message's post runs; a listener added
+// afterwards gets nothing.
+void a_message_posted_before_the_room_ended_is_dropped() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("postedAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "posted");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("postedBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b(join(b_app, "posted"));
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b->peers().size() == 1; })));
+    auto send = a.make_action<std::string>("chat");
+    auto receive = b->make_action<std::string>("chat");
+    std::vector<std::string> got;
+    auto first = receive.on_message(
+        [&](const std::string& text, const trystero::message_info&) { got.push_back(text); });
+    bool ended = false;
+    receive.on_receive_progress([&](double share, const trystero::progress_info&) {
+        if (share == 1.0 && !ended) {
+            ended = true;
+            first.unsubscribe();
+            b.reset();
+        }
+    });
+    send.async_send("posted", [](boost::system::error_code) {});
+    BOOST_TEST(run_until(f.io, [&] { return ended; }));
+    run_until(f.io, [] { return false; }, 100ms);
+    const auto late = receive.on_message(
+        [&](const std::string& text, const trystero::message_info&) { got.push_back(text); });
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST(got.empty());
 }
 
 void the_errors_have_their_values() {
@@ -3342,6 +3401,7 @@ int main() {
     run_case(peer_connect_failed_says_whether_turn_was_configured);
     run_case(error_names_match_trystero);
     run_case(messages_waiting_at_a_leave_are_dropped);
+    run_case(a_message_posted_before_the_room_ended_is_dropped);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }

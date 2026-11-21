@@ -54,8 +54,9 @@ enum class error {
     handshake_timed_out,
     /**
      * A peer's handshake failed, 0.27.0's `handshake-failed` room error, which
-     * `room_error_code_name` names. The password handshake of rooms sharing a connection reports
-     * its failures as `wrong_password` and `handshake_timed_out`, which name what failed.
+     * `room_error_code_name` names. Nothing reports it before Phase 2's handshake: the password
+     * handshake of rooms sharing a connection reports its failures as `wrong_password` and
+     * `handshake_timed_out`, which name what failed.
      */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
@@ -156,7 +157,7 @@ private:
             case error::channel_stalled: return "the data channel stopped draining";
             case error::wrong_password: return "the peer uses another room password";
             case error::handshake_timed_out: return "the handshake timed out";
-            case error::handshake_failed: return "the handshake failed";
+            case error::handshake_failed: return "handshake failed";
             case error::backend_failure: return "the WebRTC backend refused an operation";
             case error::invalid_configuration: return "the configuration is unusable";
             case error::already_joined: return "the app has already joined a room of that id";

@@ -929,8 +929,9 @@ public:
                 }),
             log_, memory_, bind<void()>([weak] {
                 if (const auto self = weak.lock()) {
-                    self->report({}, make_error_code(error::relay_failed),
-                                 "all signaling relays failed");
+                    const auto code = make_error_code(error::relay_failed);
+                    std::array<char, 64> buffer{};  // the message without a std::string
+                    self->report({}, code, code.message(buffer.data(), buffer.size()));
                 }
             }));
         register_and_advertise();
@@ -2095,6 +2096,12 @@ private:
     /** Hands a message to the next receive, or queues it for one, rechecking consumers after a
      * queue-limit log sink. */
     void hand_over(action_slot& slot, incoming&& message) {
+        // A message posted before a leave that finds no listener once it runs goes with the room,
+        // as the rest of what waited at the leave went: a receive or listener added since gets
+        // nothing.
+        if (left_) {
+            return;
+        }
         if (slot.messages.empty() && slot.receivers.empty() &&
             slot.queue.size() >= max_queued_messages) {
             log_("action", "dropping the oldest unread message of ", message.name());

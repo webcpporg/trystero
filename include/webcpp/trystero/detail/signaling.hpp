@@ -690,7 +690,7 @@ private:
         // another, has the answer replayed (replay_answer), as Trystero's replay records its relay.
         const auto sdp = open_signal("offer", peer, offer_id, offer);
         if (!sdp) {
-            failed_open(peer, n, "offer");
+            failed_open(peer, n, signal_stage::offer);
             return;
         }
         if (used_.contains(*sdp)) {
@@ -869,7 +869,7 @@ private:
         // peer's name, must not reset the offer the peer's own answer is on its way to.
         const auto sdp = open_signal("answer", peer, offer_id, answer);
         if (!sdp) {
-            failed_open(peer, n, "answer");
+            failed_open(peer, n, signal_stage::answer);
             return;
         }
         if (used_.contains(*sdp)) {
@@ -921,23 +921,26 @@ private:
      * Tip: anyone who reads the relays can send garbage from any number of fresh ids, and each id
      * is reported, as 0.27.0 reports each; the reports remembered are bounded, as 0.27.0's are.
      */
-    void failed_open(std::string_view peer, negotiation& n, std::string_view what) {
+    void failed_open(std::string_view peer, negotiation& n, std::optional<signal_stage> stage) {
         ++failed_opens_;
         if (!std::exchange(n.failed_open_logged, true)) {
-            log_("signal", "could not open the ", what, " from ", peer,
-                 ": another password, or forged in its name; ignored");
+            log_("signal", "could not open the ", stage ? stage_name(*stage) : "candidate",
+                 " from ", peer, ": another password, or forged in its name; ignored");
         }
-        if (what == "offer") {
-            report_decrypt_failed(peer, signal_stage::offer);
-        } else if (what == "answer") {
-            report_decrypt_failed(peer, signal_stage::answer);
+        if (stage) {
+            report_decrypt_failed(peer, *stage);
         }
+    }
+
+    /** The name 0.27.0 gives a signal of `stage`: "offer" or "answer". */
+    static std::string_view stage_name(signal_stage stage) {
+        return stage == signal_stage::offer ? "offer" : "answer";
     }
 
     /** Reports that `peer`'s signal of `stage` did not open, unless it was reported less than
      * `decrypt_report_interval` ago. */
     void report_decrypt_failed(std::string_view peer, signal_stage stage) {
-        const std::string_view name = stage == signal_stage::offer ? "offer" : "answer";
+        const std::string_view name = stage_name(stage);
         std::pmr::string key(name, memory_);
         key += ':';
         key += peer;
@@ -1024,7 +1027,7 @@ private:
         }
         const auto plain = open_signal("candidate", peer, offer_id, candidate);
         if (!plain) {
-            failed_open(peer, *m, "candidate");
+            failed_open(peer, *m, std::nullopt);
             return;
         }
         // A candidate names the offer it belongs to; one that names none goes to the connection
@@ -1224,6 +1227,8 @@ private:
             make_error_code(error::backend_failure).message(buffer.data(), buffer.size()), peer));
     }
 
+    /** Ends the offer side; a failure to connect may be reported again afterwards, as 0.27.0's
+     * `resetOfferState` clears `didReportFailure`. */
     static void reset_offer(negotiation& n) {
         close_side(n.offer);
         n.offer_id.clear();
@@ -1234,6 +1239,7 @@ private:
         n.offer_expiry.reset();
         n.offer_retry.clear();
         n.offer_retries.clear();
+        n.connect_failure_reported = false;
     }
 
     static void reset_answer(negotiation& n) {
