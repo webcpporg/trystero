@@ -9,6 +9,7 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
 #include <webcpp/hash/digest.hpp>
@@ -65,6 +66,10 @@ inline std::pmr::string random_id(
  *
  * Tip: every digest the protocol takes is of a few ids joined by separators; hashing the parts in
  * place builds none.
+ *
+ * Tip: SHA-256 over webcpp::hash's backends cannot fail: the hasher starts, takes pieces of any
+ * size and finishes into 32 bytes. That is this function's precondition; were it broken, a debug
+ * build asserts and a release build returns zeros.
  *
  * @param parts The texts, in order.
  * @return The digest.
@@ -130,42 +135,6 @@ inline std::pmr::string domain_tag(
 }
 
 /**
- * Appends a text as the string `JSON.stringify` writes: quoted, with `"` and `\\` escaped, `\b`,
- * `\f`, `\n`, `\r` and `\t` by their letters, the other controls as lowercase `\u00XX`, and every
- * other byte as it is.
- *
- * Tip: unlike @ref json::append_string it never refuses a text, so that a topic never silently
- * loses a part; a byte that is not UTF-8 is copied as it is.
- *
- * @param out The text to append to.
- * @param utf8 The text, in UTF-8.
- */
-inline void append_json_string(std::pmr::string& out, std::string_view utf8) {
-    static constexpr std::string_view digits = "0123456789abcdef";
-    out += '"';
-    for (const char c : utf8) {
-        switch (c) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(c) < 0x20) {
-                    out += "\\u00";
-                    out += digits[static_cast<unsigned char>(c) >> 4U];
-                    out += digits[static_cast<unsigned char>(c) & 15U];
-                } else {
-                    out += c;
-                }
-        }
-    }
-    out += '"';
-}
-
-/**
  * Trystero's `topicPath`: the JSON array of the parts, `["a","b"]`, which no choice of parts can
  * make equal to another's.
  *
@@ -184,7 +153,7 @@ inline std::pmr::string topic_path(
             out += ',';
         }
         first = false;
-        append_json_string(out, part);
+        json::append_string_total(out, part);
     }
     out += ']';
     return out;
@@ -286,10 +255,12 @@ inline std::uint32_t hash32(std::string_view utf8) {
  * Trystero's `strToNum`: @ref hash32 of the text, modulo `limit`.
  *
  * @param utf8 The text, in UTF-8.
+ * @pre `limit != 0`.
  * @param limit The modulus; the default is JavaScript's `Number.MAX_SAFE_INTEGER`.
  * @return The number, in [0, `limit`).
  */
 inline std::uint64_t str_to_num(std::string_view utf8, std::uint64_t limit = 9007199254740991ULL) {
+    BOOST_ASSERT(limit != 0);
     return hash32(utf8) % limit;
 }
 

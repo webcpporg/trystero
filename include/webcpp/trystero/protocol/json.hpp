@@ -146,6 +146,44 @@ inline bool quotable(std::string_view text) {
     return webcpp::document::quote(text, out);
 }
 
+/**
+ * Appends `text` as the string `JSON.stringify` writes, whatever its bytes: quoted, `"` and `\\`
+ * escaped, `\b`, `\f`, `\n`, `\r` and `\t` by their letters, the other controls below 0x20 as
+ * lowercase `\u00XX`, and every other byte as it is (DEL and U+2028 too, as `JSON.stringify`
+ * writes them). It is the library's one writer of a string that is not refused.
+ *
+ * Tip: unlike @ref append_string it never refuses a text, so that a topic built of an app id or a
+ * room id, which nothing checks to be UTF-8, never silently loses a part; a byte that is not UTF-8
+ * is copied as it is. On UTF-8 it writes what @ref append_string writes.
+ *
+ * @param out The text to append to.
+ * @param text The text.
+ */
+inline void append_string_total(std::pmr::string& out, std::string_view text) {
+    static constexpr std::string_view digits = "0123456789abcdef";
+    out += '"';
+    for (const char c : text) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += digits[static_cast<unsigned char>(c) >> 4U];
+                    out += digits[static_cast<unsigned char>(c) & 15U];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    out += '"';
+}
+
 namespace detail {
 
 /**
@@ -154,8 +192,7 @@ namespace detail {
  * is made.
  */
 inline void append_utf8(std::pmr::string& out, std::string_view text) {
-    // Quoting fails only on a text that is not UTF-8, which the precondition rules out.
-    static_cast<void>(append_string(out, text));
+    append_string_total(out, text);
 }
 
 }  // namespace detail

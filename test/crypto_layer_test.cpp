@@ -9,6 +9,7 @@
 // The fixture's path is the test's one argument, as webcpp.run passes its input file. The
 // fixture is read with webcpp::document; section(name) gives a case the named section of it.
 
+#include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -125,6 +126,30 @@ void topic_path_matches() {
                   std::string_view(R"(["\b\f\n\r\t\u0001\u001f","a/b"])"));
 }
 
+// The one writer of a string that is not refused: JSON.stringify's output on UTF-8, with DEL and
+// U+2028 raw; and, on a byte that is not UTF-8, the byte as it is.
+void the_total_string_writer_is_json_stringifys() {
+    for (const std::string_view text :
+         {"", "plain", "a\"b\\c", "\b\f\n\r\t", "\x01\x1f", "del\x7f", "ls\xe2\x80\xa8ps",
+          "caf\xc3\xa9 \xf0\x9f\x98\x80", "\x7f\xe2\x80\xa9"}) {
+        std::pmr::string total;
+        tp::json::append_string_total(total, text);
+        std::pmr::string checked;
+        BOOST_TEST(tp::json::append_string(checked, text).has_value());
+        BOOST_TEST_EQ(total, checked);
+    }
+    // DEL and U+2028 are written raw, as JSON.stringify writes them.
+    std::pmr::string raw;
+    tp::json::append_string_total(raw, "\x7f\xe2\x80\xa8");
+    BOOST_TEST_EQ(raw, std::string_view("\"\x7f\xe2\x80\xa8\""));
+    // A byte that is not UTF-8 is kept, where append_string refuses the text.
+    std::pmr::string bad;
+    tp::json::append_string_total(bad, "a\xffz");
+    BOOST_TEST_EQ(bad, std::string_view("\"a\xffz\""));
+    std::pmr::string refused;
+    BOOST_TEST(!tp::json::append_string(refused, "a\xffz").has_value());
+}
+
 void hash_topic_matches() {
     for (const auto entry : section("hash_topic")) {
         const auto topic = tp::hash_topic(str(entry["text"]));
@@ -181,6 +206,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(base64url_matches);
     webcpp::test::run_case(base64url_is_strict);
     webcpp::test::run_case(topic_path_matches);
+    webcpp::test::run_case(the_total_string_writer_is_json_stringifys);
     webcpp::test::run_case(hash_topic_matches);
     webcpp::test::run_case(room_topics_match);
     webcpp::test::run_case(hash32_matches);

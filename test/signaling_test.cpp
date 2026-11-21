@@ -290,8 +290,12 @@ void an_answerers_signals_are_trysteros(const fixture_value& oracle) {
         // it.
         const auto offer = str(c["offer"]);
         constexpr std::string_view key = R"("peerId":")";
-        const auto from = offer.find(key) + key.size();
-        const auto offerer = offer.substr(from, offer.find('"', from) - from);
+        const auto found = offer.find(key);
+        BOOST_TEST(found != std::string_view::npos);
+        const auto from = found + key.size();
+        const auto closing = offer.find('"', from);
+        BOOST_TEST(closing != std::string_view::npos);
+        const auto offerer = offer.substr(from, closing - from);
         const std::string topic = std::string(
             trystero::protocol::peer_topic(str(oracle["app_id"]), str(oracle["room_id"]), offerer));
         std::size_t i = 0;

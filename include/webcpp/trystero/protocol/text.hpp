@@ -203,7 +203,6 @@ inline std::optional<bytes> base64_decode(
 inline void append_base64url(std::pmr::string& out, std::span<const std::uint8_t> in) {
     static constexpr std::string_view table =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    out.reserve(out.size() + ((in.size() * 4 + 2) / 3));
     std::size_t i = 0;
     for (; i + 2 < in.size(); i += 3) {
         const std::uint32_t v = (std::uint32_t{in[i]} << 16U) | (std::uint32_t{in[i + 1]} << 8U) |
@@ -302,9 +301,10 @@ inline std::optional<bytes> from_base64url(
 /**
  * The sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
  *
- * Tip: Trystero derives Nostr kinds and the relay shuffle seed from it, so non-ASCII ids must count
- * as in JS. The sum is a double, JavaScript's Number, as Trystero's is; the oracle's fixtures pin
- * it.
+ * Tip: it is Trystero 0.26.0's `strToNum`, from which that version derived Nostr kinds and the
+ * relay shuffle seed, so non-ASCII ids must count as in JS. 0.27.0 derives them from @ref hash32
+ * instead; the port keeps this sum for the kinds and the shuffle until Tasks 7 and 3 move them. The
+ * sum is a double, JavaScript's Number, as Trystero's is; the 0.26 fixtures pin it.
  *
  * @param utf8 The text, in UTF-8.
  * @return The sum of the code units of its UTF-16 form, a character above U+FFFF counting as its
