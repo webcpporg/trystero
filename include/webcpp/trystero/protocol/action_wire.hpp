@@ -88,6 +88,14 @@ inline constexpr std::uint8_t action_wire_version = 3;
  * takes messages of @ref max_bulk_frame_bytes; no other frame may carry it.
  */
 inline constexpr std::uint8_t wide_bulk_flag = 64;
+/** The chunks a transfer's offer announces: @ref chunk_size or, under @ref wide_bulk_flag,
+ * @ref wide_chunk_size bytes each but the last. */
+enum class chunk_width : std::uint8_t {
+    /** Chunks of @ref chunk_size, as every transport takes. */
+    narrow,
+    /** Chunks of @ref wide_chunk_size, for a connection whose SCTP takes 64 KiB messages. */
+    wide,
+};
 /** The largest chunk frame of a wide transfer, Trystero's `maxBulkFrameBytes`: 64 KiB. */
 inline constexpr std::size_t max_bulk_frame_bytes = std::size_t{64} * 1024;
 /** The size of an inline frame's header, Trystero's `inlineHeaderSize`. */
@@ -190,13 +198,14 @@ namespace detail {
 
 /** Appends the header an inline frame and an offer share: version, kind and format, name. */
 inline void append_header(bytes& out, frame_kind kind, std::string_view name, payload_format format,
-                          std::string_view metadata, std::size_t header_size, bool wide = false) {
+                          std::string_view metadata, std::size_t header_size,
+                          chunk_width width = chunk_width::narrow) {
     const auto at = out.size();
     out.resize(at + header_size, 0);
     out[at] = action_wire_version;
     out[at + 1] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(kind) |
                                             (static_cast<std::uint32_t>(format) << 4U) |
-                                            (wide ? wide_bulk_flag : 0U));
+                                            (width == chunk_width::wide ? wide_bulk_flag : 0U));
     std::memcpy(out.data() + at + 2, name.data(), name.size());
     set_u16(out, at + 34, static_cast<std::uint16_t>(metadata.size()));
 }
@@ -240,15 +249,15 @@ inline void append_inline(bytes& out, std::string_view name, payload_format form
  * @param metadata JSON text, or empty.
  * @param id The transfer's id.
  * @param size The payload's size in bytes.
- * @param wide Whether the chunks will be wide, @ref wide_chunk_size each but the last.
+ * @param width The chunks' width: @ref wide_chunk_size each but the last when wide.
  * @pre `valid_action_name(name)`, and the metadata fits one frame after the offer's header.
  */
 inline void append_offer(bytes& out, std::string_view name, payload_format format,
                          std::string_view metadata, std::uint32_t id, std::size_t size,
-                         bool wide = false) {
+                         chunk_width width = chunk_width::narrow) {
     out.reserve(out.size() + offer_header_size + metadata.size());
     const auto at = out.size();
-    detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size, wide);
+    detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size, width);
     detail::set_u32(out, at + 36, id);
     detail::set_f64(out, at + 40, static_cast<double>(size));
     out.insert(out.end(), metadata.begin(), metadata.end());
@@ -334,15 +343,16 @@ inline bytes encode_inline(std::string_view name, payload_format format, std::st
  * @param metadata JSON text, or empty.
  * @param id The transfer's id.
  * @param size The payload's size in bytes.
- * @param wide Whether the chunks will be wide.
+ * @param width The chunks' width.
  * @param memory The resource the frame is allocated in.
  * @return The frame, as @ref append_offer writes it.
  */
 inline bytes encode_offer(std::string_view name, payload_format format, std::string_view metadata,
-                          std::uint32_t id, std::size_t size, bool wide = false,
+                          std::uint32_t id, std::size_t size,
+                          chunk_width width = chunk_width::narrow,
                           std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
-    append_offer(out, name, format, metadata, id, size, wide);
+    append_offer(out, name, format, metadata, id, size, width);
     return out;
 }
 

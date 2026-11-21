@@ -368,7 +368,7 @@ void wide_bulk_frames_are_bounded() {
         return !decoded.frame.has_value() && decoded.error == tp::wire_error::invalid_frame;
     };
     const auto wide_offer =
-        tp::encode_offer("file", tp::payload_format::binary, "", 1, 200'000, true);
+        tp::encode_offer("file", tp::payload_format::binary, "", 1, 200'000, tp::chunk_width::wide);
     BOOST_TEST_EQ(wide_offer[1], 0x61U);
     const auto offer = tp::decode_action(wide_offer);
     if (BOOST_TEST(offer.frame.has_value())) {
@@ -410,6 +410,8 @@ void envelopes(const fixture_value& fixture) {
     const auto expected_present = hex(frames[0]);
     BOOST_TEST_ALL_EQ(present.begin(), present.end(), expected_present.begin(),
                       expected_present.end());
+    // The envelope's recorded vector (expected.json, from 0.26.0) wraps these bytes, a version-2
+    // action frame's start: the envelope carries any payload, whatever the action wire's version.
     const tp::bytes action{2, 0, 99, 104, 97, 116};
     const auto room_frame = tp::room_frame(token, action);
     const auto expected_room = hex(frames[1]);

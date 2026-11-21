@@ -631,6 +631,15 @@ void action_frames_match() {
             const auto kind = static_cast<tp::frame_kind>(frame["hex"].is_string()
                                                               ? bytes_of(frame["hex"])[1] & 15U
                                                               : bytes_of(frame["head"])[1] & 15U);
+            // A control frame's id and reason, as recorded: its reason is what follows its header.
+            const auto transfer_id = [&frame] {
+                return static_cast<std::uint32_t>(integer(frame["transfer_id"]));
+            };
+            std::string recorded_reason;
+            if (kind == tp::frame_kind::rejected) {
+                const auto recorded = bytes_of(frame["hex"]);
+                recorded_reason.assign(recorded.begin() + tp::control_header_size, recorded.end());
+            }
             tp::bytes encoded;
             switch (kind) {
                 case tp::frame_kind::inline_payload: {
@@ -648,10 +657,10 @@ void action_frames_match() {
                     break;
                 }
                 case tp::frame_kind::offer:
-                    encoded =
-                        tp::encode_offer(str(entry["action"]), format, metadata,
-                                         static_cast<std::uint32_t>(integer(frame["transfer_id"])),
-                                         payload.size(), wide);
+                    encoded = tp::encode_offer(
+                        str(entry["action"]), format, metadata,
+                        static_cast<std::uint32_t>(integer(frame["transfer_id"])), payload.size(),
+                        wide ? tp::chunk_width::wide : tp::chunk_width::narrow);
                     break;
                 case tp::frame_kind::chunk: {
                     const auto offset = chunks++ * chunk;
@@ -661,10 +670,12 @@ void action_frames_match() {
                                          offset, std::span(payload).subspan(offset, length));
                     break;
                 }
-                case tp::frame_kind::accepted: encoded = tp::encode_accepted(0); break;
-                case tp::frame_kind::cancelled: encoded = tp::encode_cancelled(0); break;
+                case tp::frame_kind::accepted: encoded = tp::encode_accepted(transfer_id()); break;
+                case tp::frame_kind::cancelled:
+                    encoded = tp::encode_cancelled(transfer_id());
+                    break;
                 case tp::frame_kind::rejected:
-                    encoded = tp::encode_rejected(0, "payload rejected by receiver");
+                    encoded = tp::encode_rejected(transfer_id(), recorded_reason);
                     break;
             }
             if (!is_recorded(encoded, frame)) {
@@ -689,8 +700,15 @@ void action_frames_match() {
                 } else if (from_sender) {
                     BOOST_TEST(std::ranges::equal(p->payload, payload));
                 } else {
-                    BOOST_TEST_EQ(p->name, "@_response");
-                    BOOST_TEST_EQ(p->metadata, str(entry["answer"]["metadata"]));
+                    const auto answer = entry["answer"];
+                    const auto text = str(answer["payload_text"]);
+                    BOOST_TEST_EQ(p->name, str(answer["action"]));
+                    BOOST_TEST(p->format ==
+                               static_cast<tp::payload_format>(integer(answer["format"])));
+                    BOOST_TEST_EQ(p->metadata, str(answer["metadata"]));
+                    BOOST_TEST(std::ranges::equal(
+                        p->payload, std::span(reinterpret_cast<const std::uint8_t*>(text.data()),
+                                              text.size())));
                 }
             } else if (const auto* c = std::get_if<tp::chunk>(&*decoded.frame)) {
                 BOOST_TEST_EQ(c->offset, static_cast<double>((chunks - 1) * chunk));
@@ -698,10 +716,8 @@ void action_frames_match() {
             } else {
                 const auto& m = std::get<tp::control_message>(*decoded.frame);
                 BOOST_TEST(m.kind == kind);
-                BOOST_TEST_EQ(m.id, 0U);
-                if (kind == tp::frame_kind::rejected) {
-                    BOOST_TEST_EQ(m.reason, "payload rejected by receiver");
-                }
+                BOOST_TEST_EQ(m.id, transfer_id());
+                BOOST_TEST_EQ(m.reason, recorded_reason);
             }
         }
         if (chunks != 0 && name != "cancelled") {

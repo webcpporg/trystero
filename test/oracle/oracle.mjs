@@ -115,7 +115,10 @@ for (const content of cases.nostr_events.contents) {
         id: toHex(await hashWith('SHA-256', toJson([0, pubkey, createdAt, kind, [['x', topic]], content])))})
 }
 
-// Action frames, captured from Trystero's own action wire manager sending to a fake peer.
+// Action frames, captured from Trystero's own action wire manager sending to a fake peer. These
+// sections (`actions`, `controls`) hold 0.26's version-2 frames, which no test reads since the port's
+// action wire is 0.27.0's version 3, proven by `action_frames` in trystero-0.27.0.json; they go
+// with this recorder once the room envelope does (Phase 2).
 const actions = cases.actions
 const chunked = actions.chunked
 const captureActions = async () => {

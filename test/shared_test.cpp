@@ -732,6 +732,47 @@ void a_connection_failing_under_a_waiting_transfer() {
     BOOST_TEST_EQ(completions, 1U);
 }
 
+// A transfer accepted while the channel back to its sender buffers more than 1 MiB: the accepted
+// frame cannot go, so the room kicks the peer from within the wire's drain, whose kick clears the
+// peer's transfers from the wire it is iterating. A floods B with inline frames that the channel
+// releases at once, then drains one byte per post; B's offer then reaches A. A drops B and goes
+// on: B leaves once, its send completes once, with an error, and the two meet again. Run under the
+// sanitizers too.
+void a_transfer_accepted_into_a_full_channel_kicks_its_sender() {
+    two_apps t("EEEEEEEEEEEEEEEEEEE3", "FFFFFFFFFFFFFFFFFFF4");
+    t.f.net.channel_capacity = 1;
+    const ends e(t);
+    joined_in(t, {"r"});
+    auto file = t.a_rooms[0].make_action<trystero::bytes>("file");
+    std::size_t files = 0;
+    file.on_message([&files](const trystero::bytes&, const trystero::message_info&) { ++files; });
+    auto flood = t.a_rooms[0].make_action<std::string>("flood");
+    const std::string text(16'000, 'f');
+    for (std::size_t i = 0; i < 100; ++i) {
+        flood.async_send(text, [](boost::system::error_code) {});
+    }
+    // The first frames drain at the usual pace; the ones that waited go at once, then crawl.
+    t.f.net.drain_per_post = 1;
+    webcpp::test::require(BOOST_TEST(poll_until(t.f, [&] {
+        return t.f.net.buffered(e.a()) > trystero::protocol::max_control_buffered_bytes;
+    })));
+    t.f.net.drain_per_post = std::size_t{16} * 1024;
+    std::size_t leaves = 0;
+    t.a_rooms[0].on_peer_leave([&leaves](std::string_view) { ++leaves; });
+    std::size_t completions = 0;
+    std::optional<boost::system::error_code> sent;
+    t.b_rooms[0].make_action<trystero::bytes>("file").async_send(
+        trystero::bytes(20'000, std::uint8_t{7}), [&](boost::system::error_code ec) {
+            ++completions;
+            sent = ec;
+        });
+    BOOST_TEST(run_until(t.f, [&] { return leaves == 1 && sent.has_value(); }));
+    BOOST_TEST(sent.has_value() && *sent);
+    BOOST_TEST_EQ(files, 0U);
+    BOOST_TEST(run_until(t.f, [&] { return t.all_joined(); }, 30s));
+    BOOST_TEST_EQ(completions, 1U);
+}
+
 // A kick is per room. B sends an incorrect r2 proof and A is the lower id:
 // A reports wrong_password in r2 only and r1 stays joined over the same connection. Then a
 // handshake that times out: B the lower id, its challenge dropped once by the filter; B reports
@@ -2039,6 +2080,10 @@ int main(int argc, const char* const argv[]) {
         {
             "a_connection_failing_under_a_waiting_transfer",
             a_connection_failing_under_a_waiting_transfer,
+        },
+        {
+            "a_transfer_accepted_into_a_full_channel_kicks_its_sender",
+            a_transfer_accepted_into_a_full_channel_kicks_its_sender,
         },
         {"a_room_left_can_be_joined_again", a_room_left_can_be_joined_again},
         {"join_and_leave_sequences_on_one_id", join_and_leave_sequences_on_one_id},

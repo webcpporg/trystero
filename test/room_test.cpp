@@ -223,7 +223,11 @@ struct wire_bench {
 
     fixture f{true};
     std::shared_ptr<link> channel = std::make_shared<link>();
-    std::set<std::string, std::less<>> receivers{"file"};
+    /** The actions the room made, and those of them that listen. */
+    std::set<std::string, std::less<>> actions{"file"};
+    std::set<std::string, std::less<>> listeners{"file"};
+    /** Whether dropping a peer clears it from the wire at once, as a room's kick does. */
+    bool clear_dropped = false;
     std::vector<trystero::detail::incoming> delivered;
     std::vector<std::string> dropped;
     std::shared_ptr<trystero::detail::action_wire> wire;
@@ -244,11 +248,18 @@ struct wire_bench {
                 },
                 .peers = [memory](bool) { return std::pmr::vector<std::string_view>(memory); },
                 .may_receive = [](std::string_view, std::string_view) { return true; },
-                .has_receiver = [this](std::string_view name) { return receivers.contains(name); },
+                .has_action = [this](std::string_view name) { return actions.contains(name); },
+                .has_listener = [this](std::string_view name) { return listeners.contains(name); },
                 .deliver =
                     [this](trystero::detail::incoming&& m) { delivered.push_back(std::move(m)); },
-                .fail_peer = [this](std::string_view,
-                                    std::string_view reason) { dropped.emplace_back(reason); },
+                .fail_peer =
+                    [this](std::string_view peer, std::string_view reason) {
+                        dropped.emplace_back(reason);
+                        if (clear_dropped) {
+                            wire->clear_peer(peer,
+                                             make_error_code(trystero::error::peer_disconnected));
+                        }
+                    },
             },
             memory);
     }
@@ -280,7 +291,7 @@ void a_wide_transfer_arrives_in_wide_chunks_in_any_order() {
     }
     wire_bench b;
     b.receive("A", tp::encode_offer("file", tp::payload_format::binary, R"({"n":1})", 5,
-                                    payload.size(), true));
+                                    payload.size(), tp::chunk_width::wide));
     const auto answers = b.sent();
     if (!BOOST_TEST_EQ(answers.size(), 1U)) {
         return;
@@ -302,10 +313,12 @@ void a_wide_transfer_arrives_in_wide_chunks_in_any_order() {
     }
 
     wire_bench narrow;
-    narrow.receive(
-        "A", tp::encode_offer("file", tp::payload_format::binary, "", 6, payload.size(), true));
+    narrow.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 6, payload.size(),
+                                         tp::chunk_width::wide));
     narrow.receive("A", tp::encode_chunk(6, 0, std::span(payload).first(tp::chunk_size)));
-    BOOST_TEST_EQ(narrow.dropped.size(), 1U);
+    if (BOOST_TEST_EQ(narrow.dropped.size(), 1U)) {
+        BOOST_TEST_EQ(narrow.dropped[0], "invalid action chunk");
+    }
 
     wire_bench twice;
     twice.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 7, payload.size()));
@@ -324,7 +337,7 @@ void a_wide_transfer_arrives_in_wide_chunks_in_any_order() {
 
 // 0.27.0 keeps at most 1024 transfers pending across peers and 64 of one peer, and rejects the
 // next offer as "too many pending transfers"; it keeps at most 32 messages of one action and peer
-// until the action can take them, a newer one dropping the oldest, for 10 s.
+// until the action listens, a newer one dropping the oldest, for 10 s, and no bound across actions.
 void the_wire_keeps_0_27_0s_bounds() {
     namespace tp = trystero::protocol;
     const auto rejections = [](const wire_bench& b) {
@@ -340,6 +353,7 @@ void the_wire_keeps_0_27_0s_bounds() {
     };
     {
         wire_bench b;
+        b.actions.insert("later");
         for (std::uint32_t id = 0; id <= tp::max_pending_transfers_per_peer; ++id) {
             b.receive("A", tp::encode_offer("later", tp::payload_format::binary, "", id, 20000));
         }
@@ -358,28 +372,76 @@ void the_wire_keeps_0_27_0s_bounds() {
     }
     {
         wire_bench b;
+        b.actions.insert({"later", "other"});
         for (std::size_t i = 0; i <= tp::max_pre_listener_messages; ++i) {
             b.receive("A", tp::encode_inline("later", tp::payload_format::binary, "",
                                              trystero::bytes{static_cast<std::uint8_t>(i)}));
         }
         b.receive("A",
                   tp::encode_inline("other", tp::payload_format::binary, "", trystero::bytes{99}));
-        b.receivers.insert("later");
-        b.wire->receiver_added();
+        b.listeners.insert("later");
+        b.wire->listener_added();
         if (BOOST_TEST_EQ(b.delivered.size(), tp::max_pre_listener_messages)) {
             for (std::size_t i = 0; i < b.delivered.size(); ++i) {
                 BOOST_TEST_EQ(b.delivered[i].payload()[0], i + 1);
             }
         }
         advance(b.f, 10'001ms);
-        b.receivers.insert("other");
-        b.wire->receiver_added();
+        b.listeners.insert("other");
+        b.wire->listener_added();
         BOOST_TEST_EQ(b.delivered.size(), tp::max_pre_listener_messages);
+    }
+    {
+        // Each action of a peer has a ring of its own: three full ones keep 96 messages.
+        wire_bench b;
+        const std::array<std::string, 3> names{"n0", "n1", "n2"};
+        for (const auto& name : names) {
+            b.actions.insert(name);
+            for (std::size_t i = 0; i < tp::max_pre_listener_messages; ++i) {
+                b.receive("A", tp::encode_inline(name, tp::payload_format::binary, "",
+                                                 trystero::bytes{1}));
+            }
+        }
+        b.listeners.insert(names.begin(), names.end());
+        b.wire->listener_added();
+        BOOST_TEST_EQ(b.delivered.size(), names.size() * tp::max_pre_listener_messages);
+        BOOST_TEST(b.dropped.empty());
     }
 }
 
+// As 0.27.0's handleData: an inline frame of an action the room has not made is dropped, and not
+// delivered once it is made; an offer of one is rejected at once as an "unregistered action", and
+// takes no pending slot.
+void frames_of_an_action_not_made_are_dropped_or_rejected() {
+    namespace tp = trystero::protocol;
+    wire_bench b;
+    b.receive("A", tp::encode_inline("late", tp::payload_format::text, "", trystero::bytes{'x'}));
+    BOOST_TEST(b.channel->sent.empty());
+    b.actions.insert("late");
+    b.listeners.insert("late");
+    b.wire->listener_added();
+    BOOST_TEST(b.delivered.empty());
+
+    wire_bench offered;
+    offered.receive("A", tp::encode_offer("late", tp::payload_format::binary, "", 3, 20000));
+    const auto answers = offered.sent();
+    if (BOOST_TEST_EQ(answers.size(), 1U)) {
+        const auto& m = std::get<tp::control_message>(answers[0]);
+        BOOST_TEST(m.kind == tp::frame_kind::rejected);
+        BOOST_TEST_EQ(m.id, 3U);
+        BOOST_TEST_EQ(m.reason, "unregistered action");
+    }
+    offered.actions.insert("later");
+    for (std::uint32_t id = 0; id < tp::max_pending_transfers_per_peer; ++id) {
+        offered.receive("A", tp::encode_offer("later", tp::payload_format::binary, "", id, 20000));
+    }
+    BOOST_TEST_EQ(offered.sent().size(), 1U);
+    BOOST_TEST(offered.dropped.empty());
+}
+
 // A control frame goes out only while the channel buffers at most 1 MiB, as 0.27.0's
-// sendControlFrame checks: past it, the peer is dropped.
+// sendControlFrame checks: past it, the peer is dropped. A room drops it at once, from within the
+// wire's drain, which goes on to the next peer.
 void a_control_frame_into_a_full_channel_drops_the_peer() {
     namespace tp = trystero::protocol;
     wire_bench b;
@@ -394,6 +456,20 @@ void a_control_frame_into_a_full_channel_drops_the_peer() {
     at_bound.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 1, 20000));
     BOOST_TEST_EQ(at_bound.channel->sent.size(), 1U);
     BOOST_TEST(at_bound.dropped.empty());
+
+    wire_bench cleared;
+    cleared.clear_dropped = true;
+    cleared.actions.insert("later");
+    cleared.receive("A", tp::encode_offer("later", tp::payload_format::binary, "", 1, 20000));
+    cleared.receive("B", tp::encode_offer("later", tp::payload_format::binary, "", 1, 20000));
+    cleared.channel->buffered = tp::max_control_buffered_bytes + 1;
+    cleared.listeners.insert("later");
+    cleared.wire->listener_added();
+    BOOST_TEST(cleared.channel->sent.empty());
+    BOOST_TEST_EQ(cleared.dropped.size(), 2U);
+    cleared.channel->buffered = 0;
+    cleared.receive("A", tp::encode_offer("later", tp::payload_format::binary, "", 1, 20000));
+    BOOST_TEST_EQ(cleared.channel->sent.size(), 1U);  // A's transfer is gone: id 1 is new again
 }
 
 void ping_measures_a_round_trip() {
@@ -2371,6 +2447,7 @@ int main() {
     run_case(large_payloads_travel_in_chunks_both_ways);
     run_case(a_wide_transfer_arrives_in_wide_chunks_in_any_order);
     run_case(the_wire_keeps_0_27_0s_bounds);
+    run_case(frames_of_an_action_not_made_are_dropped_or_rejected);
     run_case(a_control_frame_into_a_full_channel_drops_the_peer);
     run_case(ping_measures_a_round_trip);
     run_case(the_same_password_joins_and_another_does_not);

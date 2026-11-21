@@ -609,9 +609,15 @@ public:
                         const auto self = weak.lock();
                         return self && self->may_receive(peer, name);
                     }),
-                .has_receiver = bind<bool(std::string_view)>([weak](std::string_view name) {
+                .has_action = bind<bool(std::string_view)>([weak](std::string_view name) {
                     const auto self = weak.lock();
-                    return self && (name.starts_with("@_") || self->actions_.contains(name));
+                    return self && self->has_action(name);
+                }),
+                // A made action listens from the start: without a handler its messages queue for
+                // async_receive.
+                .has_listener = bind<bool(std::string_view)>([weak](std::string_view name) {
+                    const auto self = weak.lock();
+                    return self && self->has_action(name);
                 }),
                 .deliver = bind<void(incoming&&)>([weak](incoming&& m) {
                     if (const auto self = weak.lock()) {
@@ -824,13 +830,14 @@ public:
         }
     }
 
-    /** Registers an action; frames that waited for it are delivered to it from now on. */
+    /** Registers an action, which receives from now on: frames of an action not made are dropped,
+     * as Trystero drops them. */
     void add_action(std::string_view name) {
         if (!actions_.contains(name)) {
             actions_.try_emplace(std::pmr::string(name, memory_), allocator());
         }
         if (wire_) {
-            wire_->receiver_added();
+            wire_->listener_added();
         }
     }
 
@@ -1075,6 +1082,11 @@ private:
 
     static bool is_internal_to_pending(std::string_view name) {
         return name == "@_leave" || name == "@_hsdata" || name == "@_hsready";
+    }
+
+    /** Whether the room has the action: it was made, or it is internal. */
+    bool has_action(std::string_view name) const {
+        return name.starts_with("@_") || actions_.contains(name);
     }
 
     bool may_receive(std::string_view peer, std::string_view name) const {
@@ -1796,8 +1808,9 @@ public:
     /**
      * Makes an action of this room, Trystero's `makeAction`: a named channel of messages.
      *
-     * Frames of the action that arrived before it was made, which the room keeps for a while (64
-     * per peer, for 120 s), are delivered to it.
+     * Frames of the action that arrived before it was made are dropped, and its transfers offered
+     * meanwhile rejected, as Trystero's are: a room makes the actions it receives right after it
+     * is joined.
      *
      * @tparam T The type of its messages: `std::string`, `std::pmr::string`, `std::string_view`,
      * `webcpp::document::document`, `webcpp::document::pmr::document`, @ref bytes, @ref pmr_bytes,
