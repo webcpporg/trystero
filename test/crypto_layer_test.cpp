@@ -361,8 +361,9 @@ void room_keys_from_master_match() {
 }
 
 // 600,000 iterations of HMAC-SHA-256 take about 0.2 s in a release build and tens of times that
-// in a debug one, so it runs in the release variant's run only (see main and the Jamfile's
-// crypto_layer_release); one vector proves the iteration count and the salt's use.
+// in a debug one, so it runs in the release variant's run only, which defines
+// WEBCPP_TRYSTERO_TEST_SLOW_KDF (see main and the Jamfile's crypto_layer_release); one vector
+// proves the iteration count and the salt's use.
 [[maybe_unused]] void pbkdf2_master_matches() {
     BOOST_TEST_EQ(tp::pbkdf2_iterations, 600'000U);
     const auto entry = password_vector("example.com/app", "lobby", "hunter2");
@@ -428,6 +429,9 @@ void room_auth_token_is_strict() {
     BOOST_TEST(twin != token);
     BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, twin));
     BOOST_TEST(!tp::from_base64url(twin).has_value());
+    // A sequence number beyond 2^53 - 1 is refused, as 0.27.0 refuses it, not asserted.
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, tp::max_room_auth_seq + 1, token));
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, UINT64_MAX, token));
     auto outside = token;
     outside[3] = '+';
     BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, outside));
@@ -463,7 +467,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(compact_key_is_strict);
     webcpp::test::run_case(room_key_without_password_matches);
     webcpp::test::run_case(room_keys_from_master_match);
-#ifdef NDEBUG
+#ifdef WEBCPP_TRYSTERO_TEST_SLOW_KDF
     webcpp::test::run_case(pbkdf2_master_matches);
 #endif
     webcpp::test::run_case(room_auth_matches);

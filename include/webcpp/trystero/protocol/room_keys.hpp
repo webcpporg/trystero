@@ -13,6 +13,7 @@
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/crypto/equal.hpp>
 #include <webcpp/crypto/secret.hpp>
 #include <webcpp/hash/hkdf.hpp>
@@ -69,8 +70,10 @@ inline std::span<const std::uint8_t> bytes_of_text(std::string_view text) noexce
 inline webcpp::crypto::secret<32> room_aes_key_without_password(std::string_view app_id,
                                                                 std::string_view room_id) {
     webcpp::crypto::secret<32> key;
-    const auto digest = sha256(topic_path({domain_tag("room-aes", 3), app_id, room_id}));
+    auto digest = sha256(topic_path({domain_tag("room-aes", 3), app_id, room_id}));
     std::ranges::copy(digest, key.writable().begin());
+    // webcpp::crypto has no public wipe of an array yet; its detail one is the library's own.
+    webcpp::crypto::detail::wipe_object(digest);
     return key;
 }
 
@@ -120,8 +123,10 @@ inline boost::system::result<room_keys> derive_room_keys(std::span<const std::ui
  * @param app_id The app id, in UTF-8.
  * @param room_id The room id, in UTF-8.
  * @param peer_id The id of the peer the token is for.
- * @param seq The token's sequence number, at most @ref max_room_auth_seq.
+ * @param seq The token's sequence number.
  * @param memory The resource the text is allocated in.
+ * @pre `seq` is at most @ref max_room_auth_seq: a number a peer sends is checked by
+ * @ref verify_room_auth, which refuses a larger one, before it reaches here.
  * @return The text.
  */
 inline std::pmr::string room_auth_payload(
@@ -146,8 +151,9 @@ namespace detail {
 /** The HMAC-SHA-256 of a room authentication payload. */
 inline std::array<std::uint8_t, 32> room_auth_mac(const webcpp::crypto::secret<32>& hmac_key,
                                                   std::string_view app_id, std::string_view room_id,
-                                                  std::string_view peer_id, std::uint64_t seq) {
-    const auto payload = room_auth_payload(app_id, room_id, peer_id, seq);
+                                                  std::string_view peer_id, std::uint64_t seq,
+                                                  std::pmr::memory_resource* memory) {
+    const auto payload = room_auth_payload(app_id, room_id, peer_id, seq, memory);
     const auto key = hmac_key.bytes();
     webcpp::hash::hmac_sha2_256 mac(key.data(), key.size());
     mac.update(payload.data(), payload.size());
@@ -167,14 +173,16 @@ inline std::array<std::uint8_t, 32> room_auth_mac(const webcpp::crypto::secret<3
  * @param room_id The room id, in UTF-8.
  * @param peer_id The id of the peer the token is for.
  * @param seq The token's sequence number, at most @ref max_room_auth_seq.
- * @param memory The resource the token is allocated in.
+ * @param memory The resource the token and its working text are allocated in.
+ * @pre `seq` is at most @ref max_room_auth_seq.
  * @return The token, 43 characters.
  */
 inline std::pmr::string sign_room_auth(
     const webcpp::crypto::secret<32>& hmac_key, std::string_view app_id, std::string_view room_id,
     std::string_view peer_id, std::uint64_t seq,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return to_base64url(detail::room_auth_mac(hmac_key, app_id, room_id, peer_id, seq), memory);
+    return to_base64url(detail::room_auth_mac(hmac_key, app_id, room_id, peer_id, seq, memory),
+                        memory);
 }
 
 /**
@@ -187,11 +195,17 @@ inline std::pmr::string sign_room_auth(
  * @param peer_id The id of the peer the token claims to be for.
  * @param seq The sequence number the token claims.
  * @param token The token received.
- * @return Whether the token is genuine.
+ * @param memory The resource the working text is allocated in.
+ * @return Whether the token is genuine; false, as 0.27.0 answers, when `seq` is beyond
+ * @ref max_room_auth_seq.
  */
 inline bool verify_room_auth(const webcpp::crypto::secret<32>& hmac_key, std::string_view app_id,
                              std::string_view room_id, std::string_view peer_id, std::uint64_t seq,
-                             std::string_view token) {
+                             std::string_view token,
+                             std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    if (seq > max_room_auth_seq) {
+        return false;
+    }
     // 32 bytes are 43 characters unpadded; any other length is refused before it is decoded, so
     // that the decoding below fits its arena.
     constexpr std::size_t token_size = 43;
@@ -205,7 +219,7 @@ inline bool verify_room_auth(const webcpp::crypto::secret<32>& hmac_key, std::st
     if (!given || given->size() != 32) {
         return false;
     }
-    const auto expected = detail::room_auth_mac(hmac_key, app_id, room_id, peer_id, seq);
+    const auto expected = detail::room_auth_mac(hmac_key, app_id, room_id, peer_id, seq, memory);
     return webcpp::crypto::equal(std::span<const std::uint8_t>(*given), expected);
 }
 

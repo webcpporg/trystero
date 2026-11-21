@@ -70,11 +70,12 @@ webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/
 # code (oracle/record_0_27.mjs).
 webcpp.run crypto_layer : crypto_layer_test.cpp
   : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
-# The PBKDF2 case of crypto_layer (600,000 iterations) is compiled only where NDEBUG is defined, in
-# a release build: a debug run skips it by construction, so this target runs it in every lane,
-# whatever the lane's variant.
+# The PBKDF2 case of crypto_layer (600,000 iterations) is compiled only where WEBCPP_TRYSTERO_TEST_SLOW_KDF
+# is defined, which this target alone defines, in a release build: the debug run of crypto_layer
+# skips it by construction, so this target runs it in every lane.
 webcpp.run crypto_layer_release : crypto_layer_test.cpp
-  : <testing.input-file>fixtures/expected/trystero-0.27.0.json <variant>release ;
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json <variant>release
+    <define>WEBCPP_TRYSTERO_TEST_SLOW_KDF ;
 # The signaling and the Nostr strategy alone: an answerer's signals against
 # Trystero's, and the bounds of the texts they read.
 webcpp.run signaling : signaling_test.cpp
