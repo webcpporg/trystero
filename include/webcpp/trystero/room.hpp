@@ -1282,7 +1282,8 @@ private:
                 history->second.challenges.push(std::pmr::string(state.challenge, memory_));
             }
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
-            protocol::json::detail::append_utf8(text, state.challenge);  // drawn from base62_alphabet
+            protocol::json::detail::append_utf8(text,
+                                                state.challenge);  // drawn from base62_alphabet
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
             state.challenge_sent = true;

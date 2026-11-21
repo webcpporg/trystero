@@ -221,6 +221,9 @@ void shuffle_matches() {
             BOOST_TEST_EQ(derived[i], tp::default_nostr_relays[expected[i]]);
         }
     }
+    // A redundancy above the list's size keeps the whole shuffled list, as a slice does.
+    BOOST_TEST_EQ(tp::derive_relays("app", tp::default_nostr_relays, 40).size(), 30U);
+    BOOST_TEST_EQ(tp::derive_relays("app", tp::default_nostr_relays, 0).size(), 0U);
     // A zero seed is one, as Trystero's `|| 1`.
     std::array<int, 8> zero{0, 1, 2, 3, 4, 5, 6, 7};
     std::array<int, 8> one = zero;
@@ -287,6 +290,10 @@ void uuid_v4_has_its_form() {
     BOOST_TEST_EQ(text(tp::uuid_v4(random)), "ffffffff-ffff-4fff-bfff-ffffffffffff");
     random.fill(0);
     BOOST_TEST_EQ(text(tp::uuid_v4(random)), "00000000-0000-4000-8000-000000000000");
+    for (std::size_t i = 0; i < random.size(); ++i) {
+        random[i] = static_cast<std::uint8_t>(i);
+    }
+    BOOST_TEST_EQ(text(tp::uuid_v4(random)), "00010203-0405-4607-8809-0a0b0c0d0e0f");
 }
 
 void compact_key_is_strict() {

@@ -178,17 +178,14 @@ inline std::optional<std::array<std::uint8_t, 65>> parse_compact_public_key(
     return out;
 }
 
-namespace detail {
-
-/** The id of `length` base62 characters from the SHA-256 of the tag of `name`, `:` and `compact`.
+/** Internal helper of the two derivations below: the id of `length` base62 characters from the
+ * SHA-256 of the tag of `name`, `:` and `compact`.
  */
-inline std::pmr::string derive_identity_id(std::string_view name, std::string_view compact,
-                                           std::size_t length, std::pmr::memory_resource* memory) {
+inline std::pmr::string identity_id_of(std::string_view name, std::string_view compact,
+                                       std::size_t length, std::pmr::memory_resource* memory) {
     const auto tag = domain_tag(name, 1, memory);
     return encode_base62(sha256_of({tag, ":", compact}), length, memory);
 }
-
-}  // namespace detail
 
 /**
  * A peer's id, derived from its compact public key: the low 20 base-62 digits of the SHA-256 of
@@ -201,7 +198,7 @@ inline std::pmr::string derive_identity_id(std::string_view name, std::string_vi
 inline std::pmr::string derive_peer_id(
     std::string_view compact,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return detail::derive_identity_id("pid", compact, peer_id_size, memory);
+    return identity_id_of("pid", compact, peer_id_size, memory);
 }
 
 /**
@@ -215,7 +212,7 @@ inline std::pmr::string derive_peer_id(
 inline std::pmr::string derive_user_id(
     std::string_view compact,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return detail::derive_identity_id("uid", compact, user_id_size, memory);
+    return identity_id_of("uid", compact, user_id_size, memory);
 }
 
 }  // namespace webcpp::trystero::protocol
