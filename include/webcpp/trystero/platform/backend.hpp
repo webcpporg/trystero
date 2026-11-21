@@ -341,6 +341,9 @@ public:
                                 std::span<const std::uint8_t, 32> salt,
                                 std::span<std::uint8_t, 32> out,
                                 handler<void(boost::system::error_code)> done) override {
+        // The pool's thread dispatches the completion through `ex_`, an `any_io_executor`, which
+        // drops the allocator property: so nothing is allocated in `done`'s resource there, off
+        // the room's thread. A concrete executor type would change that.
         const auto allocator = done.get_allocator();
         auto completion = webcpp::asio::bind_executor(
             ex_, webcpp::asio::bind_allocator(allocator, [out, done = std::move(done)](

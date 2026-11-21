@@ -201,24 +201,32 @@ void its_pbkdf2_is_trysteros_and_off_the_rooms_thread() {
                   "0a9daa6bbfe5e7a974b8ab2030704abcd09c0451a3e189a4bf5cda230e8fa8a7");
 }
 
-// A backend destroyed while its thread derives waits for the derivation, whose completion then
-// waits in the io_context, which runs it.
+// A backend destroyed while its thread derives, a second derivation queued behind the first,
+// waits for both, whose completions then wait in the io_context, which runs them.
 void its_destruction_waits_for_a_derivation() {
     asio::io_context io;
     const auto salt = trystero::protocol::pbkdf2_salt("example.com/app", "lobby");
-    std::array<std::uint8_t, 32> master{};
-    std::optional<boost::system::error_code> done;
+    std::array<std::uint8_t, 32> first{};
+    std::array<std::uint8_t, 32> second{};
+    std::optional<boost::system::error_code> first_done;
+    std::optional<boost::system::error_code> second_done;
     {
         trystero::platform::backend backend(io.get_executor());
-        backend.derive_password_master(bytes_of("hunter2"), salt, master,
-                                       [&](boost::system::error_code ec) { done = ec; });
+        backend.derive_password_master(bytes_of("hunter2"), salt, first,
+                                       [&](boost::system::error_code ec) { first_done = ec; });
+        backend.derive_password_master(bytes_of("hunter2"), salt, second,
+                                       [&](boost::system::error_code ec) { second_done = ec; });
     }
-    io.run();  // lint-run: the derivation's completion
-    if (BOOST_TEST(done.has_value())) {
-        BOOST_TEST(!*done);
+    io.run();  // lint-run: the derivations' completions
+    for (const auto* done : {&first_done, &second_done}) {
+        if (BOOST_TEST(done->has_value())) {
+            BOOST_TEST(!**done);
+        }
     }
-    BOOST_TEST_EQ(trystero::protocol::to_hex(master),
-                  "0a9daa6bbfe5e7a974b8ab2030704abcd09c0451a3e189a4bf5cda230e8fa8a7");
+    for (const auto* master : {&first, &second}) {
+        BOOST_TEST_EQ(trystero::protocol::to_hex(*master),
+                      "0a9daa6bbfe5e7a974b8ab2030704abcd09c0451a3e189a4bf5cda230e8fa8a7");
+    }
 }
 
 void its_executor_and_tls_context_are_there() {

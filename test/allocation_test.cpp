@@ -871,6 +871,26 @@ trystero::room_options options_in(counting_resource& memory) {
 
 // end::config[]
 
+/** Starts OpenSSL's count over, for the case that follows. */
+void start_counting_openssl() {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    openssl_allocations = 0;
+#endif
+}
+
+/**
+ * Natively, that OpenSSL allocated since start_counting_openssl, counted apart: webcpp::crypto's
+ * AES-256-GCM is OpenSSL's there, whose cipher contexts the rooms' seals and opens make, outside
+ * their resources: two a seal or an open (the EVP context and its AES-GCM state, measured), as many
+ * as the case makes, `expected`. On emscripten the cipher is BearSSL's, which allocates nothing,
+ * and the C library's count holds that.
+ */
+void expect_openssl_allocations([[maybe_unused]] std::size_t expected) {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    BOOST_TEST_EQ(openssl_allocations, expected);
+#endif
+}
+
 /**
  * Two apps, each with a log and a relay of its own, are made one after the other
  * and join a room with a password, whose two sides exchange a payload that travels
@@ -901,6 +921,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         return std::pmr::polymorphic_allocator<>(&memory);
     };
     // end::allocator[]
+    start_counting_openssl();
     counting = true;
     {
         // z is subscribed and announcing before a arrives, so that z, whose id is
@@ -970,6 +991,8 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
+    // Two rooms: each seals its offer or answer and a candidate, and opens the other's two.
+    expect_openssl_allocations(16U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
     global_allocations = 0;
     c_allocations = 0;
@@ -1007,6 +1030,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
             trystero::test::memory_network network{io, 1, &network_memory};
             network.relay("wss://relay.test");
             warm(io);
+            start_counting_openssl();
             counting = true;
             {
                 trystero::app a(io.get_executor(), network, std::move(a_config));
@@ -1058,6 +1082,8 @@ void rooms_of_one_app_allocate_through_their_resources() {
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
+    // Four rooms, two pairs of the above.
+    expect_openssl_allocations(32U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
         BOOST_TEST_EQ(m->outstanding, 0U);
         BOOST_TEST_EQ(m->foreign, 0U);

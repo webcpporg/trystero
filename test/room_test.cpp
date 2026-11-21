@@ -294,7 +294,8 @@ void password_room_keys_complete_after_the_join_returns() {
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id, "s3cret"));
     auto b = join(b_app, "keyed");
     BOOST_TEST_EQ(f.net.derivations, 2U);
-    advance(f, 30s);
+    // Qualified: a std::chrono argument finds std::advance by ADL, which libstdc++ prefers.
+    trystero::test::advance(f, 30s);
     BOOST_TEST_EQ(f.net.held_derivations(), 2U);
     BOOST_TEST_EQ(watcher.seen, 0U);
     BOOST_TEST(a.peers().empty());
@@ -347,7 +348,7 @@ void a_failed_derivation_is_retried() {
             BOOST_TEST(peer.empty());
             errors.push_back(ec);
         });
-        advance(f, 30s);
+        trystero::test::advance(f, 30s);
         BOOST_TEST_EQ(f.net.derivations, 1U);
         if (BOOST_TEST_EQ(errors.size(), 1U)) {
             BOOST_TEST(errors.front() == trystero::error::backend_failure);
@@ -361,6 +362,62 @@ void a_failed_derivation_is_retried() {
     BOOST_TEST(run_until(f, [&] { return watcher.seen >= 1; }));
     BOOST_TEST_EQ(f.net.derivations, 2U);
     BOOST_TEST_EQ(errors.size(), 1U);
+}
+
+// A room left, and its app ended, while the room's derivation is held: once released, the
+// derivation completes into nothing, as the room and the app are gone. No announcement leaves, no
+// handler of the room runs, and nothing it allocated is touched (the hardened run of shared_test
+// and the allocation test cover its memory; here the room's own resource is checked empty). A
+// room of the same id joined again while the derivation is still held completes from it.
+void a_room_left_while_its_keys_derive_announces_nothing() {
+    counting_resource memory;  // first: the io_context's pending operations free into it
+    fixture f{true};
+    f.net.derive_delay = true;
+    const std::string a_id = "0aaaaaaaaaaaaaaaaaaa";
+    announcement_watcher watcher(f, "leaving", {a_id});
+    std::size_t errors = 0;
+    {
+        auto c = app_config(a_id, "s3cret");
+        c.memory = &memory;
+        trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
+        {
+            auto a = join(a_app, "leaving");
+            a.on_error([&errors](std::string_view, boost::system::error_code, std::string_view) {
+                ++errors;
+            });
+            bool left = false;
+            a.async_leave([&](boost::system::error_code ec) { left = !ec; });
+            BOOST_TEST(run_until(f, [&] { return left; }));
+        }
+        BOOST_TEST_EQ(f.net.held_derivations(), 1U);
+        // Joined again while the first derivation is held: it waits for that one.
+        const auto again = join(a_app, "leaving");
+        webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+        BOOST_TEST_EQ(f.net.derivations, 1U);
+        f.net.derive_delay = false;
+        f.net.release_derivations();
+        BOOST_TEST(run_until(f, [&] { return watcher.seen >= 1; }));
+        BOOST_TEST_EQ(f.net.derivations, 1U);
+    }
+    // And once more, the app ended while held.
+    watcher.seen = 0;
+    f.net.derive_delay = true;
+    {
+        auto c = app_config(a_id, "s3cret");
+        c.memory = &memory;
+        trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
+        auto a = join(a_app, "leaving");
+        a.on_error(
+            [&errors](std::string_view, boost::system::error_code, std::string_view) { ++errors; });
+        BOOST_TEST_EQ(f.net.held_derivations(), 1U);
+    }
+    f.net.derive_delay = false;
+    f.net.release_derivations();
+    trystero::test::advance(f, 30'000ms);
+    BOOST_TEST_EQ(f.net.derivations, 2U);
+    BOOST_TEST_EQ(watcher.seen, 0U);
+    BOOST_TEST_EQ(errors, 0U);
+    BOOST_TEST_EQ(memory.in_use, 0U);
 }
 
 // The app's cache keeps the keys of 64 rooms, the least recently asked for leaving first, as
@@ -2031,6 +2088,7 @@ int main() {
     run_case(password_room_keys_complete_after_the_join_returns);
     run_case(rooms_of_one_password_derive_once_per_room);
     run_case(a_failed_derivation_is_retried);
+    run_case(a_room_left_while_its_keys_derive_announces_nothing);
     run_case(the_room_keys_cache_keeps_64_rooms);
     run_case(leaving_is_seen_by_the_others_and_a_return_reconnects);
     run_case(moving_a_room_over_a_joined_one_leaves_it);
