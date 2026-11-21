@@ -2661,6 +2661,340 @@ void a_receive_gate_decides_and_progress_is_reported() {
     BOOST_TEST_LT(shares.front(), 1.0);
 }
 
+// A listener may release the last handles of its room while it is reported: the room stays whole
+// until the emission ends, whose other listeners run, as Trystero's leave clears listeners only
+// once it completes; nothing is reported after it. A progress listener that drops its room and its
+// action at the first share, as a page torn down on a finished upload would, and a join listener
+// that drops its room.
+void a_listener_may_end_its_room_while_it_is_reported() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("endsAAAAAAAAAAAAAAAA"));
+    std::optional<trystero::room> a(join(a_app, "teardown"));
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("endsBBBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b(join(b_app, "teardown"));
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a->peers().size() == 1 && b->peers().size() == 1; })));
+    std::optional<trystero::action<trystero::bytes>> send(a->make_action<trystero::bytes>("file"));
+    std::optional<trystero::action<trystero::bytes>> receive(
+        b->make_action<trystero::bytes>("file"));
+    bool b_ended = false;
+    std::size_t rest_b = 0;
+    std::size_t after_b = 0;
+    receive->on_message([&](const trystero::bytes&, const trystero::message_info&) { ++after_b; });
+    receive->on_receive_progress([&](double, const trystero::progress_info&) {
+        b_ended = true;
+        receive.reset();
+        b.reset();
+    });
+    receive->on_receive_progress([&](double, const trystero::progress_info&) { ++rest_b; });
+    send->async_send(trystero::bytes(100'000, 1), [](boost::system::error_code) {});
+    BOOST_TEST(run_until(f.io, [&] { return b_ended; }));
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(rest_b, 1U);
+    BOOST_TEST_EQ(after_b, 0U);
+
+    bool a_ended = false;
+    std::size_t rest_a = 0;
+    a->on_peer_join([&](const trystero::peer_event&) {
+        a_ended = true;
+        send.reset();
+        a.reset();
+    });
+    a->on_peer_join([&](const trystero::peer_event&) { ++rest_a; });
+    a->on_user_join([&](const trystero::user_event&) { ++rest_a; });
+    trystero::app c_app(f.io.get_executor(), f.net, app_config("endsCCCCCCCCCCCCCCCC"));
+    const auto c = join(c_app, "teardown");
+    BOOST_TEST(run_until(f.io, [&] { return a_ended; }));
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(rest_a, 2U);  // the peer's join, then its user's, once each
+}
+
+// A subscription may outlive its room: it is inactive once the room's last handles are gone, or
+// once the room is left, as Trystero clears its listeners then, and unsubscribing does nothing.
+void a_subscription_outlives_its_room() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("outlivesAAAAAAAAAAAA"));
+    std::optional<trystero::room> a(join(a_app, "outlives"));
+    std::optional<trystero::action<std::string>> chat(a->make_action<std::string>("chat"));
+    auto joined = a->on_peer_join([](const trystero::peer_event&) {});
+    auto said = chat->on_message([](const std::string&, const trystero::message_info&) {});
+    auto gate = chat->on_receive([](const trystero::receive_info&) { return true; });
+    webcpp::test::require(BOOST_TEST(gate.has_value()));
+    BOOST_TEST(joined.active() && said.active() && gate->active());
+    chat.reset();
+    a.reset();
+    run_until(f.io, [] { return false; }, 50ms);
+    BOOST_TEST(!joined.active());
+    BOOST_TEST(!said.active());
+    BOOST_TEST(!gate->active());
+    joined.unsubscribe();
+    said.unsubscribe();
+    gate->unsubscribe();
+    BOOST_TEST(!joined.active());
+
+    auto b = join(a_app, "left");
+    const auto left = b.on_peer_leave([](const trystero::peer_event&) {});
+    bool done = false;
+    b.async_leave([&](boost::system::error_code) { done = true; });
+    BOOST_TEST(run_until(f.io, [&] { return done; }));
+    BOOST_TEST(!left.active());
+}
+
+// A join the room posted just before it was left is not reported, as 0.27.0 reports none once its
+// room is leaving; the listeners go with the leave.
+void a_join_posted_before_the_leave_is_not_reported() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("postedAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "posted");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("postedBBBBBBBBBBBBBB"));
+    const auto b = join(b_app, "posted");
+    std::size_t joins = 0;
+    const auto peers = a.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    const auto users = a.on_user_join([&](const trystero::user_event&) { ++joins; });
+    // One handler at a time, until A has B: the join it posted then has not run yet.
+    const auto end = std::chrono::steady_clock::now() + 10s;
+    while (a.peers().empty() && std::chrono::steady_clock::now() < end) {
+        f.io.run_one_for(20ms);
+        if (f.io.stopped()) {
+            f.io.restart();
+        }
+    }
+    webcpp::test::require(BOOST_TEST_EQ(a.peers().size(), 1U));
+    BOOST_TEST_EQ(joins, 0U);
+    bool left = false;
+    a.async_leave([&](boost::system::error_code) { left = true; });
+    BOOST_TEST(run_until(f.io, [&] { return left; }));
+    BOOST_TEST_EQ(joins, 0U);
+    BOOST_TEST(!peers.active());
+    BOOST_TEST(!users.active());
+}
+
+// A receive gate asked about the messages that waited, as a listener is added, may release the
+// room's last handles, that of the action being listened to among them: the room stays whole until
+// the call returns.
+void a_gate_may_end_its_room_while_waiting_messages_are_delivered() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("gateAAAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "gated");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("gateBBBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b(join(b_app, "gated"));
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b->peers().size() == 1; })));
+    auto send = a.make_action<trystero::bytes>("kept");
+    std::optional<trystero::action<trystero::bytes>> receive(
+        b->make_action<trystero::bytes>("kept"));
+    std::size_t sent = 0;
+    for (std::uint8_t i = 0; i < 2; ++i) {
+        send.async_send(trystero::bytes(1, i), [&](boost::system::error_code) { ++sent; });
+    }
+    BOOST_TEST(run_until(f.io, [&] { return sent == 2; }));
+    run_until(f.io, [] { return false; }, 100ms);  // they arrive, and wait for a listener
+    std::size_t asked = 0;
+    const auto gate = receive->on_receive([&](const trystero::receive_info&) {
+        ++asked;
+        receive.reset();
+        b.reset();
+        return false;
+    });
+    BOOST_TEST(gate.has_value());
+    BOOST_TEST_EQ(asked, 0U);  // nothing is delivered yet: the action listens to nothing
+    std::size_t got = 0;
+    const auto listening =
+        receive->on_message([&](const trystero::bytes&, const trystero::message_info&) { ++got; });
+    BOOST_TEST_EQ(asked, 2U);  // each message that waited, the room gone after the first
+    BOOST_TEST(!listening.active());
+    BOOST_TEST(!receive.has_value() && !b.has_value());
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(got, 0U);
+}
+
+// Leaves are reported as joins are: the peer's, then its user's.
+void leaves_are_reported_peer_then_user() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("leavesAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "leaves");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("leavesBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b(join(b_app, "leaves"));
+    std::vector<std::string> order;
+    a.on_user_leave(
+        [&](const trystero::user_event& e) { order.push_back("user " + std::string(e.user_id)); });
+    a.on_peer_leave(
+        [&](const trystero::peer_event& e) { order.push_back("peer " + std::string(e.peer_id)); });
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
+    b.reset();
+    BOOST_TEST(run_until(f.io, [&] { return order.size() == 2; }));
+    const std::vector<std::string> expected{"peer leavesBBBBBBBBBBBBBB",
+                                            "user leavesBBBBBBBBBBBBBB"};
+    BOOST_TEST_ALL_EQ(order.begin(), order.end(), expected.begin(), expected.end());
+}
+
+/** Refusals of a request with long reasons. */
+class reasons final : public boost::system::error_category {
+public:
+    const char* name() const noexcept override { return "reasons"; }
+
+    std::string message(int ev) const override {
+        // 511 UTF-16 code units, then a character of two of them, which the cut splits.
+        return ev == 1 ? std::string(511, 'x') + "\xF0\x9F\x98\x80tail" : std::string(600, 'y');
+    }
+};
+
+// A request whose listener is removed after it arrived, before its post runs, is refused with "no
+// active request handler"; one that the gate refuses with "payload rejected by receiver"; a
+// listener's reason is cut at 512 UTF-16 code units, as 0.27.0 cuts it, a pair cut in two leaving
+// its high surrogate, which the requester reads. The requester's request completes with
+// `request_rejected`, and the reason is logged.
+void a_request_is_refused_by_a_gone_listener_or_the_gate() {
+    fixture f;
+    auto config = app_config("refusedAAAAAAAAAAAAA");
+    std::vector<std::string> reasons_logged;
+    config.log = [&](std::string_view category, std::string_view text) {
+        if (category == "action" && text.find(" refused by ") != std::string_view::npos) {
+            reasons_logged.emplace_back(text.substr(text.find(": ") + 2));
+        }
+    };
+    trystero::app a_app(f.io.get_executor(), f.net, std::move(config));
+    auto a = join(a_app, "refused");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("refusedBBBBBBBBBBBBB"));
+    auto b = join(b_app, "refused");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    const auto echo = [](std::string q, const trystero::message_info&) { return q; };
+
+    // The progress of 1 is posted before the request: its listener removes the request's.
+    auto gone = b.make_request_action<std::string>("gone");
+    auto answering = gone.on_request(echo);
+    webcpp::test::require(BOOST_TEST(answering.has_value()));
+    gone.on_receive_progress([&](double share, const trystero::progress_info&) {
+        if (share == 1.0) {
+            answering->unsubscribe();
+        }
+    });
+    auto gated = b.make_request_action<std::string>("gated");
+    BOOST_TEST(gated.on_request(echo).has_value());
+    BOOST_TEST(gated.on_receive([](const trystero::receive_info&) { return false; }).has_value());
+    static const reasons category{};
+    auto cut = b.make_request_action<std::string>("cut");
+    BOOST_TEST(
+        cut.on_request([](std::string q,
+                          const trystero::message_info&) -> boost::system::result<std::string> {
+               return boost::system::error_code(q == "pair" ? 1 : 2, category);
+           })
+            .has_value());
+
+    std::vector<boost::system::error_code> results;
+    const auto ask = [&](std::string_view name, std::string q) {
+        a.make_request_action<std::string>(name).async_request(
+            std::move(q), trystero::request_options{.target = trystero::peer_id(b.self_id())},
+            [&](boost::system::error_code ec, std::string) { results.push_back(ec); });
+        return run_until(f.io, [&, n = results.size() + 1] { return results.size() == n; });
+    };
+    BOOST_TEST(ask("gone", "q"));
+    BOOST_TEST(ask("gated", "q"));
+    BOOST_TEST(ask("cut", "pair"));
+    BOOST_TEST(ask("cut", "ascii"));
+    for (const auto& ec : results) {
+        BOOST_TEST(ec == trystero::error::request_rejected);
+    }
+    if (BOOST_TEST_EQ(reasons_logged.size(), 4U)) {
+        BOOST_TEST_EQ(reasons_logged[0], "no active request handler");
+        BOOST_TEST_EQ(reasons_logged[1], "payload rejected by receiver");
+        // The high surrogate left alone is read as the replacement character.
+        BOOST_TEST_EQ(reasons_logged[2], std::string(511, 'x') + "\xEF\xBF\xBD");
+        BOOST_TEST_EQ(reasons_logged[3], std::string(512, 'y'));
+    }
+}
+
+// A request fails with `peer_disconnected` when the peer asked leaves first, and with `room_left`
+// when the requester's room is left first.
+void a_request_fails_when_its_peer_or_its_room_goes() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("goesAAAAAAAAAAAAAAAA"));
+    auto a1 = join(a_app, "goes-peer");
+    auto a2 = join(a_app, "goes-room");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("goesBBBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b1(join(b_app, "goes-peer"));
+    auto b2 = join(b_app, "goes-room");
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] {
+        return a1.peers().size() == 1 && a2.peers().size() == 1 && b2.peers().size() == 1;
+    })));
+    // B makes the actions but answers nothing: the requests wait.
+    const auto slow1 = b1->make_request_action<std::string>("slow");
+    const auto slow2 = b2.make_request_action<std::string>("slow");
+    std::optional<boost::system::error_code> peer_gone;
+    a1.make_request_action<std::string>("slow").async_request(
+        "q", trystero::request_options{.target = trystero::peer_id(b2.self_id())},
+        [&](boost::system::error_code ec, std::string) { peer_gone = ec; });
+    std::optional<boost::system::error_code> room_gone;
+    a2.make_request_action<std::string>("slow").async_request(
+        "q", trystero::request_options{.target = trystero::peer_id(b2.self_id())},
+        [&](boost::system::error_code ec, std::string) { room_gone = ec; });
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST(!peer_gone && !room_gone);
+    b1.reset();
+    BOOST_TEST(run_until(f.io, [&] { return peer_gone.has_value(); }));
+    BOOST_TEST(*peer_gone == trystero::error::peer_disconnected);
+    a2.async_leave([](boost::system::error_code) {});
+    BOOST_TEST(run_until(f.io, [&] { return room_gone.has_value(); }));
+    BOOST_TEST(*room_gone == trystero::error::room_left);
+}
+
+// A name keeps the kind of action it was made first, as 0.27.0 refuses to redefine it ("action
+// type cannot be redefined", which it throws): a handle of the other kind fails each operation with
+// `action_redefined` and adds no listener; another of the first kind is the same action.
+void an_action_name_keeps_its_first_kind() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("kindAAAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "kinds");
+    std::vector<boost::system::error_code> failed;
+
+    auto chat = a.make_action<std::string>("chat");
+    BOOST_TEST(chat.on_message([](const std::string&, const trystero::message_info&) {}).active());
+    auto ask_chat = a.make_request_action<std::string>("chat");
+    const auto request_listener =
+        ask_chat.on_request([](std::string q, const trystero::message_info&) { return q; });
+    BOOST_TEST(request_listener.has_error() &&
+               request_listener.error() == trystero::error::action_redefined);
+    const auto request_gate =
+        ask_chat.on_receive([](const trystero::receive_info&) { return true; });
+    BOOST_TEST(request_gate.has_error() &&
+               request_gate.error() == trystero::error::action_redefined);
+    BOOST_TEST(
+        !ask_chat.on_receive_progress([](double, const trystero::progress_info&) {}).active());
+    ask_chat.async_request("q", trystero::request_options{.target = "anyone"},
+                           [&](boost::system::error_code ec, std::string r) {
+                               failed.push_back(ec);
+                               BOOST_TEST(r.empty());
+                           });
+
+    auto ask = a.make_request_action<std::string>("ask");
+    auto say_ask = a.make_action<std::string>("ask");
+    BOOST_TEST(
+        !say_ask.on_message([](const std::string&, const trystero::message_info&) {}).active());
+    BOOST_TEST(
+        !say_ask.on_receive_progress([](double, const trystero::progress_info&) {}).active());
+    const auto message_gate =
+        say_ask.on_receive([](const trystero::receive_info&) { return true; });
+    BOOST_TEST(message_gate.has_error() &&
+               message_gate.error() == trystero::error::action_redefined);
+    say_ask.async_send("hello", [&](boost::system::error_code ec) { failed.push_back(ec); });
+    say_ask.async_receive(
+        [&](boost::system::error_code ec, std::string v, const trystero::message_info&) {
+            failed.push_back(ec);
+            BOOST_TEST(v.empty());
+        });
+    BOOST_TEST(run_until(f.io, [&] { return failed.size() == 3; }));
+    for (const auto& ec : failed) {
+        BOOST_TEST(ec == trystero::error::action_redefined);
+    }
+    // The first kind stays whole: another handle of it is the same action.
+    BOOST_TEST(a.make_request_action<std::string>("ask")
+                   .on_request([](std::string q, const trystero::message_info&) { return q; })
+                   .has_value());
+    BOOST_TEST(ask.on_request([](std::string q, const trystero::message_info&) { return q; })
+                   .has_error());  // already_subscribed, through the other handle
+}
+
 // The errors' values are fixed and never reused; their messages name what failed.
 void the_errors_have_their_values() {
     BOOST_TEST_EQ(static_cast<int>(trystero::error::already_joined), 14);
@@ -2679,6 +3013,10 @@ void the_errors_have_their_values() {
     BOOST_TEST_EQ(make_error_code(trystero::error::decrypt_failed).message(),
                   "failed to decrypt a signal (incorrect password or corrupted signal)");
     BOOST_TEST_EQ(make_error_code(trystero::error::action_aborted).message(), "operation aborted");
+    // Appended after them: 0.27.0 throws it.
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::action_redefined), 29);
+    BOOST_TEST_EQ(make_error_code(trystero::error::action_redefined).message(),
+                  "action type cannot be redefined");
 }
 
 }  // namespace
@@ -2756,6 +3094,14 @@ int main() {
     run_case(a_request_is_answered_or_refused);
     run_case(messages_wait_for_a_listener);
     run_case(a_receive_gate_decides_and_progress_is_reported);
+    run_case(a_listener_may_end_its_room_while_it_is_reported);
+    run_case(a_subscription_outlives_its_room);
+    run_case(a_join_posted_before_the_leave_is_not_reported);
+    run_case(a_gate_may_end_its_room_while_waiting_messages_are_delivered);
+    run_case(leaves_are_reported_peer_then_user);
+    run_case(a_request_is_refused_by_a_gone_listener_or_the_gate);
+    run_case(a_request_fails_when_its_peer_or_its_room_goes);
+    run_case(an_action_name_keeps_its_first_kind);
     run_case(the_errors_have_their_values);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());

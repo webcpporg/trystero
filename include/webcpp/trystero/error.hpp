@@ -97,6 +97,11 @@ enum class error {
     request_rejected,
     /** A request was not answered in time, 0.27.0's "request timed out". */
     request_timed_out,
+    /**
+     * The action's name was made the other kind of action first, a message action or a request
+     * action, 0.27.0's "action type cannot be redefined", which it throws.
+     */
+    action_redefined,
 };
 
 /**
@@ -168,6 +173,7 @@ private:
             case error::action_aborted: return "operation aborted";
             case error::request_rejected: return "request rejected";
             case error::request_timed_out: return "request timed out";
+            case error::action_redefined: return "action type cannot be redefined";
         }
         return "unknown webcpp.trystero error";
     }

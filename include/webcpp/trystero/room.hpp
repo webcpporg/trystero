@@ -48,9 +48,13 @@
 
 #include <boost/assert.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -587,6 +591,8 @@ struct response_envelope {
     std::pmr::string id;
     /** Whether the answer refuses the request. */
     bool refused = false;
+    /** The reason of a refusal, or empty. */
+    std::pmr::string reason;
 };
 
 /** The object a request's or an answer's metadata holds, within a JSON payload's limits; a text
@@ -619,17 +625,83 @@ inline std::optional<request_envelope> read_request(std::string_view metadata, c
     return out;
 }
 
+/**
+ * A JSON text with each lone surrogate escape, `\\ud83d` without its low half, written as the
+ * replacement character's, `\\ufffd`, which webcpp::document's parser can read: it refuses a lone
+ * surrogate, which JavaScript's `JSON.parse` reads.
+ *
+ * Tip: outside a string JSON holds no backslash, so every backslash met starts an escape.
+ */
+inline std::pmr::string without_lone_surrogates(std::string_view json,
+                                                std::pmr::memory_resource* memory) {
+    const auto unit_at = [json](std::size_t at) -> std::optional<std::uint32_t> {
+        if (at + 6 > json.size() || json[at] != '\\' || json[at + 1] != 'u') {
+            return std::nullopt;
+        }
+        std::uint32_t unit = 0;
+        for (std::size_t i = at + 2; i < at + 6; ++i) {
+            const char c = json[i];
+            unit <<= 4U;
+            if (c >= '0' && c <= '9') {
+                unit |= static_cast<std::uint32_t>(c - '0');
+            } else if (c >= 'a' && c <= 'f') {
+                unit |= static_cast<std::uint32_t>(c - 'a' + 10);
+            } else if (c >= 'A' && c <= 'F') {
+                unit |= static_cast<std::uint32_t>(c - 'A' + 10);
+            } else {
+                return std::nullopt;
+            }
+        }
+        return unit;
+    };
+    const auto high = [](std::uint32_t u) { return u >= 0xD800U && u <= 0xDBFFU; };
+    const auto low = [](std::uint32_t u) { return u >= 0xDC00U && u <= 0xDFFFU; };
+    std::pmr::string out(memory);
+    out.reserve(json.size());
+    for (std::size_t i = 0; i < json.size();) {
+        if (json[i] != '\\') {
+            out += json[i++];
+            continue;
+        }
+        const auto unit = unit_at(i);
+        if (!unit) {
+            out.append(json.substr(i, std::min<std::size_t>(2, json.size() - i)));  // \n, \", ...
+            i += 2;
+            continue;
+        }
+        if (const auto next = unit_at(i + 6); high(*unit) && next && low(*next)) {
+            out.append(json.substr(i, 12));  // a pair
+            i += 12;
+        } else if (high(*unit) || low(*unit)) {
+            out += "\\ufffd";
+            i += 6;
+        } else {
+            out.append(json.substr(i, 6));
+            i += 6;
+        }
+    }
+    return out;
+}
+
 /** An answer's metadata read, as 0.27.0's `getResponseMetadata` reads it: only a text `e`
- * refuses; nothing when it names no request. */
+ * refuses; nothing when it names no request. A reason that ends in a lone surrogate, as 0.27.0's
+ * cut at 512 UTF-16 code units may leave it, is read with the replacement character in its place.
+ */
 inline std::optional<response_envelope> read_response(std::string_view metadata,
                                                       const decoding& to) {
-    const auto v = envelope_of(metadata, to);
+    auto v = envelope_of(metadata, to);
+    if (!v && metadata.find("\\u") != std::string_view::npos) {
+        v = envelope_of(without_lone_surrogates(metadata, to.memory), to);
+    }
     if (!v) {
         return std::nullopt;
     }
+    const auto e = v->root()["e"];
     return response_envelope{
         .id = std::pmr::string(protocol::json::text_of(v->root()["r"]), to.memory),
-        .refused = v->root()["e"].is_string(),
+        .refused = e.is_string(),
+        .reason = std::pmr::string(e.is_string() ? protocol::json::text_of(e) : std::string_view{},
+                                   to.memory),
     };
 }
 
@@ -1032,10 +1104,13 @@ public:
 
     /** Registers an action, a request action when `request` says so: from now on its frames are
      * kept for its listeners, where frames of an action not made are dropped, as Trystero drops
-     * them. */
-    void add_action(std::string_view name, bool request) {
-        auto& slot = slot_for(name);
-        slot.request = slot.request || request;
+     * them. The first make of a name sets its kind; whether this one asks for the same. */
+    [[nodiscard]] bool add_action(std::string_view name, bool request) {
+        if (const auto* const slot = made(name)) {
+            return slot->request == request;
+        }
+        slot_for(name).request = request;
+        return true;
     }
 
     /** Adds a listener of an action's messages, posts it every message that queued for
@@ -1177,21 +1252,55 @@ public:
         send_response(peer, metadata, std::move(payload));
     }
 
-    /** Refuses a request of `peer` with a reason, at most 512 bytes of it, as 0.27.0 cuts it, and
-     * a JSON `null` payload. */
+    /** Refuses a request of `peer` with a reason and a JSON `null` payload. The reason is cut at
+     * 512 UTF-16 code units, as 0.27.0's `.slice(0, 512)` cuts it: a character beyond the basic
+     * plane counts two, and one cut in two leaves its high surrogate, which `JSON.stringify` writes
+     * as `\\udXXX`. */
     void respond_error(std::string_view peer, std::string_view id, std::string_view reason) {
-        constexpr std::size_t max_reason_bytes = 512;
-        if (reason.size() > max_reason_bytes) {
-            std::size_t cut = max_reason_bytes;
-            while (cut > 0 && (static_cast<unsigned char>(reason[cut]) & 0xC0U) == 0x80U) {
-                --cut;  // not within a character
+        constexpr std::size_t max_reason_units = 512;
+        std::size_t units = 0;
+        std::size_t cut = 0;
+        std::uint32_t high_surrogate = 0;  // of a character cut in two, or 0
+        while (cut < reason.size()) {
+            const auto lead = static_cast<unsigned char>(reason[cut]);
+            std::size_t length = 1;  // an ASCII byte, or one that leads no sequence
+            if (lead >= 0xF0U) {
+                length = 4;
+            } else if (lead >= 0xE0U) {
+                length = 3;
+            } else if (lead >= 0xC0U) {
+                length = 2;
             }
-            reason = reason.substr(0, cut);
+            length = std::min(length, reason.size() - cut);
+            const std::size_t width = length == 4 ? 2 : 1;
+            if (units + width > max_reason_units) {
+                if (width == 2 && units + 1 == max_reason_units) {
+                    const auto byte = [&](std::size_t i) {
+                        return static_cast<std::uint32_t>(
+                            static_cast<unsigned char>(reason[cut + i]) & 0x3FU);
+                    };
+                    const std::uint32_t code_point =
+                        ((lead & 0x07U) << 18U) | (byte(1) << 12U) | (byte(2) << 6U) | byte(3);
+                    high_surrogate = 0xD800U + ((code_point - 0x10000U) >> 10U);
+                }
+                break;
+            }
+            units += width;
+            cut += length;
         }
         std::pmr::string metadata(R"({"r":)", memory_);
         protocol::json::detail::append_utf8(metadata, id);
         metadata += R"(,"e":)";
-        protocol::json::detail::append_utf8(metadata, reason);
+        protocol::json::detail::append_utf8(metadata, reason.substr(0, cut));
+        if (high_surrogate != 0) {
+            static constexpr std::string_view digits = "0123456789abcdef";
+            metadata.pop_back();  // the closing quote
+            metadata += "\\u";
+            for (const unsigned shift : {12U, 8U, 4U, 0U}) {
+                metadata += digits[(high_surrogate >> shift) & 15U];
+            }
+            metadata += '"';
+        }
         metadata += '}';
         static constexpr std::string_view null = "null";
         send_response(peer, metadata,
@@ -1459,8 +1568,7 @@ private:
             return false;
         }
         const auto& slot = it->second;
-        return slot.request ? !slot.requests.empty()
-                            : !slot.messages.empty() || slot.awaited;
+        return slot.request ? !slot.requests.empty() : !slot.messages.empty() || slot.awaited;
     }
 
     /** The metadata a listener of an action reads: a request's own, inside its envelope; nothing
@@ -1524,7 +1632,8 @@ private:
         }
         post([weak = weak_from_this(), slot, share, peer = std::pmr::string(peer, memory_),
               metadata = std::move(*own)] {
-            if (weak.lock()) {
+            // Held for the whole emission: a listener may release the room's last handles.
+            if (const auto self = weak.lock()) {
                 slot->progress.emit(share,
                                     {.peer_id = peer, .user_id = peer, .metadata = metadata});
             }
@@ -1882,11 +1991,15 @@ private:
         if (!left_ && current != peers_.end() && current->second.link == link) {
             // Each peer is a user of its own until identities are derived from keys: its user
             // joins with it, after it, as 0.27.0 reports a user's first peer.
+            // A room left before the post runs reports no join, as 0.27.0 reports none once its
+            // room is leaving.
             post([weak = weak_from_this(), peer = std::move(peer_copy)] {
-                if (const auto self = weak.lock()) {
-                    self->peer_join_.emit({.peer_id = peer, .user_id = peer});
-                    self->user_join_.emit({.user_id = peer, .peer_id = peer});
+                const auto self = weak.lock();
+                if (!self || self->left_) {
+                    return;
                 }
+                self->peer_join_.emit({.peer_id = peer, .user_id = peer});
+                self->user_join_.emit({.user_id = peer, .peer_id = peer});
             });
         }
     }
@@ -1995,6 +2108,11 @@ private:
         const auto it = requests_.find(envelope->id);
         if (it == requests_.end() || it->second.peer != m.peer) {
             return;
+        }
+        if (envelope->refused) {
+            // The request completes with the code alone; the reason the peer gave is logged.
+            log_("action", "request ", envelope->id, " refused by ", m.peer, ": ",
+                 envelope->reason);
         }
         finish_request(envelope->id,
                        envelope->refused ? make_error_code(error::request_rejected)
@@ -2122,11 +2240,14 @@ private:
             strategy_->restart_announcements();
         }
         if (state.active) {
+            // As a join, a leave is not reported once the room is left.
             post([weak = weak_from_this(), peer = std::move(peer)] {
-                if (const auto self = weak.lock()) {
-                    self->peer_leave_.emit({.peer_id = peer, .user_id = peer});
-                    self->user_leave_.emit({.user_id = peer, .peer_id = peer});
+                const auto self = weak.lock();
+                if (!self || self->left_) {
+                    return;
                 }
+                self->peer_leave_.emit({.peer_id = peer, .user_id = peer});
+                self->user_leave_.emit({.user_id = peer, .peer_id = peer});
             });
         }
     }
@@ -2161,6 +2282,15 @@ private:
             c->idle_if_unused(app_->idle_timeout());
         }
         departing_connection_.reset();
+        // Every listener goes, as 0.27.0 clears its emitters and its actions' listeners once its
+        // room is left. From a post: an emission under way finishes, as 0.27.0's leave clears only
+        // once it completes, and what was posted to the listeners before is delivered, as 0.27.0
+        // delivers it at once; a join or a leave posted before checks `left_` itself.
+        post([weak = weak_from_this()] {
+            if (const auto self = weak.lock()) {
+                self->clear_listeners();
+            }
+        });
         for (auto& [name, slot] : actions_) {
             for (auto& receiver : slot.receivers) {
                 complete(std::move(receiver), make_error_code(error::room_left), incoming{});
@@ -2177,6 +2307,20 @@ private:
         app_->unregister_room(token_, this);
         if (!std::exchange(released_, true)) {
             app_->release_user();
+        }
+    }
+
+    /** Removes every listener of the room and of its actions: their subscriptions are inactive. */
+    void clear_listeners() noexcept {
+        peer_join_.clear();
+        peer_leave_.clear();
+        user_join_.clear();
+        user_leave_.clear();
+        for (auto& [name, slot] : actions_) {
+            slot.messages.clear();
+            slot.requests.clear();
+            slot.gate.clear();
+            slot.progress.clear();
         }
     }
 
@@ -2334,7 +2478,8 @@ public:
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` calls it first, within this
      * call, with each peer already joined.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
         requires std::is_invocable_v<F&, const peer_event&>
@@ -2349,7 +2494,8 @@ public:
      * @tparam F A callable with a `const peer_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
         requires std::is_invocable_v<F&, const peer_event&>
@@ -2367,7 +2513,8 @@ public:
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` calls it first, within this
      * call, with each user already joined.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
         requires std::is_invocable_v<F&, const user_event&>
@@ -2383,7 +2530,8 @@ public:
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
         requires std::is_invocable_v<F&, const user_event&>
@@ -2420,7 +2568,11 @@ public:
      *
      * Frames of the action that arrived before it was made are dropped, and its transfers offered
      * meanwhile rejected, as Trystero's are: a room makes the actions it receives right after it
-     * is joined.
+     * is joined. A name is made again as often as wanted, each handle the same action; a name made
+     * first by `make_request_action` cannot be made a message action, where Trystero throws "action
+     * type cannot be redefined": the handle's sends and receives complete with
+     * `error::action_redefined`, its `on_receive` returns it, and its other listeners are not
+     * added.
      *
      * @tparam T The type of its messages: `std::string`, `std::pmr::string`, `std::string_view`,
      * `webcpp::document::document`, `webcpp::document::pmr::document`, @ref bytes, @ref pmr_bytes,
@@ -2438,8 +2590,10 @@ public:
      *
      * A request travels as a message of the action whose metadata is `{"r":<id>,"m":<metadata>}`,
      * and its answer as the internal action `\@_response`, as 0.27.0's do. A name is a request
-     * action or a message action, not both: once made as a request action, its messages are
-     * requests.
+     * action or a message action, not both: a name made first by `make_action` cannot be made a
+     * request action, where Trystero throws "action type cannot be redefined": the handle's
+     * requests complete with `error::action_redefined`, its `on_request` and `on_receive` return
+     * it, and its progress listeners are not added.
      *
      * @tparam T The type of its requests, one of those `make_action` lists.
      * @tparam R The type of its answers, one of them that owns its storage.
@@ -2544,15 +2698,23 @@ public:
      * the document invalidates it.
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener. It is inactive, and nothing is added, when the name was made a request
+     * action first.
      */
     template <class F>
         requires std::is_invocable_v<F&, T, const message_info&>
     subscription on_message(F&& f, listen_options options = {}) {
-        return impl_->add_message_listener(
+        if (redefined_) {
+            return {};
+        }
+        // Held for the call: delivering what waited may run a receive gate, which may release the
+        // room's last handles, this one among them.
+        const auto impl = impl_;
+        return impl->add_message_listener(
             name_,
-            impl_->bind<void(detail::incoming&)>(
-                [f = std::forward<F>(f), to = impl_->decoding()](detail::incoming& m) mutable {
+            impl->template bind<void(detail::incoming&)>(
+                [f = std::forward<F>(f), to = impl->decoding()](detail::incoming& m) mutable {
                     // The metadata is read before decoding: a binary payload takes the buffer the
                     // metadata lives in.
                     const message_info info{
@@ -2580,14 +2742,20 @@ public:
      * returning whether to receive the message.
      * @param f The gate, kept in the room's resource.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription, or `error::already_subscribed` while a gate is in place.
+     * @return Its subscription, which requires the room's resource to outlive it;
+     * `error::already_subscribed` while a gate is in place, or `error::action_redefined` when the
+     * name was made the other kind of action first.
      */
     template <class F>
         requires std::is_invocable_r_v<bool, F&, const receive_info&>
     [[nodiscard]] boost::system::result<subscription> on_receive(F&& f,
                                                                  listen_options options = {}) {
-        return impl_->add_receive_gate(
-            name_, impl_->bind<bool(const receive_info&)>(std::forward<F>(f)), options);
+        if (redefined_) {
+            return error::action_redefined;
+        }
+        const auto impl = impl_;  // delivering what waited may release this handle
+        return impl->add_receive_gate(
+            name_, impl->template bind<bool(const receive_info&)>(std::forward<F>(f)), options);
     }
 
     /**
@@ -2599,11 +2767,16 @@ public:
      * are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener. It is inactive, and nothing is added, when the name was made the other
+     * kind of action first.
      */
     template <class F>
         requires std::is_invocable_v<F&, double, const progress_info&>
     subscription on_receive_progress(F&& f, listen_options options = {}) {
+        if (redefined_) {
+            return {};
+        }
         return impl_->add_progress_listener(
             name_, impl_->bind<void(double, const progress_info&)>(std::forward<F>(f)), options);
     }
@@ -2619,7 +2792,8 @@ public:
      * as Trystero's `send` resolves: nothing confirms that the receiver has the message. It
      * completes with the first failure: `error::invalid_action_name`, `error::metadata_too_large`,
      * `error::no_such_peer`, `error::transfer_rejected`, `error::transfer_timed_out`,
-     * `error::channel_stalled`, `error::peer_disconnected` or `error::room_left`.
+     * `error::channel_stalled`, `error::peer_disconnected` or `error::room_left`; at once with
+     * `error::action_redefined` when the name was made a request action first.
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code)`.
      * @param value The message, taken at the call: moved when `T` owns its storage, copied once
@@ -2633,8 +2807,12 @@ public:
     auto async_send(T value, send_options options,  // NOLINT(performance-unnecessary-value-param)
                     CompletionToken&& token) {
         return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code)>(
-            [impl = impl_, name = std::pmr::string(name_, impl_->memory())](
+            [impl = impl_, name = std::pmr::string(name_, impl_->memory()), redefined = redefined_](
                 auto handler, detail::encoded_payload payload, const send_options& options) {
+                if (redefined) {
+                    impl->complete(std::move(handler), make_error_code(error::action_redefined));
+                    return;
+                }
                 impl->send(
                     name, std::move(payload), options,
                     impl->template erase<void(boost::system::error_code)>(std::move(handler)));
@@ -2663,7 +2841,8 @@ public:
      * Completes with `(error_code, T, message_info)`; a message of another payload format than
      * `T`'s, or a JSON text that does not parse, completes with `error::transfer_rejected` and an
      * empty value, which allocates nothing (a JSON document that holds nothing, whose root reads
-     * `undefined`), and leaving the room with `error::room_left`.
+     * `undefined`), leaving the room with `error::room_left`, and at once with
+     * `error::action_redefined` when the name was made a request action first.
      * `T` must own its storage: a view would outlive the message. A JSON document is the
      * handler's: a handle of its values refers to the document object, so moving the document
      * invalidates it.
@@ -2678,7 +2857,15 @@ public:
                       "a received view would outlive the message: await an owning type");
         return webcpp::asio::async_initiate<CompletionToken,
                                             void(boost::system::error_code, T, message_info)>(
-            [impl = impl_, name = std::pmr::string(name_, impl_->memory())](auto handler) {
+            [impl = impl_, name = std::pmr::string(name_, impl_->memory()),
+             redefined = redefined_](auto handler) {
+                if (redefined) {
+                    impl->complete(std::move(handler), make_error_code(error::action_redefined),
+                                   detail::empty_payload<T>(impl->memory()),
+                                   message_info{.from = std::pmr::string(impl->memory()),
+                                                .metadata = std::pmr::string(impl->memory())});
+                    return;
+                }
                 // The decoding step is allocated as the user's handler is, which it carries.
                 const auto allocator = webcpp::asio::get_associated_allocator(handler);
                 impl->receive(
@@ -2710,12 +2897,14 @@ private:
     friend class room;
 
     action(std::shared_ptr<detail::room_impl> impl, std::string_view name)
-        : impl_(std::move(impl)), name_(name, impl_->memory()) {
-        impl_->add_action(name_, false);
-    }
+        : impl_(std::move(impl)),
+          name_(name, impl_->memory()),
+          redefined_(!impl_->add_action(name_, false)) {}
 
     std::shared_ptr<detail::room_impl> impl_;
     std::pmr::string name_;
+    /** Whether the name was made a request action first: every operation fails. */
+    bool redefined_;
 };
 
 /**
@@ -2756,7 +2945,9 @@ public:
      * for the duration of the call.
      * @param f The listener, kept in the room's resource.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription, or `error::already_subscribed` while a listener is in place.
+     * @return Its subscription, which requires the room's resource to outlive it;
+     * `error::already_subscribed` while a listener is in place, or `error::action_redefined` when
+     * the name was made a message action first.
      */
     template <class F>
         requires std::is_invocable_v<F&, T, const message_info&>
@@ -2766,13 +2957,19 @@ public:
         static_assert(
             std::is_convertible_v<answer, R> || std::is_same_v<answer, boost::system::result<R>>,
             "a request listener returns an R or a boost::system::result<R>");
+        if (redefined_) {
+            return error::action_redefined;
+        }
+        // Held for the call: delivering what waited may run a receive gate, which may release the
+        // room's last handles, this one among them.
+        const auto impl = impl_;
         // The listener is the room's own: it reaches its room through a plain pointer, since a
         // shared one would keep the room alive through itself.
-        detail::room_impl* const room = impl_.get();
-        return impl_->add_request_listener(
+        detail::room_impl* const room = impl.get();
+        return impl->add_request_listener(
             name_,
-            impl_->bind<void(detail::incoming&, const detail::request_envelope&)>(
-                [f = std::forward<F>(f), room, to = impl_->decoding()](
+            impl->template bind<void(detail::incoming&, const detail::request_envelope&)>(
+                [f = std::forward<F>(f), room, to = impl->decoding()](
                     detail::incoming& m, const detail::request_envelope& envelope) mutable {
                     const message_info info{
                         .from = std::pmr::string(m.peer, to.memory),
@@ -2810,14 +3007,20 @@ public:
      * returning whether to receive the request.
      * @param f The gate, kept in the room's resource.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription, or `error::already_subscribed` while a gate is in place.
+     * @return Its subscription, which requires the room's resource to outlive it;
+     * `error::already_subscribed` while a gate is in place, or `error::action_redefined` when the
+     * name was made the other kind of action first.
      */
     template <class F>
         requires std::is_invocable_r_v<bool, F&, const receive_info&>
     [[nodiscard]] boost::system::result<subscription> on_receive(F&& f,
                                                                  listen_options options = {}) {
-        return impl_->add_receive_gate(
-            name_, impl_->bind<bool(const receive_info&)>(std::forward<F>(f)), options);
+        if (redefined_) {
+            return error::action_redefined;
+        }
+        const auto impl = impl_;  // delivering what waited may release this handle
+        return impl->add_receive_gate(
+            name_, impl->template bind<bool(const receive_info&)>(std::forward<F>(f)), options);
     }
 
     /**
@@ -2827,11 +3030,16 @@ public:
      * @tparam F A callable with a `double` from 0 to 1 and a `const progress_info&`.
      * @param f The listener, kept in the room's resource beside those added before.
      * @param options `once` removes it before its first run; `replay` is ignored.
-     * @return Its subscription; destroying it leaves the listener.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener. It is inactive, and nothing is added, when the name was made the other
+     * kind of action first.
      */
     template <class F>
         requires std::is_invocable_v<F&, double, const progress_info&>
     subscription on_receive_progress(F&& f, listen_options options = {}) {
+        if (redefined_) {
+            return {};
+        }
         return impl_->add_progress_listener(
             name_, impl_->bind<void(double, const progress_info&)>(std::forward<F>(f)), options);
     }
@@ -2846,8 +3054,12 @@ public:
      * `error::request_rejected` when the peer refused the request (its listener's error, no
      * listener, or a refused transfer), `error::request_timed_out` after `options.timeout`,
      * `error::transfer_rejected` for an answer of another format than `R`'s,
-     * `error::peer_disconnected` when the peer leaves first, `error::room_left`, or the failure of
-     * the request's send. An unsuccessful completion carries an empty answer.
+     * `error::peer_disconnected` when the peer leaves first, `error::room_left`, the failure of
+     * the request's send, or at once `error::action_redefined` when the name was made a message
+     * action first. An unsuccessful completion carries an empty answer.
+     *
+     * Unlike Trystero's rejection, which carries the reason the peer gave, a refusal completes with
+     * the code alone: the room logs the reason, under "action".
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code, R)`.
      * @param value The request, taken at the call as `action::async_send` takes a message.
@@ -2860,8 +3072,13 @@ public:
                        request_options options,  // NOLINT(performance-unnecessary-value-param)
                        CompletionToken&& token) {
         return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code, R)>(
-            [impl = impl_, name = std::pmr::string(name_, impl_->memory())](
+            [impl = impl_, name = std::pmr::string(name_, impl_->memory()), redefined = redefined_](
                 auto handler, detail::encoded_payload payload, const request_options& options) {
+                if (redefined) {
+                    impl->complete(std::move(handler), make_error_code(error::action_redefined),
+                                   detail::empty_payload<R>(impl->memory()));
+                    return;
+                }
                 // The decoding step is allocated as the user's handler is, which it carries.
                 const auto allocator = webcpp::asio::get_associated_allocator(handler);
                 impl->request(
@@ -2890,12 +3107,14 @@ private:
     friend class room;
 
     request_action(std::shared_ptr<detail::room_impl> impl, std::string_view name)
-        : impl_(std::move(impl)), name_(name, impl_->memory()) {
-        impl_->add_action(name_, true);
-    }
+        : impl_(std::move(impl)),
+          name_(name, impl_->memory()),
+          redefined_(!impl_->add_action(name_, true)) {}
 
     std::shared_ptr<detail::room_impl> impl_;
     std::pmr::string name_;
+    /** Whether the name was made a message action first: every operation fails. */
+    bool redefined_;
 };
 
 template <class T>

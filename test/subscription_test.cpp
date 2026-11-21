@@ -15,8 +15,10 @@
 #include <webcpp/test/exit_status.hpp>
 
 #include <array>
+#include <memory>
 #include <memory_resource>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -190,6 +192,76 @@ void call_first_answers_once() {
     BOOST_TEST(!s.active());
 }
 
+// Clearing, as a room does when it is left, removes every listener, even within an emission: those
+// whose turn had not come do not run, and every subscription is inactive.
+void clearing_removes_every_listener() {
+    auto e = make_event();
+    std::vector<std::string> calls;
+    const auto first = e.add(
+        [&](int) {
+            calls.emplace_back("first");
+            e.clear();
+        },
+        {});
+    const auto second = e.add([&](int) { calls.emplace_back("second"); }, {});
+    e.emit(1);
+    e.emit(2);
+    const std::vector<std::string> expected{"first"};
+    BOOST_TEST_ALL_EQ(calls.begin(), calls.end(), expected.begin(), expected.end());
+    BOOST_TEST(e.empty());
+    BOOST_TEST(!first.active());
+    BOOST_TEST(!second.active());
+    const auto later = e.add([&](int) { calls.emplace_back("later"); }, {});
+    e.emit(3);
+    BOOST_TEST_EQ(calls.back(), "later");
+    BOOST_TEST(later.active());
+
+    // A clear during a replay removes the listener being added, which replays no further.
+    std::size_t replayed = 0;
+    const std::array<int, 2> current{1, 2};
+    const auto replaying = e.add(
+        [&](int) {
+            ++replayed;
+            e.clear();
+        },
+        {.once = false, .replay = true}, current);
+    BOOST_TEST_EQ(replayed, 1U);
+    BOOST_TEST(!replaying.active());
+    BOOST_TEST(e.empty());
+}
+
+#ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
+// A listener that throws ends the emission, which still forgets the listeners removed meanwhile:
+// what a removed listener holds is released, as after an emission that ends normally.
+void a_throwing_listener_ends_the_emission_cleanly() {
+    auto e = make_event();
+    const auto held = std::make_shared<int>(0);
+    auto removed = e.add([held](int) {}, {});
+    // It removes the first listener, then throws.
+    e.add(
+        [&](int v) {
+            if (v == 1) {
+                removed.unsubscribe();
+                throw std::runtime_error("listener failed");
+            }
+        },
+        {});
+    bool thrown = false;
+    try {
+        e.emit(1);
+    } catch (const std::runtime_error&) {
+        thrown = true;
+    }
+    BOOST_TEST(thrown);
+    BOOST_TEST_EQ(held.use_count(), 1);  // the removed listener was forgotten
+    std::size_t runs = 0;
+    e.add([&](int) { ++runs; }, {});
+    e.emit(2);
+    BOOST_TEST_EQ(runs, 1U);
+    BOOST_TEST_EQ(e.size(), 2U);
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -202,5 +274,9 @@ int main() {
     run_case(dropping_a_subscription_keeps_the_listener);
     run_case(replay_reports_what_is_current);
     run_case(call_first_answers_once);
+    run_case(clearing_removes_every_listener);
+#ifndef WEBCPP_TRYSTERO_NO_EXCEPTIONS
+    run_case(a_throwing_listener_ends_the_emission_cleanly);
+#endif
     return webcpp::test::exit_status(boost::report_errors());
 }
