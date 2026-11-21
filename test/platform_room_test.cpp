@@ -174,15 +174,13 @@ void another_password_never_joins() {
                         app_config("CCCCCCCCCCCCCCCCCCCC", "guess"));
     auto b = join(b_app, "private");
     std::vector<boost::system::error_code> errors;
-    b.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        errors.push_back(ec);
-    });
+    b.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
     // A's id is the lower: once both derived their keys, A offers, and B cannot open the offer.
     BOOST_TEST(run_until(f.io, [&] { return !errors.empty(); }, derivation_bound));
     BOOST_TEST(a.peers().empty());
     BOOST_TEST(b.peers().empty());
     for (const auto& ec : errors) {
-        BOOST_TEST(ec == trystero::error::wrong_password);
+        BOOST_TEST(ec == trystero::error::decrypt_failed);
     }
 }
 

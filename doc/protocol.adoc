@@ -259,11 +259,11 @@ signal in any peer's name. Trystero JS bounds none of this; trystero bounds
 what each costs a room.
 
 * Nothing a peer sends changes a negotiation before it opens with the room
-  key: an offer, an answer or a candidate that does not open is counted,
-  reported once per negotiation, and changes nothing else. A flood of fresh
-  ids makes each a negotiation, so the reports are paced: the first of a
-  quiet 10 s goes to `on_error` at once, with its peer, and the others of
-  those 10 s in one report, with no peer and their number.
+  key: an offer, an answer or a candidate that does not open is counted and
+  changes nothing else. An offer or an answer is reported to `on_error` as
+  `decrypt_failed`, with its peer and stage, at most once a minute per peer
+  and stage, the last 512 remembered, as 0.27.0 reports them; a candidate
+  is not reported.
 * A room holds at most `detail::signaling::max_unconnected_peers` (32)
   negotiations with peers it is not connected to. A negotiation whose offer
   and answer expire without a connection is dropped, an idle one gives its

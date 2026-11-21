@@ -20,9 +20,10 @@ namespace webcpp::trystero {
 /**
  * What an operation of the library completes with when it does not succeed.
  *
- * Each value is one of the errors Trystero rejects a promise with or reports to `onPeerError`,
- * as a code of @ref error_category rather than a message: an operation completes with it, and
- * `room::on_error` reports it with the peer it concerns.
+ * Each value is one of the errors Trystero rejects a promise with or reports to a room's
+ * `onError`, as a code of @ref error_category rather than a message: an operation completes with
+ * it, and `room::on_error` reports it in a @ref room_error, with the context Trystero gives it and
+ * `room_error_code_name` gives Trystero's name of a room error's code.
  *
  * @see "Rooms and actions", in the guide.
  */
@@ -44,17 +45,17 @@ enum class error {
     /** The data channel stopped draining while a transfer waited for it. */
     channel_stalled,
     /**
-     * A peer's signal or handshake used another password, or the peer sent a handshake message the
-     * protocol does not expect, Trystero's "incorrect password for overlapping room".
+     * A peer sharing a connection answered the room's password handshake under another password,
+     * or sent a handshake message the protocol does not expect, Trystero's "incorrect password for
+     * overlapping room". A signal under another password is `decrypt_failed`.
      */
     wrong_password,
     /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
     handshake_timed_out,
     /**
-     * Reserved: nothing reports it today.
-     *
-     * A handshake message of the wrong shape reports `wrong_password`, as Trystero's handshake
-     * does.
+     * A peer's handshake failed, 0.27.0's `handshake-failed` room error, which
+     * `room_error_code_name` names. The password handshake of rooms sharing a connection reports
+     * its failures as `wrong_password` and `handshake_timed_out`, which name what failed.
      */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
@@ -80,7 +81,9 @@ enum class error {
     plugin_failed,
     /**
      * A signal could not be opened: another room password, a corrupted text, or a plaintext that
-     * is not UTF-8, 0.27.0's `decrypt-failed`.
+     * is not UTF-8, 0.27.0's `decrypt-failed`. A room reports it for an offer or an answer, at most
+     * once a minute per peer and stage, with the stage in the report and its message, as
+     * "failed to decrypt offer (incorrect password or corrupted signal)".
      */
     decrypt_failed,
     /** The peer could not be connected after the SDP exchange, 0.27.0's `peer-connect-failed`. */
@@ -164,7 +167,7 @@ private:
             case error::identity_failed: return "identity resolution failed";
             case error::plugin_failed: return "plugin setup failed";
             case error::decrypt_failed:
-                return "failed to decrypt a signal (incorrect password or corrupted signal)";
+                return "failed to decrypt offer or answer (incorrect password or corrupted signal)";
             case error::peer_connect_failed:
                 return "could not connect to peer after exchanging SDP";
             case error::peer_error: return "peer error";

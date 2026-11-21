@@ -372,11 +372,12 @@ struct extra_room {
         room.on_peer_leave([this](const trystero::peer_event& event) {
             record("peer-leave", {{"room", which}, {"peer", event.peer_id}});
         });
-        room.on_error(
-            [this](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-                record("error",
-                       {{"room", which}, {"peer", peer}, {"error", ec.message()}, {"what", what}});
-            });
+        room.on_error([this](const trystero::room_error& e) {
+            record("error", {{"room", which},
+                             {"peer", e.peer_id},
+                             {"error", e.code.message()},
+                             {"what", e.message}});
+        });
         chat.on_message([this](std::string text, const trystero::message_info& info) {
             record("chat", {{"room", which}, {"from", info.from}, {"text", text}});
             if (!text.starts_with("echo: ")) {
@@ -519,8 +520,8 @@ int main(int argc, char* argv[]) {
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     backend.delay_open = !args["delayOpen"].empty();
     trystero::app app(io.get_executor(), backend, app_config_of(args));
-    app.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
+    app.on_error([](const trystero::room_error& e) {
+        record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });
     trystero::room room = join(app, args["room"], options_of(args));
     record("joined", {{"self", room.self_id()}, {"relays", room.relay_urls()}});
@@ -568,8 +569,8 @@ int main(int argc, char* argv[]) {
     });
     room.on_peer_leave(
         [](const trystero::peer_event& e) { record("peer-leave", {{"peer", e.peer_id}}); });
-    room.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
+    room.on_error([](const trystero::room_error& e) {
+        record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });
     chat.on_message([&](std::string text, const trystero::message_info& info) {
         record("chat", {{"from", info.from}, {"text", text}});

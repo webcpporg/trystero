@@ -31,6 +31,7 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
+#include <webcpp/trystero/room_error.hpp>
 #include <webcpp/trystero/subscription.hpp>
 
 #include <webcpp/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
@@ -782,6 +783,7 @@ public:
           peer_leave_(allocator()),
           user_join_(allocator()),
           user_leave_(allocator()),
+          errors_(allocator()),
           leave_completions_(memory_) {}
 
     /** Room state represents one membership and cannot be copied. */
@@ -898,16 +900,11 @@ public:
                             self->on_connected(peer, std::move(pc), std::move(channel));
                         }
                     }),
-                .failed = bind<void(std::string_view, boost::system::error_code, std::string_view)>(
-                    [weak](std::string_view peer, boost::system::error_code ec,
-                           std::string_view what) {
-                        if (const auto self = weak.lock()) {
-                            std::array<char, 128> buffer{};  // the message without a std::string
-                            self->report(
-                                peer, ec,
-                                what.empty() ? ec.message(buffer.data(), buffer.size()) : what);
-                        }
-                    }),
+                .failed = bind<void(const room_error&)>([weak](const room_error& e) {
+                    if (const auto self = weak.lock()) {
+                        self->report(e);
+                    }
+                }),
             },
             log_, memory_, app_->memory());
         // The self topic before the root topic, as Trystero's rooms subscribe them, so that the
@@ -930,7 +927,12 @@ public:
                         self->signaling_->handle(relay, content);
                     }
                 }),
-            log_, memory_);
+            log_, memory_, bind<void()>([weak] {
+                if (const auto self = weak.lock()) {
+                    self->report({}, make_error_code(error::relay_failed),
+                                 "all signaling relays failed");
+                }
+            }));
         register_and_advertise();
     }
 
@@ -1058,9 +1060,9 @@ public:
         return user_leave_.add(std::move(f), options);
     }
 
-    /** Sets the handler of each problem with a peer that the room handled itself. */
-    void on_error(handler<void(std::string_view, boost::system::error_code, std::string_view)> f) {
-        on_error_ = keep_handler(std::move(f));
+    /** Adds a listener of each problem the room handled itself. */
+    subscription on_error(handler<void(const room_error&)> f, listen_options options) {
+        return errors_.add(std::move(f), options);
     }
 
     /** Binds advertised peers when allowed, or detaches a withdrawn token. */
@@ -1519,15 +1521,6 @@ private:
 
     static constexpr std::size_t max_queued_messages = 1024;
 
-    /** A handler that several posts call, shared in the room's resource. */
-    template <class Signature>
-    std::shared_ptr<handler<Signature>> keep_handler(handler<Signature> f) const {
-        if (!f) {
-            return nullptr;
-        }
-        return std::allocate_shared<handler<Signature>>(allocator(), std::move(f));
-    }
-
     /** The slot of an action the room made, or null. */
     action_slot* made(std::string_view name) {
         const auto it = actions_.find(name);
@@ -1697,16 +1690,63 @@ private:
                     bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
     }
 
-    void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        // The sink may end the room and release the storage behind either view.
-        std::pmr::string peer_copy(peer, memory_);
-        std::pmr::string what_copy(what, memory_);
-        log_("room", "peer ", peer_copy, ": ", what_copy);
-        if (on_error_) {
-            post([f = on_error_, peer = std::move(peer_copy), ec, what = std::move(what_copy)] {
-                (*f)(peer, ec, what);
-            });
+    /** Reports a problem with `peer`, or with none, to the room's error listeners. */
+    void report(std::string_view peer, boost::system::error_code ec, std::string_view message) {
+        room_error e;
+        e.code = ec;
+        e.message = message;
+        e.peer_id = peer;
+        report(e);
+    }
+
+    /**
+     * Logs a problem the room handled itself and posts its report to the error listeners, with
+     * the app's and the room's ids: what is in place when the post runs, unless the room was left
+     * by then, as 0.27.0 reports nothing once its room is leaving.
+     */
+    void report(const room_error& e) {
+        // Copies: the post runs after the views' storage may be gone.
+        struct owned {
+            boost::system::error_code code;
+            std::pmr::string message;
+            std::pmr::string peer_id;
+            std::optional<signal_stage> stage;
+            bool turn_configured;
+            std::pmr::string reason;
+            std::pmr::string plugin;
+        };
+
+        owned copy{
+            .code = e.code,
+            .message = std::pmr::string(e.message, memory_),
+            .peer_id = std::pmr::string(e.peer_id, memory_),
+            .stage = e.stage,
+            .turn_configured = e.turn_configured,
+            .reason = std::pmr::string(e.reason, memory_),
+            .plugin = std::pmr::string(e.plugin, memory_),
+        };
+        if (copy.peer_id.empty()) {
+            log_("room", copy.message);
+        } else {
+            log_("room", "peer ", copy.peer_id, ": ", copy.message);
         }
+        post([weak = weak_from_this(), copy = std::move(copy)] {
+            const auto self = weak.lock();
+            if (!self || self->left_) {
+                return;
+            }
+            self->errors_.emit({
+                .code = copy.code,
+                .message = copy.message,
+                .app_id = self->app_->app_id(),
+                .room_id = self->room_id_,
+                .peer_id = copy.peer_id,
+                .stage = copy.stage,
+                .turn_configured = copy.turn_configured,
+                .reason = copy.reason,
+                .plugin = copy.plugin,
+            });
+        });
     }
 
     /** What makes a room bind a peer over a live connection: its own join, the peer's presence, a
@@ -2296,6 +2336,9 @@ private:
                 complete(std::move(receiver), make_error_code(error::room_left), incoming{});
             }
             slot.receivers.clear();
+            // What waited for a receive or a listener goes too, as 0.27.0 drops each peer's
+            // pending data when its room is left: a listener added later gets none of it.
+            slot.queue.clear();
         }
         fail_requests({}, make_error_code(error::room_left));
         if (signaling_) {
@@ -2316,6 +2359,7 @@ private:
         peer_leave_.clear();
         user_join_.clear();
         user_leave_.clear();
+        errors_.clear();
         for (auto& [name, slot] : actions_) {
             slot.messages.clear();
             slot.requests.clear();
@@ -2345,8 +2389,7 @@ private:
     listeners<void(const peer_event&)> peer_leave_;
     listeners<void(const user_event&)> user_join_;
     listeners<void(const user_event&)> user_leave_;
-    std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
-        on_error_;
+    listeners<void(const room_error&)> errors_;
     std::shared_ptr<backend::timer> leave_timer_;
     std::weak_ptr<connection> departing_connection_;
     std::pmr::vector<completion<void(boost::system::error_code)>> leave_completions_;
@@ -2541,26 +2584,36 @@ public:
     }
 
     /**
-     * Sets what is called with each problem with one peer that the room handled itself, as a
-     * wrong password or a timed-out handshake, Trystero's `onPeerError`.
+     * Adds a listener of each problem the room handled itself, Trystero's `onError`: each report
+     * is a @ref room_error, with its code, its message, the app's and the room's ids, and the
+     * context Trystero gives that code. Nothing is reported once the room is being left.
      *
-     * Signals that do not open with the room key (`error::wrong_password`) are reported once per
-     * negotiation, and paced: the first of a quiet 10 s at once, with its peer, and the others of
-     * those 10 s in one report, with an empty peer id and a description that starts with their
-     * number, since anyone who reads the relays can send them from any number of fresh ids. A part
-     * of the configuration the app set aside is reported to `app::on_error`, not here.
+     * | Code                  | When                                                       |
+     * | `decrypt_failed`      | a peer's offer or answer did not open with the room key:   |
+     * |                       | another password, or a corrupted or forged signal; at most |
+     * |                       | once a minute per peer and stage, as Trystero reports it   |
+     * | `peer_connect_failed` | the connection with a peer did not open after the exchange |
+     * |                       | of descriptions; once per offer or answer                  |
+     * | `relay_failed`        | the first connection of every relay failed before any      |
+     * |                       | opened; once                                               |
+     * | `wrong_password`      | a peer sharing a connection failed the room's password     |
+     * |                       | handshake                                                  |
+     * | `handshake_timed_out` | a peer sharing a connection did not finish it in time      |
+     * | `backend_failure`     | the backend made no connection for a peer, or the room's   |
+     * |                       | keys could not be derived                                  |
      *
-     * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
-     * for the call.
-     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     * A part of the configuration the app set aside is reported to `app::on_error`, not here.
+     *
+     * @tparam F A callable with a `const room_error&`, whose views are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription, which requires the room's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
-        requires std::is_invocable_v<F&, std::string_view, boost::system::error_code,
-                                     std::string_view>
-    void on_error(F&& f) {
-        impl_->on_error(
-            impl_->bind<void(std::string_view, boost::system::error_code, std::string_view)>(
-                std::forward<F>(f)));
+        requires std::is_invocable_v<F&, const room_error&>
+    subscription on_error(F&& f, listen_options options = {}) {
+        return impl_->on_error(impl_->bind<void(const room_error&)>(std::forward<F>(f)), options);
     }
 
     /**

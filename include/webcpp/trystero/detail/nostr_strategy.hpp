@@ -151,6 +151,8 @@ private:
  * |                    | connection stayed open for 60 s                                          |
  * | reopened relay     | its subscriptions asked again and the announcement replayed once, or     |
  * |                    | both after its cooldown; the cadence is not started over                 |
+ * | every relay failed | reported once, when each relay's first connection closed before it      |
+ * |                    | opened and none opened yet, as 0.27.0 reports `relay-failed`            |
  *
  * Tip: the bound of the reconnection delay comes back down only after a connection that lasted,
  * so that a relay that closes us at once after each open, as one that sends a text longer than we
@@ -171,17 +173,19 @@ public:
      * `nonce` to the announcement's payload each time it publishes it. */
     using announcement_handler = handler<std::pmr::string(std::string_view nonce)>;
 
-    /** Every allocation goes through `memory`, the parsed relay messages' documents included. */
+    /** Every allocation goes through `memory`, the parsed relay messages' documents included;
+     * `all_failed`, when set, is called once every relay failed (see the table). */
     nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls,
                    std::pmr::vector<std::pmr::string> topics, std::string_view announce_topic,
                    announcement_handler announcement, message_handler on_message, logger log,
-                   std::pmr::memory_resource* memory)
+                   std::pmr::memory_resource* memory, handler<void()> all_failed = {})
         : factory_(factory),
           memory_(memory),
           topics_(std::move(topics), memory),
           announce_topic_(announce_topic, memory),
           announcement_(std::move(announcement)),
           on_message_(std::move(on_message)),
+          all_failed_(std::move(all_failed)),
           log_(std::move(log)),
           relays_(memory),
           seen_(remembered_events, draw_key(factory), memory) {
@@ -312,6 +316,8 @@ private:
         std::pmr::vector<std::pmr::string> subscriptions;
         bool open = false;
         bool opened_before = false;
+        // Whether its first connection closed before it opened, 0.27.0's `boot-failed`.
+        bool boot_failed = false;
         // How many announcements the cadence made since it started, sent or skipped, which picks
         // the next delay.
         std::size_t announce_attempt = 0;
@@ -444,6 +450,7 @@ private:
     void on_open(std::size_t index) {
         auto& r = relays_[index];
         r.open = true;
+        any_opened_ = true;
         r.opened = steady_now(factory_);
         log_("nostr", r.opened_before ? "reconnected to " : "connected to ", r.url);
         if (std::exchange(r.opened_before, true)) {
@@ -568,6 +575,9 @@ private:
         }
         log_("nostr", was_open ? "lost " : "could not reach ", r.url, ", next attempt within ",
              r.retry.count(), " ms");
+        if (!r.opened_before && !std::exchange(r.boot_failed, true)) {
+            report_if_all_failed();
+        }
         std::array<std::uint8_t, 2> random{};
         factory_.random(random);
         // A share of the bound in [0, 1), in steps of 1/65536, and the delay in whole
@@ -583,6 +593,20 @@ private:
                                                  self->connect(index);
                                              }
                                          }});
+    }
+
+    /** Calls `all_failed` once, when no relay opened yet and the first connection of every relay
+     * closed before it opened, as 0.27.0's `maybeReportAllBootFailed` reports `relay-failed`. */
+    void report_if_all_failed() {
+        if (any_opened_ || all_failed_reported_ || relays_.empty() ||
+            !std::ranges::all_of(relays_, [](const relay_state& r) { return r.boot_failed; })) {
+            return;
+        }
+        all_failed_reported_ = true;
+        log_("nostr", "every relay failed");
+        if (all_failed_) {
+            all_failed_();
+        }
     }
 
     void announce(std::size_t index) {
@@ -766,11 +790,15 @@ private:
     std::pmr::string announce_topic_;
     announcement_handler announcement_;
     message_handler on_message_;
+    handler<void()> all_failed_;
     logger log_;
     std::optional<protocol::nostr::signer> signer_;
     std::pmr::vector<relay_state> relays_;
     recent_event_ids seen_;
     bool stopped_ = false;
+    // Whether a relay ever opened, and whether the failure of every relay was reported.
+    bool any_opened_ = false;
+    bool all_failed_reported_ = false;
 };
 
 }  // namespace webcpp::trystero::detail

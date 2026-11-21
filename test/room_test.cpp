@@ -502,29 +502,26 @@ void the_same_password_joins_and_another_does_not() {
     BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b.peers().size() == 1; }));
 
     // A and B, whose ids are lower, offer to the intruder, which cannot open their offers with its
-    // room key, so it never connects. It reports both: the first at once, with its peer, and the
-    // other with their number when the interval of its reports ends, 10 s later.
+    // room key, so it never connects. It reports each of them, with its peer.
     std::vector<boost::system::error_code> errors;
-    std::size_t refused = 0;
+    std::set<std::string> refused;
     trystero::app intruder_app(f.io.get_executor(), f.net,
                                app_config("HHHHHHHHHHHHHHHHHHHH", "guess"));
     auto intruder = join(intruder_app, "private");
-    intruder.on_error(
-        [&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-            errors.push_back(ec);
-            if (ec == trystero::error::wrong_password) {
-                refused += peer.empty() ? std::stoul(std::string(what)) : 1;
-            }
-        });
-    a.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        errors.push_back(ec);
+    intruder.on_error([&](const trystero::room_error& e) {
+        errors.push_back(e.code);
+        if (e.code == trystero::error::decrypt_failed) {
+            refused.emplace(e.peer_id);
+        }
     });
-    BOOST_TEST(run_until(f, [&] { return refused == 2; }, 20'000ms));
+    a.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
+    BOOST_TEST(run_until(f, [&] { return refused.size() == 2; }, 20'000ms));
+    BOOST_TEST(refused == (std::set<std::string>{"FFFFFFFFFFFFFFFFFFFF", "GGGGGGGGGGGGGGGGGGGG"}));
     BOOST_TEST(intruder.peers().empty());
     BOOST_TEST_EQ(a.peers().size(), 1U);
     BOOST_TEST(!errors.empty());
     for (const auto& ec : errors) {
-        BOOST_TEST(ec == trystero::error::wrong_password);
+        BOOST_TEST(ec == trystero::error::decrypt_failed);
     }
 }
 
@@ -613,9 +610,9 @@ void a_failed_derivation_is_retried() {
     std::vector<boost::system::error_code> errors;
     {
         auto a = join(a_app, "failing");
-        a.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view) {
-            BOOST_TEST(peer.empty());
-            errors.push_back(ec);
+        a.on_error([&](const trystero::room_error& e) {
+            BOOST_TEST(e.peer_id.empty());
+            errors.push_back(e.code);
         });
         trystero::test::advance(f, 30s);
         BOOST_TEST_EQ(f.net.derivations, 1U);
@@ -651,9 +648,7 @@ void a_room_left_while_its_keys_derive_announces_nothing() {
         trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
         {
             auto a = join(a_app, "leaving");
-            a.on_error([&errors](std::string_view, boost::system::error_code, std::string_view) {
-                ++errors;
-            });
+            a.on_error([&errors](const trystero::room_error&) { ++errors; });
             bool left = false;
             a.async_leave([&](boost::system::error_code ec) { left = !ec; });
             BOOST_TEST(run_until(f, [&] { return left; }));
@@ -676,8 +671,7 @@ void a_room_left_while_its_keys_derive_announces_nothing() {
         c.memory = &memory;
         trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
         auto a = join(a_app, "leaving");
-        a.on_error(
-            [&errors](std::string_view, boost::system::error_code, std::string_view) { ++errors; });
+        a.on_error([&errors](const trystero::room_error&) { ++errors; });
         BOOST_TEST_EQ(f.net.held_derivations(), 1U);
     }
     f.net.derive_delay = false;
@@ -836,8 +830,11 @@ void unusable_ice_servers_are_dropped_and_reported() {
     trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
     auto a = join(a_app, "ice");
     std::vector<std::pair<std::string, boost::system::error_code>> errors;
-    a_app.on_error([&](std::string_view peer, boost::system::error_code ec,
-                       std::string_view /*what*/) { errors.emplace_back(peer, ec); });
+    a_app.on_error([&](const trystero::room_error& e) {
+        BOOST_TEST_EQ(e.app_id, app_id);
+        BOOST_TEST(e.room_id.empty());
+        errors.emplace_back(e.peer_id, e.code);
+    });
     std::vector<std::string> joined;
     a.on_peer_join([&](const trystero::peer_event& e) { joined.emplace_back(e.peer_id); });
     trystero::app b_app(f.io.get_executor(), f.net, app_config("OOOOOOOOOOOOOOOOOOOO"));
@@ -866,8 +863,7 @@ void a_refused_peer_connection_is_reported_and_tried_again() {
     trystero::app b_app(f.io.get_executor(), f.net, app_config("QQQQQQQQQQQQQQQQQQQQ"));
     auto b = join(b_app, "refused");
     std::vector<boost::system::error_code> errors;
-    const auto on_error = [&](std::string_view /*peer*/, boost::system::error_code ec,
-                              std::string_view /*what*/) { errors.push_back(ec); };
+    const auto on_error = [&](const trystero::room_error& e) { errors.push_back(e.code); };
     a.on_error(on_error);
     b.on_error(on_error);
     std::vector<std::string> joined;
@@ -982,8 +978,7 @@ void a_forged_answer_changes_nothing() {
     std::vector<std::string> joined;
     a.on_peer_join([&](const trystero::peer_event& e) { joined.emplace_back(e.peer_id); });
     std::vector<boost::system::error_code> errors;
-    a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
-                   std::string_view /*what*/) { errors.push_back(ec); });
+    a.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
     flooder attacker(f, "forged");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "forged", a_id);
     std::size_t forged = 0;
@@ -1130,61 +1125,6 @@ void offers_in_one_name_are_answered_one_at_a_time() {
     BOOST_TEST_EQ(f.net.made_connections, 1U);
     const std::set<std::string> both{relay_a, relay_b};
     BOOST_TEST_ALL_EQ(answered_through.begin(), answered_through.end(), both.begin(), both.end());
-}
-
-// Unsealed offers from 2000 fresh ids, which anyone who reads the relays can send: the room reports
-// the first at once, with its peer, and the rest together, at most once per interval, with no peer
-// and their number, so that the application is not handed one report per id. On the virtual
-// clock, the flood spans two and a half intervals.
-void signals_that_do_not_open_are_reported_once_per_interval() {
-    constexpr std::size_t flood = 2000;
-    fixture f{true};
-    const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
-    trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id));
-    auto a = join(a_app, "reports");
-
-    struct report {
-        std::string peer;
-        std::string what;
-    };
-
-    std::vector<report> reports;
-    a.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        if (ec == trystero::error::wrong_password) {
-            reports.push_back({.peer = std::string(peer), .what = std::string(what)});
-        }
-    });
-    flooder attacker(f, "reports");
-    const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
-    const auto started = f.net.steady_now();
-    const auto before = f.net.relay(relay_a).events_seen;
-    // Paced, twenty at a time: every twenty, everything ready runs, the relay and the room, and
-    // then the clock moves 250 ms, 25 s for the whole flood.
-    for (std::size_t i = 0; i < flood; ++i) {
-        attacker.publish(a_topic, {
-                                      .peer_id = "0garbage" + std::to_string(i),
-                                      .offer_id = "o",
-                                      .offer = "not a sealed offer",
-                                  });
-        if (i % 20 == 19) {
-            advance(f, 250ms);
-        }
-    }
-    BOOST_TEST(run_until(f, [&] { return f.net.relay(relay_a).events_seen >= before + flood; }));
-    // Every failed open is counted once its interval ends.
-    const auto counted = [&] {
-        std::size_t sum = 0;
-        for (const auto& r : reports) {
-            sum += r.peer.empty() ? std::stoul(r.what) : 1;
-        }
-        return sum;
-    };
-    BOOST_TEST(run_until(f, [&] { return counted() == flood; }));
-    const auto elapsed = f.net.steady_now() - started;
-    BOOST_TEST_LE(reports.size(), 2 + static_cast<std::size_t>(elapsed / 10s));
-    if (BOOST_TEST(!reports.empty())) {
-        BOOST_TEST_EQ(reports.front().peer, "0garbage0");
-    }
 }
 
 // A room member, who holds the key, sends offers from fresh ids whose SDP every connection refuses:
@@ -1612,8 +1552,7 @@ void a_replayed_answer_does_not_open() {
         left.emplace_back(e.peer_id);
         armed = true;
     });
-    a.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
-                   std::string_view /*what*/) { errors.push_back(ec); });
+    a.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
     flooder watcher(f, "replay");
     const auto a_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", a_id));
     const auto b_topic = std::string(trystero::protocol::peer_topic(app_id, "replay", b_id));
@@ -1641,7 +1580,7 @@ void a_replayed_answer_does_not_open() {
     BOOST_TEST(run_until(f, [&] { return joined.size() == 2; }));
     BOOST_TEST_GE(replays, 1U);
     BOOST_TEST(std::ranges::any_of(errors, [](boost::system::error_code ec) {
-        return ec == trystero::error::wrong_password;
+        return ec == trystero::error::decrypt_failed;
     }));
 }
 
@@ -1950,8 +1889,7 @@ void long_peer_ids_are_bounded() {
     trystero::app a_app(f.io.get_executor(), f.net, app_config(too_long));
     const auto a = join(a_app, "long");
     std::vector<boost::system::error_code> errors;
-    a_app.on_error([&](std::string_view /*peer*/, boost::system::error_code ec,
-                       std::string_view /*what*/) { errors.push_back(ec); });
+    a_app.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
     BOOST_TEST_EQ(a.self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST(run_until(f.io, [&] { return errors.size() == 1; }));
     if (!errors.empty()) {
@@ -2996,6 +2934,302 @@ void an_action_name_keeps_its_first_kind() {
 }
 
 // The errors' values are fixed and never reused; their messages name what failed.
+/** A room error, its views copied, and when it was reported. */
+struct reported_error {
+    boost::system::error_code code;
+    std::string message;
+    std::string app_id;
+    std::string room_id;
+    std::string peer_id;
+    std::optional<trystero::signal_stage> stage;
+    bool turn_configured = false;
+    std::chrono::steady_clock::time_point at;
+};
+
+/** A listener that records every report of `code` into `to`, with the fixture's time. */
+auto record_errors(fixture& f, std::vector<reported_error>& to, trystero::error code) {
+    return [&f, &to, code](const trystero::room_error& e) {
+        if (e.code != code) {
+            return;
+        }
+        to.push_back({
+            .code = e.code,
+            .message = std::string(e.message),
+            .app_id = std::string(e.app_id),
+            .room_id = std::string(e.room_id),
+            .peer_id = std::string(e.peer_id),
+            .stage = e.stage,
+            .turn_configured = e.turn_configured,
+            .at = f.net.steady_now(),
+        });
+    };
+}
+
+// Two apps whose passwords differ, on the virtual clock: A, the lower id, offers, and B cannot open
+// its offers. B reports decrypt_failed once, with A's id, the stage and 0.27.0's message, though A
+// sends its offer again and again within the minute; once the minute has passed, A's next offer
+// is reported again. A, which receives nothing sealed from B, reports nothing, and neither joins.
+void decrypt_failed_is_reported_once_a_minute() {
+    fixture f{true};
+    const std::string a_id = "decryptAAAAAAAAAAAAA";
+    const std::string b_id = "decryptBBBBBBBBBBBBB";
+    trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id, "s3cret"));
+    auto a = join(a_app, "private");
+    std::vector<reported_error> a_reports;
+    a.on_error([&](const trystero::room_error& e) {
+        a_reports.push_back({});
+        a_reports.back().code = e.code;
+    });
+    flooder watcher(f, "private");
+    std::vector<std::chrono::steady_clock::time_point> offers;
+    watcher.on_text = [&](std::string_view text) {
+        const auto s = relayed_signal(text);
+        if (s && s->peer == a_id && !s->offer.empty()) {
+            offers.push_back(f.net.steady_now());
+        }
+    };
+    watcher.watch(trystero::protocol::peer_topic(app_id, "private", b_id));
+    trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id, "guess"));
+    auto b = join(b_app, "private");
+    std::vector<reported_error> reports;
+    b.on_error(record_errors(f, reports, trystero::error::decrypt_failed));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !reports.empty(); }, 30s)));
+    const auto& first = reports.front();
+    BOOST_TEST_EQ(trystero::room_error_code_name(first.code), "decrypt-failed");
+    BOOST_TEST_EQ(first.message,
+                  "failed to decrypt offer (incorrect password or corrupted signal)");
+    BOOST_TEST_EQ(first.app_id, app_id);
+    BOOST_TEST_EQ(first.room_id, "private");
+    BOOST_TEST_EQ(first.peer_id, a_id);
+    BOOST_TEST(first.stage == trystero::signal_stage::offer);
+    const auto reported = first.at;
+
+    // A minute but a millisecond after the report, A has sent its offer again, and B reported none
+    // of them.
+    advance(f, std::chrono::duration_cast<std::chrono::milliseconds>(reported + 59'999ms -
+                                                                     f.net.steady_now()));
+    BOOST_TEST_EQ(reports.size(), 1U);
+    BOOST_TEST_GE(std::ranges::count_if(offers, [&](auto t) { return t > reported; }), 1);
+    BOOST_TEST(run_until(f, [&] { return reports.size() == 2; }, 3min));
+    if (reports.size() == 2) {
+        BOOST_TEST(reports[1].at - reported >= 60s);
+        BOOST_TEST_EQ(reports[1].peer_id, a_id);
+        BOOST_TEST(reports[1].stage == trystero::signal_stage::offer);
+    }
+    BOOST_TEST(a_reports.empty());
+    BOOST_TEST(a.peers().empty());
+    BOOST_TEST(b.peers().empty());
+}
+
+// Offers that do not open, from fresh ids: each id is reported once, however often it sends, and
+// the room remembers the last 512 ids it reported, as 0.27.0's cache does: past them, the first
+// is forgotten and reported again.
+void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
+    constexpr std::size_t remembered = 512;
+    fixture f{true};
+    const std::string a_id = "zzzzzzzzzzzzzzzzzzzz";
+    trystero::app a_app(f.io.get_executor(), f.net, app_config(a_id));
+    auto a = join(a_app, "reports");
+    std::vector<reported_error> reports;
+    a.on_error(record_errors(f, reports, trystero::error::decrypt_failed));
+    flooder attacker(f, "reports");
+    const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
+    const auto offer = [&](std::size_t i) {
+        attacker.publish(a_topic,
+                         {
+                             .peer_id = "0garbage" + std::to_string(i),
+                             .offer_id = "o",
+                             .offer = "not a sealed offer",
+                         },
+                         std::to_string(i) + "-" +
+                             std::to_string(f.net.steady_now().time_since_epoch().count()));
+    };
+    for (std::size_t i = 0; i < 2 * remembered; ++i) {
+        offer(i % remembered);
+        if (i % 32 == 31) {
+            advance(f, 100ms);
+        }
+    }
+    BOOST_TEST(run_until(f, [&] { return reports.size() >= remembered; }));
+    advance(f, 1s);
+    BOOST_TEST_EQ(reports.size(), remembered);
+    for (std::size_t i = 0; i < std::min(reports.size(), remembered); ++i) {
+        BOOST_TEST_EQ(reports[i].peer_id, "0garbage" + std::to_string(i));
+        BOOST_TEST(reports[i].stage == trystero::signal_stage::offer);
+    }
+    // One more id makes the room forget the first, which it then reports again, within the minute.
+    offer(remembered);
+    BOOST_TEST(run_until(f, [&] { return reports.size() == remembered + 1; }));
+    offer(1);
+    offer(0);
+    BOOST_TEST(run_until(f, [&] { return reports.size() == remembered + 2; }));
+    advance(f, 1s);
+    BOOST_TEST_EQ(reports.size(), remembered + 2);
+    if (reports.size() == remembered + 2) {
+        BOOST_TEST_EQ(reports.back().peer_id, "0garbage0");
+    }
+}
+
+// A room whose relays are all unreachable reports relay_failed once, with no peer, however often it
+// tries them again; a room that reaches one of its relays reports nothing.
+void relay_failed_when_every_relay_fails() {
+    {
+        fixture f{true};
+        f.net.make_unreachable(relay_a);
+        f.net.make_unreachable(relay_b);
+        trystero::app a_app(f.io.get_executor(), f.net, app_config("relaysAAAAAAAAAAAAAA"));
+        auto a = join(a_app, "unreachable");
+        std::vector<reported_error> reports;
+        a.on_error(record_errors(f, reports, trystero::error::relay_failed));
+        webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !reports.empty(); })));
+        BOOST_TEST_EQ(trystero::room_error_code_name(reports[0].code), "relay-failed");
+        BOOST_TEST_EQ(reports[0].message, "all signaling relays failed");
+        BOOST_TEST_EQ(reports[0].app_id, app_id);
+        BOOST_TEST_EQ(reports[0].room_id, "unreachable");
+        BOOST_TEST(reports[0].peer_id.empty());
+        BOOST_TEST(!reports[0].stage.has_value());
+        advance(f, 3min);
+        BOOST_TEST_EQ(reports.size(), 1U);
+    }
+    {
+        fixture f{true};
+        f.net.make_unreachable(relay_a);
+        trystero::app a_app(f.io.get_executor(), f.net, app_config("relaysAAAAAAAAAAAAAA"));
+        auto a = join(a_app, "half");
+        std::size_t reports = 0;
+        a.on_error([&](const trystero::room_error&) { ++reports; });
+        advance(f, 3min);
+        BOOST_TEST_EQ(reports, 0U);
+    }
+}
+
+// Two peers whose data channels never open, on the virtual clock: once the offer is answered,
+// each side reports peer_connect_failed for the other when its connection expires, with
+// whether a TURN server was configured, and 0.27.0's message.
+void peer_connect_failed_says_whether_turn_was_configured() {
+    for (const bool turn : {false, true}) {
+        fixture f{true};
+        f.net.defer_opens = true;
+        const std::string a_id = "connectAAAAAAAAAAAAA";
+        const std::string b_id = "connectBBBBBBBBBBBBB";
+        const auto config = [&](std::string_view id) {
+            auto c = app_config(id);
+            if (turn) {
+                c.ice_servers.push_back({
+                    .urls = {std::pmr::string("stun:stun.example:3478"),
+                             std::pmr::string("TURNS:turn.example:5349")},
+                    .username = std::pmr::string("user"),
+                    .credential = std::pmr::string("secret"),
+                });
+            }
+            return c;
+        };
+        trystero::app a_app(f.io.get_executor(), f.net, config(a_id));
+        auto a = join(a_app, "connect");
+        trystero::app b_app(f.io.get_executor(), f.net, config(b_id));
+        auto b = join(b_app, "connect");
+        std::vector<reported_error> a_reports;
+        std::vector<reported_error> b_reports;
+        a.on_error(record_errors(f, a_reports, trystero::error::peer_connect_failed));
+        b.on_error(record_errors(f, b_reports, trystero::error::peer_connect_failed));
+        webcpp::test::require(BOOST_TEST(
+            run_until(f, [&] { return !a_reports.empty() && !b_reports.empty(); }, 2min)));
+        const std::string hint = turn ? "verify TURN server URLs and credentials"
+                                      : "configure TURN via app_config::ice_servers";
+        for (const auto& [reports, peer] :
+             {std::pair{&a_reports, b_id}, std::pair{&b_reports, a_id}}) {
+            const auto& e = reports->front();
+            BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "peer-connect-failed");
+            BOOST_TEST_EQ(e.peer_id, peer);
+            BOOST_TEST_EQ(e.turn_configured, turn);
+            BOOST_TEST_EQ(e.message,
+                          "could not connect to peer " + peer + " after exchanging SDP; " + hint);
+            BOOST_TEST_EQ(e.room_id, "connect");
+        }
+        BOOST_TEST(a.peers().empty());
+    }
+}
+
+// The names of the codes are 0.27.0's RoomErrorCode, and every other code has none.
+void error_names_match_trystero() {
+    using trystero::error;
+    const std::array<std::pair<error, std::string_view>, 9> named{{
+        {error::room_full, "room-full"},
+        {error::banned, "banned"},
+        {error::relay_failed, "relay-failed"},
+        {error::identity_failed, "identity-failed"},
+        {error::plugin_failed, "plugin-failed"},
+        {error::decrypt_failed, "decrypt-failed"},
+        {error::peer_connect_failed, "peer-connect-failed"},
+        {error::handshake_failed, "handshake-failed"},
+        {error::peer_error, "peer-error"},
+    }};
+    for (const auto& [e, name] : named) {
+        BOOST_TEST_EQ(trystero::room_error_code_name(e), name);
+    }
+    for (int value = 1; value <= static_cast<int>(error::action_redefined); ++value) {
+        const auto e = static_cast<error>(value);
+        if (std::ranges::none_of(named, [&](const auto& n) { return n.first == e; })) {
+            BOOST_TEST(trystero::room_error_code_name(e).empty());
+        }
+    }
+    // A code of another category with a value of the same number is no room error of Trystero's.
+    BOOST_TEST(
+        trystero::room_error_code_name(boost::system::error_code(static_cast<int>(error::room_full),
+                                                                 boost::system::generic_category()))
+            .empty());
+    BOOST_TEST(trystero::room_error_code_name({}).empty());
+    // The messages are 0.27.0's, where it has one.
+    BOOST_TEST_EQ(make_error_code(error::relay_failed).message(), "all signaling relays failed");
+    BOOST_TEST_EQ(make_error_code(error::peer_connect_failed).message(),
+                  "could not connect to peer after exchanging SDP");
+    BOOST_TEST_EQ(make_error_code(error::handshake_failed).message(), "the handshake failed");
+}
+
+// Messages that queued for async_receive when the room was left go with it, as 0.27.0 drops each
+// peer's pending data at its leave: a listener added afterwards gets none of them.
+void messages_waiting_at_a_leave_are_dropped() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("droppedAAAAAAAAAAAAA"));
+    auto a = join(a_app, "dropped");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("droppedBBBBBBBBBBBBB"));
+    auto b = join(b_app, "dropped");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    auto send = a.make_action<std::string>("chat");
+    auto receive = b.make_action<std::string>("chat");
+    // A receive makes the action listen: what arrives once it completed queues for the next.
+    std::vector<std::string> got;
+    receive.async_receive(
+        [&](boost::system::error_code ec, const std::string& text, const trystero::message_info&) {
+            BOOST_TEST(!ec);
+            got.push_back(text);
+        });
+    std::size_t sent = 0;
+    for (int i = 0; i < 3; ++i) {
+        send.async_send("waiting " + std::to_string(i), [&](boost::system::error_code ec) {
+            BOOST_TEST(!ec);
+            ++sent;
+        });
+    }
+    BOOST_TEST(run_until(f.io, [&] { return sent == 3 && got.size() == 1; }));
+    run_until(f.io, [] { return false; }, 100ms);  // the others arrive, and queue
+    bool left = false;
+    b.async_leave([&](boost::system::error_code) { left = true; });
+    BOOST_TEST(run_until(f.io, [&] { return left; }));
+    const auto late = receive.on_message(
+        [&](const std::string& text, const trystero::message_info&) { got.push_back(text); });
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(got.size(), 1U);
+    bool received = false;
+    receive.async_receive(
+        [&](boost::system::error_code ec, const std::string&, const trystero::message_info&) {
+            BOOST_TEST(ec == trystero::error::room_left);
+            received = true;
+        });
+    BOOST_TEST(run_until(f.io, [&] { return received; }));
+}
+
 void the_errors_have_their_values() {
     BOOST_TEST_EQ(static_cast<int>(trystero::error::already_joined), 14);
     BOOST_TEST_EQ(static_cast<int>(trystero::error::too_many_rooms), 15);
@@ -3011,7 +3245,7 @@ void the_errors_have_their_values() {
     BOOST_TEST_EQ(make_error_code(trystero::error::room_full).message(), "room full");
     BOOST_TEST_EQ(make_error_code(trystero::error::banned).message(), "peer banned");
     BOOST_TEST_EQ(make_error_code(trystero::error::decrypt_failed).message(),
-                  "failed to decrypt a signal (incorrect password or corrupted signal)");
+                  "failed to decrypt offer or answer (incorrect password or corrupted signal)");
     BOOST_TEST_EQ(make_error_code(trystero::error::action_aborted).message(), "operation aborted");
     // Appended after them: 0.27.0 throws it.
     BOOST_TEST_EQ(static_cast<int>(trystero::error::action_redefined), 29);
@@ -3057,7 +3291,7 @@ int main() {
     run_case(forged_offers_make_no_connection);
     run_case(a_flood_of_offers_at_one_instant_is_bounded);
     run_case(offers_in_one_name_are_answered_one_at_a_time);
-    run_case(signals_that_do_not_open_are_reported_once_per_interval);
+    run_case(signals_that_do_not_open_are_reported_once_per_peer_and_stage);
     run_case(sealed_offers_that_fail_at_once_are_bounded);
     run_case(announcements_with_forged_answers_are_bounded);
     run_case(the_replay_cache_remembers_the_last_ones);
@@ -3103,6 +3337,11 @@ int main() {
     run_case(a_request_fails_when_its_peer_or_its_room_goes);
     run_case(an_action_name_keeps_its_first_kind);
     run_case(the_errors_have_their_values);
+    run_case(decrypt_failed_is_reported_once_a_minute);
+    run_case(relay_failed_when_every_relay_fails);
+    run_case(peer_connect_failed_says_whether_turn_was_configured);
+    run_case(error_names_match_trystero);
+    run_case(messages_waiting_at_a_leave_are_dropped);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }

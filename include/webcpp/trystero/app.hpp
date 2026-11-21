@@ -14,6 +14,8 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/room.hpp>
+#include <webcpp/trystero/room_error.hpp>
+#include <webcpp/trystero/subscription.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
 
@@ -153,25 +155,23 @@ public:
     }
 
     /**
-     * Sets what is called with each part of the configuration the app set aside, with an empty
-     * peer id and `error::invalid_configuration`.
+     * Adds a listener of each part of the configuration the app set aside, reported as a
+     * @ref room_error of `error::invalid_configuration` with the app's id and no room nor peer.
      *
-     * The reports are delivered once the caller has
-     * returned, each once, to the handler set when they are delivered: one replaced before then
-     * gets none.
+     * The reports are delivered once the caller has returned, each once, to the listeners in
+     * place when they are delivered: one added after then gets none.
      *
-     * @tparam F A callable with the peer's id, the @ref error and a description, the views valid
-     * for the call.
-     * @param f The handler, kept in the app's resource; it replaces the one set before.
+     * @tparam F A callable with a `const room_error&`, whose views are valid for the call.
+     * @param f The listener, kept in the app's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription, which requires the app's resource to outlive it; destroying it
+     * leaves the listener.
      */
     template <class F>
-        requires std::is_invocable_v<F&, std::string_view, boost::system::error_code,
-                                     std::string_view>
-    void on_error(F&& f) {
+        requires std::is_invocable_v<F&, const room_error&>
+    subscription on_error(F&& f, listen_options options = {}) {
         BOOST_ASSERT(impl_);
-        impl_->on_error(
-            impl_->bind<void(std::string_view, boost::system::error_code, std::string_view)>(
-                std::forward<F>(f)));
+        return impl_->on_error(impl_->bind<void(const room_error&)>(std::forward<F>(f)), options);
     }
 
     /**

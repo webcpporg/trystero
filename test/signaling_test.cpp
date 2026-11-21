@@ -259,8 +259,7 @@ struct answerer {
                         });
                     },
                 .connected = {},
-                .failed = [this](std::string_view, boost::system::error_code ec,
-                                 std::string_view) { failures.push_back(ec); },
+                .failed = [this](const trystero::room_error& e) { failures.push_back(e.code); },
             },
             detail::logger(), memory(), memory());
         signaling->set_key(room_key(oracle));

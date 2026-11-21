@@ -22,6 +22,7 @@
 #include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
+#include <webcpp/trystero/room_error.hpp>
 
 #include <webcpp/crypto/secret.hpp>
 
@@ -36,6 +37,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -49,6 +51,58 @@
 #include <vector>
 
 namespace webcpp::trystero::detail {
+
+/**
+ * When each key was last reported, for at most `capacity` keys, the least recently reported or
+ * looked up forgotten first, as 0.27.0's `createBoundedCache` keeps its last decrypt errors: a key
+ * is reported again only once `interval` has passed since its last report.
+ */
+class report_pacer {
+public:
+    /** Remembers nothing yet, in `memory`. */
+    report_pacer(std::size_t capacity, std::chrono::milliseconds interval,
+                 std::pmr::memory_resource* memory)
+        : capacity_(capacity), interval_(interval), order_(memory), at_(memory) {}
+
+    /**
+     * Whether `key` is reported at `now`: it was never reported, or it was forgotten, or its last
+     * report is `interval` old or older; when it is, `now` becomes its last report. Either way it
+     * becomes the most recent key, as 0.27.0's cache refreshes a key it reads.
+     */
+    bool due(std::string_view key, time_point now) {
+        if (const auto it = at_.find(key); it != at_.end()) {
+            order_.splice(order_.end(), order_, it->second.place);
+            if (now - it->second.reported < interval_) {
+                return false;
+            }
+            it->second.reported = now;
+            return true;
+        }
+        if (capacity_ == 0) {
+            return true;
+        }
+        if (at_.size() >= capacity_) {
+            at_.erase(std::string_view(order_.front()));
+            order_.pop_front();
+        }
+        // A list never moves what it holds, so the view stays valid until its key is forgotten.
+        const std::string_view stored = order_.emplace_back(key);
+        at_.emplace(stored, entry{.reported = now, .place = std::prev(order_.end())});
+        return true;
+    }
+
+private:
+    struct entry {
+        time_point reported;
+        std::pmr::list<std::pmr::string>::iterator place;
+    };
+
+    std::size_t capacity_;
+    std::chrono::milliseconds interval_;
+    // The keys, the least recent first.
+    std::pmr::list<std::pmr::string> order_;
+    std::pmr::map<std::string_view, entry, std::less<>> at_;
+};
 
 /**
  * The negotiation with each peer seen on the signaling topics, after Trystero's signal handler.
@@ -72,10 +126,10 @@ namespace webcpp::trystero::detail {
  * Announcements are not sealed, so anyone who knows the app and room ids can announce any number
  * of peer ids, and anyone who reads the relays can send any signal in any peer's name. Nothing a
  * peer sends changes a negotiation before it opens with the room key: a signal that does not open
- * is counted, reported once per negotiation, and changes nothing else; and since a flood of fresh
- * ids makes each a negotiation, the reports are paced too: the first of a quiet interval at once,
- * the rest together when it ends (`failed_open_report_interval`). The AAD binds a sealed signal to
- * its type, its sender and its offer id, so that one recorded from the relays opens only as what
+ * is counted and changes nothing else, and an offer or an answer that does not open is reported
+ * as `decrypt_failed` at most once a minute per peer and stage, as 0.27.0 reports it
+ * (`decrypt_report_interval`). The AAD binds a sealed signal to its type, its sender and its
+ * offer id, so that one recorded from the relays opens only as what
  * it was: the same signal of the same sender for the same offer, never another's, nor an answer
  * sent back as an offer. Resent so, it still opens: the room remembers the offers and answers it
  * made or acted on (`remembered_descriptions`) and refuses one that comes to it again, which it
@@ -136,11 +190,13 @@ public:
                      std::shared_ptr<backend::data_channel>)>
             connected;
         /**
-         * A negotiation with a peer failed, with the error and what happened, or an empty text
-         * for the error's own message; several, with an empty peer, when `what` counts them.
+         * A negotiation with a peer failed: an offer or an answer did not open
+         * (`error::decrypt_failed`), a connection did not open after the exchange of descriptions
+         * (`error::peer_connect_failed`), or the backend made no connection
+         * (`error::backend_failure`). The report's views are valid for the call; its room's id is
+         * set, and its app's.
          */
-        handler<void(std::string_view peer, boost::system::error_code, std::string_view what)>
-            failed;
+        handler<void(const room_error&)> failed;
     };
 
     /** Every allocation goes through `memory`, the parsed signals' documents included, but the
@@ -157,6 +213,7 @@ public:
           room_id_(room_id, memory),
           self_id_(self_id, memory),
           ice_servers_(copy_ice_servers(ice_servers, memory)),
+          turn_configured_(has_turn_server(ice_servers)),
           cb_(std::move(cb)),
           log_(std::move(log)),
           peers_(memory) {}
@@ -263,8 +320,13 @@ private:
     static constexpr auto counter_announce_interval = std::chrono::milliseconds(5'333);
     /** How many refused peer ids are remembered, so that each is logged once. */
     static constexpr std::size_t remembered_refusals = 64;
-    /** The least time between two reports of signals that did not open. */
-    static constexpr auto failed_open_report_interval = std::chrono::milliseconds(10'000);
+    /** The least time between two reports of an offer, or of an answer, of one peer that did not
+     * open: 0.27.0's `decryptErrDedupeTtlMs`. */
+    static constexpr auto decrypt_report_interval = std::chrono::milliseconds(60'000);
+    /** How many peers and stages the last report of a signal that did not open is remembered for,
+     * the least recently reported or seen forgotten first: 0.27.0's bound of `recentDecryptErrors`.
+     */
+    static constexpr std::size_t remembered_decrypt_failures = 512;
 
     /** One side of a negotiation: a connection, the remote candidates waiting for its remote
      * description. */
@@ -301,8 +363,11 @@ private:
         bool connected = false;
         // When the peer last sent a message, for the eviction of an idle negotiation.
         time_point last_message{};
-        // Whether a signal of this negotiation that did not open was reported.
-        bool failed_open_reported = false;
+        // Whether a signal of this negotiation that did not open was logged.
+        bool failed_open_logged = false;
+        // Whether the failure of a connection of this negotiation to open after the exchange of
+        // descriptions was reported, 0.27.0's `didReportFailure`: once per offer or answer.
+        bool connect_failure_reported = false;
         // Whether an offer or an answer of this negotiation that the room had used before was
         // logged.
         bool replay_logged = false;
@@ -501,6 +566,7 @@ private:
 
     void start_offer(std::string_view peer, negotiation& n) {
         n.offer_id = random_id(factory_, protocol::offer_id_size, memory_);
+        n.connect_failure_reported = false;
         n.offer.pc = make_connection(peer);
         if (!n.offer.pc) {
             reset_offer(n);
@@ -654,6 +720,7 @@ private:
             reset_offer(n);
         }
         log_("signal", "offer ", offer_id, " from ", peer);
+        n.connect_failure_reported = false;
         n.answer.pc = pc;
         n.answered_offer_id = std::move(offer_id);
         n.answered_offer = std::move(offer);
@@ -696,6 +763,9 @@ private:
                                        return;
                                    }
                                    self->log_("signal", "answering ", peer, " timed out");
+                                   if (m->answer_sent) {
+                                       self->report_connect_failed(peer, *m);
+                                   }
                                    reset_answer(*m);
                                    self->drop_if_done(peer);
                                }));
@@ -818,6 +888,7 @@ private:
                                   }
                                   self->log_("signal", peer,
                                              " answered but the connection never opened");
+                                  self->report_connect_failed(peer, *m);
                                   reset_offer(*m);
                                   self->drop_if_done(peer);
                               }));
@@ -843,59 +914,89 @@ private:
     /**
      * Counts a sealed signal from `peer` that did not open with the room key, and changes nothing
      * else: the peer used another password, or someone forged it in the peer's name. The first of
-     * a negotiation is logged and reported as `wrong_password`; the rest only counted. Reports are
-     * paced: the first of a quiet interval goes at once, with its peer, and the others of the
-     * interval in one report when it ends, with no peer and their number.
+     * a negotiation is logged; an offer or an answer is reported as `decrypt_failed`, at most once
+     * per `decrypt_report_interval` for each peer and stage, as 0.27.0's `reportDecryptErr`
+     * reports it; a candidate is not reported, as 0.27.0 drops it unreported.
      *
-     * Tip: anyone who reads the relays can send garbage from any number of fresh ids, each a
-     * negotiation of its own; the application then gets one report per interval, not one per id.
+     * Tip: anyone who reads the relays can send garbage from any number of fresh ids, and each id
+     * is reported, as 0.27.0 reports each; the reports remembered are bounded, as 0.27.0's are.
      */
     void failed_open(std::string_view peer, negotiation& n, std::string_view what) {
         ++failed_opens_;
-        if (std::exchange(n.failed_open_reported, true)) {
-            return;
+        if (!std::exchange(n.failed_open_logged, true)) {
+            log_("signal", "could not open the ", what, " from ", peer,
+                 ": another password, or forged in its name; ignored");
         }
-        log_("signal", "could not open the ", what, " from ", peer,
-             ": another password, or forged in its name; ignored");
-        const auto now = steady_now(factory_);
-        if (unreported_failed_opens_ == 0 &&
-            (!failed_open_reported_ ||
-             now - *failed_open_reported_ >= failed_open_report_interval)) {
-            failed_open_reported_ = now;
-            cb_.failed(peer, make_error_code(error::wrong_password), {});
-            return;
+        if (what == "offer") {
+            report_decrypt_failed(peer, signal_stage::offer);
+        } else if (what == "answer") {
+            report_decrypt_failed(peer, signal_stage::answer);
         }
-        if (unreported_failed_opens_++ != 0) {
-            return;  // the report of the interval is already due
-        }
-        failed_open_report_ = factory_.make_timer(memory_);
-        // The interval runs from the last report, which there always is by now.
-        const auto due = failed_open_reported_.value_or(now) + failed_open_report_interval;
-        const auto delay =
-            std::max(std::chrono::milliseconds::zero(),
-                     std::chrono::duration_cast<std::chrono::milliseconds>(due - now));
-        failed_open_report_->start(delay, bind<void()>([weak = weak_from_this()] {
-                                       if (const auto self = weak.lock()) {
-                                           self->report_failed_opens();
-                                       }
-                                   }));
     }
 
-    /** Reports, in one, the negotiations whose signals did not open since the last report. */
-    void report_failed_opens() {
-        const auto count = std::exchange(unreported_failed_opens_, 0);
-        if (closed_ || count == 0) {
+    /** Reports that `peer`'s signal of `stage` did not open, unless it was reported less than
+     * `decrypt_report_interval` ago. */
+    void report_decrypt_failed(std::string_view peer, signal_stage stage) {
+        const std::string_view name = stage == signal_stage::offer ? "offer" : "answer";
+        std::pmr::string key(name, memory_);
+        key += ':';
+        key += peer;
+        if (!decrypt_reports_.due(key, steady_now(factory_))) {
             return;
         }
-        failed_open_reported_ = steady_now(factory_);
-        std::pmr::string what(memory_);
-        protocol::json::append_integer(what, static_cast<std::int64_t>(count));
-        what += " more peers sent signals that did not open with the room key, in the last ";
-        protocol::json::append_integer(
-            what,
-            std::chrono::duration_cast<std::chrono::seconds>(failed_open_report_interval).count());
-        what += " s: another password, or forged in their names";
-        cb_.failed({}, make_error_code(error::wrong_password), what);
+        std::pmr::string message("failed to decrypt ", memory_);
+        message += name;
+        message += " (incorrect password or corrupted signal)";
+        room_error e = report_of(error::decrypt_failed, message, peer);
+        e.stage = stage;
+        cb_.failed(e);
+    }
+
+    /**
+     * Reports that a connection with `peer` did not open after the exchange of descriptions, once
+     * per offer or answer, as 0.27.0's `reportSdpFailure` does: an offer answered, or an answer
+     * sent, whose connection expired, failed or closed before it opened.
+     */
+    void report_connect_failed(std::string_view peer, negotiation& n) {
+        if (closed_ || n.connected || std::exchange(n.connect_failure_reported, true)) {
+            return;
+        }
+        std::pmr::string message("could not connect to peer ", memory_);
+        message += peer;
+        message += " after exchanging SDP; ";
+        message += turn_configured_ ? "verify TURN server URLs and credentials"
+                                    : "configure TURN via app_config::ice_servers";
+        room_error e = report_of(error::peer_connect_failed, message, peer);
+        e.turn_configured = turn_configured_;
+        cb_.failed(e);
+    }
+
+    /** A report of `code` about `peer`, with its message, the app's and the room's ids, and no
+     * other context. */
+    room_error report_of(error code, std::string_view message, std::string_view peer) const {
+        room_error e;
+        e.code = make_error_code(code);
+        e.message = message;
+        e.app_id = app_id_;
+        e.room_id = room_id_;
+        e.peer_id = peer;
+        return e;
+    }
+
+    /** Whether any of `servers` has a `turn:` or `turns:` URL, in any case, as 0.27.0's
+     * `hasTurnServer` reads them. */
+    static bool has_turn_server(std::span<const backend::ice_server> servers) {
+        const auto starts_with = [](std::string_view url, std::string_view scheme) {
+            return url.size() >= scheme.size() &&
+                   std::ranges::equal(url.substr(0, scheme.size()), scheme, [](char a, char b) {
+                       return (a >= 'A' && a <= 'Z' ? static_cast<char>(a - 'A' + 'a') : a) == b;
+                   });
+        };
+        return std::ranges::any_of(servers, [&](const backend::ice_server& server) {
+            return std::ranges::any_of(server.urls, [&](const std::pmr::string& url) {
+                return starts_with(url, "turn:") || starts_with(url, "turns:");
+            });
+        });
     }
 
     /**
@@ -1085,9 +1186,15 @@ private:
         }
         if (pc == n->offer.pc) {
             log_("webrtc", "the connection we offered to ", peer, " failed");
+            if (n->answered) {
+                report_connect_failed(peer, *n);
+            }
             reset_offer(*n);
         } else if (pc == n->answer.pc) {
             log_("webrtc", "the connection we answered for ", peer, " failed");
+            if (n->answer_sent) {
+                report_connect_failed(peer, *n);
+            }
             reset_answer(*n);
         }
     }
@@ -1111,7 +1218,10 @@ private:
      */
     void refused(std::string_view peer) {
         log_("webrtc", "the backend made no connection for ", peer);
-        cb_.failed(peer, make_error_code(error::backend_failure), {});
+        std::array<char, 128> buffer{};  // the message without a std::string
+        cb_.failed(report_of(
+            error::backend_failure,
+            make_error_code(error::backend_failure).message(buffer.data(), buffer.size()), peer));
     }
 
     static void reset_offer(negotiation& n) {
@@ -1148,6 +1258,8 @@ private:
     std::pmr::string room_id_;
     std::pmr::string self_id_;
     std::pmr::vector<backend::ice_server> ice_servers_;
+    // Whether a TURN server is among them, which a report of a connection that did not open says.
+    bool turn_configured_;
     callbacks cb_;
     logger log_;
     negotiations peers_;
@@ -1157,11 +1269,8 @@ private:
     std::pmr::map<std::size_t, time_point> counter_announced_{memory_};  // per relay
     replay_cache used_{remembered_descriptions, memory_};
     std::size_t failed_opens_ = 0;
-    // Negotiations whose failed open waits for the next report, when it was last made (never
-    // yet, when empty), and the timer of the next.
-    std::size_t unreported_failed_opens_ = 0;
-    std::optional<time_point> failed_open_reported_;
-    std::shared_ptr<backend::timer> failed_open_report_;
+    // The last report of each peer's offers and answers that did not open.
+    report_pacer decrypt_reports_{remembered_decrypt_failures, decrypt_report_interval, memory_};
     std::size_t replayed_ = 0;
     bool closed_ = false;
 };

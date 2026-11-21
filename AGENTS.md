@@ -318,11 +318,10 @@ holds only what is specific to trystero.
   reads the relays can send any signal in any peer's name.
   - Nothing a peer sends changes a negotiation before it opens with the
     room key: an offer, an answer or a candidate that does not open is
-    counted, reported once per negotiation, and changes nothing else. A
-    flood of fresh ids makes each a negotiation, so the reports are paced:
-    the first of a quiet 10 s goes to `on_error` at once, with its peer,
-    and the others of those 10 s in one report, with no peer and their
-    number.
+    counted and changes nothing else. An offer or an answer is reported to
+    `on_error` as `decrypt_failed`, with its peer and stage, at most once a
+    minute per peer and stage, the last 512 remembered, as 0.27.0 reports
+    them; a candidate is not reported.
   - A sealed offer or answer holds neither its offer id nor a peer id
     (Trystero's wire), so one recorded from the relays still opens when
     anyone resends it in its sender's name, and so does the room's own, sent

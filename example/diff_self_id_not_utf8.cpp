@@ -32,8 +32,8 @@ int main() {
     config.app_id = "webcpp-trystero-differences";
     config.self_id = given;
     trystero::app app(io.get_executor(), backend, std::move(config));
-    app.on_error([](std::string_view, boost::system::error_code ec, std::string_view what) {
-        std::cout << "reported: " << ec.message() << ": " << what << '\n';
+    app.on_error([](const trystero::room_error& e) {
+        std::cout << "reported: " << e.code.message() << ": " << e.message << '\n';
     });
     std::cout << "the self id given: " << given.size() << " bytes, not UTF-8\n"
               << "the app's self id: "

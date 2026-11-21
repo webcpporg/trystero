@@ -55,9 +55,11 @@ void every_room_has_the_apps_id() {
     long_id.idle_timeout = -1ms;
     std::vector<std::pair<boost::system::error_code, std::string>> reports;
     trystero::app b(f.io.get_executor(), f.net, std::move(long_id));
-    b.on_error([&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-        BOOST_TEST(peer.empty());
-        reports.emplace_back(ec, what);
+    b.on_error([&](const trystero::room_error& e) {
+        BOOST_TEST(e.peer_id.empty());
+        BOOST_TEST(e.room_id.empty());
+        BOOST_TEST_EQ(e.app_id, app_id);
+        reports.emplace_back(e.code, e.message);
     });
     BOOST_TEST_EQ(b.self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST(run_until(f, [&] { return reports.size() == 2; }));
@@ -70,22 +72,25 @@ void every_room_has_the_apps_id() {
     BOOST_TEST(reports[1].second.starts_with("idle_timeout "));
 }
 
-// A report reaches only the handler set when it is delivered, and each is delivered once: a handler
-// replaced before the delivery gets none, and one set after it gets none again.
-void each_setup_report_reaches_the_current_handler_once() {
+// A report reaches the listeners in place when it is delivered, and each is delivered once: one
+// removed before the delivery gets none, and one added after it gets none again.
+void each_setup_report_reaches_the_listeners_in_place_once() {
     fixture f{true};
     auto long_id = app_config(std::string(65, 'x'));
     long_id.idle_timeout = -1ms;
     trystero::app b(f.io.get_executor(), f.net, std::move(long_id));
-    std::array<std::size_t, 3> calls{};
-    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[0]; });
-    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[1]; });
+    std::array<std::size_t, 4> calls{};
+    auto removed = b.on_error([&](const trystero::room_error&) { ++calls[0]; });
+    b.on_error([&](const trystero::room_error&) { ++calls[1]; });
+    b.on_error([&](const trystero::room_error&) { ++calls[2]; }, {.once = true, .replay = false});
+    removed.unsubscribe();
     webcpp::trystero::test::advance(f, 100ms);
-    b.on_error([&](std::string_view, boost::system::error_code, std::string_view) { ++calls[2]; });
+    b.on_error([&](const trystero::room_error&) { ++calls[3]; });
     webcpp::trystero::test::advance(f, 100ms);
     BOOST_TEST_EQ(calls[0], 0U);
     BOOST_TEST_EQ(calls[1], 2U);
-    BOOST_TEST_EQ(calls[2], 0U);
+    BOOST_TEST_EQ(calls[2], 1U);
+    BOOST_TEST_EQ(calls[3], 0U);
 }
 
 // A room joined twice is refused while it is joined, and so is a 65th room.
@@ -548,9 +553,7 @@ void a_forged_announcement_binds_nothing() {
     joined_in(t, {"r1"});
     t.a_rooms.push_back(join(t.a, "r2"));
     std::vector<boost::system::error_code> errors;
-    t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        errors.push_back(ec);
-    });
+    t.a_rooms[1].on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
     const auto made = t.f.net.made_connections;
     flooder forger(t.f, "r2");
     forger.announce_as(t.b.self_id(), 3);
@@ -785,8 +788,7 @@ void a_kick_is_per_room() {
         corrupt_r2_responses(t);
         std::vector<boost::system::error_code> r2_errors;
         t.a_rooms.push_back(join(t.a, "r2"));
-        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { r2_errors.push_back(ec); });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) { r2_errors.push_back(e.code); });
         const auto made = t.f.net.made_connections;
         t.b_rooms.push_back(join(t.b, "r2"));
         BOOST_TEST(run_until(t.f, [&] { return !r2_errors.empty(); }));
@@ -804,8 +806,7 @@ void a_kick_is_per_room() {
         t.a_rooms.push_back(join(t.a, "r2", {.handshake_timeout = 30s}));
         const auto joined = t.f.net.steady_now();
         t.b_rooms.push_back(join(t.b, "r2"));
-        t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { b_errors.push_back(ec); });
+        t.b_rooms[1].on_error([&](const trystero::room_error& e) { b_errors.push_back(e.code); });
         BOOST_TEST(run_until(t.f, [&] { return !b_errors.empty(); }, 11s));
         BOOST_TEST(b_errors.at(0) == trystero::error::handshake_timed_out);
         BOOST_TEST(t.f.net.steady_now() - joined == 10s);
@@ -1036,8 +1037,8 @@ void check_incorrect_proof_rebinding(bool a_lower) {
     std::vector<std::chrono::steady_clock::time_point> a_reports;
     std::vector<std::chrono::steady_clock::time_point> b_reports;
     const auto recorder = [&t](std::vector<std::chrono::steady_clock::time_point>& to) {
-        return [&t, &to](std::string_view, boost::system::error_code ec, std::string_view) {
-            if (ec == trystero::error::wrong_password) {
+        return [&t, &to](const trystero::room_error& e) {
+            if (e.code == trystero::error::wrong_password) {
                 to.push_back(t.f.net.steady_now());
             }
         };
@@ -1105,12 +1106,11 @@ void a_kick_that_closes_the_connection() {
         corrupt_r2_responses(t);
         std::vector<std::chrono::steady_clock::time_point> kicks;
         t.a_rooms.push_back(join(t.a, "r2"));
-        t.a_rooms[1].on_error(
-            [&](std::string_view, boost::system::error_code ec, std::string_view) {
-                if (ec == trystero::error::wrong_password) {
-                    kicks.push_back(t.f.net.steady_now());
-                }
-            });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) {
+            if (e.code == trystero::error::wrong_password) {
+                kicks.push_back(t.f.net.steady_now());
+            }
+        });
         t.b_rooms.push_back(join(t.b, "r2"));
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return kicks.size() == 1; }, 1s)));
         t.b_rooms.erase(t.b_rooms.begin());  // r1 left on both sides: r2 is all they share
@@ -1130,12 +1130,11 @@ void a_kick_that_closes_the_connection() {
         std::vector<std::chrono::steady_clock::time_point> b_timeouts;
         t.a_rooms.push_back(join(t.a, "r2", {.handshake_timeout = 30s}));
         t.b_rooms.push_back(join(t.b, "r2"));
-        t.b_rooms[0].on_error(
-            [&](std::string_view, boost::system::error_code ec, std::string_view) {
-                if (ec == trystero::error::handshake_timed_out) {
-                    b_timeouts.push_back(t.f.net.steady_now());
-                }
-            });
+        t.b_rooms[0].on_error([&](const trystero::room_error& e) {
+            if (e.code == trystero::error::handshake_timed_out) {
+                b_timeouts.push_back(t.f.net.steady_now());
+            }
+        });
         webcpp::test::require(
             BOOST_TEST(run_until(t.f, [&] { return t.f.net.live_connections() == 2; }, 1s)));
         const auto made = t.f.net.made_connections;
@@ -1199,8 +1198,7 @@ void a_lost_presence_is_replaced_by_the_peers_frames() {
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.a.self_id()));
     watcher.watch(trystero::protocol::peer_topic(app_id, "r2", t.b.self_id()));
     std::vector<boost::system::error_code> errors;
-    const auto recorder = [&errors](std::string_view, boost::system::error_code ec,
-                                    std::string_view) { errors.push_back(ec); };
+    const auto recorder = [&errors](const trystero::room_error& e) { errors.push_back(e.code); };
     t.a_rooms[1].on_error(recorder);
     t.b_rooms.push_back(join(t.b, "r2"));
     t.b_rooms[1].on_error(recorder);
@@ -1230,12 +1228,8 @@ void check_transient_failure(bool password, bool lower_times_out, bool release_a
     std::vector<boost::system::error_code> b_errors;
     t.a_rooms.push_back(join(t.a, "r2", lower_times_out ? normal : patient));
     t.b_rooms.push_back(join(t.b, "r2", lower_times_out ? patient : normal));
-    t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        a_errors.push_back(ec);
-    });
-    t.b_rooms[1].on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        b_errors.push_back(ec);
-    });
+    t.a_rooms[1].on_error([&](const trystero::room_error& e) { a_errors.push_back(e.code); });
+    t.b_rooms[1].on_error([&](const trystero::room_error& e) { b_errors.push_back(e.code); });
     const auto& timed_out = lower_times_out ? a_errors : b_errors;
     webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !timed_out.empty(); }, 11s)));
     const auto kick = t.f.net.steady_now();
@@ -1275,8 +1269,7 @@ void an_answer_to_an_old_challenge() {
         std::vector<boost::system::error_code> a_errors;
         t.a_rooms.push_back(join(t.a, "r2"));
         t.b_rooms.push_back(join(t.b, "r2", {.handshake_timeout = 30s}));
-        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { a_errors.push_back(ec); });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) { a_errors.push_back(e.code); });
         // A's bindings start at 0, 21, 53, 107, 205, 391, 701, 1011 and 1321 s.
         webcpp::test::require(
             BOOST_TEST(run_until(t.f, [&] { return a_challenges == binding; }, 1400s)));
@@ -1308,12 +1301,11 @@ void a_corrected_response_rejoins() {
         corrupt_r2_responses(t);
         std::vector<std::chrono::steady_clock::time_point> a_kicks;
         t.a_rooms.push_back(join(t.a, "r2"));
-        t.a_rooms[1].on_error(
-            [&](std::string_view, boost::system::error_code ec, std::string_view) {
-                if (ec == trystero::error::wrong_password) {
-                    a_kicks.push_back(t.f.net.steady_now());
-                }
-            });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) {
+            if (e.code == trystero::error::wrong_password) {
+                a_kicks.push_back(t.f.net.steady_now());
+            }
+        });
         std::optional<trystero::room> b2(join(t.b, "r2"));
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return a_kicks.size() == 3; }, 40s)));
         const auto first = a_kicks.front();
@@ -1323,9 +1315,7 @@ void a_corrected_response_rejoins() {
         t.f.net.filter = {};
         b2.emplace(join(t.b, "r2"));
         std::vector<boost::system::error_code> b_errors;
-        b2->on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-            b_errors.push_back(ec);
-        });
+        b2->on_error([&](const trystero::room_error& e) { b_errors.push_back(e.code); });
         BOOST_TEST(run_until(t.f, [&] { return b2->peers().size() == 1; }, 45s));
         BOOST_TEST(t.f.net.steady_now() - first == 77s);
         BOOST_TEST_LE(std::ranges::count(b_errors, trystero::error::handshake_timed_out), 2);
@@ -1338,9 +1328,7 @@ void a_corrected_response_rejoins() {
         std::vector<boost::system::error_code> b_errors;
         t.a_rooms.push_back(join(t.a, "r2"));
         std::optional<trystero::room> b2(join(t.b, "r2"));
-        b2->on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-            b_errors.push_back(ec);
-        });
+        b2->on_error([&](const trystero::room_error& e) { b_errors.push_back(e.code); });
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !b_errors.empty(); }, 1s)));
         webcpp::trystero::test::advance(t.f, 3s);
         b2.reset();
@@ -1563,8 +1551,7 @@ void invalid_room_proofs_fail_within_one_password_domain() {
         }
         t.a_rooms.push_back(join(t.a, "r2"));
         std::vector<boost::system::error_code> errors;
-        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { errors.push_back(ec); });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
         const auto joined = t.f.net.steady_now();
         t.b_rooms.push_back(join(t.b, "r2", {.handshake_timeout = 30s}));
         webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return !errors.empty(); }, 11s)));
@@ -1701,8 +1688,9 @@ void a_join_log_can_leave_or_destroy_its_room() {
     }
 }
 
-// The error callback selected after logging receives owned diagnostic text even if the sink
-// destroys the offending binding. A replacement callback installed by the sink takes effect.
+// A log sink may leave or destroy its room while the room reports an error: the report is not
+// delivered, to the listener in place nor to one the sink adds, as 0.27.0 reports nothing once its
+// room is leaving, and the other room of the connection keeps its peer.
 void check_leaving_from_error_log(bool destroy) {
     bool acted = false;
     std::size_t old_errors = 0;
@@ -1713,13 +1701,7 @@ void check_leaving_from_error_log(bool destroy) {
     config.log = [&](std::string_view, std::string_view text) {
         if (!acted && room && text.ends_with("incorrect password for overlapping room")) {
             acted = true;
-            room->on_error(
-                [&](std::string_view peer, boost::system::error_code ec, std::string_view what) {
-                    ++new_errors;
-                    BOOST_TEST_EQ(peer, "ZZZZZZZZZZZZZZZZZZR2");
-                    BOOST_TEST(ec == trystero::error::wrong_password);
-                    BOOST_TEST_EQ(what, "incorrect password for overlapping room");
-                });
+            room->on_error([&](const trystero::room_error&) { ++new_errors; });
             if (destroy) {
                 room.reset();
             } else {
@@ -1731,13 +1713,12 @@ void check_leaving_from_error_log(bool destroy) {
     joined_in(t, {"r1"});
     corrupt_r2_responses(t);
     room = join(t.a, "r2");
-    room->on_error(
-        [&](std::string_view, boost::system::error_code, std::string_view) { ++old_errors; });
+    room->on_error([&](const trystero::room_error&) { ++old_errors; });
     t.b_rooms.push_back(join(t.b, "r2"));
     webcpp::test::require(BOOST_TEST(run_until(t.f, [&] { return acted; })));
     webcpp::trystero::test::advance(t.f, 200ms);
     BOOST_TEST_EQ(old_errors, 0U);
-    BOOST_TEST_EQ(new_errors, 1U);
+    BOOST_TEST_EQ(new_errors, 0U);
     BOOST_TEST_EQ(t.a_rooms[0].peers().size(), 1U);
 }
 
@@ -1774,10 +1755,8 @@ void check_draining_from_queue_log(bool leave) {
     webcpp::test::require(BOOST_TEST(
         run_until(f, [&] { return room->peers().size() == 1 && remote.peers().size() == 1; })));
     inbox.emplace(room->make_action<std::string>("unread"));
-    inbox->async_receive(
-        [&](boost::system::error_code ec, const std::string&, const trystero::message_info&) {
-            received += ec ? 0 : 1;
-        });
+    inbox->async_receive([&](boost::system::error_code ec, const std::string&,
+                             const trystero::message_info&) { received += ec ? 0 : 1; });
     auto out = remote.make_action<std::string>("unread");
     for (std::size_t i = 0; i < 1026; ++i) {
         out.async_send("x", [](boost::system::error_code) {});
@@ -1890,8 +1869,7 @@ void a_password_challenge_requires_a_string() {
         };
         t.a_rooms.push_back(join(t.a, "r2"));
         std::vector<boost::system::error_code> errors;
-        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { errors.push_back(ec); });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
         t.b_rooms.push_back(join(t.b, "r2"));
         webcpp::trystero::test::advance(t.f, 1ms);
         t.f.net.filter = {};
@@ -1931,8 +1909,7 @@ void a_handshake_message_past_its_bound_fails() {
         };
         t.a_rooms.push_back(join(t.a, "r2"));
         std::vector<boost::system::error_code> errors;
-        t.a_rooms[1].on_error([&](std::string_view, boost::system::error_code ec,
-                                  std::string_view) { errors.push_back(ec); });
+        t.a_rooms[1].on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
         t.b_rooms.push_back(join(t.b, "r2"));
         webcpp::trystero::test::advance(t.f, 1ms);
         std::string message(challenge.substr(0, challenge.size() - 1));
@@ -2057,8 +2034,8 @@ int main(int argc, const char* const argv[]) {
         },
         {"every_room_has_the_apps_id", every_room_has_the_apps_id},
         {
-            "each_setup_report_reaches_the_current_handler_once",
-            each_setup_report_reaches_the_current_handler_once,
+            "each_setup_report_reaches_the_listeners_in_place_once",
+            each_setup_report_reaches_the_listeners_in_place_once,
         },
         {"joining_is_refused_twice_and_beyond_64", joining_is_refused_twice_and_beyond_64},
         {"two_apps_with_one_id_never_meet", two_apps_with_one_id_never_meet},
