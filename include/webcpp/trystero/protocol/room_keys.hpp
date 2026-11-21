@@ -65,12 +65,14 @@ inline std::span<const std::uint8_t> bytes_of_text(std::string_view text) noexce
  *
  * @param app_id The app id, in UTF-8.
  * @param room_id The room id, in UTF-8.
+ * @param memory The resource the hashed text is allocated in.
  * @return The key.
  */
-inline webcpp::crypto::secret<32> room_aes_key_without_password(std::string_view app_id,
-                                                                std::string_view room_id) {
+inline webcpp::crypto::secret<32> room_aes_key_without_password(
+    std::string_view app_id, std::string_view room_id,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     webcpp::crypto::secret<32> key;
-    auto digest = sha256(topic_path({domain_tag("room-aes", 3), app_id, room_id}));
+    auto digest = sha256(topic_path({domain_tag("room-aes", 3, memory), app_id, room_id}, memory));
     std::ranges::copy(digest, key.writable().begin());
     // webcpp::crypto has no public wipe of an array yet; its detail one is the library's own.
     webcpp::crypto::detail::wipe_object(digest);
@@ -83,10 +85,13 @@ inline webcpp::crypto::secret<32> room_aes_key_without_password(std::string_view
  *
  * @param app_id The app id, in UTF-8.
  * @param room_id The room id, in UTF-8.
+ * @param memory The resource the hashed text is allocated in.
  * @return The salt.
  */
-inline std::array<std::uint8_t, 32> pbkdf2_salt(std::string_view app_id, std::string_view room_id) {
-    return sha256(topic_path({domain_tag("pbkdf2-master", 3), app_id, room_id}));
+inline std::array<std::uint8_t, 32> pbkdf2_salt(
+    std::string_view app_id, std::string_view room_id,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return sha256(topic_path({domain_tag("pbkdf2-master", 3, memory), app_id, room_id}, memory));
 }
 
 /**
@@ -96,18 +101,21 @@ inline std::array<std::uint8_t, 32> pbkdf2_salt(std::string_view app_id, std::st
  *
  * @param master The 32 bytes of PBKDF2 over the password, @ref pbkdf2_salt and
  * @ref pbkdf2_iterations.
+ * @param memory The resource the infos are allocated in.
  * @return The keys, or the error of the derivation.
  */
-inline boost::system::result<room_keys> derive_room_keys(std::span<const std::uint8_t, 32> master) {
+inline boost::system::result<room_keys> derive_room_keys(
+    std::span<const std::uint8_t, 32> master,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     constexpr std::array<std::uint8_t, 32> no_salt{};
     room_keys keys;
-    const auto aes_info = domain_tag("room-aes", 3);
+    const auto aes_info = domain_tag("room-aes", 3, memory);
     auto derived = webcpp::hash::hkdf<webcpp::hash::hmac_sha2_256>(
         keys.aes.writable(), no_salt, master, detail::bytes_of_text(aes_info));
     if (!derived) {
         return derived.error();
     }
-    const auto hmac_info = domain_tag("room-hmac", 3);
+    const auto hmac_info = domain_tag("room-hmac", 3, memory);
     derived = webcpp::hash::hkdf<webcpp::hash::hmac_sha2_256>(keys.hmac.writable(), no_salt, master,
                                                               detail::bytes_of_text(hmac_info));
     if (!derived) {
@@ -135,7 +143,7 @@ inline std::pmr::string room_auth_payload(
     BOOST_ASSERT(seq <= max_room_auth_seq);
     std::pmr::string out(memory);
     out += '[';
-    json::append_string_total(out, domain_tag("ov-auth", 3));
+    json::append_string_total(out, domain_tag("ov-auth", 3, memory));
     for (const auto part : {app_id, room_id, peer_id}) {
         out += ',';
         json::append_string_total(out, part);

@@ -15,6 +15,7 @@
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/post.hpp>
 #include <webcpp/trystero/detail/random_id.hpp>
+#include <webcpp/trystero/detail/room_keys_cache.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
@@ -97,6 +98,8 @@ public:
           app_id_(config.app_id, memory_),
           self_id_(config.self_id, memory_),
           password_(config.password, memory_),
+          room_keys_(std::allocate_shared<room_keys_cache>(allocator(), ex_, factory_, app_id_,
+                                                           password_, memory_)),
           relay_urls_(config.relay_urls, memory_),
           ice_servers_(copy_ice_servers(config.ice_servers, memory_)),
           idle_timeout_(config.idle_timeout),
@@ -176,6 +179,9 @@ public:
 
     /** The immutable password shared by this app's rooms and authenticated connections. */
     [[nodiscard]] std::string_view password() const { return password_; }
+
+    /** The keys of the app's rooms, derived once per room id when the app has a password. */
+    [[nodiscard]] room_keys_cache& room_keys() const { return *room_keys_; }
 
     /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
@@ -644,6 +650,7 @@ private:
     std::pmr::string app_id_;
     std::pmr::string self_id_;
     std::pmr::string password_;
+    std::shared_ptr<room_keys_cache> room_keys_;
     std::pmr::vector<std::pmr::string> relay_urls_;
     std::pmr::vector<backend::ice_server> ice_servers_;
     std::chrono::milliseconds idle_timeout_;

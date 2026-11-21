@@ -33,7 +33,6 @@
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -190,9 +189,11 @@ public:
         return backend_.make_timer(memory);
     }
 
-    std::shared_ptr<trystero::backend::sealer> make_sealer(
-        std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
-        return backend_.make_sealer(key, memory);
+    void derive_password_master(std::span<const std::uint8_t> password,
+                                std::span<const std::uint8_t, 32> salt,
+                                std::span<std::uint8_t, 32> out,
+                                trystero::handler<void(boost::system::error_code)> done) override {
+        backend_.derive_password_master(password, salt, out, std::move(done));
     }
 
     void random(std::span<std::uint8_t> out) override { backend_.random(out); }

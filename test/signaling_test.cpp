@@ -7,7 +7,9 @@
 // Tests the signaling and the Nostr strategy alone, over the memory backend, on both targets. As
 // an answerer, the signaling publishes the bytes Trystero JS 0.26.0's own signal handler published
 // for the same offers, which the original's oracle wrote into fixtures/expected/expected.json, the
-// test's one argument: its sealer gives Trystero's sealed texts, and its peer connections the
+// test's one argument, but for each sealed text: the oracle's offers are sealed again as 0.27.0
+// seals them, under the room's key with their AAD, and each sealed text the signaling publishes
+// opens, with its own AAD, to the plaintext Trystero sealed there; its peer connections give the
 // oracle's answer and candidate. Each text a strategy or a signaling reads is bounded: a relay's
 // text or a signal at its bound is read, one byte longer is dropped.
 
@@ -19,7 +21,11 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
+
+#include <webcpp/crypto/secret.hpp>
 
 #include "support/memory_backend.hpp"
 
@@ -33,7 +39,9 @@
 #include <boost/core/lightweight_test.hpp>
 #include <webcpp/test/exit_status.hpp>
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <memory>
 #include <memory_resource>
@@ -164,63 +172,58 @@ private:
     std::string candidate_;
 };
 
-/**
- * A sealer that seals and opens as Trystero JS did for the oracle: each plaintext the oracle
- * sealed becomes the text Trystero's encrypt made of it, and that text opens to it again. Any
- * other text fails, as one sealed under another key does, and is counted.
- */
-class oracle_sealer final : public backend::sealer {
-public:
-    oracle_sealer(asio::io_context& io, const fixture_value& sealed) : io_(io) {
-        for (const auto entry : sealed) {
-            table_.emplace_back(str(entry["plaintext"]), str(entry["text"]));
+/** The key of the oracle's room, which has no password. */
+webcpp::crypto::secret<32> room_key(const fixture_value& oracle) {
+    return tp::room_aes_key_without_password(str(oracle["app_id"]), str(oracle["room_id"]));
+}
+
+/** The text Trystero JS 0.26.0 sealed `plaintext` to for the oracle; the case fails without one. */
+std::string old_sealed(const fixture_value& oracle, std::string_view plaintext) {
+    for (const auto entry : oracle["sealed"]) {
+        if (str(entry["plaintext"]) == plaintext) {
+            return std::string(str(entry["text"]));
         }
     }
+    BOOST_ERROR("the oracle sealed no such plaintext");
+    return {};
+}
 
-    void seal(std::string_view plaintext,
-              trystero::handler<void(backend::error_code, std::string_view)> done) override {
-        reply(find(plaintext, true), std::move(done));
+/** `text` with its one `from` replaced by `to`; the case fails when it holds none. */
+std::string replaced(std::string_view text, std::string_view from, std::string_view to) {
+    std::string out(text);
+    const auto at = out.find(from);
+    require(BOOST_TEST(!from.empty() && at != std::string::npos));
+    out.replace(at, from.size(), to);
+    return out;
+}
+
+/** A signal's text, read as a room reads it; the case fails when it is not one. */
+struct read_signal_text {
+    explicit read_signal_text(std::string_view text)
+        : document(webcpp::document::parse(text,
+                                           tp::json::protocol_limits(tp::max_parsed_signal_bytes),
+                                           std::pmr::polymorphic_allocator<std::byte>(memory()))) {
+        require(BOOST_TEST(document.has_value()));
+        message = tp::read_signal(document->root());
+        require(BOOST_TEST(message.has_value()));
     }
 
-    void open(std::string_view sealed,
-              trystero::handler<void(backend::error_code, std::string_view)> done) override {
-        ++opened;
-        reply(find(sealed, false), std::move(done));
-    }
-
-    /** How many texts it was asked to open. */
-    std::size_t opened = 0;
-    /** How many texts it did not know, which a test of Trystero's texts never gives. */
-    std::size_t unknown = 0;
-
-private:
-    /** The sealed text of a plaintext, or the plaintext of a sealed text; nothing for another. */
-    [[nodiscard]] std::optional<std::string> find(std::string_view text, bool plaintext) const {
-        for (const auto& [plain, sealed] : table_) {
-            if ((plaintext ? plain : sealed) == text) {
-                return plaintext ? sealed : plain;
-            }
-        }
-        return std::nullopt;
-    }
-
-    void reply(std::optional<std::string> text,
-               trystero::handler<void(backend::error_code, std::string_view)> done) {
-        if (!text) {
-            ++unknown;
-        }
-        post_in(io_, memory(), [text = std::move(text), done = std::move(done)]() mutable {
-            if (text) {
-                done({}, *text);
-            } else {
-                done(make_error_code(trystero::error::wrong_password), {});
-            }
-        });
-    }
-
-    asio::io_context& io_;
-    std::vector<std::pair<std::string, std::string>> table_;
+    decltype(webcpp::document::parse(std::string_view(), tp::json::protocol_limits(0),
+                                     std::pmr::polymorphic_allocator<std::byte>())) document;
+    std::optional<tp::signal_message> message;
 };
+
+/** The oracle's offer `text`, its offer sealed again as 0.27.0 seals it: under the room key, with
+ * the AAD of the offer, its sender and its offer id. */
+std::string resealed_offer(const fixture_value& oracle, std::string_view text) {
+    const read_signal_text read(text);
+    const auto plaintext = str(oracle["sealed"][0]["plaintext"]);
+    const std::array<std::uint8_t, tp::gcm_iv_size> iv{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    const auto aad = tp::signal_aad("offer", read.message->peer_id, read.message->offer_id);
+    const auto sealed = tp::seal(room_key(oracle), iv, plaintext, std::string_view(aad));
+    require(BOOST_TEST(sealed.has_value()));
+    return replaced(text, read.message->offer, *sealed);
+}
 
 /** A signal the signaling published. */
 struct published_signal {
@@ -229,20 +232,18 @@ struct published_signal {
     std::string text;
 };
 
-/** A signaling of the oracle's room and self id, over its sealer and an answering network. */
+/** A signaling of the oracle's room and self id, under its room key, over an answering network. */
 struct answerer {
     asio::io_context io;
     answering_network net;
-    std::shared_ptr<oracle_sealer> sealer;
     std::vector<published_signal> published;
     std::vector<boost::system::error_code> failures;
     std::shared_ptr<detail::signaling> signaling;
 
     explicit answerer(const fixture_value& oracle)
-        : net(io, str(oracle["answer_sdp"]), str(oracle["candidate"])),
-          sealer(std::make_shared<oracle_sealer>(io, oracle["sealed"])) {
+        : net(io, str(oracle["answer_sdp"]), str(oracle["candidate"])) {
         signaling = std::make_shared<detail::signaling>(
-            net, sealer, str(oracle["app_id"]), str(oracle["room_id"]), str(oracle["self_id"]),
+            net, str(oracle["app_id"]), str(oracle["room_id"]), str(oracle["self_id"]),
             std::span<const backend::ice_server>(),
             detail::signaling::callbacks{
                 .claim = {},
@@ -259,6 +260,7 @@ struct answerer {
                                  std::string_view) { failures.push_back(ec); },
             },
             detail::logger(), memory(), memory());
+        signaling->set_key(room_key(oracle));
     }
 
     /** Hands `text` to the signaling, as a relay's on the room's self topic, then runs what is
@@ -272,13 +274,15 @@ struct answerer {
 // For each offer, the signaling opens it, applies it to an answering connection, and publishes the
 // answer, then the candidate it held, on the offerer's topic, each written as Trystero's answerer
 // writes it: {peerId, answer, offerId} and {peerId, candidate, offerId}, its offerId last, or none
-// for an offer that had none. The bytes are Trystero's, member for member.
+// for an offer that had none. The bytes are Trystero's, member for member, but for each sealed
+// text, which opens with the AAD of its type, the answerer and the offer id to what Trystero
+// sealed there.
 void an_answerers_signals_are_trysteros(const fixture_value& oracle) {
     const auto cases = oracle["cases"];
     BOOST_TEST_EQ(cases.size(), 2U);
     for (const auto c : cases) {
         answerer a(oracle);
-        a.receive(str(c["offer"]));
+        a.receive(resealed_offer(oracle, str(c["offer"])));
         BOOST_TEST_EQ(a.net.connections.size(), 1U);
         if (!a.net.connections.empty()) {
             BOOST_TEST_EQ(a.net.connections[0]->remote_type, "offer");
@@ -303,11 +307,22 @@ void an_answerers_signals_are_trysteros(const fixture_value& oracle) {
             if (i < a.published.size()) {
                 BOOST_TEST_EQ(a.published[i].relay, 0U);
                 BOOST_TEST_EQ(a.published[i].topic, topic);
-                BOOST_TEST_EQ(a.published[i].text, str(signal["text"]));
+                const read_signal_text read(a.published[i].text);
+                const auto& m = *read.message;
+                const bool answer = !m.answer.empty();
+                const auto sealed = answer ? m.answer : m.candidate;
+                const auto aad = tp::signal_aad(answer ? "answer" : "candidate",
+                                                str(oracle["self_id"]), m.offer_id);
+                const auto plain = tp::open(room_key(oracle), sealed, std::string_view(aad));
+                if (BOOST_TEST(plain.has_value())) {
+                    BOOST_TEST_EQ(*plain, str(answer ? oracle["answer_sdp"] : oracle["candidate"]));
+                    BOOST_TEST_EQ(
+                        a.published[i].text,
+                        replaced(str(signal["text"]), old_sealed(oracle, *plain), sealed));
+                }
             }
             ++i;
         }
-        BOOST_TEST_EQ(a.sealer->unknown, 0U);
         BOOST_TEST(a.failures.empty());
     }
 }
@@ -322,22 +337,21 @@ std::string padded(std::string_view text, std::size_t size) {
 }
 
 // A signal of protocol::max_parsed_signal_bytes, the oracle's first offer with spaces, is read and
-// answered; one byte longer is dropped before it is read: nothing is opened, made or published.
+// answered; one byte longer is dropped before it is read: nothing is made or published.
 void a_signal_past_its_bound_is_dropped(const fixture_value& oracle) {
-    const auto offer = str(oracle["cases"][0]["offer"]);
+    const auto offer = resealed_offer(oracle, str(oracle["cases"][0]["offer"]));
     {
         answerer a(oracle);
         a.receive(padded(offer, tp::max_parsed_signal_bytes));
-        BOOST_TEST_EQ(a.sealer->opened, 1U);
         BOOST_TEST_EQ(a.net.connections.size(), 1U);
         BOOST_TEST_EQ(a.published.size(), 2U);
     }
     {
         answerer a(oracle);
         a.receive(padded(offer, tp::max_parsed_signal_bytes + 1));
-        BOOST_TEST_EQ(a.sealer->opened, 0U);
         BOOST_TEST(a.net.connections.empty());
         BOOST_TEST(a.published.empty());
+        BOOST_TEST(a.failures.empty());
     }
 }
 

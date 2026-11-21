@@ -13,7 +13,6 @@
 
 #include <boost/system/error_code.hpp>
 
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -34,9 +33,10 @@
  * them there first.
  *
  * Every handler runs after the call that caused it has returned, never inside it: a completion
- * (`done`) of a `peer_connection` or a `sealer`, and a `websocket`'s `close` when no socket can be
- * made, are posted even when their result is known at once. The room calls these operations from
- * inside handlers whose state a completion run there would change under them.
+ * (`done`) of a `peer_connection` or of `factory::derive_password_master`, and a `websocket`'s
+ * `close` when no socket can be made, are posted even when their result is known at once. The
+ * room calls these operations from inside handlers whose state a completion run there would
+ * change under them.
  *
  * Text crosses this interface as `std::string_view`, valid for the duration of the call or of the
  * handler: a backend reads what it is given before returning, and a handler copies what it keeps.
@@ -282,39 +282,6 @@ public:
 };
 
 /**
- * AES-GCM under one room key, in Trystero's sealed text form (protocol/signal.hpp), what Trystero's
- * `encrypt` and `decrypt` do with `crypto.subtle`.
- *
- * @see "The protocol", in the guide.
- */
-class sealer {
-public:
-    /** Destroys the sealer. */
-    virtual ~sealer() = default;
-
-    /**
-     * Seals a text under a fresh random IV.
-     *
-     * @param plaintext The text, read during the call.
-     * @param done Called with the sealed text, a view valid for the call, or with
-     * `error::backend_failure` and an empty view.
-     */
-    virtual void seal(std::string_view plaintext,
-                      handler<void(error_code, std::string_view sealed)> done) = 0;
-
-    /**
-     * Opens a sealed text.
-     *
-     * @param sealed The sealed text, read during the call.
-     * @param done Called with the plaintext, a view valid for the call, or with an error and an
-     * empty view: `trystero::error::wrong_password` when the text was sealed under another key or
-     * is not a sealed text.
-     */
-    virtual void open(std::string_view sealed,
-                      handler<void(error_code, std::string_view plaintext)> done) = 0;
-};
-
-/**
  * Makes everything above, and gives a room its randomness and its clocks: one per page in the
  * browser, one per application natively, one per test.
  *
@@ -362,15 +329,20 @@ public:
     virtual std::shared_ptr<timer> make_timer(std::pmr::memory_resource* memory) = 0;
 
     /**
-     * Makes a sealer under a room's key.
+     * Derives a room's PBKDF2 master from its password: PBKDF2-HMAC-SHA-256 of `password` with
+     * `salt` and `protocol::pbkdf2_iterations` iterations, 32 bytes, what 0.27.0's
+     * `deriveBits` gives, off the room's thread, since 600,000 iterations would stall it.
      *
-     * @param key The raw AES-256 key, as `protocol::seal_key` derives it.
-     * @param memory The room's resource, which the sealer, its texts and its completions are
-     * allocated in.
-     * @return The sealer.
+     * @param password The password, in UTF-8; the caller's until `done` runs.
+     * @param salt The salt, `protocol::pbkdf2_salt`; the caller's until `done` runs.
+     * @param out Where the master is written; the caller's until `done` runs, zeroed on error.
+     * @param done Called on the room's executor once the master is written, or with
+     * `error::backend_failure`; what the derivation allocates goes through its allocator.
      */
-    virtual std::shared_ptr<sealer> make_sealer(std::array<std::uint8_t, 32> key,
-                                                std::pmr::memory_resource* memory) = 0;
+    virtual void derive_password_master(std::span<const std::uint8_t> password,
+                                        std::span<const std::uint8_t, 32> salt,
+                                        std::span<std::uint8_t, 32> out,
+                                        handler<void(boost::system::error_code)> done) = 0;
 
     /**
      * Fills `out` with bytes from a cryptographically secure source: they become secret keys and

@@ -27,8 +27,8 @@ rule native-threads ( properties * )
     }
 }
 local platform = <library>/webcpp/trystero//platform <conditional>@native-threads ;
-# A test of a part that parses no JSON, the timer, a relay's URL, a page's
-# calls or the sealer, links parts or platform-parts in place of the rooms:
+# A test of a part that parses no JSON, the timer, a relay's URL or a page's
+# calls, links parts or platform-parts in place of the rooms:
 # they leave out the rooms' Asyncify list, whose pattern names Boost.JSON's
 # parser, of which such a program has no function, and Binaryen warns of a
 # pattern that names none (build.jam).
@@ -44,8 +44,7 @@ local platform-part = -<library>/webcpp/trystero//trystero
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/platform/backend.hpp trystero/platform/entropy.hpp
-    trystero/platform/sealer.hpp trystero/platform/websocket.hpp trystero/webrtc/*.hpp
+  : trystero/platform/backend.hpp trystero/platform/websocket.hpp trystero/webrtc/*.hpp
   : $(platform) ;
 webcpp.headers-alone trystero : ../include : trystero/platform/page.hpp
   : $(platform) : emscripten ;
@@ -104,8 +103,7 @@ webcpp.run timer : timer_test.cpp : $(part) ;
 
 # The platform backend's own tests, on each target that builds them. On both:
 # the backend itself (its own state in backend_config::memory, its clocks,
-# its randomness, its TLS context); its sealer, natively OpenSSL's AES-GCM, in
-# a page Web Crypto under node, against what Trystero JS sealed; relays it
+# its randomness, its PBKDF2 off the room's thread, its TLS context); relays it
 # cannot reach; and how a relay's URL is read. Natively, against
 # libdatachannel and in-process servers: the relays' WebSocket, built with the
 # standard libraries' own checks, libc++'s extensive hardening and
@@ -118,8 +116,6 @@ webcpp.run timer : timer_test.cpp : $(part) ;
 # libdatachannel throws, so the backend needs none.
 # tag::platform[]
 webcpp.run platform_backend : platform_backend_test.cpp : $(platform) ;
-webcpp.run platform_sealer : platform_sealer_test.cpp
-  : $(platform) <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run platform_websocket_unreachable : platform_websocket_unreachable_test.cpp
   : $(platform) ;
 webcpp.run platform_websocket_url : platform_websocket_url_test.cpp : $(platform-part) ;
@@ -134,8 +130,6 @@ webcpp.run platform_peer_connection : platform_peer_connection_test.cpp
 webcpp.run platform_room : platform_room_test.cpp : $(platform) : native ;
 webcpp.run platform_backend_no_exceptions : platform_backend_test.cpp
   : $(platform) <exception-handling>off ;
-webcpp.run platform_sealer_no_exceptions : platform_sealer_test.cpp
-  : $(platform) <testing.input-file>fixtures/expected/expected.json <exception-handling>off ;
 webcpp.run platform_websocket_unreachable_no_exceptions : platform_websocket_unreachable_test.cpp
   : $(platform) <exception-handling>off ;
 webcpp.run platform_websocket_url_no_exceptions : platform_websocket_url_test.cpp
@@ -209,24 +203,16 @@ webcpp.run platform_page_peer_connection : platform_page_peer_connection_test.cp
 # A page's program: main runs the io_context under a work guard, and the
 # page's calls into C++ only post to it.
 webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
-# A page's sealer allocates nothing outside the room's resource from the
-# start of a seal or an open to its completion: the global operator new and
-# the C library's allocation functions, replaced, count none.
-webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
-  : $(platform-part) : emscripten ;
 # A relay's connection and each of its messages allocate outside the room's
 # resource exactly what the guide lists, no more and no fewer.
 webcpp.run platform_page_relay_allocation : platform_page_relay_allocation_test.cpp
   : $(platform) : emscripten ;
-# A page whose crypto misbehaves: its randomness and its sealer fail with
-# their errors, and no JavaScript exception enters WebAssembly.
-webcpp.run platform_page_sealer : platform_page_sealer_test.cpp : $(platform-part) : emscripten ;
 # A page_call's handler sees the page's value as it is when it runs; a
 # function the page kept reaches nothing once its page_call, or its
 # io_context, is destroyed; and a page_call outlives its io_context harmlessly.
 webcpp.run platform_page_call : platform_page_call_test.cpp : $(platform-part) : emscripten ;
-# A relay socket's handlers and a sealer's completions run outside the page's
-# events.
+# A relay socket's handlers and a derivation's completion run outside the
+# page's events.
 webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
 # end::page[]
 
@@ -248,11 +234,6 @@ webcpp.run platform_page_peer_connection_no_exceptions : platform_page_peer_conn
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_no_exceptions : platform_page_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
-webcpp.run platform_page_sealer_allocation_no_exceptions
-  : platform_page_sealer_allocation_test.cpp
-  : $(platform-part) <exception-handling>off : emscripten ;
-webcpp.run platform_page_sealer_no_exceptions : platform_page_sealer_test.cpp
-  : $(platform-part) <exception-handling>off : emscripten ;
 webcpp.run platform_page_relay_allocation_no_exceptions : platform_page_relay_allocation_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_call_no_exceptions : platform_page_call_test.cpp

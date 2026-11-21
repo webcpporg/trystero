@@ -12,18 +12,28 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/construction_window.hpp>
 #include <webcpp/trystero/detail/timer.hpp>
+#include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/platform/entropy.hpp>
-#include <webcpp/trystero/platform/sealer.hpp>
 #include <webcpp/trystero/platform/websocket.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
 
 #include <webcpp/webrtc/error.hpp>
 #include <webcpp/webrtc/options.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
+#include <webcpp/crypto/detail/wipe.hpp>
+#include <webcpp/crypto/random_device.hpp>  // lint-world: the backend's randomness
+#include <webcpp/hash/async.hpp>
+#include <webcpp/hash/hmac.hpp>
+
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
+#include <webcpp/asio/bind_allocator.hpp>   // lint-world: binds an allocator only
+#include <webcpp/asio/bind_executor.hpp>    // lint-world: binds an executor only
 #include <webcpp/asio/ssl.hpp>              // lint-world: the relays' TLS
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+#include <webcpp/asio/thread_pool.hpp>  // lint-world: the thread a PBKDF2 runs on
+#endif
 
 #include <boost/system/result.hpp>
 
@@ -34,6 +44,7 @@
 #include <cstdlib>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -42,10 +53,11 @@
 
 /**
  * The platform: one implementation of the backend interface for both targets, over webcpp::webrtc
- * for WebRTC, webcpp::beast for the relays' WebSockets and webcpp::asio for timers; natively
- * libdatachannel's WebRTC, Boost.Beast's WebSockets and OpenSSL's TLS, AES-GCM and randomness, in a
- * page its own `RTCPeerConnection`, `WebSocket` and `crypto.subtle`. Everything it reports runs on
- * the executor it is given, whose io_context the program runs.
+ * for WebRTC, webcpp::beast for the relays' WebSockets, webcpp::asio for timers, webcpp::crypto
+ * for randomness and webcpp::hash for a password's PBKDF2; natively libdatachannel's WebRTC,
+ * Boost.Beast's WebSockets and OpenSSL's TLS, in a page its own `RTCPeerConnection`, `WebSocket`
+ * and `crypto.subtle`. Everything it reports runs on the executor it is given, whose io_context
+ * the program runs.
  */
 namespace webcpp::trystero::platform {
 
@@ -107,9 +119,10 @@ struct backend_config {
  * page.
  *
  * It makes peer connections, data channels and received frames in `app_config::memory`, and
- * WebSockets, sealers and room timers in the room's effective `room_options::memory`; its own state
- * is in `backend_config::memory`. Objects and their handlers use the resource supplied to their
- * factory method. What libdatachannel and OpenSSL allocate stays theirs, and what
+ * WebSockets and room timers in the room's effective `room_options::memory`; its own state is in
+ * `backend_config::memory`. Objects and their handlers use the resource supplied to their factory
+ * method, and a derivation its completion's allocator. What libdatachannel and OpenSSL allocate
+ * stays theirs, as does the thread of `derive_password_master` natively, and what
  * `emscripten::val` holds is in the JavaScript heap.
  *
  * Its peer connections are webcpp::webrtc's, counted by a `webcpp::webrtc::runtime`: its own, or
@@ -123,7 +136,8 @@ struct backend_config {
  * Tip: in a page, every object it makes runs on its executor, whose io_context the program runs
  * from `main`, under a work guard, for as long as the page lives: the page's events, the timers and
  * the promises it awaits post to that io_context, and run only while it runs. A page needs a
- * secure context (https, or http on localhost), where `crypto.subtle` exists, for its sealer.
+ * secure context (https, or http on localhost), where `crypto.subtle` exists, for the PBKDF2 of a
+ * room with a password.
  *
  * @see "The platform backend", in the guide.
  */
@@ -197,6 +211,24 @@ public:
                   std::shared_ptr<::webcpp::webrtc::runtime>(
                       std::shared_ptr<::webcpp::webrtc::runtime>(), &runtime),
                   config) {}
+
+    /** Waits for the derivation its thread runs, natively, if any, then destroys the backend. */
+    ~backend() override {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+        if (pool_) {
+            pool_->join();
+        }
+#endif
+    }
+
+    /** Not copyable: its rooms, connections and relays hold it by reference. */
+    backend(const backend&) = delete;
+    /** Not copy-assignable. */
+    backend& operator=(const backend&) = delete;
+    /** Not movable: its rooms, connections and relays hold it by reference. */
+    backend(backend&&) = delete;
+    /** Not move-assignable. */
+    backend& operator=(backend&&) = delete;
 
     /**
      * The executor everything the backend reports runs on.
@@ -293,28 +325,55 @@ public:
     }
 
     /**
-     * Makes a sealer: natively over OpenSSL's AES-256-GCM, in a page over `crypto.subtle`.
+     * Derives a room's PBKDF2 master off the room's thread: natively with
+     * `webcpp::hash::async_pbkdf2` on a thread of the backend's own, made at the first call and
+     * joined when the backend is destroyed; in a page through the page's WebCrypto
+     * (`backends::webcrypto`), awaited on the backend's executor.
      *
-     * @param key The raw AES-256 key.
-     * @param memory The room's resource, which the sealer, its texts and its completions are
-     * allocated in.
-     * @return The sealer.
+     * @param password The password, in UTF-8; the caller's until `done` runs.
+     * @param salt The salt; the caller's until `done` runs.
+     * @param out Where the master is written; the caller's until `done` runs, zeroed on error.
+     * @param done Called on the backend's executor, after the call returns, once the master is
+     * written, or with `error::backend_failure`; the derivation's operation is allocated with its
+     * allocator.
      */
-    std::shared_ptr<trystero::backend::sealer> make_sealer(
-        std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
-        return std::allocate_shared<sealer>(std::pmr::polymorphic_allocator<>(memory), ex_, key,
-                                            memory);
+    void derive_password_master(std::span<const std::uint8_t> password,
+                                std::span<const std::uint8_t, 32> salt,
+                                std::span<std::uint8_t, 32> out,
+                                handler<void(boost::system::error_code)> done) override {
+        const auto allocator = done.get_allocator();
+        auto completion = webcpp::asio::bind_executor(
+            ex_, webcpp::asio::bind_allocator(allocator, [out, done = std::move(done)](
+                                                             boost::system::error_code ec) mutable {
+                if (ec) {
+                    webcpp::crypto::detail::wipe(out.data(), out.size());
+                    done(make_error_code(error::backend_failure));
+                    return;
+                }
+                done({});
+            }));
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+        webcpp::hash::async_pbkdf2<webcpp::hash::hmac_sha2_256, webcpp::hash::backends::webcrypto>(
+            ex_, out, password, salt, protocol::pbkdf2_iterations, std::move(completion));
+#else
+        if (!pool_) {
+            pool_.emplace(1);
+        }
+        webcpp::hash::async_pbkdf2<webcpp::hash::hmac_sha2_256>(
+            pool_->get_executor(), out, password, salt, protocol::pbkdf2_iterations,
+            std::move(completion));
+#endif
     }
 
     /**
-     * Fills `out` from the platform's secure source of randomness, natively OpenSSL's generator,
-     * in a page its `crypto.getRandomValues`; the program aborts when it has none.
+     * Fills `out` from `webcpp::crypto::random_device`, the system's generator, in a page its
+     * `crypto.getRandomValues`; the program aborts when it has none.
      *
      * @param out The bytes to fill.
      */
     void random(std::span<std::uint8_t> out) override {
-        if (!detail::fill_random(out)) {
-            std::abort();  // no secure randomness: nothing is safe
+        if (!webcpp::crypto::random_device().fill(out)) {  // lint-world: Trystero's randomness
+            std::abort();                                  // no secure randomness: nothing is safe
         }
     }
 
@@ -406,6 +465,10 @@ private:
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
     trystero::detail::construction_window constructions_;
     boost::system::result<webcpp::asio::ssl::context> tls_;
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // The one thread of the derivations, made at the first.
+    std::optional<webcpp::asio::thread_pool> pool_;
+#endif
 };
 
 }  // namespace webcpp::trystero::platform

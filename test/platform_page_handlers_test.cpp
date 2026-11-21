@@ -6,18 +6,18 @@
 
 // Tests that the platform backend's handlers in a page run outside the page's events, under node:
 // a relay socket's open, message and close handlers, over a stand-in for the page's WebSocket, and
-// a sealer's completions of a seal and an open, through the page's Web Crypto, each find
-// webcpp::asio's bridge delivering nothing (`bridge::delivering()` false): the page's event, or the
+// the completion of a password's PBKDF2, through the page's WebCrypto, each find webcpp::asio's
+// bridge delivering nothing (`bridge::delivering()` false): the page's event, or the
 // settlement of a promise, only posts to the io_context, and the run family runs the handler after
 // it. A probe proves that the check sees a delivery: inside a call of a bridge's function, which a
 // page's event is, `delivering()` is true.
 //
 // main runs the io_context under a work guard, as a page's program does; once the socket reported
-// its close and the sealer opened what it sealed, the verdict releases the guard. A step that does
+// its close and the derivation completed, the verdict releases the guard. A step that does
 // not come within 10 s fails by name.
 
 #include <webcpp/trystero/platform/backend.hpp>
-#include <webcpp/trystero/protocol/signal.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
 
 #include <webcpp/asio/browser/bridge.hpp>
 #include <webcpp/asio/executor_work_guard.hpp>
@@ -29,10 +29,13 @@
 #include <boost/system/error_code.hpp>
 #include <webcpp/test/exit_status.hpp>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -108,16 +111,13 @@ struct state {
     asio::executor_work_guard<asio::io_context::executor_type> guard{io.get_executor()};
     trystero::platform::backend backend{io.get_executor()};
     std::shared_ptr<trystero::backend::websocket> socket;
-    std::shared_ptr<trystero::backend::sealer> sealer =
-        backend.make_sealer(trystero::protocol::seal_key("secret", "my-app", "room-1"),
-                            std::pmr::get_default_resource());
+    std::array<std::uint8_t, 32> salt = trystero::protocol::pbkdf2_salt("my-app", "room-1");
+    std::array<std::uint8_t, 32> master{};
     std::string echoed;
-    std::string opened;
     seen open;
     seen message;
     seen close;
-    seen sealed;
-    seen opened_text;
+    seen derived;
     bool judged = false;
 };
 
@@ -127,9 +127,9 @@ void record(state& s, seen& into) {
     into.inside_an_event = asio::use_service<asio::browser::bridge>(s.io).delivering();
 }
 
-/** Once the socket closed and the sealer opened what it sealed: the verdict. */
+/** Once the socket closed and the derivation completed: the verdict. */
 void judge(state& s) {
-    if (!s.close.ran || !s.opened_text.ran) {
+    if (!s.close.ran || !s.derived.ran) {
         return;
     }
     s.socket.reset();
@@ -137,18 +137,16 @@ void judge(state& s) {
     s.guard.reset();
 }
 
-/** Seals a text, and opens what was sealed, recording where each completion ran. */
-void seal_and_open(state& s) {
-    s.sealer->seal("a candidate", [&s](boost::system::error_code ec, std::string_view text) {
-        record(s, s.sealed);
-        BOOST_TEST(!ec);
-        s.sealer->open(text, [&s](boost::system::error_code ec, std::string_view plain) {
-            record(s, s.opened_text);
+/** Derives a password's master, recording where its completion ran. */
+void derive(state& s) {
+    constexpr std::string_view password = "secret";
+    s.backend.derive_password_master(
+        std::span(reinterpret_cast<const std::uint8_t*>(password.data()), password.size()), s.salt,
+        s.master, [&s](boost::system::error_code ec) {
+            record(s, s.derived);
             BOOST_TEST(!ec);
-            s.opened = plain;
             judge(s);
         });
-    });
 }
 
 /** Checks that a handler ran outside every event of the page's. */
@@ -193,17 +191,16 @@ int main() {
                                          },
                                  },
                                  std::pmr::get_default_resource());
-    seal_and_open(s);
+    derive(s);
     s.io.run_for(10s);  // lint-run: the test's event loop, held by its work guard until the verdict
     if (!s.judged) {
-        BOOST_ERROR("the socket's close or the sealer's open never came");
+        BOOST_ERROR("the socket's close or the derivation's completion never came");
     }
     expect_outside(s.open, "the socket's open handler never ran");
     expect_outside(s.message, "the socket's message handler never ran");
     expect_outside(s.close, "the socket's close handler never ran");
-    expect_outside(s.sealed, "the seal never completed");
-    expect_outside(s.opened_text, "the open never completed");
+    expect_outside(s.derived, "the derivation never completed");
     BOOST_TEST_EQ(s.echoed, "hello");
-    BOOST_TEST_EQ(s.opened, "a candidate");
+    BOOST_TEST(std::ranges::any_of(s.master, [](std::uint8_t b) { return b != 0; }));
     return webcpp::test::exit_status(boost::report_errors());
 }

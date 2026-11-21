@@ -26,7 +26,9 @@
 #include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
@@ -583,12 +585,10 @@ public:
      */
     ~room_impl() { app_->unregister_room(token_, this); }
 
-    /** Joins: makes the sealer, the action wire, the signaling and the strategy, registers the
-     * room with its app, and starts the strategy. */
+    /** Joins: makes the action wire, the signaling and the strategy, registers the room with its
+     * app, and asks for the room's keys, the strategy starting once they exist. */
     void start() {
         const auto weak = weak_from_this();
-        sealer_ = factory_.make_sealer(
-            protocol::seal_key(app_->password(), app_->app_id(), room_id_), memory_);
         wire_ = std::allocate_shared<action_wire>(
             allocator(), factory_, token_, options_.max_receive_bytes,
             action_wire::callbacks{
@@ -627,8 +627,7 @@ public:
             },
             memory_);
         signaling_ = std::allocate_shared<signaling>(
-            allocator(), factory_, sealer_, app_->app_id(), room_id_, app_->self_id(),
-            app_->ice_servers(),
+            allocator(), factory_, app_->app_id(), room_id_, app_->self_id(), app_->ice_servers(),
             signaling::callbacks{
                 .claim = bind<bool(std::string_view)>([weak](std::string_view peer) {
                     const auto self = weak.lock();
@@ -683,7 +682,8 @@ public:
         register_and_advertise();
     }
 
-    /** Registers the membership, starts discovery, and advertises it on live connections. */
+    /** Registers the membership, asks for the keys that start discovery, and advertises it on
+     * live connections. */
     void register_and_advertise() {
         // By a weak reference: the room leaves the registry before it ends, its destructor
         // included.
@@ -693,7 +693,7 @@ public:
         // The registry reserves this room before the sink can reenter app::join.
         log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
              " over ", app_->relay_urls().size(), " relays");
-        strategy_->start();
+        request_keys();
         // As Trystero joins a room: bound over every live connection whose remote advertised it,
         // then announced on every live connection, so that each remote binds in turn.
         const auto connections = app_->live_connections();
@@ -703,6 +703,41 @@ public:
         for (const auto& c : connections) {
             c->send_presence(token_, true);
         }
+    }
+
+    /**
+     * Asks the app for the room's keys, which complete after the join returns: a room with a
+     * password derives them off its thread. The strategy starts once they exist, so that nothing
+     * is announced before the room can seal, as 0.27.0's room waits for `genKey`.
+     */
+    void request_keys() {
+        app_->room_keys().get(room_id_,
+                              bind<void(boost::system::error_code, const protocol::room_keys&)>(
+                                  [weak = weak_from_this()](boost::system::error_code ec,
+                                                            const protocol::room_keys& keys) {
+                                      if (const auto self = weak.lock()) {
+                                          self->on_keys(ec, keys);
+                                      }
+                                  }));
+    }
+
+    /**
+     * Starts the strategy under the room's keys; a room left meanwhile starts nothing. A failed
+     * derivation is reported as `error::backend_failure`, 0.27.0 having no room error for it
+     * (design D6), and the room announces nothing: a rejoin derives again.
+     */
+    void on_keys(boost::system::error_code ec, const protocol::room_keys& keys) {
+        if (left_) {
+            return;
+        }
+        if (ec) {
+            report({}, make_error_code(error::backend_failure),
+                   "the room's keys could not be derived from its password, so it announces "
+                   "nothing; join it again to retry");
+            return;
+        }
+        signaling_->set_key(keys.aes);
+        strategy_->start();
     }
 
     /** The room's executor. */
@@ -1306,12 +1341,9 @@ private:
         if (app_->self_id() < peer) {
             const auto h = field("h");
             const auto r = rebinds_.find(peer);
-            const bool proves =
-                field("__trystero_pw") == "response" && r != rebinds_.end() &&
-                r->second.challenges.any_of([&](std::string_view c) {
-                    return h == protocol::handshake_proof(c, app_->password(), app_->app_id(),
-                                                          room_id_, memory_);
-                });
+            const bool proves = field("__trystero_pw") == "response" && r != rebinds_.end() &&
+                                r->second.challenges.any_of(
+                                    [&](std::string_view c) { return h == handshake_proof(c); });
             if (proves) {
                 pass_local(peer);
                 return;
@@ -1327,12 +1359,21 @@ private:
             return;
         }
         std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
-        protocol::json::detail::append_utf8(
-            text, protocol::handshake_proof(field("c"), app_->password(), app_->app_id(), room_id_,
-                                            memory_));
+        protocol::json::detail::append_utf8(text, handshake_proof(field("c")));
         text += '}';
         send_internal("@_hsdata", peer, protocol::payload_format::json, text);
         pass_local(peer);
+    }
+
+    /**
+     * The proof of the password handshake over a shared connection, 0.26.0's `hashChallenge`: the
+     * hexadecimal SHA-256 of "<challenge>:<password>:<app>:<room>". Provisional: 0.27.0 has no
+     * such handshake, and Phase 2's dual-signature handshake (Task 2.4) replaces it.
+     */
+    std::pmr::string handshake_proof(std::string_view challenge) const {
+        return protocol::to_hex(protocol::sha256_of({challenge, ":", app_->password(), ":",
+                                                     app_->app_id(), ":", room_id_}),
+                                memory_);
     }
 
     void fail_handshake(std::string_view peer_view) {
@@ -1576,7 +1617,6 @@ private:
     std::pmr::string token_;
     std::pmr::string root_topic_;
     std::pmr::string self_topic_;
-    std::shared_ptr<backend::sealer> sealer_;
     std::shared_ptr<action_wire> wire_;
     std::shared_ptr<signaling> signaling_;
     std::shared_ptr<nostr_strategy> strategy_;

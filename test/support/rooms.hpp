@@ -17,6 +17,8 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -215,13 +217,21 @@ public:
                                                      protocol::write_signal(m, nonce), aux));
     }
 
-    /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
-     */
-    static std::string sealed(std::string_view room, std::string_view plain) {
-        const auto key = protocol::seal_key("", app_id, room);
-        return std::string(protocol::format_sealed(
-            std::span(key).first(16),
-            std::span(reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size())));
+    /** `plain` sealed under the room key of `room`, with no password, as `peer`'s signal of
+     * `type` for the offer `offer_id`, as a room seals it, under an IV of its own. */
+    static std::string sealed(std::string_view room, std::string_view plain, std::string_view peer,
+                              std::string_view offer_id, std::string_view type = "offer") {
+        static std::uint64_t seals = 0;
+        std::array<std::uint8_t, protocol::gcm_iv_size> iv{};
+        const auto n = ++seals;
+        for (std::size_t i = 0; i < sizeof(n); ++i) {
+            iv.at(i) = static_cast<std::uint8_t>(n >> (8 * i));
+        }
+        const auto key = protocol::room_aes_key_without_password(app_id, room);
+        const auto aad = protocol::signal_aad(type, peer, offer_id);
+        auto text = protocol::seal(key, iv, plain, std::string_view(aad));
+        webcpp::test::require(BOOST_TEST(text.has_value()));
+        return std::string(*text);
     }
 
     /** Announces one id `times` times. */

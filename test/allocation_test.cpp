@@ -8,7 +8,10 @@
 // they make goes through the resources of their configurations: the counting
 // resources see them, and the global operator new, replaced here, sees none,
 // nor do the C library's allocation functions where the platform lets a
-// program count them (doc: #trystero-allocation).
+// program count them (doc: #trystero-allocation), but natively OpenSSL's:
+// webcpp::crypto's AES-256-GCM is OpenSSL's there, whose cipher context each
+// seal and open of a signal allocates, outside the rooms' resources, counted
+// apart.
 
 #include <webcpp/trystero.hpp>
 
@@ -49,6 +52,9 @@
 #include <malloc.h>
 #else
 #include <pthread.h>
+#endif
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+#include <openssl/crypto.h>
 #endif
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 #include <emscripten/em_asm.h>
@@ -93,6 +99,15 @@ bool live_overflow = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+// Set while OpenSSL takes its memory from the C library (openssl_malloc), which then counts
+// nothing: natively each seal and open of a signal allocates OpenSSL's cipher context, outside the
+// rooms' resources, which openssl_allocations counts apart.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+bool inside_openssl = false;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t openssl_allocations = 0;
+#endif
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 // Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
 // emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
@@ -175,6 +190,11 @@ void __libc_free(void* pointer);
 namespace {
 
 void* counted(void* pointer) {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    if (inside_openssl) {
+        return pointer;
+    }
+#endif
     if (on_counted_thread() && counting && !inside_operator_new) {
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
         ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
@@ -310,7 +330,7 @@ constexpr std::uint32_t malloc_log_allocate = 2;
 void count_c_allocation(std::uint32_t type, std::uintptr_t /*zone*/, std::uintptr_t /*size*/,
                         std::uintptr_t /*other*/, std::uintptr_t /*result*/,
                         std::uint32_t /*frames*/) {
-    if (on_counted_thread() && counting && !inside_operator_new &&
+    if (on_counted_thread() && counting && !inside_operator_new && !inside_openssl &&
         (type & malloc_log_allocate) != 0) {
         ++c_allocations;
     }
@@ -1113,9 +1133,44 @@ void mark_the_runtime_allocations() {
 
 }  // namespace
 
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+namespace {
+
+/** OpenSSL's allocation functions: the C library's, counted apart (inside_openssl). */
+void* openssl_malloc(std::size_t size, const char* /*file*/, int /*line*/) {
+    inside_openssl = true;
+    void* const pointer = std::malloc(size);  // NOLINT(cppcoreguidelines-no-malloc)
+    inside_openssl = false;
+    if (on_counted_thread() && counting) {
+        ++openssl_allocations;
+    }
+    return pointer;
+}
+
+void* openssl_realloc(void* pointer, std::size_t size, const char* /*file*/, int /*line*/) {
+    inside_openssl = true;
+    void* const moved = std::realloc(pointer, size);  // NOLINT(cppcoreguidelines-no-malloc)
+    inside_openssl = false;
+    if (on_counted_thread() && counting) {
+        ++openssl_allocations;
+    }
+    return moved;
+}
+
+void openssl_free(void* pointer, const char* /*file*/, int /*line*/) {
+    std::free(pointer);  // NOLINT(cppcoreguidelines-no-malloc)
+}
+
+}  // namespace
+#endif
+
 int main() {
     count_this_thread();
     mark_the_runtime_allocations();
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // Before OpenSSL's first allocation, which a later call could not replace.
+    BOOST_TEST_EQ(CRYPTO_set_mem_functions(&openssl_malloc, &openssl_realloc, &openssl_free), 1);
+#endif
 #if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
     !defined(WEBCPP_TARGET_EMSCRIPTEN)
     malloc_logger = &count_c_allocation;

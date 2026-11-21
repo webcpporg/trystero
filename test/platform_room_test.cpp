@@ -5,11 +5,14 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests whole rooms over the platform backend natively: real WebRTC through libdatachannel, AES-GCM
-// through OpenSSL, webcpp::asio's timers. Only the relays are the memory ones of
-// support/memory_backend.hpp, and the backend binds every connection to 127.0.0.1, so the loopback
-// is the only network needed.
+// through webcpp::crypto's OpenSSL, a password's PBKDF2 on the backend's thread, webcpp::asio's
+// timers. Only the relays are the memory ones of support/memory_backend.hpp, and the backend binds
+// every connection to 127.0.0.1, so the loopback is the only network needed. A room with a
+// password announces once its PBKDF2 of 600,000 iterations completed, seconds in a debug build on
+// a loaded machine: its waits are bounds of `derivation_bound`, never what the case measures.
 
 #include <webcpp/trystero/app.hpp>
+#include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/room.hpp>
 
@@ -41,6 +44,9 @@ using namespace std::chrono_literals;
 namespace {
 
 constexpr const char* relay_url = "wss://relay.test";
+
+/** How long a case waits, at most, for what follows the PBKDF2 of its rooms' password. */
+constexpr std::chrono::milliseconds derivation_bound = 120s;
 
 /** The platform backend bound to the loopback, with the memory relays instead of the network's. */
 class native_over_memory_relays : public trystero::platform::backend {
@@ -120,8 +126,9 @@ void native_rooms_join_and_exchange_every_format() {
             file = std::move(v);
             metadata = info.metadata;
         });
-    if (!BOOST_TEST(
-            run_until(f.io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; }))) {
+    if (!BOOST_TEST(run_until(
+            f.io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; },
+            derivation_bound))) {
         return;
     }
 
@@ -170,10 +177,13 @@ void another_password_never_joins() {
     b.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
         errors.push_back(ec);
     });
-    run_until(f.io, [] { return false; }, 2s);
+    // A's id is the lower: once both derived their keys, A offers, and B cannot open the offer.
+    BOOST_TEST(run_until(f.io, [&] { return !errors.empty(); }, derivation_bound));
     BOOST_TEST(a.peers().empty());
     BOOST_TEST(b.peers().empty());
-    BOOST_TEST(!errors.empty());
+    for (const auto& ec : errors) {
+        BOOST_TEST(ec == trystero::error::wrong_password);
+    }
 }
 
 void leaving_is_seen_over_a_real_connection() {

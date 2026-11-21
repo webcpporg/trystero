@@ -46,3 +46,10 @@ webcpp.drive interop_native : interop/native_peer.cpp
   : interop/run.mjs : --native : native ;
 webcpp.lane interop : interop_browser interop_native : native emscripten ;
 # end::interop[]
+
+# On the branch port/trystero-0.27 the oracle and interop lanes are off until
+# Phase 2's Task 2.6: their oracle is still Trystero 0.26.0, whose wire the
+# branch no longer speaks. Their targets stay explicit (webcpp.lane makes each
+# so), so that the library's test and example directories never build them;
+# they run only by name.
+explicit twins cases-protocol interop_browser interop_native ;

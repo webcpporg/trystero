@@ -49,9 +49,9 @@ rule platform-dependencies ( properties * )
 #
 # trystero is parts and that list. parts, the same headers and dependencies
 # without it, is for a program of a part that parses no JSON, as trystero's
-# tests of the timer, a relay's URL, a page's calls and the sealer are
-# (test/Jamfile): such a program has none of the parser's functions, and
-# Binaryen warns of a pattern of the list that names none.
+# tests of the timer, a relay's URL and a page's calls are (test/Jamfile):
+# such a program has none of the parser's functions, and Binaryen warns of a
+# pattern of the list that names none.
 path-constant WEBCPP_TRYSTERO_ROOT : . ;
 # tag::trystero[]
 alias parts : :
