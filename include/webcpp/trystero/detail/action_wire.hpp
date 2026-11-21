@@ -64,6 +64,11 @@ struct incoming {  // NOLINT(bugprone-exception-escape)
     range payload_at = {};
     /** Where the metadata, JSON text or empty, is in the buffer. */
     range metadata_at = {};
+    /**
+     * Whether several listeners read the message: each then copies what it takes, leaving the
+     * message whole for the next.
+     */
+    bool shared = false;
 
     /** The action's name, a view into the buffer. */
     [[nodiscard]] std::string_view name() const { return text(name_at); }
@@ -91,6 +96,16 @@ private:
     [[nodiscard]] std::string_view text(range r) const {
         return {reinterpret_cast<const char*>(buffer.data()) + r.offset, r.size};
     }
+};
+
+/** What a room's receive gate, Trystero's `onReceive`, says of a message it is asked about. */
+enum class admission {
+    /** The action has no gate: the message is received unasked. */
+    open,
+    /** The gate took the message. */
+    admitted,
+    /** The gate refused the message: an inline one is dropped, an offer rejected. */
+    refused,
 };
 
 /** A payload to send: the bytes, and what keeps them alive while a transfer is in flight. */
@@ -138,6 +153,11 @@ protected:
  * |                          | "unregistered action"                                              |
  * | frames before a listener | of an action made: kept, 32 per action and peer (a newer one drops |
  * |                          | the oldest), for 10 s, until the action gets one                   |
+ * | the receive gate         | asked of an inline frame and of an offer as it arrives, and of a   |
+ * |                          | kept frame it was not asked of before it is delivered; a refusal   |
+ * |                          | drops the frame, or rejects the offer "payload rejected by         |
+ * |                          | receiver"                                                          |
+ * | progress                 | after each chunk but the last, the share received                  |
  * | control frames           | sent only while the channel buffers at most 1 MiB, else the peer   |
  * |                          | is dropped                                                         |
  * | protocol violations      | the peer is dropped                                                |
@@ -148,8 +168,12 @@ protected:
  * reports no `maxBulkFrameBytes`, and receives wide transfers as Trystero does.
  *
  * Frames of an action the room has not made are not kept, as Trystero keeps none: a page that makes
- * an action after it joined misses what came before. A room's made action always listens: without a
- * handler, the room queues its messages for `async_receive`.
+ * an action after it joined misses what came before. An action listens while it has a message
+ * listener or a request listener, and from its first `async_receive` on; its frames wait
+ * meanwhile.
+ *
+ * The receive gate runs during the frame's processing, as Trystero's does, and may end the peer or
+ * the room: the wire looks the peer up again after it.
  */
 class action_wire : public std::enable_shared_from_this<action_wire> {
 public:
@@ -197,6 +221,21 @@ public:
         handler<void(incoming&&)> deliver;
         /** Drops a peer that broke the protocol, with the reason. */
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
+        /** Asks the receive gate of an action the room has about a message, with its payload's
+         * size and its metadata; empty, every message is received unasked. */
+        handler<admission(std::string_view peer, std::string_view name, std::size_t size,
+                          std::string_view metadata)>
+            admit = nullptr;
+        /** The wire refused a message of an action the room has, with the reason, Trystero's
+         * `onReject`: the gate's refusal, a size or a count over its bound, a transfer timed out.
+         */
+        handler<void(std::string_view peer, std::string_view name, std::string_view metadata,
+                     std::string_view reason)>
+            rejected = nullptr;
+        /** A transfer's share received, below 1, after each of its chunks but the last. */
+        handler<void(std::string_view peer, std::string_view name, std::string_view metadata,
+                     double share)>
+            progress = nullptr;
     };
 
     /** Every allocation goes through `memory`. */
@@ -390,6 +429,8 @@ private:
     struct waiting_inline {  // NOLINT(bugprone-exception-escape)
         incoming message;
         time_point arrived{};
+        /** Whether the receive gate took it as it arrived. */
+        bool admitted = false;
     };
 
     struct peer_in {
@@ -402,6 +443,20 @@ private:
     };
 
     pmr_allocator allocator() const { return {memory_}; }
+
+    /** Asks the receive gate about a message; open without one. */
+    admission gate(std::string_view peer, std::string_view name, std::size_t size,
+                   std::string_view metadata) {
+        return cb_.admit ? cb_.admit(peer, name, size, metadata) : admission::open;
+    }
+
+    /** Tells the room a message of an action it has was refused. */
+    void refused(std::string_view peer, std::string_view name, std::string_view metadata,
+                 std::string_view reason) {
+        if (cb_.rejected) {
+            cb_.rejected(peer, name, metadata, reason);
+        }
+    }
 
     /** `f` as a handler of the room's resource. */
     template <class Signature, class F>
@@ -597,6 +652,14 @@ private:
         if (!cb_.has_action(p.name)) {
             return;  // as Trystero drops a frame of an unregistered action
         }
+        const auto verdict = gate(peer, p.name, p.payload.size(), p.metadata);
+        if (verdict == admission::refused) {
+            refused(peer, p.name, p.metadata, "payload rejected by receiver");
+            return;
+        }
+        if (verdict == admission::admitted && !cb_.may_receive(peer, p.name)) {
+            return;  // the gate ended the peer, or the room
+        }
         if (cb_.has_listener(p.name)) {
             cb_.deliver(std::move(message));
             return;
@@ -617,7 +680,11 @@ private:
         if (same_action >= protocol::max_pre_listener_messages) {
             in.waiting.erase(oldest);
         }
-        in.waiting.push_back({.message = std::move(message), .arrived = now});
+        in.waiting.push_back({
+            .message = std::move(message),
+            .arrived = now,
+            .admitted = verdict == admission::admitted,
+        });
     }
 
     peer_in& incoming_for(std::string_view peer) {
@@ -634,27 +701,42 @@ private:
             cb_.fail_peer(peer, "duplicate action offer");
             return;
         }
-        // Each rejection returns at once: a control frame that cannot go drops the peer.
-        const auto reject = [&](std::string_view reason) {
+        // Each rejection returns at once: a control frame that cannot go drops the peer. The room
+        // hears of the rejections of an action it has.
+        const auto reject = [&](std::string_view reason, bool registered = true) {
             auto frame = protocol::begin_room_frame(
                 token_, protocol::control_header_size + reason.size(), memory_);
             protocol::append_rejected(frame, p.id, reason);
+            if (registered) {
+                refused(peer, p.name, p.metadata, reason);
+            }
             control(peer, frame);
         };
         if (!cb_.has_action(p.name)) {
-            reject("unregistered action");
+            reject("unregistered action", false);
             return;
         }
         if (p.size > max_receive_bytes_) {
             reject("payload exceeds receiver size limit");
             return;
         }
-        auto& in = incoming_for(peer);
-        if (pending_transfers_ >= protocol::max_pending_transfers ||
-            in.bulk.size() >= protocol::max_pending_transfers_per_peer) {
+        if (const auto it = incoming_.find(peer);
+            pending_transfers_ >= protocol::max_pending_transfers ||
+            (it != incoming_.end() &&
+             it->second.bulk.size() >= protocol::max_pending_transfers_per_peer)) {
             reject("too many pending transfers");
             return;
         }
+        // The gate, as Trystero asks it once the offer is pending; its code may end the peer.
+        const auto verdict = gate(peer, p.name, static_cast<std::size_t>(p.size), p.metadata);
+        if (verdict == admission::refused) {
+            reject("payload rejected by receiver");
+            return;
+        }
+        if (verdict == admission::admitted && !cb_.may_receive(peer, p.name)) {
+            return;
+        }
+        auto& in = incoming_for(peer);
         auto& b = in.bulk.try_emplace(p.id, allocator()).first->second;
         ++pending_transfers_;
         b.name = p.name;
@@ -684,10 +766,14 @@ private:
                            if (b == it->second.bulk.end()) {
                                return;
                            }
+                           // What the room hears of the rejection outlives the transfer's state.
+                           const std::pmr::string name(b->second.name, self->memory_);
+                           const std::pmr::string metadata(b->second.metadata, self->memory_);
                            self->release_bulk(it->second, b);
                            auto frame = protocol::begin_room_frame(
                                self->token_, protocol::control_header_size + 32, self->memory_);
                            protocol::append_rejected(frame, id, "action transfer timed out");
+                           self->refused(peer, name, metadata, "action transfer timed out");
                            self->control(peer, frame);
                            self->drain();
                        }));
@@ -733,6 +819,10 @@ private:
         t.received += c.data.size();
         arm(peer, c.id, t);
         if (t.received < t.size) {
+            if (cb_.progress) {
+                cb_.progress(peer, t.name, t.metadata,
+                             static_cast<double>(t.received) / static_cast<double>(t.size));
+            }
             return;
         }
         const incoming::range payload_at{.offset = 0, .size = t.size};
@@ -771,7 +861,7 @@ private:
      * and drains again. */
     void drain() {
         const auto now = steady_now(factory_);
-        std::pmr::vector<incoming> ready(memory_);
+        std::pmr::vector<waiting_inline> ready(memory_);
         std::pmr::vector<std::pair<std::pmr::string, std::uint32_t>> accepted(memory_);
         for (auto& [peer, in] : incoming_) {
             std::pmr::deque<waiting_inline> still_waiting(memory_);
@@ -780,7 +870,7 @@ private:
                     continue;  // expired, as Trystero's sweep drops it, even if its action is here
                 }
                 if (cb_.has_listener(w.message.name())) {
-                    ready.push_back(std::move(w.message));
+                    ready.push_back(std::move(w));
                 } else {
                     still_waiting.push_back(std::move(w));
                 }
@@ -801,8 +891,20 @@ private:
                 break;
             }
         }
-        for (auto& m : ready) {
-            cb_.deliver(std::move(m));
+        for (auto& w : ready) {
+            // A frame kept before its action had a gate is asked now, as Trystero asks it when it
+            // flushes; the gate's code, or a delivery, may have ended its peer.
+            if (!w.admitted) {
+                const auto& m = w.message;
+                const auto verdict = gate(m.peer, m.name(), m.payload().size(), m.metadata());
+                if (verdict == admission::refused) {
+                    refused(m.peer, m.name(), m.metadata(), "payload rejected by receiver");
+                    continue;
+                }
+            }
+            if (cb_.may_receive(w.message.peer, w.message.name())) {
+                cb_.deliver(std::move(w.message));
+            }
         }
         for (const auto& [peer, id] : accepted) {
             // A delivery or an earlier acceptance may have dropped this peer.

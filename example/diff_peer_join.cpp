@@ -4,12 +4,12 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// A difference from Trystero (doc: #trystero-differences-behaviour): a join handler set once a
-// peer has joined. Trystero calls a newly set onPeerJoin with each peer already joined; a room
-// reports a join from its executor once, to the handler set then, and peers() lists the peers
-// joined. Two apps of one program meet in a room, as two pages would. Its twin is
-// test/oracle/twins/diff_peer_join.mjs. Both meet over the relay whose URL is in the environment,
-// TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
+// A join listener added once a peer has joined (doc: #trystero-differences-behaviour). Trystero
+// 0.26.0 called a newly set onPeerJoin with each peer already joined; a room's listeners are
+// 0.27.0's: one added without `replay` waits for the next join, every listener added stays, and
+// peers() lists the peers joined. Two apps of one program meet in a room, as two pages would. Its
+// twin is test/oracle/twins/diff_peer_join.mjs. Both meet over the relay whose URL is in the
+// environment, TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
@@ -61,11 +61,11 @@ int main() {
     };
     // tag::example[]
     int late_calls = 0;
-    room.on_peer_join([&](std::string_view) {
+    room.on_peer_join([&](const trystero::peer_event&) {
         std::cout << "the handler set before the join: called\n";
-        // Once the join is reported, another handler replaces this one.
+        // Once the join is reported, another listener is added beside this one, without replay.
         asio::post(io, [&] {
-            room.on_peer_join([&late_calls](std::string_view) { ++late_calls; });
+            room.on_peer_join([&late_calls](const trystero::peer_event&) { ++late_calls; });
             asio::post(io, [&] {
                 std::cout << "the handler set after the join: "
                           << (late_calls == 0 ? "not called" : "called") << '\n'

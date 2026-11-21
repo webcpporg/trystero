@@ -80,6 +80,8 @@ webcpp.run crypto_layer_release : crypto_layer_test.cpp
 webcpp.run signaling : signaling_test.cpp
   : <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run room : room_test.cpp ;
+# The listeners of an event alone, as Trystero 0.27.0's emitter runs them.
+webcpp.run subscription : subscription_test.cpp ;
 # Rooms of one app that share one connection per remote peer; once as the
 # build asks, once without exceptions, on both targets; and, natively, once
 # with the standard libraries' checks, so that a kept frame that kicks during

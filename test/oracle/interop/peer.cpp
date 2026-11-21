@@ -261,8 +261,8 @@ void join_extra(extra_room& extra, std::string_view room_id) {
     extra.file = std::make_unique<trystero::action<trystero::bytes>>(
         extra.room->make_action<trystero::bytes>("file"));
     record("joined", {{"room", extra.which}, {"self", extra.room->self_id()}});
-    extra.room->on_peer_join([&extra](std::string_view peer_view) {
-        const trystero::peer_id peer(peer_view);
+    extra.room->on_peer_join([&extra](const trystero::peer_event& event) {
+        const trystero::peer_id peer(event.peer_id);
         record("peer-join", {{"room", extra.which}, {"peer", peer}});
         extra.chat->async_send("hello from C++",
                                trystero::send_options{.targets = {peer}, .metadata = {}},
@@ -275,8 +275,8 @@ void join_extra(extra_room& extra, std::string_view room_id) {
                                trystero::send_options{.targets = {peer}, .metadata = {}},
                                [](boost::system::error_code) {});
     });
-    extra.room->on_peer_leave([&extra](std::string_view peer) {
-        record("peer-leave", {{"room", extra.which}, {"peer", peer}});
+    extra.room->on_peer_leave([&extra](const trystero::peer_event& event) {
+        record("peer-leave", {{"room", extra.which}, {"peer", event.peer_id}});
     });
     extra.room->on_error([&extra](std::string_view peer, boost::system::error_code ec,
                                   std::string_view what) {
@@ -346,8 +346,8 @@ void start() {
     app.file = std::make_unique<trystero::action<trystero::bytes>>(
         room.make_action<trystero::bytes>("file"));
 
-    room.on_peer_join([](std::string_view peer_view) {
-        const trystero::peer_id peer(peer_view);
+    room.on_peer_join([](const trystero::peer_event& event) {
+        const trystero::peer_id peer(event.peer_id);
         record("peer-join", {{"peer", peer}});
         // Each handler holds a copy of its own, not const, so that moving the handler moves it.
         const auto done = [peer](const char* what) {
@@ -382,7 +382,8 @@ void start() {
                                });
             });
     });
-    room.on_peer_leave([](std::string_view peer) { record("peer-leave", {{"peer", peer}}); });
+    room.on_peer_leave(
+        [](const trystero::peer_event& e) { record("peer-leave", {{"peer", e.peer_id}}); });
     room.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
     });

@@ -105,8 +105,9 @@ int main() {
     auto bob_chat = bob_lobby->make_action<std::string>("chat");
 
     // alice greets each peer once its handshake completes, prints the answer, and leaves.
-    alice_lobby->on_peer_join([&](std::string_view peer) {
-        alice_chat.async_send("hello", {.targets = {trystero::peer_id(peer)}, .metadata = {}},
+    alice_lobby->on_peer_join([&](const trystero::peer_event& joined) {
+        alice_chat.async_send("hello",
+                              {.targets = {trystero::peer_id(joined.peer_id)}, .metadata = {}},
                               [](boost::system::error_code ec) {
                                   if (ec) {
                                       std::cerr << "not delivered: " << ec.message() << '\n';

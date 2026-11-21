@@ -84,7 +84,7 @@ int main() {
     text += ']';
     // This room sends the payload its JSON text makes, once it meets the other peer.
     auto payload = room.make_action<wd::document>("payload");
-    room.on_peer_join([&](std::string_view) {
+    room.on_peer_join([&](const trystero::peer_event&) {
         wd::result<wd::document> value = wd::parse(text);
         if (!value) {
             std::cerr << "not parsed: " << value.error().message() << '\n';

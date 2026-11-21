@@ -117,8 +117,8 @@ void join(page& p) {
     p.z.emplace(test::join(*p.z_app, "lobby"));
     p.chat_a.emplace(p.a->make_action<std::string>("chat"));
     p.chat_z.emplace(p.z->make_action<std::string>("chat"));
-    p.a->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
-    p.z->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
+    p.a->on_peer_join([&p](const trystero::peer_event&) { met(p); });
+    p.z->on_peer_join([&p](const trystero::peer_event&) { met(p); });
     p.chat_z->on_message([&p](std::string text, const trystero::message_info& /*info*/) {
         p.received.push_back(std::move(text));
         if (p.received.size() == 2) {

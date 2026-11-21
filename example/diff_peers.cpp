@@ -59,11 +59,12 @@ int main() {
         other->async_leave([](boost::system::error_code) {});
     };
     // tag::example[]
-    room.on_peer_join([&](std::string_view peer_id) {
+    room.on_peer_join([&](const trystero::peer_event& joined) {
         const auto peers = room.peers();
         std::cout << "peers: " << peers.size() << '\n'
                   << "the joined peer's entry: "
-                  << (peers.size() == 1 && peers.front() == peer_id ? "its id" : "not its id")
+                  << (peers.size() == 1 && peers.front() == joined.peer_id ? "its id"
+                                                                           : "not its id")
                   << '\n';
         leave();
     });

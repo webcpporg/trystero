@@ -355,8 +355,8 @@ struct extra_room {
                trystero::room_options options)
         : which(std::move(which_room)), room(join(app, std::string(room_id), options)) {
         record("joined", {{"room", which}, {"self", room.self_id()}});
-        room.on_peer_join([this](std::string_view peer_view) {
-            const trystero::peer_id peer(peer_view);
+        room.on_peer_join([this](const trystero::peer_event& event) {
+            const trystero::peer_id peer(event.peer_id);
             record("peer-join", {{"room", which}, {"peer", peer}});
             chat.async_send("hello from C++",
                             trystero::send_options{.targets = {peer}, .metadata = {}},
@@ -369,8 +369,8 @@ struct extra_room {
                             trystero::send_options{.targets = {peer}, .metadata = {}},
                             [](boost::system::error_code) {});
         });
-        room.on_peer_leave([this](std::string_view peer) {
-            record("peer-leave", {{"room", which}, {"peer", peer}});
+        room.on_peer_leave([this](const trystero::peer_event& event) {
+            record("peer-leave", {{"room", which}, {"peer", event.peer_id}});
         });
         room.on_error(
             [this](std::string_view peer, boost::system::error_code ec, std::string_view what) {
@@ -529,8 +529,8 @@ int main(int argc, char* argv[]) {
     auto drink = room.make_action<webcpp::document::document>("drink");
     auto file = room.make_action<trystero::bytes>("file");
 
-    room.on_peer_join([&](std::string_view peer_view) {
-        const trystero::peer_id peer(peer_view);
+    room.on_peer_join([&](const trystero::peer_event& event) {
+        const trystero::peer_id peer(event.peer_id);
         record("peer-join", {{"peer", peer}});
         // Each handler holds a copy of its own, not const, so that moving the handler moves it.
         const auto done = [peer](const char* what) {
@@ -566,7 +566,8 @@ int main(int argc, char* argv[]) {
                            });
         });
     });
-    room.on_peer_leave([](std::string_view peer) { record("peer-leave", {{"peer", peer}}); });
+    room.on_peer_leave(
+        [](const trystero::peer_event& e) { record("peer-leave", {{"peer", e.peer_id}}); });
     room.on_error([](std::string_view peer, boost::system::error_code ec, std::string_view what) {
         record("error", {{"peer", peer}, {"error", ec.message()}, {"what", what}});
     });

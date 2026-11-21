@@ -24,12 +24,14 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
+#include <webcpp/trystero/subscription.hpp>
 
 #include <webcpp/asio/any_completion_handler.hpp>  // lint-world: posts handlers only
 #include <webcpp/asio/any_io_executor.hpp>         // lint-world: posts handlers only
@@ -114,6 +116,81 @@ struct message_info {
     peer_id from;
     /** The metadata the sender passed, as JSON text, or empty when it passed none. */
     std::pmr::string metadata;
+};
+
+/**
+ * A peer that joined or left a room, what `room::on_peer_join` and `room::on_peer_leave` report,
+ * Trystero's `PeerJoinContext` and `PeerLeaveContext` without their roles.
+ *
+ * The views are valid for the duration of the listener's call.
+ */
+struct peer_event {
+    /** The peer's id. */
+    std::string_view peer_id;
+    /** The id of the peer's user; until identities are derived from keys, each peer is a user of
+     * its own, whose id is the peer's. */
+    std::string_view user_id;
+};
+
+/**
+ * A user that joined or left a room, what `room::on_user_join` and `room::on_user_leave` report,
+ * Trystero's `UserJoinContext` and `UserLeaveContext` without their roles.
+ *
+ * The views are valid for the duration of the listener's call.
+ */
+struct user_event {
+    /** The user's id; until identities are derived from keys, the id of its one peer. */
+    std::string_view user_id;
+    /** The peer whose join or departure made the user join or leave. */
+    std::string_view peer_id;
+};
+
+/**
+ * What an action's receive gate is asked about, Trystero's `ActionReceiveContext` without its
+ * roles, its signal and its kind: a message, before it is received.
+ *
+ * The views are valid for the duration of the gate's call.
+ */
+struct receive_info {
+    /** The sender's id. */
+    std::string_view peer_id;
+    /** The id of the sender's user; until identities are derived from keys, the sender's. */
+    std::string_view user_id;
+    /** The size of the message's payload, in bytes. */
+    std::size_t byte_length = 0;
+    /** The metadata the sender passed, as JSON text, or empty when it passed none. */
+    std::string_view metadata;
+};
+
+/**
+ * Whose message an action's progress concerns, Trystero's `ActionProgressContext`.
+ *
+ * The views are valid for the duration of the listener's call.
+ */
+struct progress_info {
+    /** The sender's id. */
+    std::string_view peer_id;
+    /** The id of the sender's user; until identities are derived from keys, the sender's. */
+    std::string_view user_id;
+    /** The metadata the sender passed, as JSON text, or empty when it passed none. */
+    std::string_view metadata;
+};
+
+/**
+ * Where a request goes, what it carries beside its payload and how long it waits, Trystero's
+ * `RequestOptions` without `onProgress` and `signal`.
+ *
+ * Tip: it owns its strings because a completion token such as `asio::deferred` starts the
+ * operation later, after the caller's views may be gone.
+ */
+struct request_options {
+    /** The peer asked, which must be active. */
+    peer_id target = {};
+    /** The metadata, as JSON text, or empty for none. */
+    std::pmr::string metadata = {};
+    /** How long the request waits for its answer, Trystero's `timeoutMs`; none waits as long as
+     * the peer stays. */
+    std::optional<std::chrono::milliseconds> timeout = std::nullopt;
 };
 
 /**
@@ -388,14 +465,14 @@ struct payload_traits<pmr_bytes> {
     }
 
     /**
-     * The message's payload as this type: the message's buffer, moved when the payload starts it,
-     * in the room's resource; nothing for another format.
+     * The message's payload as this type: the message's buffer, moved when the payload starts it
+     * and no other listener reads the message, in the room's resource; nothing for another format.
      */
     static std::optional<pmr_bytes> decode(incoming& m, const decoding& to) {
         if (m.format != protocol::payload_format::binary) {
             return std::nullopt;
         }
-        if (m.buffer.get_allocator().resource() != to.memory) {
+        if (m.shared || m.buffer.get_allocator().resource() != to.memory) {
             const auto payload = m.payload();
             return pmr_bytes(payload.begin(), payload.end(), to.memory);
         }
@@ -491,6 +568,72 @@ T empty_payload(std::pmr::memory_resource* memory) noexcept {
 }
 
 /**
+ * What a request's metadata holds, `{"r":<id>,"m":<metadata>}` as 0.27.0's request actions write
+ * it: the request's id, and the sender's own metadata, as JSON text, or empty when it passed none.
+ */
+struct request_envelope {
+    /** The request's id, which its answer names. */
+    std::pmr::string id;
+    /** The sender's metadata, as JSON text, or empty. */
+    std::pmr::string metadata;
+};
+
+/**
+ * What an answer's metadata holds, `{"r":<id>}` or `{"r":<id>,"e":<reason>}`: the id of the
+ * request it answers, and the reason of a refusal.
+ */
+struct response_envelope {
+    /** The id of the request answered. */
+    std::pmr::string id;
+    /** Whether the answer refuses the request. */
+    bool refused = false;
+};
+
+/** The object a request's or an answer's metadata holds, within a JSON payload's limits; a text
+ * that is no object, or does not parse, holds nothing. */
+inline std::optional<webcpp::document::pmr::document> envelope_of(std::string_view metadata,
+                                                                  const decoding& to) {
+    if (metadata.empty()) {
+        return std::nullopt;
+    }
+    auto v = webcpp::document::parse(metadata, json_payload_limits(metadata, to),
+                                     std::pmr::polymorphic_allocator<std::byte>(to.memory));
+    if (!v.has_value() || !v->root().is_object() || !v->root()["r"].is_string()) {
+        return std::nullopt;
+    }
+    return std::move(v).unsafe_value();
+}
+
+/** A request's metadata read, as 0.27.0's `getRequestMetadata` reads it; nothing when it names no
+ * request. */
+inline std::optional<request_envelope> read_request(std::string_view metadata, const decoding& to) {
+    const auto v = envelope_of(metadata, to);
+    if (!v) {
+        return std::nullopt;
+    }
+    request_envelope out{
+        .id = std::pmr::string(protocol::json::text_of(v->root()["r"]), to.memory),
+        .metadata = std::pmr::string(to.memory),
+    };
+    protocol::json::append_value(out.metadata, v->root()["m"]);  // `undefined` writes nothing
+    return out;
+}
+
+/** An answer's metadata read, as 0.27.0's `getResponseMetadata` reads it: only a text `e`
+ * refuses; nothing when it names no request. */
+inline std::optional<response_envelope> read_response(std::string_view metadata,
+                                                      const decoding& to) {
+    const auto v = envelope_of(metadata, to);
+    if (!v) {
+        return std::nullopt;
+    }
+    return response_envelope{
+        .id = std::pmr::string(protocol::json::text_of(v->root()["r"]), to.memory),
+        .refused = v->root()["e"].is_string(),
+    };
+}
+
+/**
  * A user's completion handler, type-erased, and whether its associated executor is the room's,
  * which only its concrete type tells cheaply: a type-erased executor is compared through objects
  * Asio allocates.
@@ -529,13 +672,17 @@ struct completion {
  * | \@_hsready        | the sender's side of the handshake passed                         |
  * | \@_ping, \@_pong  | round-trip measurement                                            |
  * | \@_leave          | the sender leaves the room                                        |
+ * | \@_response       | the answer to a request, `{"r":<id>}` or `{"r":<id>,"e":<reason>}`  |
+ * |                   | in its metadata, as 0.27.0's request actions answer               |
  */
 class room_impl final : public std::enable_shared_from_this<room_impl>, public room_endpoint {
 public:
     /** The executor every handler and completion of the room runs on. */
     using executor_type = webcpp::asio::any_io_executor;
-    /** What an action's `on_message` becomes: a handler of each received message. */
+    /** What an action's `on_message` becomes: a listener of each received message. */
     using message_handler = handler<void(incoming&)>;
+    /** What a request action's `on_request` becomes: the listener that answers each request. */
+    using request_handler = handler<void(incoming&, const request_envelope&)>;
 
     /** A room of `app`, with its own options copied into `memory`. */
     room_impl(std::shared_ptr<app_impl> app, room_options options, std::string_view room_id,
@@ -558,6 +705,11 @@ public:
           peers_(memory_),
           rebinds_(memory_),
           actions_(memory_),
+          requests_(memory_),
+          peer_join_(allocator()),
+          peer_leave_(allocator()),
+          user_join_(allocator()),
+          user_leave_(allocator()),
           leave_completions_(memory_) {}
 
     /** Room state represents one membership and cannot be copied. */
@@ -613,11 +765,9 @@ public:
                     const auto self = weak.lock();
                     return self && self->has_action(name);
                 }),
-                // A made action listens from the start: without a handler its messages queue for
-                // async_receive.
                 .has_listener = bind<bool(std::string_view)>([weak](std::string_view name) {
                     const auto self = weak.lock();
-                    return self && self->has_action(name);
+                    return self && self->listens(name);
                 }),
                 .deliver = bind<void(incoming&&)>([weak](incoming&& m) {
                     if (const auto self = weak.lock()) {
@@ -630,6 +780,29 @@ public:
                             self->kick(peer, reason);
                         }
                     }),
+                .admit = bind<admission(std::string_view, std::string_view, std::size_t,
+                                        std::string_view)>(
+                    [weak](std::string_view peer, std::string_view name, std::size_t size,
+                           std::string_view metadata) {
+                        const auto self = weak.lock();
+                        return self ? self->admit(peer, name, size, metadata) : admission::open;
+                    }),
+                .rejected = bind<void(std::string_view, std::string_view, std::string_view,
+                                      std::string_view)>(
+                    [weak](std::string_view peer, std::string_view name, std::string_view metadata,
+                           std::string_view reason) {
+                        if (const auto self = weak.lock()) {
+                            self->on_rejected(peer, name, metadata, reason);
+                        }
+                    }),
+                .progress =
+                    bind<void(std::string_view, std::string_view, std::string_view, double)>(
+                        [weak](std::string_view peer, std::string_view name,
+                               std::string_view metadata, double share) {
+                            if (const auto self = weak.lock()) {
+                                self->post_progress(peer, name, metadata, share);
+                            }
+                        }),
             },
             memory_);
         signaling_ = std::allocate_shared<signaling>(
@@ -778,12 +951,39 @@ public:
         return out;
     }
 
-    /** Sets the handler of each peer that becomes active. */
-    void on_peer_join(handler<void(std::string_view)> f) { on_join_ = keep_handler(std::move(f)); }
+    /** Adds a listener of each peer that becomes active; `replay` calls it first with each active
+     * peer. */
+    subscription on_peer_join(handler<void(const peer_event&)> f, listen_options options) {
+        // Copies: the listener's code may end the room, and free the peers' entries.
+        const auto ids = active_peers();
+        std::pmr::vector<peer_event> current(memory_);
+        current.reserve(ids.size());
+        for (const auto& id : ids) {
+            current.push_back({.peer_id = id, .user_id = id});
+        }
+        return peer_join_.add(std::move(f), options, current);
+    }
 
-    /** Sets the handler of each active peer that leaves. */
-    void on_peer_leave(handler<void(std::string_view)> f) {
-        on_leave_ = keep_handler(std::move(f));
+    /** Adds a listener of each active peer that leaves. */
+    subscription on_peer_leave(handler<void(const peer_event&)> f, listen_options options) {
+        return peer_leave_.add(std::move(f), options);
+    }
+
+    /** Adds a listener of each user whose first peer becomes active; `replay` calls it first with
+     * each user joined. Each peer is a user of its own until identities are derived from keys. */
+    subscription on_user_join(handler<void(const user_event&)> f, listen_options options) {
+        const auto ids = active_peers();
+        std::pmr::vector<user_event> current(memory_);
+        current.reserve(ids.size());
+        for (const auto& id : ids) {
+            current.push_back({.user_id = id, .peer_id = id});
+        }
+        return user_join_.add(std::move(f), options, current);
+    }
+
+    /** Adds a listener of each user whose last active peer leaves. */
+    subscription on_user_leave(handler<void(const user_event&)> f, listen_options options) {
+        return user_leave_.add(std::move(f), options);
     }
 
     /** Sets the handler of each problem with a peer that the room handled itself. */
@@ -830,28 +1030,69 @@ public:
         }
     }
 
-    /** Registers an action, which receives from now on: frames of an action not made are dropped,
-     * as Trystero drops them. */
-    void add_action(std::string_view name) {
-        if (!actions_.contains(name)) {
-            actions_.try_emplace(std::pmr::string(name, memory_), allocator());
+    /** Registers an action, a request action when `request` says so: from now on its frames are
+     * kept for its listeners, where frames of an action not made are dropped, as Trystero drops
+     * them. */
+    void add_action(std::string_view name, bool request) {
+        auto& slot = slot_for(name);
+        slot.request = slot.request || request;
+    }
+
+    /** Adds a listener of an action's messages, posts it every message that queued for
+     * `async_receive` meanwhile, and delivers what the wire kept for the action. */
+    subscription add_message_listener(std::string_view name, message_handler f,
+                                      listen_options options) {
+        auto& slot = slot_for(name);
+        auto out = slot.messages.add(std::move(f), options);
+        while (!slot.queue.empty()) {
+            post_message(slot, std::move(slot.queue.front()));
+            slot.queue.pop_front();
         }
         if (wire_) {
             wire_->listener_added();
         }
+        return out;
     }
 
-    /** Sets an action's handler, and posts it every message that queued while it had none. */
-    void set_action_handler(std::string_view name, message_handler handler) {
+    /** Sets the listener that answers a request action's requests, unless one is in place. */
+    boost::system::result<subscription> add_request_listener(std::string_view name,
+                                                             request_handler f,
+                                                             listen_options options) {
         auto& slot = slot_for(name);
-        slot.handler = keep_handler(std::move(handler));
-        while (!slot.queue.empty()) {
-            post_call(slot.handler, std::move(slot.queue.front()));
-            slot.queue.pop_front();
+        if (!slot.requests.empty()) {
+            return error::already_subscribed;
         }
+        auto out = slot.requests.add(std::move(f), options);
+        if (wire_) {
+            wire_->listener_added();
+        }
+        return out;
     }
 
-    /** Completes with an action's next message: a queued one at once, else the next to arrive. */
+    /** Sets an action's receive gate, unless one is in place. */
+    boost::system::result<subscription> add_receive_gate(std::string_view name,
+                                                         handler<bool(const receive_info&)> f,
+                                                         listen_options options) {
+        auto& slot = slot_for(name);
+        if (!slot.gate.empty()) {
+            return error::already_subscribed;
+        }
+        auto out = slot.gate.add(std::move(f), options);
+        if (wire_) {
+            wire_->listener_added();
+        }
+        return out;
+    }
+
+    /** Adds a listener of the progress of an action's messages. */
+    subscription add_progress_listener(std::string_view name,
+                                       handler<void(double, const progress_info&)> f,
+                                       listen_options options) {
+        return slot_for(name).progress.add(std::move(f), options);
+    }
+
+    /** Completes with an action's next message: a queued one at once, else the next to arrive;
+     * the action listens from then on. */
     void receive(std::string_view name,
                  completion<void(boost::system::error_code, incoming)> handler) {
         if (left_) {
@@ -866,6 +1107,98 @@ public:
             return;
         }
         slot.receivers.push_back(std::move(handler));
+        if (!std::exchange(slot.awaited, true) && wire_) {
+            wire_->listener_added();
+        }
+    }
+
+    /**
+     * Sends a request action's payload to one active peer, and completes with its answer: the
+     * message the answer is, `error::request_rejected` when it refuses, or the first failure.
+     */
+    void request(std::string_view name, encoded_payload payload, const request_options& options,
+                 completion<void(boost::system::error_code, incoming)> handler) {
+        if (left_) {
+            complete(std::move(handler), make_error_code(error::room_left), incoming{});
+            return;
+        }
+        const auto peer = peers_.find(options.target);
+        if (peer == peers_.end() || !peer->second.active) {
+            complete(std::move(handler), make_error_code(error::not_connected), incoming{});
+            return;
+        }
+        // 0.27.0's crypto.randomUUID(), from the backend's randomness.
+        std::array<std::uint8_t, 16> random{};
+        factory_.random(random);
+        const auto uuid = protocol::uuid_v4(random);
+        std::pmr::string id(uuid.data(), uuid.size(), memory_);
+        std::pmr::string metadata(R"({"r":)", memory_);
+        protocol::json::detail::append_utf8(metadata, id);
+        if (!options.metadata.empty()) {
+            metadata += R"(,"m":)";
+            metadata += options.metadata;
+        }
+        metadata += '}';
+        const auto weak = weak_from_this();
+        auto& waiter = requests_
+                           .try_emplace(std::pmr::string(id, memory_),
+                                        request_waiter{
+                                            .peer = std::pmr::string(peer->first, memory_),
+                                            .handler = std::move(handler),
+                                            .timer = nullptr,
+                                        })
+                           .first->second;
+        if (options.timeout) {
+            waiter.timer = factory_.make_timer(memory_);
+            waiter.timer->start(
+                *options.timeout, bind<void()>([weak, id = std::pmr::string(id, memory_)] {
+                    if (const auto self = weak.lock()) {
+                        self->finish_request(id, make_error_code(error::request_timed_out), {});
+                    }
+                }));
+        }
+        const std::string_view target = waiter.peer;
+        wire_->send(name, payload.format, metadata, std::move(payload.ref), std::span(&target, 1),
+                    false,
+                    bind<void(boost::system::error_code)>(
+                        [weak, id = std::move(id)](boost::system::error_code ec) {
+                            const auto self = weak.lock();
+                            if (ec && self) {
+                                self->finish_request(id, ec, {});
+                            }
+                        }));
+    }
+
+    /** Answers a request of `peer` with a payload. */
+    void respond(std::string_view peer, std::string_view id, encoded_payload payload) {
+        std::pmr::string metadata(R"({"r":)", memory_);
+        protocol::json::detail::append_utf8(metadata, id);
+        metadata += '}';
+        send_response(peer, metadata, std::move(payload));
+    }
+
+    /** Refuses a request of `peer` with a reason, at most 512 bytes of it, as 0.27.0 cuts it, and
+     * a JSON `null` payload. */
+    void respond_error(std::string_view peer, std::string_view id, std::string_view reason) {
+        constexpr std::size_t max_reason_bytes = 512;
+        if (reason.size() > max_reason_bytes) {
+            std::size_t cut = max_reason_bytes;
+            while (cut > 0 && (static_cast<unsigned char>(reason[cut]) & 0xC0U) == 0x80U) {
+                --cut;  // not within a character
+            }
+            reason = reason.substr(0, cut);
+        }
+        std::pmr::string metadata(R"({"r":)", memory_);
+        protocol::json::detail::append_utf8(metadata, id);
+        metadata += R"(,"e":)";
+        protocol::json::detail::append_utf8(metadata, reason);
+        metadata += '}';
+        static constexpr std::string_view null = "null";
+        send_response(peer, metadata,
+                      {.format = protocol::payload_format::json,
+                       .ref = {.data = std::span(reinterpret_cast<const std::uint8_t*>(null.data()),
+                                                 null.size()),
+                               .owner = nullptr}});
     }
 
     /**
@@ -1049,11 +1382,30 @@ private:
     };
 
     struct action_slot {
-        explicit action_slot(std::pmr::polymorphic_allocator<> a) : queue(a), receivers(a) {}
+        explicit action_slot(std::pmr::polymorphic_allocator<> a)
+            : messages(a), requests(a), gate(a), progress(a), queue(a), receivers(a) {}
 
-        std::shared_ptr<message_handler> handler;
+        /** Whether its messages are requests, which its request listener answers. */
+        bool request = false;
+        /** Whether `async_receive` was called: the action listens from then on, its messages
+         * queuing for the next receive. */
+        bool awaited = false;
+        listeners<void(incoming&)> messages;
+        /** One at a time. */
+        listeners<void(incoming&, const request_envelope&)> requests;
+        /** One at a time. */
+        listeners<bool(const receive_info&)> gate;
+        listeners<void(double, const progress_info&)> progress;
+        /** The messages that arrived while no listener and no receive waited, for the next. */
         std::pmr::deque<incoming> queue;
         std::pmr::deque<completion<void(boost::system::error_code, incoming)>> receivers;
+    };
+
+    /** A request sent, waiting for its answer. */
+    struct request_waiter {
+        std::pmr::string peer;
+        completion<void(boost::system::error_code, incoming)> handler;
+        std::shared_ptr<backend::timer> timer;
     };
 
     static constexpr std::size_t max_queued_messages = 1024;
@@ -1065,6 +1417,12 @@ private:
             return nullptr;
         }
         return std::allocate_shared<handler<Signature>>(allocator(), std::move(f));
+    }
+
+    /** The slot of an action the room made, or null. */
+    action_slot* made(std::string_view name) {
+        const auto it = actions_.find(name);
+        return it == actions_.end() ? nullptr : &it->second;
     }
 
     template <class F>
@@ -1087,6 +1445,107 @@ private:
     /** Whether the room has the action: it was made, or it is internal. */
     bool has_action(std::string_view name) const {
         return name.starts_with("@_") || actions_.contains(name);
+    }
+
+    /** Whether an action the room has listens, 0.27.0's receiver: an internal one always; a
+     * request action while its request listener is in place; another while it has a message
+     * listener, and from its first `async_receive` on. Its frames wait in the wire meanwhile. */
+    bool listens(std::string_view name) const {
+        if (name.starts_with("@_")) {
+            return true;
+        }
+        const auto it = actions_.find(name);
+        if (it == actions_.end()) {
+            return false;
+        }
+        const auto& slot = it->second;
+        return slot.request ? !slot.requests.empty()
+                            : !slot.messages.empty() || slot.awaited;
+    }
+
+    /** The metadata a listener of an action reads: a request's own, inside its envelope; nothing
+     * when a request's names none. */
+    std::optional<std::pmr::string> user_metadata(const action_slot& slot,
+                                                  std::string_view metadata) const {
+        if (!slot.request) {
+            return std::pmr::string(metadata, memory_);
+        }
+        auto envelope = read_request(metadata, decoding());
+        if (!envelope) {
+            return std::nullopt;
+        }
+        return std::move(envelope->metadata);
+    }
+
+    /** Asks an action's receive gate about a message, as the wire receives it. The gate runs
+     * during the call, and may end the peer or the room. */
+    admission admit(std::string_view peer, std::string_view name, std::size_t size,
+                    std::string_view metadata) {
+        auto* const slot = made(name);
+        if (slot == nullptr || slot->gate.empty()) {
+            return admission::open;
+        }
+        const auto own = user_metadata(*slot, metadata);
+        if (!own) {
+            return admission::refused;  // a request without its envelope, which nothing answers
+        }
+        const receive_info info{
+            .peer_id = peer,
+            .user_id = peer,
+            .byte_length = size,
+            .metadata = *own,
+        };
+        return slot->gate.call_first(info) ? admission::admitted : admission::refused;
+    }
+
+    /** The wire refused a message of an action: a request is answered with the reason, as 0.27.0's
+     * request actions answer it, so that the requester need not wait. */
+    void on_rejected(std::string_view peer, std::string_view name, std::string_view metadata,
+                     std::string_view reason) {
+        const auto* const slot = made(name);
+        if (slot == nullptr || !slot->request || left_) {
+            return;
+        }
+        if (const auto envelope = read_request(metadata, decoding())) {
+            respond_error(peer, envelope->id, reason);
+        }
+    }
+
+    /** Posts the progress of a message of an action to its progress listeners. */
+    void post_progress(std::string_view peer, std::string_view name, std::string_view metadata,
+                       double share) {
+        auto* const slot = made(name);
+        if (slot == nullptr || slot->progress.empty()) {
+            return;
+        }
+        auto own = user_metadata(*slot, metadata);
+        if (!own) {
+            return;
+        }
+        post([weak = weak_from_this(), slot, share, peer = std::pmr::string(peer, memory_),
+              metadata = std::move(*own)] {
+            if (weak.lock()) {
+                slot->progress.emit(share,
+                                    {.peer_id = peer, .user_id = peer, .metadata = metadata});
+            }
+        });
+    }
+
+    /** Posts a message to an action's listeners, or, when none is left once the post runs, to its
+     * next receive. A slot lives as long as its room. */
+    void post_message(action_slot& slot, incoming&& m) {
+        post([weak = weak_from_this(), slot = &slot, m = std::move(m)]() mutable {
+            const auto self = weak.lock();
+            if (!self) {
+                return;
+            }
+            if (slot->messages.empty()) {
+                self->hand_over(*slot, std::move(m));
+                return;
+            }
+            m.shared = slot->messages.size() > 1;
+            slot->messages.emit(m);
+        });
     }
 
     bool may_receive(std::string_view peer, std::string_view name) const {
@@ -1127,10 +1586,6 @@ private:
         };
         wire_->send(name, format, {}, ref, std::span(&peer, 1), true,
                     bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
-    }
-
-    void post_call(const std::shared_ptr<message_handler>& handler, incoming m) {
-        post([handler, m = std::move(m)]() mutable { (*handler)(m); });
     }
 
     void report(std::string_view peer, boost::system::error_code ec, std::string_view what) {
@@ -1424,8 +1879,15 @@ private:
         log_("room", "peer joined: ", peer_copy);
         // The sink may leave the room or remove this binding before notification is posted.
         const auto current = peers_.find(peer_copy);
-        if (!left_ && current != peers_.end() && current->second.link == link && on_join_) {
-            post([f = on_join_, peer = std::move(peer_copy)] { (*f)(peer); });
+        if (!left_ && current != peers_.end() && current->second.link == link) {
+            // Each peer is a user of its own until identities are derived from keys: its user
+            // joins with it, after it, as 0.27.0 reports a user's first peer.
+            post([weak = weak_from_this(), peer = std::move(peer_copy)] {
+                if (const auto self = weak.lock()) {
+                    self->peer_join_.emit({.peer_id = peer, .user_id = peer});
+                    self->user_join_.emit({.user_id = peer, .peer_id = peer});
+                }
+            });
         }
     }
 
@@ -1455,6 +1917,8 @@ private:
             }
         } else if (name == "@_leave") {
             remove_peer(m.peer, "peer left the room", end_kind::peer_left);
+        } else if (name == "@_response") {
+            on_response(std::move(m));
         } else if (name.starts_with("@_")) {
             // Media and renegotiation actions: not implemented yet (doc: #trystero-roadmap).
         } else if (const auto it = actions_.find(name); it != actions_.end()) {
@@ -1462,27 +1926,116 @@ private:
         }
     }
 
-    /** Delivers an application message, rechecking consumers after a queue-limit log sink. */
+    /** Delivers an application message: its progress is complete, and it goes to the request
+     * listener, the message listeners, or the next receive, in that order. */
     void deliver_action(std::string_view name, action_slot& slot, incoming&& message) {
-        if (!slot.handler && slot.receivers.empty() && slot.queue.size() >= max_queued_messages) {
-            log_("action", "dropping the oldest unread message of ", name);
+        post_progress(message.peer, name, message.metadata(), 1.0);
+        if (slot.request) {
+            deliver_request(slot, std::move(message));
+        } else if (!slot.messages.empty()) {
+            post_message(slot, std::move(message));
+        } else {
+            hand_over(slot, std::move(message));
+        }
+    }
+
+    /** Hands a message to the next receive, or queues it for one, rechecking consumers after a
+     * queue-limit log sink. */
+    void hand_over(action_slot& slot, incoming&& message) {
+        if (slot.messages.empty() && slot.receivers.empty() &&
+            slot.queue.size() >= max_queued_messages) {
+            log_("action", "dropping the oldest unread message of ", message.name());
             if (left_) {
                 return;
             }
-            // Installing a handler or receiving from the sink can drain the queue synchronously.
+            // Adding a listener or receiving from the sink can drain the queue synchronously.
             if (slot.queue.size() >= max_queued_messages) {
                 slot.queue.pop_front();
             }
         }
-        if (slot.handler) {
-            post_call(slot.handler, std::move(message));
-        } else if (!slot.receivers.empty()) {
+        if (!slot.receivers.empty()) {
             auto receiver = std::move(slot.receivers.front());
             slot.receivers.pop_front();
             complete(std::move(receiver), boost::system::error_code{}, std::move(message));
+        } else if (!slot.messages.empty()) {
+            post_message(slot, std::move(message));
         } else {
             slot.queue.push_back(std::move(message));
         }
+    }
+
+    /** Posts a request to the listener that answers it; one whose metadata names no request is
+     * dropped, as 0.27.0 drops it, and one that finds no listener once the post runs is refused. */
+    void deliver_request(action_slot& slot, incoming&& message) {
+        auto envelope = read_request(message.metadata(), decoding());
+        if (!envelope) {
+            return;
+        }
+        post([weak = weak_from_this(), slot = &slot, envelope = std::move(*envelope),
+              m = std::move(message)]() mutable {
+            const auto self = weak.lock();
+            if (!self) {
+                return;
+            }
+            if (slot->requests.empty()) {
+                self->respond_error(m.peer, envelope.id, "no active request handler");
+                return;
+            }
+            slot->requests.call_first(m, envelope);
+        });
+    }
+
+    /** An answer to a request: it completes the request of its id, if the peer it was sent to
+     * answered it. */
+    void on_response(incoming&& m) {
+        const auto envelope = read_response(m.metadata(), decoding());
+        if (!envelope) {
+            return;
+        }
+        const auto it = requests_.find(envelope->id);
+        if (it == requests_.end() || it->second.peer != m.peer) {
+            return;
+        }
+        finish_request(envelope->id,
+                       envelope->refused ? make_error_code(error::request_rejected)
+                                         : boost::system::error_code{},
+                       std::move(m));
+    }
+
+    /** Completes a request once, with its answer or its failure. */
+    void finish_request(std::string_view id, boost::system::error_code ec, incoming&& m) {
+        const auto it = requests_.find(id);
+        if (it == requests_.end()) {
+            return;
+        }
+        auto node = requests_.extract(it);
+        if (node.mapped().timer) {
+            node.mapped().timer->cancel();
+        }
+        complete(std::move(node.mapped().handler), ec, std::move(m));
+    }
+
+    /** Fails every request sent to `peer`, or every request when it is empty. */
+    void fail_requests(std::string_view peer, boost::system::error_code ec) {
+        std::pmr::vector<std::pmr::string> ids(memory_);
+        for (const auto& [id, w] : requests_) {
+            if (peer.empty() || w.peer == peer) {
+                ids.emplace_back(id);  // in the vector's resource, the room's
+            }
+        }
+        for (const auto& id : ids) {
+            finish_request(id, ec, {});
+        }
+    }
+
+    /** Sends an answer, inline or as a transfer, to one peer, the room not left. */
+    void send_response(std::string_view peer, std::string_view metadata, encoded_payload payload) {
+        if (left_ || !wire_) {
+            return;
+        }
+        wire_->send("@_response", payload.format, metadata, std::move(payload.ref),
+                    std::span(&peer, 1), false,
+                    bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
     }
 
     void kick(std::string_view peer, std::string_view reason) {
@@ -1555,6 +2108,7 @@ private:
                      std::chrono::milliseconds{});
         }
         wire_->clear_peer(peer, make_error_code(error::peer_disconnected));
+        fail_requests(peer, make_error_code(error::peer_disconnected));
         if (left_) {
             return;
         }
@@ -1567,8 +2121,13 @@ private:
         if (!app_->find(peer)) {
             strategy_->restart_announcements();
         }
-        if (state.active && on_leave_) {
-            post([f = on_leave_, peer = std::move(peer)] { (*f)(peer); });
+        if (state.active) {
+            post([weak = weak_from_this(), peer = std::move(peer)] {
+                if (const auto self = weak.lock()) {
+                    self->peer_leave_.emit({.peer_id = peer, .user_id = peer});
+                    self->user_leave_.emit({.user_id = peer, .peer_id = peer});
+                }
+            });
         }
     }
 
@@ -1608,6 +2167,7 @@ private:
             }
             slot.receivers.clear();
         }
+        fail_requests({}, make_error_code(error::room_left));
         if (signaling_) {
             signaling_->close();
         }
@@ -1636,8 +2196,11 @@ private:
     std::pmr::map<std::pmr::string, peer_state, std::less<>> peers_;
     std::pmr::map<std::pmr::string, rebind_state, std::less<>> rebinds_;
     std::pmr::map<std::pmr::string, action_slot, std::less<>> actions_;
-    std::shared_ptr<handler<void(std::string_view)>> on_join_;
-    std::shared_ptr<handler<void(std::string_view)>> on_leave_;
+    std::pmr::map<std::pmr::string, request_waiter, std::less<>> requests_;
+    listeners<void(const peer_event&)> peer_join_;
+    listeners<void(const peer_event&)> peer_leave_;
+    listeners<void(const user_event&)> user_join_;
+    listeners<void(const user_event&)> user_leave_;
     std::shared_ptr<handler<void(std::string_view, boost::system::error_code, std::string_view)>>
         on_error_;
     std::shared_ptr<backend::timer> leave_timer_;
@@ -1652,6 +2215,9 @@ private:
 
 template <class T>
 class action;
+
+template <class T, class R>
+class request_action;
 
 /**
  * A room joined over Trystero's Nostr strategy, what Trystero's `joinRoom` returns.
@@ -1758,28 +2324,72 @@ public:
     [[nodiscard]] std::pmr::vector<peer_id> peers() const { return impl_->active_peers(); }
 
     /**
-     * Sets what is called with each peer that joins, once its handshake completes, Trystero's
+     * Adds a listener of each peer that joins, once its handshake completes, Trystero's
      * `onPeerJoin`.
      *
-     * @tparam F A callable with a `std::string_view`, the peer's id, valid for the call.
-     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     * Listeners run in the order added, each join reported from the room's executor; one added
+     * while a join is reported waits for the next, and one removed before its turn does not run.
+     *
+     * @tparam F A callable with a `const peer_event&`, whose views are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` calls it first, within this
+     * call, with each peer already joined.
+     * @return Its subscription; destroying it leaves the listener.
      */
     template <class F>
-        requires std::is_invocable_v<F&, std::string_view>
-    void on_peer_join(F&& f) {
-        impl_->on_peer_join(impl_->bind<void(std::string_view)>(std::forward<F>(f)));
+        requires std::is_invocable_v<F&, const peer_event&>
+    subscription on_peer_join(F&& f, listen_options options = {}) {
+        const auto impl = impl_;  // the replay may destroy or reassign this handle
+        return impl->on_peer_join(impl->bind<void(const peer_event&)>(std::forward<F>(f)), options);
     }
 
     /**
-     * Sets what is called with each joined peer that leaves, Trystero's `onPeerLeave`.
+     * Adds a listener of each joined peer that leaves, Trystero's `onPeerLeave`.
      *
-     * @tparam F A callable with a `std::string_view`, the peer's id, valid for the call.
-     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     * @tparam F A callable with a `const peer_event&`, whose views are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription; destroying it leaves the listener.
      */
     template <class F>
-        requires std::is_invocable_v<F&, std::string_view>
-    void on_peer_leave(F&& f) {
-        impl_->on_peer_leave(impl_->bind<void(std::string_view)>(std::forward<F>(f)));
+        requires std::is_invocable_v<F&, const peer_event&>
+    subscription on_peer_leave(F&& f, listen_options options = {}) {
+        return impl_->on_peer_leave(impl_->bind<void(const peer_event&)>(std::forward<F>(f)),
+                                    options);
+    }
+
+    /**
+     * Adds a listener of each user that joins, when its first peer joins, after that peer's
+     * `on_peer_join`, Trystero's `onUserJoin`. Until identities are derived from keys, each peer is
+     * a user of its own, whose id is the peer's.
+     *
+     * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` calls it first, within this
+     * call, with each user already joined.
+     * @return Its subscription; destroying it leaves the listener.
+     */
+    template <class F>
+        requires std::is_invocable_v<F&, const user_event&>
+    subscription on_user_join(F&& f, listen_options options = {}) {
+        const auto impl = impl_;  // the replay may destroy or reassign this handle
+        return impl->on_user_join(impl->bind<void(const user_event&)>(std::forward<F>(f)), options);
+    }
+
+    /**
+     * Adds a listener of each user that leaves, when its last peer leaves, after that peer's
+     * `on_peer_leave`, Trystero's `onUserLeave`.
+     *
+     * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription; destroying it leaves the listener.
+     */
+    template <class F>
+        requires std::is_invocable_v<F&, const user_event&>
+    subscription on_user_leave(F&& f, listen_options options = {}) {
+        return impl_->on_user_leave(impl_->bind<void(const user_event&)>(std::forward<F>(f)),
+                                    options);
     }
 
     /**
@@ -1821,6 +2431,24 @@ public:
      */
     template <class T>
     action<T> make_action(std::string_view name);
+
+    /**
+     * Makes a request action of this room, Trystero's `makeAction` with `kind: 'request'`: a named
+     * channel of requests, each answered by the peer asked.
+     *
+     * A request travels as a message of the action whose metadata is `{"r":<id>,"m":<metadata>}`,
+     * and its answer as the internal action `\@_response`, as 0.27.0's do. A name is a request
+     * action or a message action, not both: once made as a request action, its messages are
+     * requests.
+     *
+     * @tparam T The type of its requests, one of those `make_action` lists.
+     * @tparam R The type of its answers, one of them that owns its storage.
+     * @param name The action's name, 1 to 32 UTF-8 bytes without NUL; with another, every request
+     * fails with `error::invalid_action_name`.
+     * @return The action.
+     */
+    template <class T, class R = T>
+    request_action<T, R> make_request_action(std::string_view name);
 
     /**
      * Measures the round trip to a peer, Trystero's `ping`.
@@ -1882,10 +2510,12 @@ private:
  * A named channel of messages of type `T` within a room, wire compatible with what Trystero's
  * `makeAction` returns.
  *
- * Messages arrive at the handler `on_message` set, or, without one, queue for `async_receive`, up
- * to 1024 per action, the oldest dropped first. A message of another format than `T`'s is not
- * delivered to the handler. A room makes it with `room::make_action`, and it keeps the room's
- * state alive.
+ * Messages arrive at the listeners `on_message` adds, or, without one, at `async_receive`. Until
+ * the action has a listener or was first awaited, its messages wait as Trystero's wait for a
+ * listener, 32 per sender for 10 s, the oldest dropped first; once awaited, those no receive
+ * waits for queue for the next, up to 1024, the oldest dropped first. A message
+ * of another format than `T`'s is not delivered to a listener. A room makes it with
+ * `room::make_action`, and it keeps the room's state alive.
  *
  * @tparam T The type of its messages, one of those `room::make_action` lists.
  * @see "Rooms and actions", in the guide.
@@ -1901,33 +2531,81 @@ public:
     [[nodiscard]] std::string_view name() const { return name_; }
 
     /**
-     * Sets what is called with every message, Trystero's `onMessage`.
+     * Adds a listener of every message, Trystero's `onMessage`.
      *
-     * Messages that queued while the action had no handler are delivered to it first.
+     * Listeners run in the order added, each message reported from the room's executor; one added
+     * while a message is reported waits for the next, and one removed before its turn does not
+     * run. Messages that queued for `async_receive`, and those that waited for a listener, are
+     * delivered first. Each listener decodes the message: with several, each takes its own copy.
      *
      * @tparam F A callable with a `T` and a `const message_info&`; with a view type, the view is
-     * valid for the duration of the call. A JSON document is the handler's to keep: a handle of its
-     * values refers to the document object, as every handle of webcpp::document does, so moving the
-     * document invalidates it.
-     * @param f The handler, kept in the room's resource; it replaces the one set before.
+     * valid for the duration of the call. A JSON document is the listener's to keep: a handle of
+     * its values refers to the document object, as every handle of webcpp::document does, so moving
+     * the document invalidates it.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription; destroying it leaves the listener.
      */
     template <class F>
         requires std::is_invocable_v<F&, T, const message_info&>
-    void on_message(F&& f) {
-        impl_->set_action_handler(
+    subscription on_message(F&& f, listen_options options = {}) {
+        return impl_->add_message_listener(
             name_,
             impl_->bind<void(detail::incoming&)>(
                 [f = std::forward<F>(f), to = impl_->decoding()](detail::incoming& m) mutable {
                     // The metadata is read before decoding: a binary payload takes the buffer the
                     // metadata lives in.
                     const message_info info{
-                        .from = std::move(m.peer),
+                        .from = m.shared ? std::pmr::string(m.peer, to.memory) : std::move(m.peer),
                         .metadata = std::pmr::string(m.metadata(), to.memory),
                     };
                     if (auto value = detail::payload_traits<T>::decode(m, to)) {
                         f(std::move(*value), info);
                     }
-                }));
+                }),
+            options);
+    }
+
+    /**
+     * Sets the action's receive gate, Trystero's `onReceive`: asked about each message as it
+     * arrives, before the action receives it, with its size and metadata.
+     *
+     * It runs during the frame's processing, as Trystero's runs, rather than from a post: its
+     * answer decides at once. A refused inline message is dropped; a refused transfer is rejected
+     * with "payload rejected by receiver", and its sender's send completes with
+     * `error::transfer_rejected`. A message that waited for a listener before the gate was set is
+     * asked before it is delivered.
+     *
+     * @tparam F A callable with a `const receive_info&`, whose views are valid for the call,
+     * returning whether to receive the message.
+     * @param f The gate, kept in the room's resource.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription, or `error::already_subscribed` while a gate is in place.
+     */
+    template <class F>
+        requires std::is_invocable_r_v<bool, F&, const receive_info&>
+    [[nodiscard]] boost::system::result<subscription> on_receive(F&& f,
+                                                                 listen_options options = {}) {
+        return impl_->add_receive_gate(
+            name_, impl_->bind<bool(const receive_info&)>(std::forward<F>(f)), options);
+    }
+
+    /**
+     * Adds a listener of the progress of each message received, Trystero's `onReceiveProgress`:
+     * the share of a transfer received after each chunk but the last, then 1 once the message is
+     * whole, reported from the room's executor.
+     *
+     * @tparam F A callable with a `double` from 0 to 1 and a `const progress_info&`, whose views
+     * are valid for the call.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription; destroying it leaves the listener.
+     */
+    template <class F>
+        requires std::is_invocable_v<F&, double, const progress_info&>
+    subscription on_receive_progress(F&& f, listen_options options = {}) {
+        return impl_->add_progress_listener(
+            name_, impl_->bind<void(double, const progress_info&)>(std::forward<F>(f)), options);
     }
 
     // T is the action's type, taken by value and moved into its encoding, which keeps a value
@@ -1979,7 +2657,8 @@ public:
     }
 
     /**
-     * Receives the next message, when no handler is set: the oldest queued, or the next to arrive.
+     * Receives the next message, when no listener is in place: the oldest queued, or the next to
+     * arrive. From the first call on, the action listens: its messages queue for the next.
      *
      * Completes with `(error_code, T, message_info)`; a message of another payload format than
      * `T`'s, or a JSON text that does not parse, completes with `error::transfer_rejected` and an
@@ -2032,7 +2711,187 @@ private:
 
     action(std::shared_ptr<detail::room_impl> impl, std::string_view name)
         : impl_(std::move(impl)), name_(name, impl_->memory()) {
-        impl_->add_action(name_);
+        impl_->add_action(name_, false);
+    }
+
+    std::shared_ptr<detail::room_impl> impl_;
+    std::pmr::string name_;
+};
+
+/**
+ * A named channel of requests of type `T`, each answered with an `R` by the peer asked, within a
+ * room, wire compatible with what Trystero's `makeAction` returns for `kind: 'request'`.
+ *
+ * The peer asked answers with the listener `on_request` sets. While it has none, requests wait as
+ * Trystero's messages wait for a listener, 32 per sender for 10 s. A room makes it with
+ * `room::make_request_action`, and it keeps the room's state alive.
+ *
+ * @tparam T The type of its requests, one of those `room::make_action` lists.
+ * @tparam R The type of its answers, one of those that own their storage.
+ * @see "Rooms and actions", in the guide.
+ */
+template <class T, class R>
+class request_action {
+public:
+    static_assert(detail::payload_traits<R>::owning,
+                  "an answer completes a request later: answer with an owning type");
+
+    /**
+     * The action's name.
+     *
+     * @return The name, valid as long as the action.
+     */
+    [[nodiscard]] std::string_view name() const { return name_; }
+
+    /**
+     * Sets the listener that answers each request, Trystero's `onRequest`.
+     *
+     * It is called from the room's executor with the request and who sent it, and its result is
+     * the answer: an `R`, or a `boost::system::result<R>` whose error refuses the request with the
+     * error's message, which the requester's request completes with as `error::request_rejected`.
+     * A request of another format than `T`'s is refused.
+     *
+     * @tparam F A callable with a `T` and a `const message_info&`, whose metadata is the sender's
+     * own, returning an `R` or a `boost::system::result<R>`; with a view type, the view is valid
+     * for the duration of the call.
+     * @param f The listener, kept in the room's resource.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription, or `error::already_subscribed` while a listener is in place.
+     */
+    template <class F>
+        requires std::is_invocable_v<F&, T, const message_info&>
+    [[nodiscard]] boost::system::result<subscription> on_request(F&& f,
+                                                                 listen_options options = {}) {
+        using answer = std::invoke_result_t<F&, T, const message_info&>;
+        static_assert(
+            std::is_convertible_v<answer, R> || std::is_same_v<answer, boost::system::result<R>>,
+            "a request listener returns an R or a boost::system::result<R>");
+        // The listener is the room's own: it reaches its room through a plain pointer, since a
+        // shared one would keep the room alive through itself.
+        detail::room_impl* const room = impl_.get();
+        return impl_->add_request_listener(
+            name_,
+            impl_->bind<void(detail::incoming&, const detail::request_envelope&)>(
+                [f = std::forward<F>(f), room, to = impl_->decoding()](
+                    detail::incoming& m, const detail::request_envelope& envelope) mutable {
+                    const message_info info{
+                        .from = std::pmr::string(m.peer, to.memory),
+                        .metadata = std::pmr::string(envelope.metadata, to.memory),
+                    };
+                    auto value = detail::payload_traits<T>::decode(m, to);
+                    if (!value) {
+                        room->respond_error(info.from, envelope.id,
+                                            make_error_code(error::transfer_rejected).message());
+                        return;
+                    }
+                    if constexpr (std::is_same_v<answer, boost::system::result<R>>) {
+                        auto r = f(std::move(*value), info);
+                        if (!r) {
+                            room->respond_error(info.from, envelope.id, r.error().message());
+                            return;
+                        }
+                        room->respond(info.from, envelope.id,
+                                      detail::payload_traits<R>::encode(std::move(*r), to.memory));
+                    } else {
+                        room->respond(info.from, envelope.id,
+                                      detail::payload_traits<R>::encode(f(std::move(*value), info),
+                                                                        to.memory));
+                    }
+                }),
+            options);
+    }
+
+    /**
+     * Sets the action's receive gate, Trystero's `onReceive`: asked about each request as it
+     * arrives, as `action::on_receive` asks. A refused request is answered with "payload rejected
+     * by receiver".
+     *
+     * @tparam F A callable with a `const receive_info&`, whose metadata is the sender's own,
+     * returning whether to receive the request.
+     * @param f The gate, kept in the room's resource.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription, or `error::already_subscribed` while a gate is in place.
+     */
+    template <class F>
+        requires std::is_invocable_r_v<bool, F&, const receive_info&>
+    [[nodiscard]] boost::system::result<subscription> on_receive(F&& f,
+                                                                 listen_options options = {}) {
+        return impl_->add_receive_gate(
+            name_, impl_->bind<bool(const receive_info&)>(std::forward<F>(f)), options);
+    }
+
+    /**
+     * Adds a listener of the progress of each request received, Trystero's `onReceiveProgress`,
+     * as `action::on_receive_progress` reports it.
+     *
+     * @tparam F A callable with a `double` from 0 to 1 and a `const progress_info&`.
+     * @param f The listener, kept in the room's resource beside those added before.
+     * @param options `once` removes it before its first run; `replay` is ignored.
+     * @return Its subscription; destroying it leaves the listener.
+     */
+    template <class F>
+        requires std::is_invocable_v<F&, double, const progress_info&>
+    subscription on_receive_progress(F&& f, listen_options options = {}) {
+        return impl_->add_progress_listener(
+            name_, impl_->bind<void(double, const progress_info&)>(std::forward<F>(f)), options);
+    }
+
+    // T is the action's type, taken by value and moved into its encoding, as `action::async_send`
+    // takes it.
+    /**
+     * Asks one peer, Trystero's `request`.
+     *
+     * Completes with `(error_code, R)`: the answer, as Trystero's promise resolves with it; or
+     * `error::not_connected` when the target is not an active peer,
+     * `error::request_rejected` when the peer refused the request (its listener's error, no
+     * listener, or a refused transfer), `error::request_timed_out` after `options.timeout`,
+     * `error::transfer_rejected` for an answer of another format than `R`'s,
+     * `error::peer_disconnected` when the peer leaves first, `error::room_left`, or the failure of
+     * the request's send. An unsuccessful completion carries an empty answer.
+     *
+     * @tparam CompletionToken An Asio completion token for `void(error_code, R)`.
+     * @param value The request, taken at the call as `action::async_send` takes a message.
+     * @param options The peer asked, the metadata, and the timeout.
+     * @param token The completion token.
+     * @return What the token's initiation returns.
+     */
+    template <class CompletionToken>
+    auto async_request(T value,
+                       request_options options,  // NOLINT(performance-unnecessary-value-param)
+                       CompletionToken&& token) {
+        return webcpp::asio::async_initiate<CompletionToken, void(boost::system::error_code, R)>(
+            [impl = impl_, name = std::pmr::string(name_, impl_->memory())](
+                auto handler, detail::encoded_payload payload, const request_options& options) {
+                // The decoding step is allocated as the user's handler is, which it carries.
+                const auto allocator = webcpp::asio::get_associated_allocator(handler);
+                impl->request(
+                    name, std::move(payload), options,
+                    impl->template erase<void(boost::system::error_code, detail::incoming)>(
+                        webcpp::asio::bind_allocator(
+                            allocator,
+                            [impl, handler = std::move(handler)](boost::system::error_code ec,
+                                                                 detail::incoming m) mutable {
+                                const detail::decoding to = impl->decoding();
+                                auto answer =
+                                    ec ? std::nullopt : detail::payload_traits<R>::decode(m, to);
+                                if (!ec && !answer) {
+                                    ec = make_error_code(error::transfer_rejected);
+                                }
+                                impl->complete(std::move(handler), ec,
+                                               answer ? std::move(*answer)
+                                                      : detail::empty_payload<R>(to.memory));
+                            })));
+            },
+            token, detail::payload_traits<T>::encode(std::move(value), impl_->memory()),
+            std::move(options));
+    }
+
+private:
+    friend class room;
+
+    request_action(std::shared_ptr<detail::room_impl> impl, std::string_view name)
+        : impl_(std::move(impl)), name_(name, impl_->memory()) {
+        impl_->add_action(name_, true);
     }
 
     std::shared_ptr<detail::room_impl> impl_;
@@ -2042,6 +2901,11 @@ private:
 template <class T>
 action<T> room::make_action(std::string_view name) {
     return action<T>(impl_, name);
+}
+
+template <class T, class R>
+request_action<T, R> room::make_request_action(std::string_view name) {
+    return request_action<T, R>(impl_, name);
 }
 
 }  // namespace webcpp::trystero

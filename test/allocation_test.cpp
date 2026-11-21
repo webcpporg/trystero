@@ -939,7 +939,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
             trystero::app a_app(io.get_executor(), network,
                                 app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
             auto a = join(a_app, "room", options_in(a_memory));
-            a.on_peer_leave([&left](std::string_view /*peer*/) { ++left; });
+            a.on_peer_leave([&left](const trystero::peer_event&) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
                 [&files](const trystero::pmr_bytes& data, const trystero::message_info& /*info*/) {
                     files += data.size() == 100'000 ? 1 : 0;

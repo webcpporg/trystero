@@ -172,7 +172,7 @@ int main() {
     }
     // Once each of this program's rooms has met the other peer, it reports, and every room leaves.
     bool reported = false;
-    const auto met = [&](std::string_view) {
+    const auto met = [&](const trystero::peer_event&) {
         if (reported || lobby->peers().empty() || kitchen->peers().empty()) {
             return;
         }

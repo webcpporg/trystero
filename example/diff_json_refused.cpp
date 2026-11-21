@@ -279,7 +279,7 @@ int main() {
     // The other peer sends each payload's text once it meets this room. An inline frame leaves at
     // once, so they leave in the order of the sends, as a Trystero JS page awaits each.
     auto sending = other->make_action<std::string>(action_name);
-    other->on_peer_join([&](std::string_view) {
+    other->on_peer_join([&](const trystero::peer_event&) {
         for (const auto& [label, value] : payloads) {
             sending.async_send("[\"" + std::string(label) + "\"," + value + "]",
                                [](boost::system::error_code) {});

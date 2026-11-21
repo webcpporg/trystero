@@ -191,7 +191,7 @@ void leaving_is_seen_over_a_real_connection() {
     trystero::app a_app(f.io.get_executor(), f.backend, app_config("DDDDDDDDDDDDDDDDDDDD"));
     auto a = join(a_app, "leave");
     std::vector<std::string> left;
-    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    a.on_peer_leave([&](const trystero::peer_event& e) { left.emplace_back(e.peer_id); });
     {
         // The leaver's app goes with its room, as a program that leaves for good ends it.
         trystero::app b_app(f.io.get_executor(), f.backend, app_config("EEEEEEEEEEEEEEEEEEEE"));

@@ -23,5 +23,6 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/room.hpp>
+#include <webcpp/trystero/subscription.hpp>
 
 #endif

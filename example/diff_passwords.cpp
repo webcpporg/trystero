@@ -81,11 +81,11 @@ int main() {
     std::array<std::string, 2> met;
     std::size_t meetings = 0;
     for (std::size_t i = 0; i < rooms.size(); ++i) {
-        rooms[i]->on_peer_join([&, i](std::string_view peer) {
+        rooms[i]->on_peer_join([&, i](const trystero::peer_event& joined) {
             if (!met[i].empty()) {
                 return;
             }
-            met[i] = peer;
+            met[i] = joined.peer_id;
             if (++meetings < met.size()) {
                 return;
             }
