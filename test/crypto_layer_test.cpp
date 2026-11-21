@@ -12,6 +12,7 @@
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -19,6 +20,8 @@
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/value.hpp>
+#include <webcpp/hash/hmac.hpp>
+#include <webcpp/hash/pbkdf2.hpp>
 
 #include <boost/core/lightweight_test.hpp>
 
@@ -321,6 +324,115 @@ void compact_key_is_strict() {
     BOOST_TEST(!tp::parse_compact_public_key(non_canonical));
 }
 
+/** The vector of `room_keys_password` for an app, a room and a password. */
+fixture_value password_vector(std::string_view app, std::string_view room,
+                              std::string_view password) {
+    for (const auto entry : section("room_keys_password")) {
+        if (str(entry["app"]) == app && str(entry["room"]) == room &&
+            str(entry["password"]) == password) {
+            return entry;
+        }
+    }
+    BOOST_TEST(false);
+    return section("room_keys_password");
+}
+
+void room_key_without_password_matches() {
+    for (const auto entry : section("room_key_no_password")) {
+        const auto key = tp::room_aes_key_without_password(str(entry["app"]), str(entry["room"]));
+        BOOST_TEST(std::ranges::equal(key.bytes(), bytes_of(entry["key"])));
+    }
+}
+
+void room_keys_from_master_match() {
+    for (const auto entry : section("room_keys_password")) {
+        const auto salt = bytes_of(entry["salt"]);
+        const auto made = tp::pbkdf2_salt(str(entry["app"]), str(entry["room"]));
+        BOOST_TEST(std::ranges::equal(made, salt));
+        const auto master = bytes_of(entry["master"]);
+        BOOST_TEST_EQ(master.size(), 32U);
+        const auto keys = tp::derive_room_keys(std::span<const std::uint8_t, 32>(master));
+        BOOST_TEST(keys.has_value());
+        if (keys) {
+            BOOST_TEST(std::ranges::equal(keys->aes.bytes(), bytes_of(entry["aes_key"])));
+            BOOST_TEST(std::ranges::equal(keys->hmac.bytes(), bytes_of(entry["hmac_key"])));
+        }
+    }
+}
+
+// 600,000 iterations of HMAC-SHA-256 take about 0.2 s in a release build and tens of times that
+// in a debug one, so it runs in the release variant's run only (see main and the Jamfile's
+// crypto_layer_release); one vector proves the iteration count and the salt's use.
+[[maybe_unused]] void pbkdf2_master_matches() {
+    BOOST_TEST_EQ(tp::pbkdf2_iterations, 600'000U);
+    const auto entry = password_vector("example.com/app", "lobby", "hunter2");
+    const auto salt = bytes_of(entry["salt"]);
+    const auto password = str(entry["password"]);
+    std::array<std::uint8_t, 32> master{};
+    const auto derived = webcpp::hash::pbkdf2<webcpp::hash::hmac_sha2_256>(
+        master, std::span(reinterpret_cast<const std::uint8_t*>(password.data()), password.size()),
+        salt, tp::pbkdf2_iterations);
+    BOOST_TEST(derived.has_value());
+    BOOST_TEST(std::ranges::equal(master, bytes_of(entry["master"])));
+}
+
+void room_auth_matches() {
+    for (const auto entry : section("room_auth")) {
+        const auto app = str(entry["app"]);
+        const auto room = str(entry["room"]);
+        const auto peer = str(entry["peer_id"]);
+        const auto seq = integer(entry["seq"]);
+        const auto keys = password_vector(app, room, str(entry["password"]));
+        const auto hmac_bytes = bytes_of(keys["hmac_key"]);
+        webcpp::crypto::secret<32> hmac;
+        std::ranges::copy(hmac_bytes, hmac.writable().begin());
+        BOOST_TEST_EQ(tp::room_auth_payload(app, room, peer, seq), str(entry["payload"]));
+        const auto token = tp::sign_room_auth(hmac, app, room, peer, seq);
+        BOOST_TEST_EQ(token, str(entry["token"]));
+        BOOST_TEST_EQ(token.size(), 43U);
+        BOOST_TEST_EQ(tp::verify_room_auth(hmac, app, room, peer, seq, token),
+                      entry["verifies"].value_or(false));
+        BOOST_TEST_EQ(tp::verify_room_auth(hmac, app, room, peer, seq + 1, token),
+                      entry["wrong_seq_verifies"].value_or(true));
+        BOOST_TEST(!tp::verify_room_auth(hmac, app, room, std::string(peer) + "x", seq, token));
+    }
+    // The largest safe integer is written as a decimal integer.
+    BOOST_TEST_EQ(tp::room_auth_payload("a", "r", "p", tp::max_room_auth_seq),
+                  std::string_view(R"(["trystero:ov-auth:v3","a","r","p",9007199254740991])"));
+}
+
+void room_auth_token_is_strict() {
+    const auto entry = section("room_auth")[std::size_t{0}];
+    const auto app = str(entry["app"]);
+    const auto room = str(entry["room"]);
+    const auto peer = str(entry["peer_id"]);
+    const auto seq = integer(entry["seq"]);
+    const auto hmac_bytes =
+        bytes_of(password_vector(app, room, str(entry["password"]))["hmac_key"]);
+    webcpp::crypto::secret<32> hmac;
+    std::ranges::copy(hmac_bytes, hmac.writable().begin());
+    const std::string token(str(entry["token"]));
+    BOOST_TEST(tp::verify_room_auth(hmac, app, room, peer, seq, token));
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, token + "="));
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, token.substr(0, 42)));
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, token + "A"));
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, ""));
+    // The 43rd character carries 4 bits and 2 unused ones: another character with the same top 4
+    // bits decodes to the same bytes, and is refused as non-canonical.
+    constexpr std::string_view alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const auto last = alphabet.find(token.back());
+    BOOST_TEST(last != std::string_view::npos);
+    auto twin = token;
+    twin.back() = alphabet[last ^ 1U];
+    BOOST_TEST(twin != token);
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, twin));
+    BOOST_TEST(!tp::from_base64url(twin).has_value());
+    auto outside = token;
+    outside[3] = '+';
+    BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, outside));
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -349,5 +461,12 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(identity_ids_match);
     webcpp::test::run_case(uuid_v4_has_its_form);
     webcpp::test::run_case(compact_key_is_strict);
+    webcpp::test::run_case(room_key_without_password_matches);
+    webcpp::test::run_case(room_keys_from_master_match);
+#ifdef NDEBUG
+    webcpp::test::run_case(pbkdf2_master_matches);
+#endif
+    webcpp::test::run_case(room_auth_matches);
+    webcpp::test::run_case(room_auth_token_is_strict);
     return boost::report_errors();
 }
