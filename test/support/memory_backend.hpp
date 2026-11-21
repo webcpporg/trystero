@@ -185,7 +185,7 @@ public:
     };
 
     explicit memory_relay(std::pmr::memory_resource* memory)
-        : published(memory), memory_(memory), subscriptions_(memory) {}
+        : published(memory), requests(memory), memory_(memory), subscriptions_(memory) {}
 
     void receive(const std::shared_ptr<memory_websocket>& from, std::string_view text);
 
@@ -221,6 +221,13 @@ public:
 
     /** The events taken while `record_published` is on, in order, in the relay's resource. */
     std::pmr::vector<published_event> published;
+
+    /** Whether to keep the text of each REQ the relay takes in `requests`; off, the relay
+     * allocates nothing for it. */
+    bool record_requests = false;
+
+    /** The REQs taken while `record_requests` is on, in order, in the relay's resource. */
+    std::pmr::vector<std::pmr::string> requests;
 
 private:
     using key = std::pair<const memory_websocket*, std::pmr::string>;
@@ -355,6 +362,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     }
     const std::string_view type = protocol::json::text_of(message.at(0));
     if (type == "REQ" && message.size() >= 3) {
+        if (record_requests) {
+            requests.emplace_back(text);
+        }
         subscriptions_.insert_or_assign(
             key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
             subscription_of(from, message.at(2), memory_));

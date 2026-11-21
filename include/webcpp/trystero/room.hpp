@@ -659,9 +659,11 @@ public:
                     }),
             },
             log_, memory_, app_->memory());
+        // The self topic before the root topic, as Trystero's rooms subscribe them, so that the
+        // REQ lists them, and their kinds, in 0.27.0's order.
         std::pmr::vector<std::pmr::string> topics(memory_);
-        topics.push_back(root_topic_);
         topics.push_back(self_topic_);
+        topics.push_back(root_topic_);
         strategy_ = std::allocate_shared<nostr_strategy>(
             allocator(), factory_, app_->relay_urls(), std::move(topics), root_topic_,
             bind<std::pmr::string(std::string_view)>(

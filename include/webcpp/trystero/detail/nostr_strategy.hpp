@@ -20,6 +20,7 @@
 
 #include <webcpp/document/parse.hpp>
 
+#include <boost/assert.hpp>
 #include <boost/endian/conversion.hpp>
 #include <boost/hash2/get_integral_result.hpp>
 #include <boost/hash2/siphash.hpp>
@@ -138,7 +139,8 @@ private:
  * | Rule               | Value                                                                    |
  * | signer             | one per room, made on its first event, dropped when the room stops       |
  * | announce cadence   | at once, then after 233, 533, 1333 and 5333 ms, then every 60 s; each    |
- * |                    | announcement with a fresh nonce                                          |
+ * |                    | announcement with a fresh nonce; one the relay cannot take now is        |
+ * |                    | skipped, and the cadence goes on                                         |
  * | subscription       | at most 250 topics per REQ, since a minute ago                           |
  * | relay health       | healthy; cooldown 60 s, doubling to 15 min, on "rate-limited:"; then     |
  * |                    | probation, which an accepted event ends; retired on "blocked:",          |
@@ -147,6 +149,8 @@ private:
  * | closed subscription| asked again after 5333 ms, doubling to 60 s, or after the cooldown       |
  * | reconnect          | after a random share of 3.3 s, doubling to 60 s; back to 3.3 s once a    |
  * |                    | connection stayed open for 60 s                                          |
+ * | reopened relay     | its subscriptions asked again and the announcement replayed once, or     |
+ * |                    | both after its cooldown; the cadence is not started over                 |
  *
  * Tip: the bound of the reconnection delay comes back down only after a connection that lasted,
  * so that a relay that closes us at once after each open, as one that sends a text longer than we
@@ -203,11 +207,12 @@ public:
         send_event(relays_[index], topic, content);
     }
 
-    /** Starts the announce cadence over, as Trystero does when a peer leaves. */
+    /** Starts the announce cadence over on each relay where it started, as Trystero's
+     * `requeueAnnounce` does when a peer leaves. */
     void restart_announcements() {
         for (std::size_t i = 0; i < relays_.size(); ++i) {
-            relays_[i].announce_attempt = 0;
-            if (relays_[i].open) {
+            if (relays_[i].announced) {
+                relays_[i].announce_attempt = 0;
                 announce(i);
             }
         }
@@ -218,6 +223,12 @@ public:
 
     /** The ids of the events it acted on, which it remembers to drop their repeats. */
     [[nodiscard]] const recent_event_ids& seen() const { return seen_; }
+
+    /** The room's signer, which the strategy makes at its first event and drops when it stops;
+     * null before the one and after the other. */
+    [[nodiscard]] const protocol::nostr::signer* current_signer() const {
+        return signer_ ? &*signer_ : nullptr;
+    }
 
     /** Stops announcing and reconnecting, closes each subscription and each connection, and drops
      * the room's signer. */
@@ -301,9 +312,11 @@ private:
         std::pmr::vector<std::pmr::string> subscriptions;
         bool open = false;
         bool opened_before = false;
-        // How many announcements went out since the cadence started, which picks the next delay.
+        // How many announcements the cadence made since it started, sent or skipped, which picks
+        // the next delay.
         std::size_t announce_attempt = 0;
-        // Whether the room announced on this relay, which an EOSE that came late replays.
+        // Whether the announce cadence started on this relay: a reopening or an EOSE that came late
+        // then replays the announcement.
         bool announced = false;
         health state = health::healthy;
         // The cooldown's length, which a probation remembers as its last.
@@ -433,14 +446,14 @@ private:
         r.open = true;
         r.opened = steady_now(factory_);
         log_("nostr", r.opened_before ? "reconnected to " : "connected to ", r.url);
-        r.opened_before = true;
-        // A relay still cooling down is asked once its cooldown ends, as Trystero's
-        // resubscribeOnReconnect waits.
-        if (cooldown_remaining(r) > time_point::duration::zero()) {
-            retry_subscription(index, true);
-        } else {
-            subscribe(index);
+        if (std::exchange(r.opened_before, true)) {
+            // Trystero's resubscribeOnReconnect: the cadence that started at the first opening
+            // goes on, and the relay gets the subscriptions and the announcement once, after its
+            // cooldown when it still cools down.
+            resubscribe(index);
+            return;
         }
+        subscribe(index);
         r.announce_attempt = 0;
         announce(index);
     }
@@ -458,6 +471,10 @@ private:
         r.subscription_retry_pending = false;
         constexpr std::size_t chunk = protocol::nostr::max_topics_per_subscription;
         const std::size_t requests = (topics_.size() + chunk - 1) / chunk;
+        // The topics are the strategy's for its whole life, so the subscriptions never outnumber
+        // the REQs: Trystero's CLOSE of the surplus ids, for a batcher whose topics leave, has no
+        // case here.
+        BOOST_ASSERT(r.subscriptions.size() <= requests);
         const auto since = protocol::nostr::subscribe_since(unix_now(factory_));
         r.pending.clear();
         for (std::size_t i = 0; i < requests; ++i) {
@@ -543,7 +560,6 @@ private:
         auto& r = relays_[index];
         const bool was_open = r.open;
         r.open = false;
-        r.announce_timer.reset();
         if (stopped_ || r.state == health::retired) {
             return;
         }
@@ -575,6 +591,8 @@ private:
             return;
         }
         r.announced = true;
+        // As Trystero's queueAnnounce: an announcement the relay cannot take now waits for the
+        // cooldown, at least 60 s, and the warm-up's delays bound the wait either way.
         auto next = steady_announce;
         if (const auto remaining = cooldown_remaining(r);
             !r.open || remaining > time_point::duration::zero()) {
@@ -582,9 +600,9 @@ private:
                             std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
         } else {
             send_event(r, announce_topic_, announcement());
-            if (const auto attempt = r.announce_attempt++; attempt < warmup.size()) {
-                next = warmup[attempt];
-            }
+        }
+        if (const auto attempt = r.announce_attempt++; attempt < warmup.size()) {
+            next = std::min(next, warmup[attempt]);
         }
         if (!r.announce_timer) {
             r.announce_timer = factory_.make_timer(memory_);

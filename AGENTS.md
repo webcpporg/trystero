@@ -149,8 +149,9 @@ holds only what is specific to trystero.
   `/webcpp/trystero//trystero` (`build.jam`'s `tag::trystero[]`) is the
   rooms alone, the core: `parts`, its headers, Boost, webcpp::document
   (`/webcpp/document//document`, with Boost.JSON's and Boost.Charconv's
-  definitions), config, webcpp::asio and libsecp256k1, and under Asyncify
-  the list that leaves Boost.JSON's parser uninstrumented
+  definitions), config, webcpp::asio, webcpp::hash and webcpp::crypto (its
+  secp256k1 over libsecp256k1), and under Asyncify the list that leaves
+  Boost.JSON's parser uninstrumented
   (**webcpp::document**, below); on no target does it bring webcpp::webrtc,
   and the tests over the memory relays use it alone.
   `/webcpp/trystero//platform` (`tag::platform[]`) is the platform backend's

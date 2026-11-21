@@ -1210,7 +1210,9 @@ std::vector<std::string> signers_of(fixture& f, std::string_view url, std::strin
 
 // Each room signs its events with a key of its own, as 0.27.0 keeps a signer per room: the
 // announcements of one room carry one key on every relay, another room of the same app another
-// key, and a room joined again after it left, a new one.
+// key, and a room joined again after it left, a new one. A rejoin makes a strategy of its own, so
+// this does not tell a key made at the first event and dropped on stop from one made with the
+// strategy: signaling_test's the_room_key_is_made_at_the_first_event_and_dropped_on_stop does.
 void each_room_signs_with_its_own_key() {
     fixture f(true);
     f.net.relay(relay_a).record_published = true;
@@ -1252,6 +1254,43 @@ void each_room_signs_with_its_own_key() {
     BOOST_TEST(keys.find(signers.front()) == keys.end());
     BOOST_TEST(
         std::ranges::all_of(signers, [&](const std::string& k) { return k == signers.front(); }));
+}
+
+// A room subscribes its own topic before its root topic, as Trystero's rooms do: its REQ lists
+// them in that order, and their kinds in the same order, as 0.27.0's batcher writes them.
+void a_room_subscribes_its_self_topic_before_its_root_topic() {
+    fixture f(true);
+    auto& relay = f.net.relay(relay_a);
+    relay.record_requests = true;
+    auto c = app_config("TTTTTTTTTTTTTTTTTTTT");
+    c.relay_urls = {relay_a};
+    trystero::app a_app(f.io.get_executor(), f.net, std::move(c));
+    const auto r = join(a_app, "ordered");
+    webcpp::test::require(BOOST_TEST(run_until(f, [&relay] { return !relay.requests.empty(); })));
+    const auto request = webcpp::document::parse(relay.requests.front());
+    webcpp::test::require(BOOST_TEST(request.has_value()));
+    const auto filter = request->root()[2];
+    const std::array<std::string, 2> topics{
+        std::string(trystero::protocol::peer_topic(app_id, "ordered", a_app.self_id())),
+        std::string(trystero::protocol::root_topic(app_id, "ordered")),
+    };
+    std::vector<std::string> listed;
+    for (const auto t : filter["#x"]) {
+        listed.emplace_back(t.value_or(std::string_view()));
+    }
+    BOOST_TEST_ALL_EQ(listed.begin(), listed.end(), topics.begin(), topics.end());
+    std::vector<std::int64_t> kinds;
+    for (const auto k : filter["kinds"]) {
+        kinds.push_back(k.value_or(std::int64_t{-1}));
+    }
+    std::vector<std::int64_t> expected;
+    for (const auto& t : topics) {
+        if (const std::int64_t k = trystero::protocol::nostr::topic_kind(t);
+            std::ranges::find(expected, k) == expected.end()) {
+            expected.push_back(k);
+        }
+    }
+    BOOST_TEST_ALL_EQ(kinds.begin(), kinds.end(), expected.begin(), expected.end());
 }
 
 // A boost::circular_buffer moves by swapping its allocators, which std::pmr's cannot: the classes
@@ -1543,15 +1582,12 @@ void a_relay_that_closes_at_once_is_tried_less_and_less_often() {
                       bounds.begin() + std::min<std::ptrdiff_t>(6, std::ssize(bounds)),
                       growing.begin(), growing.end());
 
-    // A connection that lasts: once the first of the steady announcements, 60 s after the warm-up,
-    // is on the relay, the relay goes away.
+    // A connection that lasts: once it has been open for 60 s, the relay goes away.
     relay.close_after_subscribe = false;
     const std::size_t before = reconnections;
     BOOST_TEST(run_until(f, [&] { return reconnections > before; }, 1min));
-    // The warm-up's first announcement went as the connection opened, before the clock moved: its
-    // four others, then the first steady one.
-    const auto seen = relay.events_seen;
-    BOOST_TEST(run_until(f, [&] { return relay.events_seen >= seen + 5; }, 2min));
+    const auto opened = f.net.steady_now();
+    BOOST_TEST(run_until(f, [&] { return f.net.steady_now() - opened >= 60s; }, 2min));
     const auto lost = bounds.size();
     relay.close_all();
     BOOST_TEST(run_until(f, [&] { return bounds.size() > lost; }));
@@ -2169,6 +2205,7 @@ int main() {
     run_case(a_strategy_draws_the_key_of_its_event_ids);
     run_case(a_forged_event_under_a_genuine_id_hides_nothing);
     run_case(each_room_signs_with_its_own_key);
+    run_case(a_room_subscribes_its_self_topic_before_its_root_topic);
     run_case(classes_over_a_pmr_circular_buffer_do_not_move);
     run_case(a_replayed_answer_does_not_open);
     run_case(a_replayed_offer_is_refused);

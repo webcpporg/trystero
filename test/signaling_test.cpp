@@ -504,12 +504,12 @@ void a_relay_text_past_its_depth_is_dropped() {
 }
 
 /**
- * A strategy over one relay of the test's, on the virtual clock, open: it subscribed and made its
- * first announcement. It announces `{"peerId":"p","nonce":<nonce>}`, as a room does, and keeps what
- * it logs and the messages it hands on.
+ * A strategy over one relay of the test's, on the virtual clock, open unless asked otherwise: it
+ * subscribed and made its first announcement. It announces `{"peerId":"p","nonce":<nonce>}`, as a
+ * room does, and keeps what it logs and the messages it hands on.
  */
 struct relay_harness {
-    explicit relay_harness(std::pmr::vector<std::pmr::string> topics) {
+    explicit relay_harness(std::pmr::vector<std::pmr::string> topics, bool open = true) {
         strategy = std::make_shared<detail::nostr_strategy>(
             net, std::span<const std::pmr::string>(&url, 1), std::move(topics), announce_topic,
             [](std::string_view nonce) {
@@ -523,16 +523,18 @@ struct relay_harness {
                 memory()),
             memory());
         strategy->start();
-        require(BOOST_TEST(net.socket != nullptr && static_cast<bool>(net.handlers.open)));
-        net.handlers.open();
-        require(BOOST_TEST(net.poll_ready()));
+        if (open) {
+            opens();
+        }
     }
 
-    /** A strategy of the root topic and one other. */
-    relay_harness()
-        : relay_harness(std::pmr::vector<std::pmr::string>(
-              {std::pmr::string(announce_topic, memory()), std::pmr::string("self", memory())},
-              memory())) {}
+    /** A strategy of one other topic and the root topic, open unless `open` is false. */
+    explicit relay_harness(bool open = true)
+        : relay_harness(
+              std::pmr::vector<std::pmr::string>(
+                  {std::pmr::string("self", memory()), std::pmr::string(announce_topic, memory())},
+                  memory()),
+              open) {}
 
     relay_harness(const relay_harness&) = delete;
     relay_harness& operator=(const relay_harness&) = delete;
@@ -567,6 +569,25 @@ struct relay_harness {
         strategy->publish(0, "a-peer-topic", "probe");
         return net.socket->sent.size() == before + 1;
     }
+
+    /** Opens the strategy's last connection, as the relay accepts it. */
+    void opens() {
+        require(BOOST_TEST(net.socket != nullptr && static_cast<bool>(net.handlers.open)));
+        net.handlers.open();
+        require(BOOST_TEST(net.poll_ready()));
+    }
+
+    /** Closes the strategy's connection, as the relay goes away, and opens the one it makes
+     * next, which comes within the first reconnection bound, 3333 ms. */
+    void reopens() {
+        net.handlers.close();
+        wait(std::chrono::milliseconds(3333));
+        require(BOOST_TEST_EQ(net.connects, 2U));
+        opens();
+    }
+
+    /** How many REQs the strategy sent on its connection. */
+    std::size_t requests() const { return sent("REQ").size(); }
 
     /** Hands the strategy `text` as the relay's. */
     void relay_says(std::string_view text) { net.handlers.message(text); }
@@ -810,6 +831,146 @@ void slow_eose_replays_announcements() {
     BOOST_TEST_EQ(h.events(), events + 1);
 }
 
+// A CLOSED of the strategy's own subscription is asked again after 5333 ms, then after twice the
+// last delay each time, up to 60 s; the EOSE of the subscription asked again brings the delay back
+// to 5333 ms.
+void closed_subscriptions_are_asked_again_less_and_less_often() {
+    using std::chrono::milliseconds;
+    relay_harness h;
+    const auto subscription = h.subscription();
+    const auto asked_again_after = [&h, &subscription](milliseconds delay) {
+        const auto before = h.requests();
+        h.relay_says(relay_text("CLOSED", subscription, "error: try later"));
+        h.wait(delay - milliseconds(1));
+        BOOST_TEST_EQ(h.requests(), before);
+        h.wait(milliseconds(1));
+        BOOST_TEST_EQ(h.requests(), before + 1);
+    };
+    for (const auto delay : {5333, 10666, 21332, 42664, 60'000, 60'000}) {
+        asked_again_after(milliseconds(delay));
+    }
+    h.relay_says(relay_text("EOSE", subscription));
+    asked_again_after(milliseconds(5333));
+}
+
+// A rate-limited CLOSED cools the relay down and asks for the subscription again only once the
+// 60 s cooldown ends, with the room's announcement.
+void a_rate_limited_closed_waits_out_the_cooldown() {
+    using std::chrono::milliseconds;
+    relay_harness h;
+    h.relay_says(relay_text("CLOSED", h.subscription(), "rate-limited: slow down"));
+    BOOST_TEST(h.logged_with("rate-limits us, pausing it for 60 s"));
+    BOOST_TEST(!h.publishes());
+    h.wait(milliseconds(59'999));
+    BOOST_TEST_EQ(h.requests(), 1U);
+    const auto events = h.events();
+    h.wait(milliseconds(1));
+    BOOST_TEST_EQ(h.requests(), 2U);
+    BOOST_TEST_EQ(h.events(), events + 1);
+    BOOST_TEST(h.publishes());
+}
+
+// A relay that comes back is asked for the subscription again, under its id, and given the room's
+// announcement once; the cadence goes on from where it was, rather than starting its warm-up over.
+void a_reopened_relay_subscribes_again_and_announces_once() {
+    using std::chrono::milliseconds;
+    relay_harness h;
+    const auto subscription = h.subscription();
+    // The warm-up: at once, then after 233, 533, 1333 and 5333 ms; the next is 60 s after it.
+    h.wait(milliseconds(233 + 533 + 1333 + 5333));
+    BOOST_TEST_EQ(h.events(), 5U);
+    h.reopens();
+    const auto requests = h.sent("REQ");
+    require(BOOST_TEST_EQ(requests.size(), 1U));
+    BOOST_TEST_EQ(str(requests[0].root()[1]), subscription);
+    BOOST_TEST_EQ(h.events(), 1U);
+    h.wait(milliseconds(60'000 - 3333 - 1));
+    BOOST_TEST_EQ(h.events(), 1U);
+    h.wait(milliseconds(1));
+    BOOST_TEST_EQ(h.events(), 2U);
+}
+
+// A relay that comes back while it cools down is asked for nothing, and given nothing, until its
+// cooldown ends.
+void a_relay_that_reopens_cooling_down_waits_for_the_cooldown() {
+    using std::chrono::milliseconds;
+    relay_harness h;
+    h.relay_says(ok_text(false, "rate-limited: slow down"));
+    h.reopens();
+    BOOST_TEST_EQ(h.requests(), 0U);
+    h.wait(milliseconds(60'000 - 3333 - 1));
+    BOOST_TEST_EQ(h.requests(), 0U);
+    BOOST_TEST_EQ(h.events(), 0U);
+    h.wait(milliseconds(1));
+    BOOST_TEST_EQ(h.requests(), 1U);
+    BOOST_TEST_EQ(h.events(), 1U);
+}
+
+// Over several subscriptions, an EOSE of some of them neither ends the wait nor replays the
+// announcement, and leaves the delay of the next retry where it was; the EOSE of the last one
+// does both and brings the delay back to 5333 ms.
+void an_eose_of_some_subscriptions_neither_syncs_nor_replays() {
+    using std::chrono::milliseconds;
+    std::pmr::vector<std::pmr::string> topics(memory());
+    for (std::size_t i = 0; i < 600; ++i) {
+        topics.emplace_back("topic-" + std::to_string(i));
+    }
+    relay_harness h(std::move(topics));
+    std::vector<std::string> ids;
+    for (const auto& req : h.sent("REQ")) {
+        ids.emplace_back(str(req.root()[1]));
+    }
+    require(BOOST_TEST_EQ(ids.size(), 3U));
+    const auto eose = [&h](std::string_view id) { h.relay_says(relay_text("EOSE", id)); };
+    h.wait(milliseconds(1000));
+    auto events = h.events();
+    eose(ids[0]);
+    eose(ids[1]);
+    eose(ids[0]);
+    BOOST_TEST_EQ(h.events(), events);
+    // Closed, the subscriptions are asked again after 5333 ms; the next delay is 10666 ms.
+    h.relay_says(relay_text("CLOSED", ids[0], "error: try later"));
+    h.wait(milliseconds(5333));
+    BOOST_TEST_EQ(h.requests(), 6U);
+    h.wait(milliseconds(1000));
+    events = h.events();
+    eose(ids[0]);
+    eose(ids[1]);
+    BOOST_TEST_EQ(h.events(), events);
+    h.relay_says(relay_text("CLOSED", ids[1], "error: try later"));
+    h.wait(milliseconds(10'665));
+    BOOST_TEST_EQ(h.requests(), 6U);
+    h.wait(milliseconds(1));
+    BOOST_TEST_EQ(h.requests(), 9U);
+    // All three end, 1 s after their REQs: the announcement once, and the delay back to 5333 ms.
+    h.wait(milliseconds(1000));
+    events = h.events();
+    for (const auto& id : ids) {
+        eose(id);
+    }
+    BOOST_TEST_EQ(h.events(), events + 1);
+    h.relay_says(relay_text("CLOSED", ids[2], "error: try later"));
+    h.wait(milliseconds(5332));
+    BOOST_TEST_EQ(h.requests(), 9U);
+    h.wait(milliseconds(1));
+    BOOST_TEST_EQ(h.requests(), 12U);
+}
+
+// The room's key is made at its first event, not with the strategy, and signs it; the strategy
+// drops it when it stops.
+void the_room_key_is_made_at_the_first_event_and_dropped_on_stop() {
+    relay_harness h(false);
+    BOOST_TEST(h.strategy->current_signer() == nullptr);
+    h.opens();
+    const auto events = h.sent("EVENT");
+    require(BOOST_TEST_EQ(events.size(), 1U));
+    const auto* key = h.strategy->current_signer();
+    require(BOOST_TEST(key != nullptr));
+    BOOST_TEST_EQ(str(events[0].root()[1]["pubkey"]), key->pubkey_hex());
+    h.strategy->stop();
+    BOOST_TEST(h.strategy->current_signer() == nullptr);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -833,5 +994,11 @@ int main(int argc, char* argv[]) {
     rate_limits_cool_a_relay_down_and_probation_ends_on_ok();
     closed_of_another_subscription_is_ignored();
     slow_eose_replays_announcements();
+    closed_subscriptions_are_asked_again_less_and_less_often();
+    a_rate_limited_closed_waits_out_the_cooldown();
+    a_reopened_relay_subscribes_again_and_announces_once();
+    a_relay_that_reopens_cooling_down_waits_for_the_cooldown();
+    an_eose_of_some_subscriptions_neither_syncs_nor_replays();
+    the_room_key_is_made_at_the_first_event_and_dropped_on_stop();
     return webcpp::test::exit_status(boost::report_errors());
 }
