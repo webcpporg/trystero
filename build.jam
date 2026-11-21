@@ -11,9 +11,11 @@
 
 project /webcpp/trystero ;
 
-# libsecp256k1 (every room) is webcpp's build of it, /third_party//secp256k1:
-# v0.8.0 from the submodule third_party/libs/secp256k1, with the tables the
-# feature webcpp-secp256k1-tables chooses (small on emscripten, large natively;
+# Hashes are webcpp::hash's and the ciphers, MACs and keys of every room
+# webcpp::crypto's. Its secp256k1 backend, /webcpp/crypto//secp256k1-default,
+# is webcpp's build of libsecp256k1 (v0.8.0 from the submodule
+# third_party/libs/secp256k1), with the tables the feature
+# webcpp-secp256k1-tables chooses (small on emscripten, large natively;
 # CODING-GUIDELINES.md chapter 5). WebRTC is webcpp::webrtc's, whose native
 # libdatachannel and its OpenSSL are pinned source dependencies, built
 # together for the consumer's B2 variant.
@@ -54,7 +56,9 @@ path-constant WEBCPP_TRYSTERO_ROOT : . ;
 # tag::trystero[]
 alias parts : :
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
-  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/third_party//secp256k1 ;
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/webcpp/hash//hash
+  <library>/webcpp/crypto//crypto <library>/webcpp/crypto//gcm-default
+  <library>/webcpp/crypto//secp256k1-default ;
 alias trystero : : : : <library>parts
   <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
   ;

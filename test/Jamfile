@@ -66,6 +66,10 @@ webcpp.compile config_all_off : config_test.cpp
 # backend of support/memory_backend.hpp: on both targets.
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
+# The crypto layer of the port to Trystero 0.27.0 against the vectors recorded from its own
+# code (oracle/record_0_27.mjs).
+webcpp.run crypto_layer : crypto_layer_test.cpp
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
 # The signaling and the Nostr strategy alone: an answerer's signals against
 # Trystero's, and the bounds of the texts they read.
 webcpp.run signaling : signaling_test.cpp

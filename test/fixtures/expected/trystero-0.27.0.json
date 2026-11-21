@@ -1,0 +1,1058 @@
+{
+ "trystero": "0.27.0",
+ "recorded_with": "node v26.13.0",
+ "domain_tags": [
+  {
+   "name": "room-aes",
+   "version": 3,
+   "tag": "trystero:room-aes:v3"
+  },
+  {
+   "name": "room-hmac",
+   "version": 3,
+   "tag": "trystero:room-hmac:v3"
+  },
+  {
+   "name": "pbkdf2-master",
+   "version": 3,
+   "tag": "trystero:pbkdf2-master:v3"
+  },
+  {
+   "name": "ov-auth",
+   "version": 3,
+   "tag": "trystero:ov-auth:v3"
+  },
+  {
+   "name": "e2e-salt",
+   "version": 2,
+   "tag": "trystero:e2e-salt:v2"
+  },
+  {
+   "name": "e2e-info",
+   "version": 2,
+   "tag": "trystero:e2e-info:v2"
+  },
+  {
+   "name": "pid",
+   "version": 1,
+   "tag": "trystero:pid:v1"
+  },
+  {
+   "name": "uid",
+   "version": 1,
+   "tag": "trystero:uid:v1"
+  },
+  {
+   "name": "user-proof",
+   "version": 3,
+   "tag": "trystero:user-proof:v3"
+  }
+ ],
+ "hash_topic": [
+  {
+   "text": "",
+   "topic": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+  },
+  {
+   "text": "lobby",
+   "topic": "S13Adue5wSKzyJEhqXEPxztJDUjh_zZhVXkZF15QVjM"
+  },
+  {
+   "text": "Trystero",
+   "topic": "KLfz8SY4qeunN-XyEUfFRFEjynHbPWsxK2cGRSaalcE"
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "topic": "EPOSMWej0eSk-IKnPAPZOgCqRnomHYt9zEpqgHdxook"
+  },
+  {
+   "text": "café 😀",
+   "topic": "BDdk33c6x87qYXXhSYiT5u4z55iFKIQXzB11y6YJSCc"
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "topic": "qiDCPjIBg0BQZ54diJQbmm_tBVfJpwXLLDFeLmP9SG0"
+  }
+ ],
+ "topic_path": [
+  {
+   "parts": [
+    "Trystero",
+    "example.com/app",
+    "lobby"
+   ],
+   "path": "[\"Trystero\",\"example.com/app\",\"lobby\"]"
+  },
+  {
+   "parts": [
+    "Trystero",
+    "a\"b\\c",
+    "café"
+   ],
+   "path": "[\"Trystero\",\"a\\\"b\\\\c\",\"café\"]"
+  },
+  {
+   "parts": [
+    "[\"Trystero\",\"app\",\"room\"]",
+    "peer0123456789abcdef"
+   ],
+   "path": "[\"[\\\"Trystero\\\",\\\"app\\\",\\\"room\\\"]\",\"peer0123456789abcdef\"]"
+  }
+ ],
+ "room_topics": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "peer_id": "T5sdTwb84yyey80e4qjv",
+   "root_text": "[\"Trystero\",\"example.com/app\",\"lobby\"]",
+   "root_topic": "Ez_9ACs-onxWTTRRn7pFD2rqRce5y0HrAay9k2X7Ip0",
+   "peer_text": "[\"[\\\"Trystero\\\",\\\"example.com/app\\\",\\\"lobby\\\"]\",\"T5sdTwb84yyey80e4qjv\"]",
+   "peer_topic": "j0YMUkrR_ecDTTcdbXvJV9GW8StO2JaSN1Do2CyT75w",
+   "root_kind": 26501
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "root_text": "[\"Trystero\",\"webcpp-trystero-quick-start\",\"café\"]",
+   "root_topic": "SpLDMeLr8p_xce0guAVzHESuo1H9xb1FiYJ5i31PwIU",
+   "peer_text": "[\"[\\\"Trystero\\\",\\\"webcpp-trystero-quick-start\\\",\\\"café\\\"]\",\"AbCdEfGhIjKlMnOpQrSt\"]",
+   "peer_topic": "dT5cAPs12Eo2XtHySSAvPbypWnlE8AI4MHdOPWU4H1I",
+   "root_kind": 26084
+  }
+ ],
+ "base64url": [
+  {
+   "bytes": "",
+   "text": ""
+  },
+  {
+   "bytes": "00",
+   "text": "AA"
+  },
+  {
+   "bytes": "fffe",
+   "text": "__4"
+  },
+  {
+   "bytes": "010203",
+   "text": "AQID"
+  },
+  {
+   "bytes": "fbffbf",
+   "text": "-_-_"
+  },
+  {
+   "bytes": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+   "text": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g"
+  }
+ ],
+ "hash32": [
+  {
+   "text": "",
+   "value": 2872998923
+  },
+  {
+   "text": "lobby",
+   "value": 1937637236
+  },
+  {
+   "text": "Trystero",
+   "value": 2975451718
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "value": 777894491
+  },
+  {
+   "text": "café 😀",
+   "value": 622887659
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "value": 3644158961
+  }
+ ],
+ "str_to_num": [
+  {
+   "text": "",
+   "limit": 10000,
+   "value": 8923
+  },
+  {
+   "text": "lobby",
+   "limit": 10000,
+   "value": 7236
+  },
+  {
+   "text": "Trystero",
+   "limit": 10000,
+   "value": 1718
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "limit": 10000,
+   "value": 4491
+  },
+  {
+   "text": "café 😀",
+   "limit": 10000,
+   "value": 7659
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "limit": 10000,
+   "value": 8961
+  }
+ ],
+ "shuffle": [
+  {
+   "app": "example.com/app",
+   "seed": 3213600185,
+   "order": [
+    24,
+    4,
+    9,
+    29,
+    12,
+    3,
+    11,
+    17,
+    2,
+    13,
+    10,
+    0,
+    27,
+    1,
+    15,
+    6,
+    22,
+    23,
+    21,
+    14,
+    16,
+    8,
+    5,
+    19,
+    7,
+    28,
+    26,
+    20,
+    25,
+    18
+   ]
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "seed": 507786972,
+   "order": [
+    6,
+    24,
+    18,
+    12,
+    11,
+    10,
+    9,
+    7,
+    4,
+    28,
+    22,
+    14,
+    8,
+    0,
+    5,
+    19,
+    20,
+    29,
+    2,
+    16,
+    13,
+    26,
+    27,
+    23,
+    1,
+    21,
+    3,
+    25,
+    15,
+    17
+   ]
+  },
+  {
+   "app": "",
+   "seed": 2872998923,
+   "order": [
+    27,
+    15,
+    20,
+    22,
+    14,
+    28,
+    3,
+    18,
+    24,
+    23,
+    29,
+    10,
+    25,
+    9,
+    5,
+    11,
+    7,
+    19,
+    8,
+    16,
+    2,
+    1,
+    13,
+    21,
+    6,
+    4,
+    17,
+    0,
+    26,
+    12
+   ]
+  },
+  {
+   "app": "café",
+   "seed": 3746663762,
+   "order": [
+    2,
+    23,
+    0,
+    9,
+    14,
+    11,
+    15,
+    28,
+    10,
+    29,
+    21,
+    3,
+    27,
+    8,
+    6,
+    16,
+    18,
+    25,
+    1,
+    22,
+    26,
+    20,
+    24,
+    5,
+    4,
+    12,
+    19,
+    13,
+    17,
+    7
+   ]
+  }
+ ],
+ "topic_to_kind": [
+  {
+   "topic": "",
+   "kind": 26261
+  },
+  {
+   "topic": "lobby",
+   "kind": 24083
+  },
+  {
+   "topic": "Trystero",
+   "kind": 24407
+  },
+  {
+   "topic": "[\"Trystero\",\"app\",\"room\"]",
+   "kind": 26553
+  },
+  {
+   "topic": "café 😀",
+   "kind": 26241
+  },
+  {
+   "topic": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "kind": 20693
+  }
+ ],
+ "gen_id": [
+  {
+   "n": 8,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAE"
+  },
+  {
+   "n": 12,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZ"
+  },
+  {
+   "n": 20,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z"
+  },
+  {
+   "n": 22,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z0z"
+  },
+  {
+   "n": 64,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z0zzAEcXYZabcde01z0zzAEcXYZabcde01z0zzAEcXYZa"
+  }
+ ],
+ "identity_ids": [
+  {
+   "compact_pub": "WKn-ZIGevcwGIyyrzFoZNBdQq79v3jZ8Nl3S1Jvxm7I.HdKAMKoHOpFkK-nMlm9JN6qzGlcrJ8nd5I4L8ss1V40",
+   "pid_digest": "99af88cf2e624ba696ab443d9c64d155c43311ee20a6add847336f00969b6a4f",
+   "uid_digest": "284b4d8b3e4b1613b005cbc7f734432d87f185d6b86bea9a1077a6ed36d52415",
+   "peer_id": "T5sdTwb84yyey80e4qjv",
+   "user_id": "2Ag9nxCt2tqpTCQ2x1bNyf"
+  }
+ ],
+ "room_key_no_password": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "preimage": "[\"trystero:room-aes:v3\",\"example.com/app\",\"lobby\"]",
+   "key": "b03810047a4001c5c48b2a81106f3649447465c05eca736b56c02f94facf207a"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "preimage": "[\"trystero:room-aes:v3\",\"webcpp-trystero-quick-start\",\"café\"]",
+   "key": "4d371f0aab945ec4316b6f040d2008484ecc853f21c4af9aa760a5f099340241"
+  }
+ ],
+ "room_keys_password": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "salt": "6c5d7a340e7fb5f0e2be6c42e4a8608da6e462638e82ba39f15ff69ead1313f7",
+   "master": "0a9daa6bbfe5e7a974b8ab2030704abcd09c0451a3e189a4bf5cda230e8fa8a7",
+   "aes_key": "4ae994c98ce84eb65c425d575f6041fd4b2d746e9aeadf55e8f5dec459b63f05",
+   "hmac_key": "fec04ff31caf38cf34185134d1073aaf4ed427f030574f42620f527f9aea3b53",
+   "probe_sealed": "AAECAwQFBgcICQoLGRjC2fdNlRMsEdzU_EXZAqj5nGES"
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "päss wörd",
+   "salt": "6c5d7a340e7fb5f0e2be6c42e4a8608da6e462638e82ba39f15ff69ead1313f7",
+   "master": "7b7cc66397463c41cd90ae25a3cbc14f3cc36fc5720c0d18634881d0d0456fc3",
+   "aes_key": "7cb04dde0775f7d1510aa484f6e852251cf574b83f35e641c3282dc03e16e48e",
+   "hmac_key": "f1d2a20f580624e4de679bb145476e2ff23cb29c15915ef9bec82ae1f123ff20",
+   "probe_sealed": "AAECAwQFBgcICQoLxIfa5stgfSD9cMjAlr4aNDVnEyQk"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "salt": "7f62b7322788b421ec9f0a971fe8ca8f63b64328ddc496060cdbd1882b63d19f",
+   "master": "54f135ffd28ed3bc7089e3eea636f68c73e59e22fa6c1c885ba65154754fe15d",
+   "aes_key": "4175388a1c6ac3c97f3c78339c61323d90d8d90663964549d955d432b295d98a",
+   "hmac_key": "434268e92183bc6011f9003e660c4683b7d727a5ad690ae3009a563ce9c0d834",
+   "probe_sealed": "AAECAwQFBgcICQoLuzWCXwmcKKap6O2D9GLhZLhD4hR_"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "päss wörd",
+   "salt": "7f62b7322788b421ec9f0a971fe8ca8f63b64328ddc496060cdbd1882b63d19f",
+   "master": "a01a75529a965885396180a2b765bcd577deb86c876e4f1f719c5673de65ea44",
+   "aes_key": "ca1d05568590c9dc5ba781844b836a6409af2a0776424d8b15421611ad39bb53",
+   "hmac_key": "37c9eb6d6473988d727964d8cfafb80e8acff634df7762b9b28ad768c1c70cb3",
+   "probe_sealed": "AAECAwQFBgcICQoLDylLYiH6u5rKzfH259JrM6gIa9WU"
+  }
+ ],
+ "room_auth": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "peer_id": "@topology",
+   "seq": 0,
+   "payload": "[\"trystero:ov-auth:v3\",\"example.com/app\",\"lobby\",\"@topology\",0]",
+   "token": "2NJHPBHFvtay1mqxqeYGpGBT0NhRgaIvzZ9E-qfyuJI",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "seq": 7,
+   "payload": "[\"trystero:ov-auth:v3\",\"example.com/app\",\"lobby\",\"AbCdEfGhIjKlMnOpQrSt\",7]",
+   "token": "ZVSE0m_rYBRZpncsk78FJryImX5vT6j7fumci7tZIek",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "peer_id": "@topology",
+   "seq": 0,
+   "payload": "[\"trystero:ov-auth:v3\",\"webcpp-trystero-quick-start\",\"café\",\"@topology\",0]",
+   "token": "T5-424RfPUNhHrePJh6wn_hz7qkujtgFMf8vpn42eb0",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "seq": 7,
+   "payload": "[\"trystero:ov-auth:v3\",\"webcpp-trystero-quick-start\",\"café\",\"AbCdEfGhIjKlMnOpQrSt\",7]",
+   "token": "BYwedXMyzF97paMCoMfwkE2UUat1CafFc4Jvc-Hea3s",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  }
+ ],
+ "seal": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLGc_6jhLrcbNj8hjzhPUqZg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLPHygQYpNoS7kXhQ0XeG6eg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLUeV4DjL1H_cMk-fvBvO1Re-y3nO7Ne-JJIVUU3PfsMhbgaUH0KbUBLB8Pxk60EQ",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLUeV4DjL1H_cMk-fvBvO1Re-y3nO7Ne-JJIVUU3PfsCMnrjZs721Qbi0h3xljAcY",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0Ioexh2NTJekXSRKgHeQyk4I",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________x9ehIHdByjLZoxc2AHDg_Q",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________4mT77-_nGq9eDxvx2WRw4Q",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________2zK42CrSR5fpZl3tcbvbFls_oetjUwCxMJLNojXULbykNyYg2kK4jAUNGUPoG3k",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________2zK42CrSR5fpZl3tcbvbFls_oetjUwCxMJLNojXULVfYGLVL5Yk85phQ-UOxyvs",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________zm7uFomdiiVR1wCLHrBKy25hdYx9kwsBb48",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________zm7uFomdiiVR1-yZs1TG4DJJmCUsPXSTOiU",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLU7rlzvmNe5NDby7HWNMYjw",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLp5uLDAohzG2vycYFeAI54g",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLH1edtphfX1Sibsj2gu6gxXecH_vhL_4MGdXQ8Ond0lAnscgR97CMUrU9QG7Y6cM",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLH1edtphfX1Sibsj2gu6gxXecH_vhL_4MGdXQ8Ond0s6d3v9lvAOof7aT5pPEdko",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLCgvLeDsQkuYa3_btujkE61AA_JWS0ZPMt9s",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLCgvLeDsQkuYa3-1BkjfzBucxRacy2JGUNjo",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________ZLRVu8Pz-WGqEDp9yQjAWQ",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________kJU7eTBfTp9GttK_6dnhNA",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________lXPjrb_hjUvTU0PvtNpTDbmWUvFRogTyC8A7ZR_p9koJP0Zpi7xsN6u-g9JggVg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________lXPjrb_hjUvTU0PvtNpTDbmWUvFRogTyC8A7ZR_p9tSzUHEdwA9IGqgQJS98HtE",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________gC-1YxyuQPlr4nyf6xfmF4hlvzA_KkBP0nE",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________gC-1YxyuQPlr4mczwxkR-j9UBgKfI0IXU5A",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLj0jjmghtRCOnPJZpqsMD2Q",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLpZ7jQZsODIcTq-DFSG2ZcA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLJANGWduDCr8olDIuVhrLZrq4Qv7semA5FQaEtq00-iRfHxw8x3y68O_kjSAHpu0",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLJANGWduDCr8olDIuVhrLZrq4Qv7semA5FQaEtq00-kGyltqViFxLmwhetU3FQDQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLMV8Ql3jMxw2QJV8SOBjnrAY6XECmtHiJe2g",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLMV8Ql3jMxw2QJZOasbdFmJ-6dhb34-bjkvQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________wAiHUcFAhvnNn_0MqWT3xQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________6t6HilIjzl15CIugS8ptbA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________SX-C8cB81taRVv3VfCBW578hzFY9ZGK1Ol9iu0TILXBipXwRUoDRzfcfeCpEs6k",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________SX-C8cB81taRVv3VfCBW578hzFY9ZGK1Ol9iu0TILRWPLLq4HaAgphClQEeGVXA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________XCPUP2MzG2Qp58dCQBqtu9e70g1sJqG39bk",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________XCPUP2MzG2Qp5wvKybUPj047-Fs9cT_dHCU",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLK5_ohRzzZRSOfSQ_C-agZw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLNXW7Kdeex04S-E4Le8VLAQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLvXrdMGYS3zvIh2u26fdDBhsrBFed56pW6SKXV9GHcL_uixOIh3fuJft3j9QAbRc",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLvXrdMGYS3zvIh2u26fdDBhsrBFed56pW6SKXV9GHcPTqw0ToHbW3fiJoN7YDn4c",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLqCaL_sVdEolwNsS94x6gm-4mo8h2XJ4M0VI",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLqCaL_sVdEolwNnOkYmH_uFkYtYo1mIDId2Q",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________zY4lFp8CCCx-uNu8ttQbBQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________02R2ulRvqnbiPbGIxvfwYw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________h-y5jK4U0I1a2muOyB4XWE9fkh5G3_rtXeOu79ZMHeXfgaGNwCWmLqpylLfUC1A",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________h-y5jK4U0I1a2muOyB4XWE9fkh5G3_rtXeOu79ZMHa7byfbtWuf_dXNtLNXX-cA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________krDvQg1bHT_ia-IrSqhCVHZWu8e2Lz-tlTw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________krDvQg1bHT_ia1Uyy9cdd8ForYX16yFpMwo",
+   "opened_equal": true
+  }
+ ],
+ "open_refused": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "not base64!",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLku",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig=",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxiA",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "BAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig",
+   "refused": true
+  }
+ ],
+ "signal_aad": [
+  {
+   "type": "offer",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "offer_id": "0123456789ab",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab"
+  },
+  {
+   "type": "answer",
+   "peer_id": "x",
+   "offer_id": "y",
+   "aad": "answer|x|y"
+  }
+ ]
+}
