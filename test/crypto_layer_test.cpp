@@ -13,6 +13,7 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/room_keys.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -437,6 +438,131 @@ void room_auth_token_is_strict() {
     BOOST_TEST(!tp::verify_room_auth(hmac, app, room, peer, seq, outside));
 }
 
+/** The AES key of an entry of "seal" or "open_refused": without a password, or the vector's. */
+webcpp::crypto::secret<32> key_of(const fixture_value& entry) {
+    const auto app = str(entry["app"]);
+    const auto room = str(entry["room"]);
+    const auto password = str(entry["password"]);
+    if (password.empty()) {
+        return tp::room_aes_key_without_password(app, room);
+    }
+    webcpp::crypto::secret<32> key;
+    std::ranges::copy(bytes_of(password_vector(app, room, password)["aes_key"]),
+                      key.writable().begin());
+    return key;
+}
+
+/** An entry's AAD: absent when the fixture holds null. */
+std::optional<std::string_view> aad_of(const fixture_value& entry) {
+    const auto aad = entry["aad"];
+    if (aad.is_null()) {
+        return std::nullopt;
+    }
+    return str(aad);
+}
+
+void seal_matches() {
+    for (const auto entry : section("seal")) {
+        const auto key = key_of(entry);
+        const auto iv = bytes_of(entry["iv"]);
+        const auto plaintext = str(entry["plaintext"]);
+        const auto aad = aad_of(entry);
+        const auto sealed =
+            tp::seal(key, std::span<const std::uint8_t, tp::gcm_iv_size>(iv), plaintext, aad);
+        BOOST_TEST(sealed.has_value());
+        if (sealed) {
+            BOOST_TEST_EQ(*sealed, str(entry["sealed"]));
+            BOOST_TEST_EQ(sealed->size(), tp::sealed_size(plaintext.size()));
+        }
+        const auto opened = tp::open(key, str(entry["sealed"]), aad);
+        BOOST_TEST(opened.has_value());
+        if (opened) {
+            BOOST_TEST_EQ(*opened, plaintext);
+        }
+    }
+}
+
+void password_probe_opens() {
+    for (const auto entry : section("room_keys_password")) {
+        webcpp::crypto::secret<32> key;
+        std::ranges::copy(bytes_of(entry["aes_key"]), key.writable().begin());
+        const auto opened = tp::open(key, str(entry["probe_sealed"]), "offer|p|o");
+        BOOST_TEST(opened.has_value());
+        if (opened) {
+            BOOST_TEST_EQ(*opened, std::string_view("probe"));
+        }
+        // Another AAD, and no AAD, do not open it.
+        BOOST_TEST(!tp::open(key, str(entry["probe_sealed"]), "offer|p|x").has_value());
+        BOOST_TEST(!tp::open(key, str(entry["probe_sealed"]), std::nullopt).has_value());
+    }
+}
+
+void open_refuses_what_trystero_refuses() {
+    for (const auto entry : section("open_refused")) {
+        BOOST_TEST(entry["refused"].value_or(false));
+        const auto opened = tp::open(key_of(entry), str(entry["sealed"]), std::nullopt);
+        BOOST_TEST(!opened.has_value());
+        if (!opened) {
+            BOOST_TEST(opened.error() == webcpp::trystero::error::decrypt_failed);
+        }
+    }
+    // A text with padding, a character outside the alphabet and another last character of the
+    // same bytes, of a sealed text that opens.
+    const auto entry = section("seal")[std::size_t{4}];
+    const auto key = key_of(entry);
+    const std::string good(str(entry["sealed"]));
+    BOOST_TEST(tp::open(key, good, std::nullopt).has_value());
+    BOOST_TEST(!tp::open(key, good + "=", std::nullopt).has_value());
+    BOOST_TEST(!tp::open(key, good + "A", std::nullopt).has_value());
+    auto outside = good;
+    outside[5] = '+';
+    BOOST_TEST(!tp::open(key, outside, std::nullopt).has_value());
+    // Fewer than 28 bytes: 27 bytes are 36 characters.
+    BOOST_TEST(!tp::open(key, std::string(36, 'A'), std::nullopt).has_value());
+    // A tag that does not match.
+    auto flipped = good;
+    flipped[flipped.size() / 2] = flipped[flipped.size() / 2] == 'A' ? 'B' : 'A';
+    BOOST_TEST(!tp::open(key, flipped, std::nullopt).has_value());
+}
+
+void open_refuses_another_aad() {
+    for (const auto entry : section("seal")) {
+        const auto key = key_of(entry);
+        const auto aad = aad_of(entry);
+        const std::string_view other = aad ? std::string_view("answer|x|y") : "offer|x|y";
+        BOOST_TEST(!tp::open(key, str(entry["sealed"]), other).has_value());
+        if (aad) {
+            BOOST_TEST(!tp::open(key, str(entry["sealed"]), std::nullopt).has_value());
+        } else {
+            // An absent AAD and an empty one are the same to GCM.
+            BOOST_TEST(tp::open(key, str(entry["sealed"]), std::string_view()).has_value());
+        }
+    }
+}
+
+// A plaintext that is not UTF-8 seals, and is refused on opening (design D12).
+void open_refuses_a_plaintext_that_is_not_utf8() {
+    const auto key = tp::room_aes_key_without_password("a", "r");
+    const std::array<std::uint8_t, tp::gcm_iv_size> iv{};
+    const auto sealed = tp::seal(key, iv, std::string_view("ab\xff\xfe", 4), std::nullopt);
+    BOOST_TEST(sealed.has_value());
+    if (sealed) {
+        const auto opened = tp::open(key, *sealed, std::nullopt);
+        BOOST_TEST(!opened.has_value());
+        if (!opened) {
+            BOOST_TEST(opened.error() == webcpp::trystero::error::decrypt_failed);
+        }
+    }
+}
+
+void signal_aad_matches() {
+    for (const auto entry : section("signal_aad")) {
+        BOOST_TEST_EQ(
+            tp::signal_aad(str(entry["type"]), str(entry["peer_id"]), str(entry["offer_id"])),
+            str(entry["aad"]));
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -472,5 +598,11 @@ int main(int argc, char* argv[]) {
 #endif
     webcpp::test::run_case(room_auth_matches);
     webcpp::test::run_case(room_auth_token_is_strict);
+    webcpp::test::run_case(seal_matches);
+    webcpp::test::run_case(password_probe_opens);
+    webcpp::test::run_case(open_refuses_what_trystero_refuses);
+    webcpp::test::run_case(open_refuses_another_aad);
+    webcpp::test::run_case(open_refuses_a_plaintext_that_is_not_utf8);
+    webcpp::test::run_case(signal_aad_matches);
     return boost::report_errors();
 }

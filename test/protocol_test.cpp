@@ -15,6 +15,8 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -130,24 +132,6 @@ void topics(const fixture_value& fixture) {
         const auto room = str(t["room_id"]);
         BOOST_TEST_EQ(tp::room_token(app, room), str(t["room_token"]));
     }
-}
-
-void handshake_and_sealing(const fixture_value& fixture) {
-    for (const auto entry : fixture["handshake"]) {
-        BOOST_TEST_EQ(tp::handshake_proof(str(entry["challenge"]), str(entry["password"]),
-                                          str(entry["app_id"]), str(entry["room_id"])),
-                      str(entry["hash"]));
-    }
-    const auto sealed = fixture["sealed"];
-    BOOST_TEST_EQ(tp::to_hex(tp::seal_key("secret", "my-app", "room-1")),
-                  str(sealed["key_material"]));
-    const auto parts = tp::parse_sealed(str(sealed["text"]));
-    BOOST_TEST(parts.has_value());
-    BOOST_TEST_EQ(parts->iv.size(), tp::seal_iv_size);
-    BOOST_TEST_EQ(parts->ciphertext.size(), str(sealed["plaintext"]).size() + 16);
-    BOOST_TEST_EQ(tp::format_sealed(parts->iv, parts->ciphertext), str(sealed["text"]));
-    BOOST_TEST(!tp::parse_sealed("1,2,300$AAAA").has_value());
-    BOOST_TEST(!tp::parse_sealed("no dollar").has_value());
 }
 
 /** A relay's echo of a client's `["EVENT",<event>]`: the event's text whole, less the client's
@@ -619,10 +603,10 @@ void signal_bounds() {
         return tp::read_signal(std::as_const(document.emplace(std::move(parsed).value())).root())
             .has_value();
     };
-    std::array<std::uint8_t, tp::seal_iv_size> iv{};
-    iv.fill(255);
-    const tp::bytes ciphertext(8192 + 16, 7);
-    const auto longest_candidate = tp::format_sealed(iv, ciphertext);
+    const auto key = tp::room_aes_key_without_password("my-app", "room-1");
+    const std::array<std::uint8_t, tp::gcm_iv_size> iv{};
+    const auto longest_candidate =
+        tp::seal(key, iv, std::string(8192, 'c'), std::string_view("candidate|p|o")).value();
     BOOST_TEST_EQ(longest_candidate.size(), tp::sealed_size(8192));
     BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .candidate = longest_candidate}));
 
@@ -913,7 +897,7 @@ void parse_bounds() {
     BOOST_TEST(refused_unread(event_text + " ", tp::nostr::max_parsed_relay_text_bytes));
 
     // Trystero's handshake message: `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`.
-    const auto proof = tp::handshake_proof("ch4ll3ng3", "secret", "my-app", "room-1");
+    const std::string proof(64, 'f');
     const auto handshake =
         padded(R"({"__trystero_pw":"response","h":")" + std::string(proof) + "\"}",
                tp::max_handshake_bytes);
@@ -1121,7 +1105,6 @@ int main(int argc, char* argv[]) {
     }
     const auto fixture = loaded->root();
     topics(fixture);
-    handshake_and_sealing(fixture);
     nostr_events(fixture);
     nostr_message_fields(fixture);
     event_ids_are_their_own(fixture);

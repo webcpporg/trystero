@@ -1909,6 +1909,14 @@ void the_errors_have_their_values() {
                   "the app holds as many rooms as a peer accepts, 64");
     BOOST_TEST_EQ(make_error_code(trystero::error::invalid_configuration).message(),
                   "the configuration is unusable");
+    // Appended after too_many_rooms, in 0.27.0's order of room errors, with its messages.
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::room_full), 16);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::request_timed_out), 28);
+    BOOST_TEST_EQ(make_error_code(trystero::error::room_full).message(), "room full");
+    BOOST_TEST_EQ(make_error_code(trystero::error::banned).message(), "peer banned");
+    BOOST_TEST_EQ(make_error_code(trystero::error::decrypt_failed).message(),
+                  "failed to decrypt a signal (incorrect password or corrupted signal)");
+    BOOST_TEST_EQ(make_error_code(trystero::error::action_aborted).message(), "operation aborted");
 }
 
 }  // namespace

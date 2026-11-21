@@ -68,6 +68,35 @@ enum class error {
     already_joined,
     /** The app already holds as many rooms as a peer accepts, 64 of them. */
     too_many_rooms,
+    /** The room holds as many peers as it accepts, 0.27.0's "room full". */
+    room_full,
+    /** The peer is banned from the room, 0.27.0's "peer banned". */
+    banned,
+    /** Every signaling relay failed, 0.27.0's `relay-failed` room error. */
+    relay_failed,
+    /** A peer's or the endpoint's identity could not be resolved, 0.27.0's `identity-failed`. */
+    identity_failed,
+    /** A plugin of the room failed to set up, 0.27.0's `plugin-failed`. */
+    plugin_failed,
+    /**
+     * A signal could not be opened: another room password, a corrupted text, or a plaintext that
+     * is not UTF-8, 0.27.0's `decrypt-failed`.
+     */
+    decrypt_failed,
+    /** The peer could not be connected after the SDP exchange, 0.27.0's `peer-connect-failed`. */
+    peer_connect_failed,
+    /** A peer reported an error, 0.27.0's `peer-error`. */
+    peer_error,
+    /** A listener that takes one at a time is already set, 0.27.0's "already registered". */
+    already_subscribed,
+    /** The target of a send is not connected, 0.27.0's "no active peer with id". */
+    not_connected,
+    /** An action was aborted by its caller, 0.27.0's "operation aborted". */
+    action_aborted,
+    /** The receiver of a request answered with a failure, 0.27.0's `rejected` action error. */
+    request_rejected,
+    /** A request was not answered in time, 0.27.0's "request timed out". */
+    request_timed_out,
 };
 
 /**
@@ -124,6 +153,21 @@ private:
             case error::invalid_configuration: return "the configuration is unusable";
             case error::already_joined: return "the app has already joined a room of that id";
             case error::too_many_rooms: return "the app holds as many rooms as a peer accepts, 64";
+            case error::room_full: return "room full";
+            case error::banned: return "peer banned";
+            case error::relay_failed: return "all signaling relays failed";
+            case error::identity_failed: return "identity resolution failed";
+            case error::plugin_failed: return "plugin setup failed";
+            case error::decrypt_failed:
+                return "failed to decrypt a signal (incorrect password or corrupted signal)";
+            case error::peer_connect_failed:
+                return "could not connect to peer after exchanging SDP";
+            case error::peer_error: return "peer error";
+            case error::already_subscribed: return "handler already registered; unsubscribe first";
+            case error::not_connected: return "no active peer with this id";
+            case error::action_aborted: return "operation aborted";
+            case error::request_rejected: return "request rejected";
+            case error::request_timed_out: return "request timed out";
         }
         return "unknown webcpp.trystero error";
     }
