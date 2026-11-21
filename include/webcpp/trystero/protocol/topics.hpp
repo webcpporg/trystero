@@ -11,12 +11,12 @@
 
 #include <webcpp/trystero/protocol/text.hpp>
 
-#include <boost/hash2/sha1.hpp>
-#include <boost/hash2/sha2.hpp>
+#include <webcpp/hash/digest.hpp>
+
+#include <boost/assert.hpp>
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <memory_resource>
@@ -70,13 +70,27 @@ inline std::pmr::string random_id(
  * @return The digest.
  */
 inline std::array<std::uint8_t, 32> sha256_of(std::initializer_list<std::string_view> parts) {
-    boost::hash2::sha2_256 h;
-    for (const auto part : parts) {
-        h.update(part.data(), part.size());
-    }
-    const auto digest = h.result();
     std::array<std::uint8_t, 32> out{};
-    std::ranges::copy(digest, out.begin());
+    // SHA-256 over webcpp::hash's default backend has no failure to report; if one came, `out`
+    // stays zeroed and the assertion says so in a debug build.
+    auto hashing = webcpp::hash::hasher<webcpp::hash::digests::sha2_256>::make();
+    BOOST_ASSERT(hashing.has_value());
+    if (!hashing) {
+        return out;
+    }
+    for (const auto part : parts) {
+        const auto fed = hashing->update(
+            std::span(reinterpret_cast<const std::uint8_t*>(part.data()), part.size()));
+        BOOST_ASSERT(fed.has_value());
+        if (!fed) {
+            return out;
+        }
+    }
+    const auto done = hashing->finish(out);
+    BOOST_ASSERT(done.has_value());
+    if (!done) {
+        out.fill(0);
+    }
     return out;
 }
 
@@ -90,54 +104,121 @@ inline std::array<std::uint8_t, 32> sha256(std::string_view text) {
     return sha256_of({text});
 }
 
+/** Trystero's library name, `libName`, the first part of every topic's path. */
+inline constexpr std::string_view lib_name = "Trystero";
+/** Trystero's library id, `libId`, the first part of every domain tag. */
+inline constexpr std::string_view lib_id = "trystero";
+
 /**
- * Trystero's `sha1` of the concatenation of `parts`, the name of a topic.
+ * Trystero's `domainTag`: the text that separates one use of a key or a hash from another.
  *
- * It is the SHA-1 digest with every byte written in base 36 without padding, concatenated.
- *
- * Tip: the text is not fixed width; it is a topic name and is only ever compared, never decoded.
- *
- * @param parts The texts, in order.
- * @param memory The resource the name is allocated in.
- * @return The name.
+ * @param name The use's name.
+ * @param version The use's version.
+ * @param memory The resource the tag is allocated in.
+ * @return "trystero:<name>:v<version>".
  */
-inline std::pmr::string sha1_topic_of(
-    std::initializer_list<std::string_view> parts,
+inline std::pmr::string domain_tag(
+    std::string_view name, unsigned version,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    boost::hash2::sha1_160 h;
-    for (const auto part : parts) {
-        h.update(part.data(), part.size());
-    }
     std::pmr::string out(memory);
-    out.reserve(40);
-    for (std::uint8_t b : h.result()) {
-        std::array<char, 2> digits{};
-        std::size_t n = 0;
-        do {
-            digits[n++] = "0123456789abcdefghijklmnopqrstuvwxyz"[b % 36];
-            b /= 36;
-        } while (b != 0);
-        while (n != 0) {
-            out += digits[--n];
-        }
-    }
+    out += lib_id;
+    out += ':';
+    out += name;
+    out += ":v";
+    out += std::to_string(version);
     return out;
 }
 
 /**
- * Trystero's `sha1` of a text, the name of a topic.
+ * Appends a text as the string `JSON.stringify` writes: quoted, with `"` and `\\` escaped, `\b`,
+ * `\f`, `\n`, `\r` and `\t` by their letters, the other controls as lowercase `\u00XX`, and every
+ * other byte as it is.
  *
- * @param text The text.
- * @param memory The resource the name is allocated in.
- * @return The name, as @ref sha1_topic_of writes it.
+ * Tip: unlike @ref json::append_string it never refuses a text, so that a topic never silently
+ * loses a part; a byte that is not UTF-8 is copied as it is.
+ *
+ * @param out The text to append to.
+ * @param utf8 The text, in UTF-8.
  */
-inline std::pmr::string sha1_topic(
-    std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return sha1_topic_of({text}, memory);
+inline void append_json_string(std::pmr::string& out, std::string_view utf8) {
+    static constexpr std::string_view digits = "0123456789abcdef";
+    out += '"';
+    for (const char c : utf8) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += "\\u00";
+                    out += digits[static_cast<unsigned char>(c) >> 4U];
+                    out += digits[static_cast<unsigned char>(c) & 15U];
+                } else {
+                    out += c;
+                }
+        }
+    }
+    out += '"';
 }
 
 /**
- * The topic every member of a room announces on, Trystero's `sha1` of "Trystero\@<app>\@<room>".
+ * Trystero's `topicPath`: the JSON array of the parts, `["a","b"]`, which no choice of parts can
+ * make equal to another's.
+ *
+ * @param parts The texts, in UTF-8.
+ * @param memory The resource the path is allocated in.
+ * @return The path.
+ */
+inline std::pmr::string topic_path(
+    std::initializer_list<std::string_view> parts,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
+    out += '[';
+    bool first = true;
+    for (const auto part : parts) {
+        if (!first) {
+            out += ',';
+        }
+        first = false;
+        append_json_string(out, part);
+    }
+    out += ']';
+    return out;
+}
+
+/**
+ * Trystero's `hashTopic`: the base64url of the SHA-256 of a text's UTF-8 bytes.
+ *
+ * @param text The text, in UTF-8.
+ * @param memory The resource the topic is allocated in.
+ * @return The topic's name, 43 characters.
+ */
+inline std::pmr::string hash_topic(
+    std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return to_base64url(sha256(text), memory);
+}
+
+/**
+ * The text whose hash is the topic every member of a room announces on: the path of the library's
+ * name, the app's id and the room's id.
+ *
+ * @param app_id The application's id.
+ * @param room_id The room's id.
+ * @param memory The resource the text is allocated in.
+ * @return The path.
+ */
+inline std::pmr::string root_topic_text(
+    std::string_view app_id, std::string_view room_id,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    return topic_path({lib_name, app_id, room_id}, memory);
+}
+
+/**
+ * The topic every member of a room announces on, the hash of @ref root_topic_text.
  *
  * @param app_id The application's id.
  * @param room_id The room's id.
@@ -147,12 +228,12 @@ inline std::pmr::string sha1_topic(
 inline std::pmr::string root_topic(
     std::string_view app_id, std::string_view room_id,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return sha1_topic_of({"Trystero@", app_id, "@", room_id}, memory);
+    return hash_topic(root_topic_text(app_id, room_id, memory), memory);
 }
 
 /**
- * The topic a peer receives its offers, answers and candidates on, Trystero's `sha1` of the root
- * topic's text, "\@" and the peer's id.
+ * The topic a peer receives its offers, answers and candidates on: the hash of the path of the
+ * root topic's text and the peer's id.
  *
  * @param app_id The application's id.
  * @param room_id The room's id.
@@ -163,7 +244,8 @@ inline std::pmr::string root_topic(
 inline std::pmr::string peer_topic(
     std::string_view app_id, std::string_view room_id, std::string_view peer_id,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return sha1_topic_of({"Trystero@", app_id, "@", room_id, "@", peer_id}, memory);
+    return hash_topic(topic_path({root_topic_text(app_id, room_id, memory), peer_id}, memory),
+                      memory);
 }
 
 /**
@@ -182,17 +264,33 @@ inline std::pmr::string room_token(
 }
 
 /**
- * Trystero's `strToNum`: the sum of the text's UTF-16 code units, modulo `limit`.
+ * Trystero's `hash32`: FNV-1a over the UTF-8 bytes, then MurmurHash3's final mix.
  *
- * Tip: it computes in doubles, JavaScript's Numbers, as `strToNum` does, so that every peer derives
- * the same kinds and relays; the oracle's fixtures pin it.
+ * @param utf8 The text, in UTF-8.
+ * @return The 32-bit hash.
+ */
+inline std::uint32_t hash32(std::string_view utf8) {
+    std::uint32_t h = 0x811c9dc5U;
+    for (const char c : utf8) {
+        h = (h ^ static_cast<std::uint8_t>(c)) * 0x01000193U;
+    }
+    h ^= h >> 16U;
+    h *= 0x85ebca6bU;
+    h ^= h >> 13U;
+    h *= 0xc2b2ae35U;
+    h ^= h >> 16U;
+    return h;
+}
+
+/**
+ * Trystero's `strToNum`: @ref hash32 of the text, modulo `limit`.
  *
- * @param text The text, in UTF-8.
+ * @param utf8 The text, in UTF-8.
  * @param limit The modulus; the default is JavaScript's `Number.MAX_SAFE_INTEGER`.
  * @return The number, in [0, `limit`).
  */
-inline double str_to_num(std::string_view text, double limit = 9007199254740991.0) {
-    return std::fmod(utf16_code_unit_sum(text), limit);
+inline std::uint64_t str_to_num(std::string_view utf8, std::uint64_t limit = 9007199254740991ULL) {
+    return hash32(utf8) % limit;
 }
 
 }  // namespace webcpp::trystero::protocol

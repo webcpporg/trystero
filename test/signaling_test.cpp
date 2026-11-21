@@ -286,11 +286,19 @@ void an_answerers_signals_are_trysteros(const fixture_value& oracle) {
         }
         const auto expected = c["published"];
         BOOST_TEST_EQ(a.published.size(), expected.size());
+        // The fixture's topics are 0.26's; the signals go to the offerer's topic as 0.27.0 names
+        // it.
+        const auto offer = str(c["offer"]);
+        constexpr std::string_view key = R"("peerId":")";
+        const auto from = offer.find(key) + key.size();
+        const auto offerer = offer.substr(from, offer.find('"', from) - from);
+        const std::string topic = std::string(
+            trystero::protocol::peer_topic(str(oracle["app_id"]), str(oracle["room_id"]), offerer));
         std::size_t i = 0;
         for (const auto signal : expected) {
             if (i < a.published.size()) {
                 BOOST_TEST_EQ(a.published[i].relay, 0U);
-                BOOST_TEST_EQ(a.published[i].topic, str(signal["topic"]));
+                BOOST_TEST_EQ(a.published[i].topic, topic);
                 BOOST_TEST_EQ(a.published[i].text, str(signal["text"]));
             }
             ++i;

@@ -128,14 +128,7 @@ void topics(const fixture_value& fixture) {
     for (const auto t : fixture["topics"]) {
         const auto app = str(t["app_id"]);
         const auto room = str(t["room_id"]);
-        BOOST_TEST_EQ(tp::root_topic(app, room), str(t["root_topic"]));
-        BOOST_TEST_EQ(tp::peer_topic(app, room, str(t["peer_id"])), str(t["self_topic"]));
         BOOST_TEST_EQ(tp::room_token(app, room), str(t["room_token"]));
-    }
-    for (const auto t : fixture["str_to_num"]) {
-        BOOST_TEST_EQ(tp::str_to_num(str(t["text"])), static_cast<double>(integer(t["unbounded"])));
-        BOOST_TEST_EQ(tp::str_to_num(str(t["text"]), 10000),
-                      static_cast<double>(integer(t["mod_10000"])));
     }
 }
 

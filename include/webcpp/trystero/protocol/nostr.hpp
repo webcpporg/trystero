@@ -24,6 +24,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -59,10 +60,11 @@ inline constexpr std::string_view topic_tag = "x";
  * forward the events and keep none.
  *
  * @param topic The topic's name.
- * @return 20000 plus `str_to_num(topic, 10000)`, below 30000.
+ * @return 20000 plus the sum of the topic's UTF-16 code units modulo 10000, below 30000. This is
+ * Trystero 0.26's `strToNum`, which a later task of the port to 0.27.0 replaces by @ref str_to_num.
  */
 inline std::uint32_t topic_kind(std::string_view topic) {
-    return static_cast<std::uint32_t>(str_to_num(topic, 10000)) + 20000;
+    return static_cast<std::uint32_t>(std::fmod(utf16_code_unit_sum(topic), 10000.0)) + 20000;
 }
 
 namespace detail {

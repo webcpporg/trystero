@@ -195,6 +195,111 @@ inline std::optional<bytes> base64_decode(
 }
 
 /**
+ * Appends unpadded base64url, Trystero's `toBase64Url`.
+ *
+ * @param out The text to append to.
+ * @param in The bytes.
+ */
+inline void append_base64url(std::pmr::string& out, std::span<const std::uint8_t> in) {
+    static constexpr std::string_view table =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    out.reserve(out.size() + ((in.size() * 4 + 2) / 3));
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const std::uint32_t v = (std::uint32_t{in[i]} << 16U) | (std::uint32_t{in[i + 1]} << 8U) |
+                                std::uint32_t{in[i + 2]};
+        out += table[(v >> 18U) & 63U];
+        out += table[(v >> 12U) & 63U];
+        out += table[(v >> 6U) & 63U];
+        out += table[v & 63U];
+    }
+    if (const auto rest = in.size() - i; rest == 1) {
+        const std::uint32_t v = std::uint32_t{in[i]} << 16U;
+        out += table[(v >> 18U) & 63U];
+        out += table[(v >> 12U) & 63U];
+    } else if (rest == 2) {
+        const std::uint32_t v = (std::uint32_t{in[i]} << 16U) | (std::uint32_t{in[i + 1]} << 8U);
+        out += table[(v >> 18U) & 63U];
+        out += table[(v >> 12U) & 63U];
+        out += table[(v >> 6U) & 63U];
+    }
+}
+
+/**
+ * Unpadded base64url, Trystero's `toBase64Url`.
+ *
+ * @param in The bytes.
+ * @param memory The resource the text is allocated in.
+ * @return The text, `A-Za-z0-9_-` only, without padding.
+ */
+inline std::pmr::string to_base64url(
+    std::span<const std::uint8_t> in,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    std::pmr::string out(memory);
+    append_base64url(out, in);
+    return out;
+}
+
+/**
+ * The bytes of a base64url text, read strictly as Trystero's `fromBase64Url` reads it.
+ *
+ * The text must be nonempty, of `A-Za-z0-9_-` only, without padding, of a length that is not 1
+ * modulo 4, and canonical: the unused low bits of its last character are zero, so that encoding
+ * the bytes gives the text back.
+ *
+ * @param text The text.
+ * @param memory The resource the bytes are allocated in.
+ * @return The bytes, or nothing when the text is not strict base64url.
+ */
+inline std::optional<bytes> from_base64url(
+    std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    // A digit's value, or `not_base64` for a character that is none.
+    constexpr std::uint32_t not_base64 = 64;
+    const auto value = [](char c) -> std::uint32_t {
+        if (c >= 'A' && c <= 'Z') {
+            return static_cast<std::uint32_t>(c - 'A');
+        }
+        if (c >= 'a' && c <= 'z') {
+            return static_cast<std::uint32_t>(c - 'a' + 26);
+        }
+        if (c >= '0' && c <= '9') {
+            return static_cast<std::uint32_t>(c - '0' + 52);
+        }
+        if (c == '-') {
+            return 62;
+        }
+        if (c == '_') {
+            return 63;
+        }
+        return not_base64;
+    };
+    if (text.empty() || text.size() % 4 == 1) {
+        return std::nullopt;
+    }
+    bytes out(memory);
+    out.reserve(text.size() * 3 / 4);
+    std::uint32_t buffer = 0;
+    std::uint32_t bits = 0;
+    for (const char c : text) {
+        const std::uint32_t v = value(c);
+        if (v == not_base64) {
+            return std::nullopt;
+        }
+        buffer = ((buffer << 6U) | v) & 0xffffU;
+        bits += 6U;
+        if (bits >= 8U) {
+            bits -= 8U;
+            out.push_back(static_cast<std::uint8_t>((buffer >> bits) & 0xffU));
+        }
+    }
+    // The bits left over are the unused low bits of the last character, which must be zero.
+    if ((buffer & ((1U << bits) - 1U)) != 0) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+/**
  * The sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
  *
  * Tip: Trystero derives Nostr kinds and the relay shuffle seed from it, so non-ASCII ids must count

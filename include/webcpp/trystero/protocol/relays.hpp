@@ -86,7 +86,8 @@ inline constexpr std::array<std::string_view, 29> default_nostr_relays{
  *
  * @tparam Sequence A sequence with `size()` and random access, as `std::pmr::vector`.
  * @param items The items, shuffled in the copy returned.
- * @param seed The seed, @ref str_to_num of the app id for the relays.
+ * @param seed The seed, @ref utf16_code_unit_sum of the app id for the relays (Trystero 0.26's
+ * `strToNum`; Task 3 moves the shuffle to 0.27.0's).
  * @return The items, shuffled.
  */
 template <class Sequence>
@@ -107,7 +108,7 @@ Sequence shuffle(Sequence items, double seed) {
  * The relays an app uses when it names none, Trystero's `getRelays`: the defaults shuffled by the
  * app id, the first `redundancy` kept.
  *
- * @param app_id The application's id, whose @ref str_to_num seeds the shuffle.
+ * @param app_id The application's id, whose @ref utf16_code_unit_sum seeds the shuffle.
  * @param defaults The relays to choose from, @ref default_nostr_relays for a room.
  * @param redundancy How many to keep.
  * @param memory The resource the list is allocated in.
@@ -118,7 +119,7 @@ inline std::pmr::vector<std::string_view> derive_relays(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     auto shuffled =
         shuffle(std::pmr::vector<std::string_view>(defaults.begin(), defaults.end(), memory),
-                str_to_num(app_id));
+                utf16_code_unit_sum(app_id));
     if (shuffled.size() > redundancy) {
         shuffled.resize(redundancy);
     }
