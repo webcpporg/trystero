@@ -252,7 +252,6 @@ private:
     /** The least delay before a closed subscription is made again, Trystero's
      * `subscriptionRetryMs`. */
     static constexpr auto subscription_retry = std::chrono::milliseconds(5333);
-    static constexpr std::size_t subscription_id_size = 64;
 
     struct relay_state {
         relay_state(std::string_view address, std::pmr::memory_resource* memory)
@@ -356,7 +355,7 @@ private:
         r.open = true;
         r.opened = steady_now(factory_);
         if (r.subscription.empty()) {
-            r.subscription = random_id(factory_, subscription_id_size, memory_);
+            r.subscription = random_id(factory_, protocol::subscription_id_size, memory_);
         }
         r.socket->send(protocol::nostr::subscribe_message(r.subscription, topics_,
                                                           unix_now(factory_), memory_));

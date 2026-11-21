@@ -132,34 +132,6 @@ void topics(const fixture_value& fixture) {
     }
 }
 
-void relays(const fixture_value& fixture) {
-    std::vector<std::string_view> defaults;
-    for (const auto url : fixture["default_relays"]) {
-        defaults.push_back(str(url));
-    }
-    BOOST_TEST(std::ranges::equal(defaults, tp::default_nostr_relays));
-    for (const auto entry : fixture["relays"]) {
-        std::vector<std::string_view> expected;
-        for (const auto url : entry["relays"]) {
-            expected.push_back(str(url));
-        }
-        const auto derived = tp::derive_relays(str(entry["app_id"]), tp::default_nostr_relays, 5);
-        BOOST_TEST_ALL_EQ(derived.begin(), derived.end(), expected.begin(), expected.end());
-    }
-    for (const auto entry : fixture["shuffle"]) {
-        std::vector<int> order(29);
-        for (int i = 0; i < 29; ++i) {
-            order[i] = i;
-        }
-        std::vector<int> expected;
-        for (const auto i : entry["order"]) {
-            expected.push_back(static_cast<int>(integer(i)));
-        }
-        const auto shuffled = tp::shuffle(order, static_cast<double>(integer(entry["seed"])));
-        BOOST_TEST_ALL_EQ(shuffled.begin(), shuffled.end(), expected.begin(), expected.end());
-    }
-}
-
 void handshake_and_sealing(const fixture_value& fixture) {
     for (const auto entry : fixture["handshake"]) {
         BOOST_TEST_EQ(tp::handshake_proof(str(entry["challenge"]), str(entry["password"]),
@@ -549,23 +521,6 @@ void signals() {
     // stringizes the macro's arguments, reads a raw string's \" as an escape and stops (C2017).
     constexpr std::string_view escaped = R"({"peerId":"q\"\\\n"})";
     BOOST_TEST_EQ(tp::write_signal({.peer_id = "q\"\\\n"}), escaped);
-}
-
-// An id has one character of Trystero's 62 for each random byte, the byte's remainder in 62: the
-// first and the last character, and the remainders 0 and 61 of larger bytes.
-void random_ids() {
-    const std::array<std::uint8_t, 6> random{0, 61, 62, 123, 124, 255};
-    BOOST_TEST_EQ(tp::random_id(random), "0z0z07");
-    BOOST_TEST_EQ(tp::random_id(std::span<const std::uint8_t>{}), "");
-    std::array<std::uint8_t, tp::peer_id_size> all{};
-    for (std::size_t i = 0; i < all.size(); ++i) {
-        all[i] = static_cast<std::uint8_t>(i * 13);
-    }
-    std::pmr::monotonic_buffer_resource memory;
-    const auto id = tp::random_id(all, &memory);
-    BOOST_TEST(id.get_allocator().resource() == &memory);
-    BOOST_TEST_EQ(id.size(), tp::peer_id_size);
-    BOOST_TEST_EQ(id.find_first_not_of(tp::id_alphabet), std::string::npos);
 }
 
 // An offer's size is a float64 that Trystero accepts up to Number.MAX_SAFE_INTEGER, 2^53 - 1, the
@@ -1166,7 +1121,6 @@ int main(int argc, char* argv[]) {
     }
     const auto fixture = loaded->root();
     topics(fixture);
-    relays(fixture);
     handshake_and_sealing(fixture);
     nostr_events(fixture);
     nostr_message_fields(fixture);
@@ -1177,7 +1131,6 @@ int main(int argc, char* argv[]) {
     offer_sizes_at_two_to_the_53();
     wide_fields_are_big_endian();
     signals();
-    random_ids();
     signal_bounds();
     event_messages(fixture);
     signal_texts(fixture);

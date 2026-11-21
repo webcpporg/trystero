@@ -206,7 +206,7 @@ void the_configuration_is_copied_and_completed() {
     BOOST_TEST_EQ(app->app_id(), "app");
     BOOST_TEST(app->password().empty());
     BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
-    BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::id_alphabet),
+    BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::base62_alphabet),
                   std::string_view::npos);
     BOOST_TEST(urls_of(app->ice_servers()) == urls_of(trystero::default_ice_servers()));
     const auto derived =
@@ -291,7 +291,7 @@ void a_self_id_that_is_not_utf8_is_set_aside() {
         const auto reports = app->setup_reports();
         if (id == "peer\xff") {
             BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
-            BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::id_alphabet),
+            BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::base62_alphabet),
                           std::string_view::npos);
             const std::vector<std::string> expected{
                 "self_id is not UTF-8, which no peer reads, so the app uses a random one",

@@ -27,40 +27,6 @@
 
 namespace webcpp::trystero::protocol {
 
-/** The 62 characters Trystero draws peer ids, offer ids and nonces from, its `charSet`. */
-inline constexpr std::string_view id_alphabet =
-    "0123456789AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz";
-
-/** The length of a Trystero peer id, its `selfId`. */
-inline constexpr std::size_t peer_id_size = 20;
-/** The length of the id of a Trystero offer, which its answer and candidates name. */
-inline constexpr std::size_t offer_id_size = 12;
-/** The length of the nonce that makes repeated announcements distinct Nostr events. */
-inline constexpr std::size_t nonce_size = 8;
-
-/**
- * An id of one character of `id_alphabet` for each random byte, Trystero's `genId`.
- *
- * Each byte picks the character at its remainder in 62, as Trystero picks one character of its
- * `charSet` for each draw, so an id of `n` characters takes `n` random bytes.
- *
- * Tip: 256 is not a multiple of 62, so each of the first eight characters comes from 5 of the 256
- * bytes and each other from 4, where Trystero draws each of the 62 alike: a character carries
- * about 5.95 bits of its byte's 8, a little less than log2(62).
- *
- * @param random The random bytes, one for each character.
- * @param memory The resource the id is allocated in.
- * @return The id, as long as `random`.
- */
-inline std::pmr::string random_id(
-    std::span<const std::uint8_t> random,
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::string out(random.size(), '0', memory);
-    std::ranges::transform(random, out.begin(),
-                           [](std::uint8_t b) { return id_alphabet[b % id_alphabet.size()]; });
-    return out;
-}
-
 /**
  * The SHA-256 of the concatenation of `parts`, fed to the hash one part at a time.
  *

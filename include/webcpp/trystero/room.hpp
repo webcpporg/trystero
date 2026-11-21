@@ -65,7 +65,7 @@ class app;
 
 /**
  * A peer's id in a room, Trystero's `selfId` and the ids `getPeers` lists: 20 characters of
- * `protocol::id_alphabet` unless the configuration names one.
+ * `protocol::base62_alphabet` unless the configuration names one.
  *
  * A room hands its ids out in its own resource.
  */
@@ -1282,7 +1282,7 @@ private:
                 history->second.challenges.push(std::pmr::string(state.challenge, memory_));
             }
             std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
-            protocol::json::detail::append_utf8(text, state.challenge);  // drawn from id_alphabet
+            protocol::json::detail::append_utf8(text, state.challenge);  // drawn from base62_alphabet
             text += '}';
             send_internal("@_hsdata", peer, protocol::payload_format::json, text);
             state.challenge_sent = true;
