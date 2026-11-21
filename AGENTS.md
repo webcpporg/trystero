@@ -139,10 +139,12 @@ holds only what is specific to trystero.
   fits (616 bytes for the room test), so they no longer catch one. There is
   one timer, the core's `detail::timer` over webcpp::asio's `steady_timer`,
   on both targets, which `timer` tests on both.
-- **The dependencies.** libsecp256k1 (every room) is webcpp's own build,
-  `/third_party//secp256k1` (v0.8.0, from `third_party/libs/secp256k1`), which
-  `/webcpp/trystero//trystero` names; its tables come from
-  `webcpp-secp256k1-tables` (see `doc/building.adoc`). Nothing is installed
+- **The dependencies.** A room signs its Nostr events with webcpp::crypto's
+  secp256k1 (`/webcpp/crypto//secp256k1-default`, which `/webcpp/trystero//trystero`
+  names), over webcpp's own build of libsecp256k1 (v0.8.0, from
+  `third_party/libs/secp256k1`); trystero includes no libsecp256k1 header
+  itself. Its tables come from `webcpp-secp256k1-tables` (see
+  `doc/building.adoc`). Nothing is installed
   outside the checkout, once the pinned submodules are initialised.
   `/webcpp/trystero//trystero` (`build.jam`'s `tag::trystero[]`) is the
   rooms alone, the core: `parts`, its headers, Boost, webcpp::document
@@ -774,8 +776,9 @@ holds only what is specific to trystero.
   - **The protocol** (`protocol/`) takes a `std::pmr::memory_resource*` as
     the last parameter of every function that returns what it allocates,
     with `std::pmr::get_default_resource()` as its default, and returns
-    `std::pmr` types; `protocol::nostr::verify` uses
-    `secp256k1_context_static` and allocates nothing.
+    `std::pmr` types; `protocol::nostr::verify` is
+    webcpp::crypto's `verify_schnorr`, over `secp256k1_context_static`, and
+    allocates nothing.
   - **Outside the resource**, stated on the page: libdatachannel's and
     OpenSSL's own allocations, with the copy libdatachannel's C API makes of
     a message before webcpp::webrtc reads it; `emscripten::val`'s JavaScript

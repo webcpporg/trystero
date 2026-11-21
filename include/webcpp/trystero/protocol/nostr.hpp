@@ -12,30 +12,31 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <secp256k1.h>
-#include <secp256k1_extrakeys.h>
-#include <secp256k1_preallocated.h>
-#include <secp256k1_schnorrsig.h>
+#include <webcpp/crypto/curves/secp256k1.hpp>
+#include <webcpp/crypto/error.hpp>
+#include <webcpp/crypto/random_device.hpp>  // lint-world: a signer's key and aux randomness
+#include <webcpp/crypto/secret.hpp>
+
 #include <boost/hash2/sha2.hpp>
+#include <boost/system/result.hpp>
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <memory_resource>
 #include <optional>
-#include <set>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace webcpp::trystero::protocol::nostr {
 
@@ -55,16 +56,37 @@ static_assert(max_parsed_relay_text_bytes < max_relay_message_bytes);
 /** The tag a Trystero event carries its topic in, its `tag`: "x". */
 inline constexpr std::string_view topic_tag = "x";
 
+/** The most topics one subscription lists, Trystero's `maxTopicsPerSubscription`: a room with
+ * more subscribes in several requests. */
+inline constexpr std::size_t max_topics_per_subscription = 250;
+
+/** How far back a subscription asks for events, Trystero's `subscribeClockSkewSeconds`: a peer
+ * whose clock is behind ours by up to a minute is still heard. */
+inline constexpr std::chrono::seconds subscribe_clock_skew{60};
+
 /**
  * The event kind a topic maps to, Trystero's `topicToKind`: 20000 to 29999, ephemeral, so relays
  * forward the events and keep none.
  *
- * @param topic The topic's name.
- * @return 20000 plus the sum of the topic's UTF-16 code units modulo 10000, below 30000. This is
- * Trystero 0.26's `strToNum`, which a later task of the port to 0.27.0 replaces by @ref str_to_num.
+ * @param topic The topic's name, in UTF-8.
+ * @return FNV-1a of 32 bits over the topic's UTF-16 code units, modulo 10000, plus 20000. Unlike
+ * @ref hash32 it hashes code units, not bytes, and has no final mix.
  */
 inline std::uint32_t topic_kind(std::string_view topic) {
-    return static_cast<std::uint32_t>(std::fmod(utf16_code_unit_sum(topic), 10000.0)) + 20000;
+    std::uint32_t h = 0x811c9dc5U;
+    for_each_utf16_code_unit(topic, [&h](std::uint32_t unit) { h = (h ^ unit) * 0x01000193U; });
+    return (h % 10000U) + 20000U;
+}
+
+/**
+ * The earliest `created_at` a subscription asks for, Trystero's `subscribeSince`.
+ *
+ * @param now The time, in whole seconds since the Unix epoch.
+ * @return `now` less @ref subscribe_clock_skew, and never before the epoch.
+ */
+inline std::chrono::sys_seconds subscribe_since(std::chrono::sys_seconds now) {
+    const auto since = now - subscribe_clock_skew;
+    return std::max(since, std::chrono::sys_seconds{});
 }
 
 namespace detail {
@@ -157,37 +179,67 @@ inline std::array<std::uint8_t, 32> event_id(
 }
 
 /**
- * A BIP-340 key pair over libsecp256k1, the one key a peer signs every event with, as Trystero's
- * Nostr strategy does with its `pubkey`.
+ * A BIP-340 key pair over webcpp::crypto's secp256k1, the key a room signs its events with, as
+ * Trystero's Nostr strategy does with a room's `NostrSigner`.
  *
- * Tip: its signing context is made in the resource it is given
- * (`secp256k1_context_preallocated_create`), where `secp256k1_context_create` would take it from
- * `malloc`.
+ * Tip: its signing context is made in the resource it is given, the key pair's one allocation.
  */
 class signer {
 public:
+    /** How many secrets @ref generate draws before it gives up, as webcpp::crypto's
+     * `keypair::generate` does with its `max_draws`. */
+    static constexpr std::size_t max_key_draws = 4;
+
     /**
-     * Makes a key from 32 random bytes.
+     * Makes a key from a random secret, as Trystero's `createSigner` does.
+     *
+     * It stands in for `webcpp::crypto::curves::secp256k1::keypair::generate`, which
+     * webcpp::crypto does not offer yet, and follows its contract so that it is replaced by it
+     * when that reaches main: up to @ref max_key_draws secrets of 32 bytes from
+     * `webcpp::crypto::random_device`, drawn again only when one is not a valid secret key, which
+     * is negligibly rare; each is wiped once it is used.
+     *
+     * @param memory The resource the signing context and the public key's text are allocated in;
+     * it must outlive the signer.
+     * @return The signer; `webcpp::crypto::error::entropy_unavailable` when the system's generator
+     * fails or every draw is refused; any other error of `keypair::make`.
+     */
+    static boost::system::result<signer> generate(
+        std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+        for (std::size_t draw = 0; draw < max_key_draws; ++draw) {
+            webcpp::crypto::secret<32> secret;
+            if (!webcpp::crypto::random_device().fill(secret.writable())) {
+                return webcpp::crypto::error::entropy_unavailable;
+            }
+            auto made = from_secret(secret.bytes(), memory);
+            if (made || made.error() != webcpp::crypto::error::invalid_secret_key) {
+                return made;
+            }
+        }
+        return webcpp::crypto::error::entropy_unavailable;
+    }
+
+    /**
+     * Makes a key from a given secret.
      *
      * @param secret The secret key.
      * @param memory The resource the signing context and the public key's text are allocated in;
      * it must outlive the signer.
-     * @return The signer, or nothing when the bytes are not a valid secret key, which is
-     * negligibly rare.
+     * @return The signer; `webcpp::crypto::error::invalid_secret_key` when the bytes are not a
+     * valid secret key; any other error of `keypair::make`.
      */
-    static std::optional<signer> from_secret(
+    static boost::system::result<signer> from_secret(
         std::span<const std::uint8_t, 32> secret,
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-        signer s(memory);
-        if (secp256k1_keypair_create(s.context_.get(), &s.keypair_, secret.data()) == 0) {
-            return std::nullopt;
+        auto key = webcpp::crypto::curves::secp256k1::keypair::make(secret, memory);
+        if (!key) {
+            return key.error();
         }
-        secp256k1_xonly_pubkey xonly;
-        secp256k1_keypair_xonly_pub(s.context_.get(), &xonly, nullptr, &s.keypair_);
-        std::array<std::uint8_t, 32> pub{};
-        secp256k1_xonly_pubkey_serialize(s.context_.get(), pub.data(), &xonly);
-        s.pubkey_ = to_hex(pub, memory);
-        return s;
+        const auto xonly = key->xonly_public_key();
+        if (!xonly) {
+            return xonly.error();
+        }
+        return signer(std::move(*key), to_hex(*xonly, memory));
     }
 
     /**
@@ -195,56 +247,38 @@ public:
      *
      * @return 64 lowercase hexadecimal digits, valid as long as the signer.
      */
-    [[nodiscard]] std::string_view pubkey() const { return pubkey_; }
+    [[nodiscard]] std::string_view pubkey_hex() const { return pubkey_; }
 
     /**
-     * Signs a message with BIP-340 Schnorr.
+     * Signs an event id with BIP-340 Schnorr, with 32 bytes of auxiliary randomness from
+     * `webcpp::crypto::random_device`, as Trystero's `schnorr.signAsync` draws its own.
      *
-     * @param message The 32 bytes to sign, an event id.
-     * @param aux 32 random bytes of auxiliary randomness.
-     * @return The 64-byte signature, an event's `sig`.
+     * @param event_id The 32 bytes to sign.
+     * @return The 64-byte signature, an event's `sig`; `webcpp::crypto::error::entropy_unavailable`
+     * when the generator fails; an error of `keypair::sign_schnorr`.
      */
-    [[nodiscard]] std::array<std::uint8_t, 64> sign(std::span<const std::uint8_t, 32> message,
-                                                    std::span<const std::uint8_t, 32> aux) const {
-        std::array<std::uint8_t, 64> sig{};
-        secp256k1_schnorrsig_sign32(context_.get(), sig.data(), message.data(), &keypair_,
-                                    aux.data());
-        return sig;
+    [[nodiscard]] boost::system::result<std::array<std::uint8_t, 64>> sign(
+        std::span<const std::uint8_t, 32> event_id) const {
+        webcpp::crypto::secret<32> aux;
+        if (!webcpp::crypto::random_device().fill(aux.writable())) {
+            return webcpp::crypto::error::entropy_unavailable;
+        }
+        return key_.sign_schnorr(event_id, aux.bytes());
     }
 
 private:
-    /** Destroys a context made in a resource, and gives its memory back there. */
-    struct context_deleter {
-        std::pmr::memory_resource* memory = nullptr;
+    signer(webcpp::crypto::curves::secp256k1::keypair key, std::pmr::string pubkey)
+        : key_(std::move(key)), pubkey_(std::move(pubkey)) {}
 
-        void operator()(secp256k1_context* c) const {
-            secp256k1_context_preallocated_destroy(c);
-            memory->deallocate(c, context_size(), alignof(std::max_align_t));
-        }
-    };
-
-    // A context that signs and verifies needs no flag. libsecp256k1 spells it with a shift of a
-    // signed constant, (1 << 0), inside its own macro, which is the dependency's to write.
-    // NOLINTNEXTLINE(bugprone-signed-bitwise)
-    static constexpr unsigned context_flags = SECP256K1_CONTEXT_NONE;
-
-    static std::size_t context_size() { return secp256k1_context_preallocated_size(context_flags); }
-
-    explicit signer(std::pmr::memory_resource* memory)
-        : context_(secp256k1_context_preallocated_create(
-                       memory->allocate(context_size(), alignof(std::max_align_t)), context_flags),
-                   context_deleter{memory}),
-          pubkey_(memory) {}
-
-    std::unique_ptr<secp256k1_context, context_deleter> context_;
-    secp256k1_keypair keypair_{};
+    webcpp::crypto::curves::secp256k1::keypair key_;
     std::pmr::string pubkey_;
 };
 
 /**
  * Whether a BIP-340 signature over an event id verifies under an x-only public key.
  *
- * It uses libsecp256k1's static context, which allocates nothing.
+ * It is webcpp::crypto's `verify_schnorr`, on libsecp256k1's static context, which allocates
+ * nothing.
  *
  * @param sig The signature.
  * @param id The event id.
@@ -253,12 +287,7 @@ private:
  */
 inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::uint8_t, 32> id,
                    std::span<const std::uint8_t, 32> pubkey) {
-    secp256k1_xonly_pubkey key;
-    if (secp256k1_xonly_pubkey_parse(secp256k1_context_static, &key, pubkey.data()) == 0) {
-        return false;
-    }
-    return secp256k1_schnorrsig_verify(secp256k1_context_static, sig.data(), id.data(), id.size(),
-                                       &key) == 1;
+    return webcpp::crypto::curves::secp256k1::verify_schnorr(sig, id, pubkey).has_value();
 }
 
 /**
@@ -272,21 +301,24 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * @param created_at The event's time, in whole seconds since the Unix epoch.
  * @param topic The topic, the value of the event's tag "x".
  * @param content The content, a signal's JSON text.
- * @param aux 32 random bytes for the signature.
  * @param memory The resource the message is allocated in.
- * @return The message's JSON text.
+ * @return The message's JSON text; an error of @ref signer::sign.
  * @pre `topic` and `content` are UTF-8, as a room's are: a topic is ASCII, a content a signal's
  * text.
  */
-inline std::pmr::string event_message(
+inline boost::system::result<std::pmr::string> event_message(
     const signer& key, std::chrono::sys_seconds created_at, std::string_view topic,
-    std::string_view content, std::span<const std::uint8_t, 32> aux,
+    std::string_view content,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const auto kind = topic_kind(topic);
     const auto quoted_topic = detail::quoted(topic, memory);
     const auto quoted_content = detail::quoted(content, memory);
-    const auto id = detail::event_id(key.pubkey(), created_at, kind, quoted_topic, quoted_content);
-    const auto sig = key.sign(id, aux);
+    const auto id =
+        detail::event_id(key.pubkey_hex(), created_at, kind, quoted_topic, quoted_content);
+    const auto sig = key.sign(id);
+    if (!sig) {
+        return sig.error();
+    }
     std::pmr::string out(memory);
     out.reserve(256 + quoted_topic.size() + quoted_content.size());
     out += R"(["EVENT",{"kind":)";
@@ -298,11 +330,11 @@ inline std::pmr::string event_message(
     out += R"(,"content":)";
     out += quoted_content;
     out += R"(,"pubkey":")";
-    out += key.pubkey();
+    out += key.pubkey_hex();
     out += R"(","id":")";
     append_hex(out, id);
     out += R"(","sig":")";
-    append_hex(out, sig);
+    append_hex(out, *sig);
     out += R"("}])";
     return out;
 }
@@ -312,9 +344,10 @@ inline std::pmr::string event_message(
  * "since": t, "#x": [...]}]`.
  *
  * @param subscription The subscription's id.
- * @param topics The topics, whose kinds the filter lists once each, in increasing order.
+ * @param topics The topics, at most @ref max_topics_per_subscription, whose kinds the filter lists
+ * once each, in the order of their first topic, as Trystero's `new Set` keeps them.
  * @param since The earliest `created_at` of the events wanted, in whole seconds since the Unix
- * epoch.
+ * epoch, @ref subscribe_since of now in a room.
  * @param memory The resource the message is allocated in.
  * @return The message's JSON text.
  * @pre `subscription` and the topics are UTF-8, as a room's, which are ASCII, are.
@@ -323,9 +356,12 @@ inline std::pmr::string subscribe_message(
     std::string_view subscription, std::span<const std::pmr::string> topics,
     std::chrono::sys_seconds since,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::set<std::uint32_t> kinds(memory);
+    std::pmr::vector<std::uint32_t> kinds(memory);
+    kinds.reserve(topics.size());
     for (const auto& t : topics) {
-        kinds.insert(topic_kind(t));
+        if (const auto k = topic_kind(t); std::ranges::find(kinds, k) == kinds.end()) {
+            kinds.push_back(k);
+        }
     }
     std::pmr::string out(memory);
     out.reserve(96 + subscription.size() + (topics.size() * 48));

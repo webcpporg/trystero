@@ -10,6 +10,7 @@
 #include <webcpp/trystero/config.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory_resource>
 #include <optional>
@@ -299,19 +300,17 @@ inline std::optional<bytes> from_base64url(
 }
 
 /**
- * The sum of the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees.
+ * Visits the UTF-16 code units of a UTF-8 text, what JavaScript's `charCodeAt` sees, in order.
  *
- * Tip: it is Trystero 0.26.0's `strToNum`, from which that version derived Nostr kinds and the
- * relay shuffle seed, so non-ASCII ids must count as in JS. 0.27.0 derives them from @ref hash32
- * instead; the port keeps this sum for the kinds and the shuffle until Tasks 7 and 3 move them. The
- * sum is a double, JavaScript's Number, as Trystero's is; the 0.26 fixtures pin it.
+ * Tip: Trystero 0.27.0's `topicToKind` hashes a topic's code units, so a non-ASCII topic must
+ * count as in JavaScript: a character above U+FFFF is its two surrogates. A byte that does not
+ * start a sequence the text completes is visited as the unit of its own value.
  *
  * @param utf8 The text, in UTF-8.
- * @return The sum of the code units of its UTF-16 form, a character above U+FFFF counting as its
- * two surrogates.
+ * @param visit Called with each code unit, a `std::uint32_t` below 0x10000.
  */
-inline double utf16_code_unit_sum(std::string_view utf8) {
-    double sum = 0;
+template <class Visit>
+void for_each_utf16_code_unit(std::string_view utf8, Visit&& visit) {
     for (std::size_t i = 0; i < utf8.size();) {
         // The bytes as unsigned values: a char may be signed.
         const auto byte = [utf8](std::size_t at) -> std::uint32_t {
@@ -333,14 +332,13 @@ inline double utf16_code_unit_sum(std::string_view utf8) {
         }
         if (point >= 0x10000) {
             point -= 0x10000;
-            sum += 0xd800 + (point >> 10U);
-            sum += 0xdc00 + (point & 0x3ffU);
+            visit(0xd800U + (point >> 10U));
+            visit(0xdc00U + (point & 0x3ffU));
         } else {
-            sum += point;
+            visit(point);
         }
         i += length;
     }
-    return sum;
 }
 
 }  // namespace webcpp::trystero::protocol

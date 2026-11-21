@@ -1096,9 +1096,10 @@ void the_event_id_hash_is_keyed() {
     BOOST_TEST_EQ(under_one(id), trystero::detail::recent_event_ids::keyed_hash(one)(id));
 }
 
-// A strategy draws its index's key from the backend's randomness when it is made, after its
-// signer's secret: a relay cannot know it. Its index hashes under those 16 bytes, read again from
-// a twin of the backend's stream, so that strategies over other streams hash an id elsewhere.
+// A strategy draws its index's key from the backend's randomness when it is made, and nothing
+// else: a relay cannot know it, and the room's signer is made at its first event from
+// webcpp::crypto's generator. Its index hashes under those 16 bytes, read again from a twin of the
+// backend's stream, so that strategies over other streams hash an id elsewhere.
 void a_strategy_draws_the_key_of_its_event_ids() {
     constexpr std::size_t key_size = trystero::detail::recent_event_ids::key_size;
     const auto id = event_id_of('e');
@@ -1108,14 +1109,12 @@ void a_strategy_draws_the_key_of_its_event_ids() {
         trystero::test::memory_network net(io, seed);
         const auto strategy = std::make_shared<trystero::detail::nostr_strategy>(
             net, std::span<const std::pmr::string>(), std::pmr::vector<std::pmr::string>(), "topic",
-            trystero::handler<std::pmr::string()>(),
+            trystero::detail::nostr_strategy::announcement_handler(),
             trystero::detail::nostr_strategy::message_handler(), trystero::detail::logger(),
             std::pmr::get_default_resource());
-        BOOST_TEST_EQ(net.random_bytes, 32U + key_size);  // the secret, the key
+        BOOST_TEST_EQ(net.random_bytes, key_size);
         asio::io_context twin_io;
         trystero::test::memory_network twin(twin_io, seed);
-        std::array<std::uint8_t, 32> secret{};
-        twin.random(secret);
         std::array<std::uint8_t, key_size> key{};
         twin.random(key);
         const std::size_t hash = strategy->seen().hash_function()(id);
@@ -1157,7 +1156,8 @@ void a_forged_event_under_a_genuine_id_hides_nothing() {
     topics.emplace_back(topic);
     const auto strategy = std::make_shared<trystero::detail::nostr_strategy>(
         f.net, urls, std::move(topics), "another-topic",
-        trystero::handler<std::pmr::string()>([] { return std::pmr::string("{}"); }),
+        trystero::detail::nostr_strategy::announcement_handler(
+            [](std::string_view /*nonce*/) { return std::pmr::string("{}"); }),
         trystero::detail::nostr_strategy::message_handler(
             [&heard](std::size_t /*relay*/, std::string_view /*topic*/, std::string_view content) {
                 heard.emplace_back(content);
@@ -1175,9 +1175,9 @@ void a_forged_event_under_a_genuine_id_hides_nothing() {
     const auto key = trystero::protocol::nostr::signer::from_secret(secret);
     webcpp::test::require(BOOST_TEST(key.has_value()));
     const auto event = [&](std::string_view content) {
-        const std::array<std::uint8_t, 32> aux{};
         return std::string(trystero::protocol::nostr::event_message(
-            *key, trystero::detail::unix_now(f.net), topic, content, aux));
+                               *key, trystero::detail::unix_now(f.net), topic, content)
+                               .value());
     };
     const std::string genuine = event("genuine");
     std::string forged = event("forged");
@@ -1195,6 +1195,63 @@ void a_forged_event_under_a_genuine_id_hides_nothing() {
     const std::array<std::string_view, 4> expected{"forged", "genuine", "forged", "later"};
     BOOST_TEST_ALL_EQ(heard.begin(), heard.end(), expected.begin(), expected.end());
     strategy->stop();
+}
+
+/** The public keys that signed the events on `topic` the relay `url` took, in order. */
+std::vector<std::string> signers_of(fixture& f, std::string_view url, std::string_view topic) {
+    std::vector<std::string> keys;
+    for (const auto& e : f.net.relay(url).published) {
+        if (e.topic == topic) {
+            keys.emplace_back(e.pubkey);
+        }
+    }
+    return keys;
+}
+
+// Each room signs its events with a key of its own, as 0.27.0 keeps a signer per room: the
+// announcements of one room carry one key on every relay, another room of the same app another
+// key, and a room joined again after it left, a new one.
+void each_room_signs_with_its_own_key() {
+    fixture f(true);
+    f.net.relay(relay_a).record_published = true;
+    f.net.relay(relay_b).record_published = true;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("SSSSSSSSSSSSSSSSSSSS"));
+    const auto one_topic = trystero::protocol::root_topic(app_id, "one");
+    const auto two_topic = trystero::protocol::root_topic(app_id, "two");
+    const auto announced_twice = [&f](std::string_view topic) {
+        return [&f, topic] {
+            return signers_of(f, relay_a, topic).size() >= 2 &&
+                   signers_of(f, relay_b, topic).size() >= 2;
+        };
+    };
+    std::set<std::string> keys;
+    {
+        auto one = join(a_app, "one");
+        auto two = join(a_app, "two");
+        webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(one_topic))));
+        webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(two_topic))));
+        for (const auto& topic : {one_topic, two_topic}) {
+            std::set<std::string> room_keys;
+            for (const auto url : {relay_a, relay_b}) {
+                const auto signers = signers_of(f, url, topic);
+                room_keys.insert(signers.begin(), signers.end());
+            }
+            BOOST_TEST_EQ(room_keys.size(), 1U);
+            keys.insert(room_keys.begin(), room_keys.end());
+        }
+        BOOST_TEST_EQ(keys.size(), 2U);
+        bool left = false;
+        one.async_leave([&left](boost::system::error_code ec) { left = !ec; });
+        webcpp::test::require(BOOST_TEST(run_until(f, [&left] { return left; })));
+    }
+    f.net.relay(relay_a).published.clear();
+    f.net.relay(relay_b).published.clear();
+    const auto again = join(a_app, "one");
+    webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(one_topic))));
+    const auto signers = signers_of(f, relay_a, one_topic);
+    BOOST_TEST(keys.find(signers.front()) == keys.end());
+    BOOST_TEST(
+        std::ranges::all_of(signers, [&](const std::string& k) { return k == signers.front(); }));
 }
 
 // A boost::circular_buffer moves by swapping its allocators, which std::pmr's cannot: the classes
@@ -2111,6 +2168,7 @@ int main() {
     run_case(the_event_id_hash_is_keyed);
     run_case(a_strategy_draws_the_key_of_its_event_ids);
     run_case(a_forged_event_under_a_genuine_id_hides_nothing);
+    run_case(each_room_signs_with_its_own_key);
     run_case(classes_over_a_pmr_circular_buffer_do_not_move);
     run_case(a_replayed_answer_does_not_open);
     run_case(a_replayed_offer_is_refused);

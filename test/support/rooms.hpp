@@ -212,9 +212,7 @@ public:
     /** Publishes a signal on a topic, in any peer's name; with a nonce, as an event of its own. */
     void publish(std::string_view topic, const protocol::signal_message& m,
                  std::string_view nonce = {}) {
-        const std::array<std::uint8_t, 32> aux{};
-        socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic,
-                                                     protocol::write_signal(m, nonce), aux));
+        socket_->send(signed_event(topic, protocol::write_signal(m, nonce)));
     }
 
     /** `plain` sealed under the room key of `room`, with no password, as `peer`'s signal of
@@ -236,28 +234,30 @@ public:
 
     /** Announces one id `times` times. */
     void announce_as(std::string_view id, std::size_t times) {
-        const std::array<std::uint8_t, 32> aux{};
         for (std::size_t i = 0; i < times; ++i) {
             const auto nonce = std::to_string(next_++);
-            const auto content = protocol::write_signal({.peer_id = id}, nonce);
-            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
-                                                         content, aux));
+            socket_->send(signed_event(topic_, protocol::write_signal({.peer_id = id}, nonce)));
         }
     }
 
     /** Announces `count` ids, each `prefix` and a number. */
     void announce(std::size_t count, std::string_view prefix) {
-        const std::array<std::uint8_t, 32> aux{};
         for (std::size_t i = 0; i < count; ++i) {
             std::pmr::string id(prefix);
             id += std::to_string(next_++);
-            const auto content = protocol::write_signal({.peer_id = id});
-            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
-                                                         content, aux));
+            socket_->send(signed_event(topic_, protocol::write_signal({.peer_id = id})));
         }
     }
 
 private:
+    /** The client message of an event of `content` on `topic`, signed with the flooder's key. */
+    std::pmr::string signed_event(std::string_view topic, std::string_view content) {
+        auto message =
+            protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic, content);
+        webcpp::test::require(BOOST_TEST(message.has_value()));
+        return std::move(*message);
+    }
+
     fixture& f_;
     std::pmr::string topic_;
     std::shared_ptr<backend::websocket> socket_;

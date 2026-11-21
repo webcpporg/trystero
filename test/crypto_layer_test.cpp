@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/seal.hpp>
@@ -188,6 +189,18 @@ void str_to_num_matches() {
     for (const auto entry : section("str_to_num")) {
         BOOST_TEST_EQ(tp::str_to_num(str(entry["text"]), 10000), integer(entry["value"]));
         BOOST_TEST_EQ(tp::str_to_num(str(entry["text"])), tp::hash32(str(entry["text"])));
+    }
+}
+
+// A topic's kind is 0.27.0's topicToKind: FNV-1a over its UTF-16 code units, an astral character
+// as its two surrogates, modulo 10000 and above 20000; a room's root topic has the kind recorded
+// with it.
+void topic_kind_matches() {
+    for (const auto entry : section("topic_to_kind")) {
+        BOOST_TEST_EQ(tp::nostr::topic_kind(str(entry["topic"])), integer(entry["kind"]));
+    }
+    for (const auto entry : section("room_topics")) {
+        BOOST_TEST_EQ(tp::nostr::topic_kind(str(entry["root_topic"])), integer(entry["root_kind"]));
     }
 }
 
@@ -585,6 +598,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(room_topics_match);
     webcpp::test::run_case(hash32_matches);
     webcpp::test::run_case(str_to_num_matches);
+    webcpp::test::run_case(topic_kind_matches);
     webcpp::test::run_case(domain_tags_match);
     webcpp::test::run_case(shuffle_matches);
     webcpp::test::run_case(gen_id_matches);

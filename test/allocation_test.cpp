@@ -754,14 +754,15 @@ void reading_a_text_allocates_through_its_resource() {
     secret.fill(7);
     const auto key = tp::nostr::signer::from_secret(secret, &memory);
     webcpp::test::require(BOOST_TEST(key.has_value()));
-    const std::array<std::uint8_t, 32> aux{};
     const std::pmr::string sealed(1100, 'A', &memory);
     const auto signal = tp::write_signal(
         {.peer_id = "AAAAAAAAAAAAAAAAAAAA", .offer_id = "BBBBBBBBBBBBBBBBBBBB", .offer = sealed},
         {}, &memory);
-    const auto message = tp::nostr::event_message(
-        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal, aux,
+    const auto signed_message = tp::nostr::event_message(
+        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal,
         &memory);
+    webcpp::test::require(BOOST_TEST(signed_message.has_value()));
+    const auto& message = *signed_message;
     // A relay's text of that event: `["EVENT","<subscription>",<event>]`.
     const std::string_view written = message;
     std::pmr::string relayed(R"(["EVENT","CCCCCCCCCCCCCCCCCCCC",)", &memory);

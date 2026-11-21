@@ -185,7 +185,7 @@ public:
     };
 
     explicit memory_relay(std::pmr::memory_resource* memory)
-        : memory_(memory), subscriptions_(memory) {}
+        : published(memory), memory_(memory), subscriptions_(memory) {}
 
     void receive(const std::shared_ptr<memory_websocket>& from, std::string_view text);
 
@@ -209,6 +209,18 @@ public:
     /** Closes each connection right after its subscription, as a relay does after a text longer
      * than a room reads. */
     bool close_after_subscribe = false;
+    /** Whether to keep, for each event the relay takes, its topic and its signer's public key in
+     * `published`; off, the relay allocates nothing for it. */
+    bool record_published = false;
+
+    /** An event the relay took: its topic and the public key that signed it. */
+    struct published_event {
+        std::pmr::string topic;
+        std::pmr::string pubkey;
+    };
+
+    /** The events taken while `record_published` is on, in order, in the relay's resource. */
+    std::pmr::vector<published_event> published;
 
 private:
     using key = std::pair<const memory_websocket*, std::pmr::string>;
@@ -375,6 +387,11 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         }
         // The event's first tag, ["x", <topic>].
         const std::string_view topic = protocol::json::text_of(event["tags"].at(0).at(1));
+        if (record_published) {
+            published.push_back(
+                {std::pmr::string(topic, memory_),
+                 std::pmr::string(protocol::json::text_of(event["pubkey"]), memory_)});
+        }
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();
             if (!socket || !s.kinds.contains(*kind) || !s.topics.contains(topic)) {

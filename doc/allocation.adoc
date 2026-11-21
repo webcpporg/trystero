@@ -27,8 +27,9 @@ own state.
   state, bindings and their drain waiters, negotiation records, rebinding
   counts and backoffs, sealed texts, relays, actions, queues, outgoing
   frames, transfers, the documents of the JSON texts it reads, and handlers.
-  The signing context is made there with
-  `secp256k1_context_preallocated_create`.
+  The room's signing key, webcpp::crypto's secp256k1 key pair, made at the
+  room's first event, makes its signing context there, its one allocation
+  (`secp256k1_context_preallocated_create`).
 * `platform::backend_config::memory`, `std::pmr::get_default_resource()` by
   default, receives the platform backend's own state: its copy of
   `bind_address`, its window of constructions and its own webcpp::webrtc
@@ -248,8 +249,8 @@ document's own allocator.
 *The protocol* (`protocol/`) takes a `std::pmr::memory_resource*` as the
 last parameter of every function that returns what it allocates, with the
 default resource as its default, and returns `std::pmr` types.
-`protocol::nostr::verify` uses `secp256k1_context_static` and allocates
-nothing.
+`protocol::nostr::verify` is webcpp::crypto's `verify_schnorr`, over
+`secp256k1_context_static`, and allocates nothing.
 
 [#trystero-allocation-outside]
 === What stays outside the resource
@@ -335,6 +336,13 @@ nothing.
   or an open to its completion. The registrations of a WebSocket and of a
   `page_call` are intrusive, the events of a socket are posted in the room's
   resource, and the calls of a `page_call` in the resource it is given.
+
+webcpp::crypto's secp256k1 allocates nothing outside the room's resource:
+its key pair's context is the room's, and the secret, the context's seed and
+each signature's auxiliary bytes are drawn into the stack from
+webcpp::crypto's `random_device`, which allocates nothing. The room
+allocation test below covers a room's first event, which makes the key, and
+its signatures on both targets.
 
 The test's memory relays are shared by every room of a test: they allocate
 their relays through the resource they are constructed with.

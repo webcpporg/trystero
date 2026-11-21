@@ -149,8 +149,8 @@ std::int64_t integer_of(const tp::json::const_value& v) {
 }
 
 void nostr_events(const fixture_value& fixture) {
+    // The kinds are 0.26's; 0.27.0's are crypto_layer's topic_kind_matches.
     for (const auto e : fixture["nostr_events"]) {
-        BOOST_TEST_EQ(tp::nostr::topic_kind(str(e["topic"])), integer(e["kind"]));
         const auto created_at =
             std::chrono::sys_seconds(std::chrono::seconds(integer(e["created_at"])));
         const auto id = tp::nostr::event_id(str(e["pubkey"]), created_at,
@@ -163,10 +163,10 @@ void nostr_events(const fixture_value& fixture) {
     secret.fill(7);
     const auto key = tp::nostr::signer::from_secret(secret);
     BOOST_TEST(key.has_value());
-    std::array<std::uint8_t, 32> aux{};
     const auto message =
         tp::nostr::event_message(*key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)),
-                                 "topic-a", R"({"peerId":"p"})", aux);
+                                 "topic-a", R"({"peerId":"p"})")
+            .value();
     const auto parsed = parse_text(message, tp::nostr::max_parsed_relay_text_bytes).value();
     const auto event = parsed.root()[1];
     const auto id = tp::from_hex(tp::json::text_of(event["id"])).value();
@@ -196,20 +196,15 @@ void nostr_events(const fixture_value& fixture) {
 // An event message and a subscription write the values they are given, read back as a relay reads
 // them: the kind Trystero gives the topic, `created_at` and `since` the time, the fixture's and one
 // past 2^32 seconds, which 32 bits would not hold, and an id computed again from the message's own
-// fields. A subscription lists each kind once, in increasing order, and the topics as given.
+// fields. A subscription lists each kind once, in the order of its first topic, and the topics as
+// given.
 void nostr_message_fields(const fixture_value& fixture) {
     const auto first = fixture["nostr_events"][0];
     const auto topic = str(first["topic"]);
-    const auto kind = integer(first["kind"]);
-    // A topic of another kind, which Trystero's own event message for it holds.
-    const auto other = fixture["event_messages"]["events"][0];
-    const auto other_topic = str(other["topic"]);
-    const auto other_message =
-        parse_text(str(other["message"]), tp::nostr::max_parsed_relay_text_bytes);
-    if (!BOOST_TEST(other_message.has_value())) {
-        return;
-    }
-    const auto other_kind = integer_of(other_message->root()[1]["kind"]);
+    const std::int64_t kind = tp::nostr::topic_kind(topic);
+    // A topic of another kind.
+    const auto other_topic = str(fixture["event_messages"]["events"][0]["topic"]);
+    const std::int64_t other_kind = tp::nostr::topic_kind(other_topic);
     BOOST_TEST_NE(kind, other_kind);
     std::array<std::uint8_t, 32> secret{};
     secret.fill(7);
@@ -217,10 +212,9 @@ void nostr_message_fields(const fixture_value& fixture) {
     if (!BOOST_TEST(key.has_value())) {
         return;
     }
-    const std::array<std::uint8_t, 32> aux{};
     for (const std::int64_t seconds : {integer(first["created_at"]), std::int64_t{4'354'000'000}}) {
         const auto at = std::chrono::sys_seconds(std::chrono::seconds(seconds));
-        const auto message = tp::nostr::event_message(*key, at, topic, R"({"peerId":"p"})", aux);
+        const auto message = tp::nostr::event_message(*key, at, topic, R"({"peerId":"p"})").value();
         const auto document = parse_text(message, tp::nostr::max_parsed_relay_text_bytes);
         if (!BOOST_TEST(document.has_value())) {
             continue;
@@ -234,7 +228,7 @@ void nostr_message_fields(const fixture_value& fixture) {
         BOOST_TEST_EQ(tp::json::text_of(tags[0][0]), "x");
         BOOST_TEST_EQ(tp::json::text_of(tags[0][1]), topic);
         BOOST_TEST_EQ(tp::json::text_of(event["content"]), R"({"peerId":"p"})");
-        BOOST_TEST_EQ(tp::json::text_of(event["pubkey"]), key->pubkey());
+        BOOST_TEST_EQ(tp::json::text_of(event["pubkey"]), key->pubkey_hex());
         const auto id = tp::nostr::event_id(
             tp::json::text_of(event["pubkey"]),
             std::chrono::sys_seconds(std::chrono::seconds(integer_of(event["created_at"]))),
@@ -262,11 +256,9 @@ void nostr_message_fields(const fixture_value& fixture) {
         for (const auto k : filter["kinds"]) {
             kinds.push_back(integer_of(k));
         }
-        const std::array<std::int64_t, 2> increasing{
-            std::min(kind, other_kind),
-            std::max(kind, other_kind),
-        };
-        BOOST_TEST_ALL_EQ(kinds.begin(), kinds.end(), increasing.begin(), increasing.end());
+        // Once each, in the order of their first topic, as Trystero's `new Set` keeps them.
+        const std::array<std::int64_t, 2> first_seen{kind, other_kind};
+        BOOST_TEST_ALL_EQ(kinds.begin(), kinds.end(), first_seen.begin(), first_seen.end());
         std::vector<std::string_view> named;
         for (const auto t : filter["#x"]) {
             named.push_back(tp::json::text_of(t));
@@ -331,16 +323,15 @@ void event_ids_are_their_own(const fixture_value& fixture) {
     if (!BOOST_TEST(key.has_value())) {
         return;
     }
-    const std::array<std::uint8_t, 32> aux{};
     const auto at = std::chrono::sys_seconds(std::chrono::seconds(1759700000));
     const std::string message(
-        tp::nostr::event_message(*key, at, "topic-a", R"({"peerId":"p"})", aux));
+        tp::nostr::event_message(*key, at, "topic-a", R"({"peerId":"p"})").value());
     const std::string kind = R"("kind":)" + std::to_string(tp::nostr::topic_kind("topic-a"));
     const std::string other_kind =
         R"("kind":)" + std::to_string(tp::nostr::topic_kind("topic-a") + 1);
     const std::string created_at = R"("created_at":1759700000)";
     const std::string forged_from(
-        tp::nostr::event_message(*key, at, "topic-a", R"({"peerId":"forged"})", aux));
+        tp::nostr::event_message(*key, at, "topic-a", R"({"peerId":"forged"})").value());
     const std::string forged = replaced(forged_from, id_in(forged_from), id_in(message));
 
     BOOST_TEST(own_id(message));
@@ -356,7 +347,7 @@ void event_ids_are_their_own(const fixture_value& fixture) {
     BOOST_TEST(!own_id(replaced(message, created_at, R"("created_at":1759700000.5)")));
     BOOST_TEST(!own_id(replaced(message, created_at, R"("created_at":1e30)")));
     BOOST_TEST(!own_id(replaced(message, kind, R"("kind":4294967296)")));
-    BOOST_TEST(!own_id(replaced(message, key->pubkey(), uppercase(key->pubkey()))));
+    BOOST_TEST(!own_id(replaced(message, key->pubkey_hex(), uppercase(key->pubkey_hex()))));
     BOOST_TEST(!own_id(replaced(message, id_in(message), uppercase(id_in(message)))));
 }
 
@@ -624,15 +615,16 @@ void signal_bounds() {
     BOOST_TEST(!read({.peer_id = "p", .offer_id = offer_id + "a", .offer = "x"}));
 }
 
-// An event message is Trystero's createEvent's, byte for byte, signed with the oracle's key, clock
-// and auxiliary bytes: its topic and content hold every control character, `"`, `\`, U+2028,
-// U+2029, DEL and astral characters, which document's quoting writes as JSON.stringify does, and
-// its id is the one the protocol computes.
+// Trystero's createEvent signed each of the oracle's events with its key, clock and auxiliary
+// bytes: its topic and content hold every control character, `"`, `\`, U+2028, U+2029, DEL and
+// astral characters. Each id is the one the protocol computes over the event's fields, each
+// signature verifies, and the signer made from the oracle's secret has the event's public key. The
+// oracle's kinds are 0.26's: an event the protocol writes for the same topic and content holds
+// 0.27.0's kind, the same fields otherwise, an id of its own and a signature that verifies.
 void event_messages(const fixture_value& fixture) {
     const auto messages = fixture["event_messages"];
     const auto secret = hex(messages["secret_key"]);
-    const auto aux = hex(messages["aux"]);
-    if (!BOOST_TEST_EQ(secret.size(), 32U) || !BOOST_TEST_EQ(aux.size(), 32U)) {
+    if (!BOOST_TEST_EQ(secret.size(), 32U)) {
         return;
     }
     const auto key =
@@ -640,18 +632,48 @@ void event_messages(const fixture_value& fixture) {
     if (!BOOST_TEST(key.has_value())) {
         return;
     }
-    const std::span<const std::uint8_t, 32> aux_bytes(aux.data(), 32);
     const auto created_at =
         std::chrono::sys_seconds(std::chrono::seconds(integer(messages["created_at"])));
+    // Whether an event's signature verifies under its public key, over its id.
+    const auto verifies = [](const tp::json::const_value& event) {
+        const auto id = tp::from_hex(tp::json::text_of(event["id"])).value_or(tp::bytes());
+        const auto sig = tp::from_hex(tp::json::text_of(event["sig"])).value_or(tp::bytes());
+        const auto pub = tp::from_hex(tp::json::text_of(event["pubkey"])).value_or(tp::bytes());
+        return id.size() == 32 && sig.size() == 64 && pub.size() == 32 &&
+               tp::nostr::verify(std::span<const std::uint8_t, 64>(sig.data(), 64),
+                                 std::span<const std::uint8_t, 32>(id.data(), 32),
+                                 std::span<const std::uint8_t, 32>(pub.data(), 32));
+    };
     BOOST_TEST_EQ(messages["events"].size(), 6U);
     for (const auto e : messages["events"]) {
         const auto topic = str(e["topic"]);
         const auto content = str(e["content"]);
-        BOOST_TEST_EQ(tp::nostr::event_message(*key, created_at, topic, content, aux_bytes),
-                      str(e["message"]));
-        const auto id = tp::nostr::event_id(key->pubkey(), created_at, tp::nostr::topic_kind(topic),
-                                            topic, content);
+        const auto theirs = parse_text(str(e["message"]), tp::nostr::max_parsed_relay_text_bytes);
+        if (!BOOST_TEST(theirs.has_value())) {
+            continue;
+        }
+        const auto event = theirs->root()[1];
+        BOOST_TEST_EQ(tp::json::text_of(event["pubkey"]), key->pubkey_hex());
+        const auto kind = static_cast<std::uint32_t>(integer_of(event["kind"]));
+        const auto id = tp::nostr::event_id(key->pubkey_hex(), created_at, kind, topic, content);
         BOOST_TEST_EQ(tp::to_hex(id), str(e["id"]));
+        BOOST_TEST(verifies(event));
+
+        const auto written = tp::nostr::event_message(*key, created_at, topic, content);
+        if (!BOOST_TEST(written.has_value())) {
+            continue;
+        }
+        const auto ours = parse_text(*written, tp::nostr::max_parsed_relay_text_bytes);
+        if (!BOOST_TEST(ours.has_value())) {
+            continue;
+        }
+        const auto mine = ours->root()[1];
+        BOOST_TEST_EQ(integer_of(mine["kind"]), std::int64_t{tp::nostr::topic_kind(topic)});
+        BOOST_TEST_EQ(tp::json::text_of(mine["tags"][0][1]), topic);
+        BOOST_TEST_EQ(tp::json::text_of(mine["content"]), content);
+        BOOST_TEST_EQ(integer_of(mine["created_at"]), integer_of(event["created_at"]));
+        BOOST_TEST(own_id(*written));
+        BOOST_TEST(verifies(mine));
     }
 }
 
@@ -871,10 +893,11 @@ void parse_bounds() {
     if (!BOOST_TEST(key.has_value())) {
         return;
     }
-    const std::array<std::uint8_t, 32> aux{};
     const auto topic = tp::peer_topic("my-app", "room-1", std::string(tp::max_peer_id_bytes, 'p'));
-    const auto message = tp::nostr::event_message(
-        *key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)), topic, signal, aux);
+    const auto message =
+        tp::nostr::event_message(*key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)),
+                                 topic, signal)
+            .value();
     const std::string_view written = message;
     std::string echo = R"(["EVENT",")" + std::string(64, 's') + R"(",)";
     echo += written.substr(9, written.size() - 10);

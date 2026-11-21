@@ -664,14 +664,13 @@ public:
         topics.push_back(self_topic_);
         strategy_ = std::allocate_shared<nostr_strategy>(
             allocator(), factory_, app_->relay_urls(), std::move(topics), root_topic_,
-            bind<std::pmr::string()>([weak, memory = memory_] {
-                const auto self = weak.lock();
-                return self ? protocol::write_signal(
-                                  {.peer_id = self->app_->self_id()},
-                                  detail::random_id(self->factory_, protocol::nonce_size, memory),
-                                  memory)
-                            : std::pmr::string(memory);
-            }),
+            bind<std::pmr::string(std::string_view)>(
+                [weak, memory = memory_](std::string_view nonce) {
+                    const auto self = weak.lock();
+                    return self ? protocol::write_signal({.peer_id = self->app_->self_id()}, nonce,
+                                                         memory)
+                                : std::pmr::string(memory);
+                }),
             bind<void(std::size_t, std::string_view, std::string_view)>(
                 [weak](std::size_t relay, std::string_view, std::string_view content) {
                     if (const auto self = weak.lock()) {

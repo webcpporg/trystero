@@ -39,13 +39,16 @@
 #include <boost/core/lightweight_test.hpp>
 #include <webcpp/test/exit_status.hpp>
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -379,9 +382,12 @@ public:
                                                 std::pmr::memory_resource* /*memory*/) override {
         handlers = std::move(h);
         socket = std::make_shared<recording_socket>();
+        ++connects;
         return socket;
     }
 
+    /** How many connections were made. */
+    std::size_t connects = 0;
     /** The handlers of the last connection made. */
     backend::websocket::handlers handlers;
     /** That connection. */
@@ -418,7 +424,7 @@ void a_relay_text_past_its_bound_is_dropped() {
     const auto strategy = std::make_shared<detail::nostr_strategy>(
         net, std::span<const std::pmr::string>(&url, 1),
         std::pmr::vector<std::pmr::string>({std::pmr::string(topic, memory())}, memory()), topic,
-        [] { return std::pmr::string(R"({"peerId":"p"})", memory()); },
+        [](std::string_view /*nonce*/) { return std::pmr::string(R"({"peerId":"p"})", memory()); },
         [&contents](std::size_t, std::string_view, std::string_view content) {
             contents.push_back(content.size());
         },
@@ -474,7 +480,7 @@ void a_relay_text_past_its_depth_is_dropped() {
     const auto strategy = std::make_shared<detail::nostr_strategy>(
         net, std::span<const std::pmr::string>(&url, 1),
         std::pmr::vector<std::pmr::string>({std::pmr::string(topic, memory())}, memory()), topic,
-        [] { return std::pmr::string(R"({"peerId":"p"})", memory()); },
+        [](std::string_view /*nonce*/) { return std::pmr::string(R"({"peerId":"p"})", memory()); },
         [&contents](std::size_t, std::string_view, std::string_view content) {
             contents.emplace_back(content);
         },
@@ -497,6 +503,313 @@ void a_relay_text_past_its_depth_is_dropped() {
     strategy->stop();
 }
 
+/**
+ * A strategy over one relay of the test's, on the virtual clock, open: it subscribed and made its
+ * first announcement. It announces `{"peerId":"p","nonce":<nonce>}`, as a room does, and keeps what
+ * it logs and the messages it hands on.
+ */
+struct relay_harness {
+    explicit relay_harness(std::pmr::vector<std::pmr::string> topics) {
+        strategy = std::make_shared<detail::nostr_strategy>(
+            net, std::span<const std::pmr::string>(&url, 1), std::move(topics), announce_topic,
+            [](std::string_view nonce) {
+                return tp::write_signal({.peer_id = "p"}, nonce, memory());
+            },
+            [this](std::size_t, std::string_view topic, std::string_view) {
+                heard.emplace_back(topic);
+            },
+            detail::logger(
+                [this](std::string_view, std::string_view text) { logged.emplace_back(text); },
+                memory()),
+            memory());
+        strategy->start();
+        require(BOOST_TEST(net.socket != nullptr && static_cast<bool>(net.handlers.open)));
+        net.handlers.open();
+        require(BOOST_TEST(net.poll_ready()));
+    }
+
+    /** A strategy of the root topic and one other. */
+    relay_harness()
+        : relay_harness(std::pmr::vector<std::pmr::string>(
+              {std::pmr::string(announce_topic, memory()), std::pmr::string("self", memory())},
+              memory())) {}
+
+    relay_harness(const relay_harness&) = delete;
+    relay_harness& operator=(const relay_harness&) = delete;
+
+    ~relay_harness() { strategy->stop(); }
+
+    /** The texts of `type` the strategy sent, parsed, in order. */
+    std::vector<webcpp::document::document> sent(std::string_view type) const {
+        std::vector<webcpp::document::document> out;
+        for (const auto& text : net.socket->sent) {
+            auto parsed = webcpp::document::parse(text);
+            if (parsed.has_value() && str(parsed->root()[0]) == type) {
+                out.push_back(std::move(*parsed));
+            }
+        }
+        return out;
+    }
+
+    /** The id of the strategy's first subscription. */
+    std::string subscription() const {
+        const auto requests = sent("REQ");
+        require(BOOST_TEST(!requests.empty()));
+        return std::string(str(requests.front().root()[1]));
+    }
+
+    /** How many events the strategy sent. */
+    std::size_t events() const { return sent("EVENT").size(); }
+
+    /** Whether a signal published now goes out: it is the last text sent. */
+    bool publishes() {
+        const auto before = net.socket->sent.size();
+        strategy->publish(0, "a-peer-topic", "probe");
+        return net.socket->sent.size() == before + 1;
+    }
+
+    /** Hands the strategy `text` as the relay's. */
+    void relay_says(std::string_view text) { net.handlers.message(text); }
+
+    /** Moves the virtual clock by `by`. */
+    void wait(std::chrono::milliseconds by) { require(BOOST_TEST(net.advance(by))); }
+
+    /** Whether a logged sentence holds `part`. */
+    bool logged_with(std::string_view part) const {
+        return std::ranges::any_of(logged, [part](const std::string& line) {
+            return line.find(part) != std::string::npos;
+        });
+    }
+
+    static constexpr std::string_view announce_topic = "the-room-topic";
+    asio::io_context io;
+    relaying_network net{io};
+    const std::pmr::string url{"wss://relay.test", memory()};
+    std::vector<std::string> logged;
+    std::vector<std::string> heard;
+    std::shared_ptr<detail::nostr_strategy> strategy;
+};
+
+/** A relay's OK of an event, refused with `reason`, or accepted. */
+std::string ok_text(bool accepted, std::string_view reason) {
+    std::pmr::string out(R"(["OK",")", memory());
+    out.append(64, 'a');
+    out += accepted ? R"(",true,)" : R"(",false,)";
+    require(BOOST_TEST(webcpp::document::quote(reason, out).has_value()));
+    out += ']';
+    return std::string(out);
+}
+
+/** A relay's `[type, subscription, reason]`, or `[type, subscription]` with no reason. */
+std::string relay_text(std::string_view type, std::string_view subscription,
+                       std::optional<std::string_view> reason = std::nullopt) {
+    std::pmr::string out("[", memory());
+    require(BOOST_TEST(webcpp::document::quote(type, out).has_value()));
+    out += ',';
+    require(BOOST_TEST(webcpp::document::quote(subscription, out).has_value()));
+    if (reason) {
+        out += ',';
+        require(BOOST_TEST(webcpp::document::quote(*reason, out).has_value()));
+    }
+    out += ']';
+    return std::string(out);
+}
+
+// A strategy of 600 topics subscribes on a relay in three REQs, of 250, 250 and 100 topics, each
+// under an id of its own of 64 characters, since a minute before now. Each lists the kinds of its
+// topics once, in the order of their first topic, which are fewer than its topics where two share
+// a kind; an event of a topic of the third reaches the room under the third's id. Stopping closes
+// all three; a time before a minute after the epoch subscribes since the epoch.
+void subscriptions_hold_250_topics_and_distinct_kinds() {
+    std::pmr::vector<std::pmr::string> topics(memory());
+    for (std::size_t i = 0; i < 600; ++i) {
+        topics.emplace_back("topic-" + std::to_string(i));
+    }
+    const std::vector<std::string> names(topics.begin(), topics.end());
+    relay_harness h(std::move(topics));
+    const auto requests = h.sent("REQ");
+    require(BOOST_TEST_EQ(requests.size(), 3U));
+    std::set<std::string> ids;
+    bool shared_kind = false;
+    const auto since = h.net.unix_now() - std::chrono::seconds(60);
+    for (std::size_t r = 0; r < requests.size(); ++r) {
+        const auto req = requests[r].root();
+        const auto id = str(req[1]);
+        BOOST_TEST_EQ(id.size(), 64U);
+        ids.emplace(id);
+        const auto filter = req[2];
+        BOOST_TEST_EQ(filter["since"].value_or(std::int64_t{-1}), since.time_since_epoch().count());
+        const std::size_t first = r * 250;
+        const std::size_t count = std::min<std::size_t>(250, names.size() - first);
+        BOOST_TEST_EQ(filter["#x"].size(), count);
+        std::vector<std::int64_t> expected;
+        for (std::size_t i = 0; i < count; ++i) {
+            BOOST_TEST_EQ(str(filter["#x"][i]), names[first + i]);
+            const std::int64_t k = tp::nostr::topic_kind(names[first + i]);
+            if (std::ranges::find(expected, k) == expected.end()) {
+                expected.push_back(k);
+            }
+        }
+        shared_kind = shared_kind || expected.size() < count;
+        std::vector<std::int64_t> kinds;
+        for (const auto k : filter["kinds"]) {
+            kinds.push_back(k.value_or(std::int64_t{-1}));
+        }
+        BOOST_TEST_ALL_EQ(kinds.begin(), kinds.end(), expected.begin(), expected.end());
+    }
+    BOOST_TEST_EQ(ids.size(), 3U);
+    BOOST_TEST(shared_kind);
+    const auto third = std::string(str(requests[2].root()[1]));
+    h.relay_says(relay_event(third, names[599], std::string(64, '3'), 300));
+    h.relay_says(relay_event("not-ours", names[599], std::string(64, '4'), 300));
+    const std::vector<std::string> heard{names[599]};
+    BOOST_TEST_ALL_EQ(h.heard.begin(), h.heard.end(), heard.begin(), heard.end());
+    h.strategy->stop();
+    const auto closes = h.sent("CLOSE");
+    BOOST_TEST_EQ(closes.size(), 3U);
+    for (const auto& c : closes) {
+        BOOST_TEST(ids.contains(std::string(str(c.root()[1]))));
+    }
+    BOOST_TEST(tp::nostr::subscribe_since(std::chrono::sys_seconds(std::chrono::seconds(30))) ==
+               std::chrono::sys_seconds());
+}
+
+// Each announcement is `{"peerId":<id>,"nonce":<nonce>}`, its nonce 8 base62 characters drawn when
+// it is published, so that no two of them are one event, as Trystero adds a nonce at each publish.
+void announcements_carry_a_fresh_nonce() {
+    relay_harness h;
+    h.wait(std::chrono::milliseconds(233 + 533 + 1333));
+    const auto events = h.sent("EVENT");
+    require(BOOST_TEST_EQ(events.size(), 4U));
+    std::set<std::string> nonces;
+    for (const auto& e : events) {
+        const auto content = str(e.root()[1]["content"]);
+        constexpr std::string_view head = R"({"peerId":"p","nonce":")";
+        BOOST_TEST(content.starts_with(head) && content.ends_with(R"("})"));
+        BOOST_TEST_EQ(content.size(), head.size() + 8 + 2);
+        const auto nonce = content.substr(head.size(), 8);
+        BOOST_TEST(std::ranges::all_of(nonce, [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        }));
+        nonces.emplace(nonce);
+    }
+    BOOST_TEST_EQ(nonces.size(), events.size());
+}
+
+// A refused event or a closed subscription whose reason starts with "blocked:", "restricted:",
+// "auth-required:" or "pow:" retires the relay: the strategy closes it, publishes nothing on it
+// and never connects to it again.
+void terminal_rejections_retire_a_relay() {
+    for (const std::string_view prefix : {"blocked:", "restricted:", "auth-required:", "pow:"}) {
+        for (const bool closed : {false, true}) {
+            relay_harness h;
+            const std::string reason = std::string(prefix) + " not here";
+            h.relay_says(closed ? relay_text("CLOSED", h.subscription(), reason)
+                                : ok_text(false, reason));
+            BOOST_TEST(h.net.socket->closed);
+            BOOST_TEST(h.logged_with("retiring wss://relay.test"));
+            BOOST_TEST(!h.publishes());
+            const auto sent = h.net.socket->sent.size();
+            h.net.handlers.close();
+            h.wait(std::chrono::minutes(20));
+            BOOST_TEST_EQ(h.net.connects, 1U);
+            BOOST_TEST_EQ(h.net.socket->sent.size(), sent);
+        }
+    }
+    // Accepted, an event is no rejection, whatever its text.
+    relay_harness h;
+    h.relay_says(ok_text(true, "blocked: nothing"));
+    BOOST_TEST(!h.net.socket->closed);
+    BOOST_TEST(h.publishes());
+}
+
+// A rate limit cools a relay down for 60 s, in which it publishes nothing; then it is on probation,
+// where another rate limit doubles the cooldown, up to 15 min, and an accepted event makes it
+// healthy, so that the next rate limit cools it for 60 s again. An accepted event during a
+// cooldown does not end it, and a "duplicate:" rejection neither cools it nor is logged.
+void rate_limits_cool_a_relay_down_and_probation_ends_on_ok() {
+    using std::chrono::milliseconds;
+    relay_harness h;
+    const auto cooled_for = [&h](milliseconds length) {
+        h.relay_says(ok_text(false, "rate-limited: slow down"));
+        BOOST_TEST(!h.publishes());
+        h.wait(length - milliseconds(1));
+        BOOST_TEST(!h.publishes());
+        h.wait(milliseconds(1));
+        BOOST_TEST(h.publishes());
+    };
+    cooled_for(milliseconds(60'000));
+    for (const auto length : {120'000, 240'000, 480'000, 900'000, 900'000}) {
+        cooled_for(milliseconds(length));
+    }
+    h.relay_says(ok_text(true, ""));
+    cooled_for(milliseconds(60'000));
+    // Healthy again, then cooled: an accepted event during the cooldown leaves it.
+    h.relay_says(ok_text(true, ""));
+    h.relay_says(ok_text(false, "rate-limited: slow down"));
+    h.relay_says(ok_text(true, ""));
+    BOOST_TEST(!h.publishes());
+    h.wait(milliseconds(60'000));
+    BOOST_TEST(h.publishes());
+    BOOST_TEST(h.logged_with("rate-limits us"));
+    h.relay_says(ok_text(true, ""));
+    h.relay_says(ok_text(false, "duplicate: already have it"));
+    BOOST_TEST(h.publishes());
+    BOOST_TEST(!h.logged_with("duplicate"));
+    h.relay_says(ok_text(false, "invalid: bad"));
+    BOOST_TEST(h.logged_with("refused an event: invalid: bad"));
+}
+
+// A CLOSED of a subscription that is not the strategy's is ignored, whatever its reason: the relay
+// is neither retired nor cooled, and nothing is asked again. A CLOSED of its own is asked again
+// under the same id after 5333 ms, with the room's announcement.
+void closed_of_another_subscription_is_ignored() {
+    relay_harness h;
+    const auto subscription = h.subscription();
+    h.relay_says(relay_text("CLOSED", "not-ours", "blocked: you"));
+    h.relay_says(relay_text("CLOSED", "not-ours", "rate-limited: you"));
+    h.relay_says(relay_text("CLOSED", "not-ours", "error: gone"));
+    BOOST_TEST(!h.net.socket->closed);
+    BOOST_TEST(h.publishes());
+    BOOST_TEST(!h.logged_with("closed our subscription"));
+    h.wait(std::chrono::milliseconds(10'000));
+    BOOST_TEST_EQ(h.sent("REQ").size(), 1U);
+
+    h.relay_says(relay_text("CLOSED", subscription, "error: shutting down"));
+    BOOST_TEST(h.logged_with("closed our subscription: error: shutting down"));
+    h.wait(std::chrono::milliseconds(5332));
+    BOOST_TEST_EQ(h.sent("REQ").size(), 1U);
+    const auto events = h.events();
+    h.wait(std::chrono::milliseconds(1));
+    const auto requests = h.sent("REQ");
+    require(BOOST_TEST_EQ(requests.size(), 2U));
+    BOOST_TEST_EQ(str(requests[1].root()[1]), subscription);
+    BOOST_TEST_EQ(h.events(), events + 1);
+}
+
+// An EOSE that ends the last pending subscription 1 s or more after its REQ replays the room's
+// announcement at once, outside its cadence; one sooner, a second one, or one of an id not the
+// strategy's replays nothing.
+void slow_eose_replays_announcements() {
+    {
+        relay_harness h;
+        h.wait(std::chrono::milliseconds(100));
+        const auto events = h.events();
+        h.relay_says(relay_text("EOSE", h.subscription()));
+        BOOST_TEST_EQ(h.events(), events);
+    }
+    relay_harness h;
+    h.wait(std::chrono::milliseconds(1000));
+    const auto events = h.events();
+    BOOST_TEST_EQ(events, 3U);  // at once, after 233 ms and after 766 ms
+    h.relay_says(relay_text("EOSE", "not-ours"));
+    BOOST_TEST_EQ(h.events(), events);
+    h.relay_says(relay_text("EOSE", h.subscription()));
+    BOOST_TEST_EQ(h.events(), events + 1);
+    h.relay_says(relay_text("EOSE", h.subscription()));
+    BOOST_TEST_EQ(h.events(), events + 1);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -514,5 +827,11 @@ int main(int argc, char* argv[]) {
     a_signal_past_its_bound_is_dropped(oracle);
     a_relay_text_past_its_bound_is_dropped();
     a_relay_text_past_its_depth_is_dropped();
+    subscriptions_hold_250_topics_and_distinct_kinds();
+    announcements_carry_a_fresh_nonce();
+    terminal_rejections_retire_a_relay();
+    rate_limits_cool_a_relay_down_and_probation_ends_on_ok();
+    closed_of_another_subscription_is_ignored();
+    slow_eose_replays_announcements();
     return webcpp::test::exit_status(boost::report_errors());
 }
