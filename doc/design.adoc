@@ -16,12 +16,14 @@
 
 | Protocol
 | `protocol/*.hpp`
-| pure functions over bytes and text: no I/O, no platform
+| pure functions over bytes and text: no I/O, no platform; among them the
+  crypto layer, the topics, ids, room keys and sealing of 0.27.0, over
+  webcpp::hash and webcpp::crypto (<<trystero-design-phase-1>>)
 
 | Backend interface
 | `backend.hpp`
-| the WebSocket, peer connection, data channel, timer and AES-GCM sealer a
-  platform provides
+| the WebSocket, peer connection, data channel, timer, clocks, randomness and
+  the PBKDF2 of a room's password a platform provides
 
 | App
 | `app.hpp`, `detail/app_impl.hpp`, `detail/connection.hpp`
@@ -39,9 +41,10 @@
 | Platform backend
 | `platform/*.hpp`
 | webcpp::webrtc, webcpp::beast (natively Boost.Beast, in a page its
-  `WebSocket`), Boost.URL, webcpp::asio's timers, and per target the sealer
-  and the randomness: OpenSSL natively, Web Crypto and
-  `crypto.getRandomValues` in a page; and, in a page, `page_call` and `js_string`
+  `WebSocket`), Boost.URL, webcpp::asio's timers, webcpp::crypto's
+  `random_device` for randomness, and webcpp::hash's `async_pbkdf2` for a
+  room's password, natively on a thread of the backend's own and in a page
+  through Web Crypto; and, in a page, `page_call` and `js_string`
 |===
 
 Everything above the backend interface is the core, which builds on both
@@ -54,8 +57,74 @@ Asio is webcpp::asio: natively Boost.Asio itself, on emscripten the backend
 webcpp::asio ships, whose `io_context` webcpp::webrtc's browser objects
 deliver their events to.
 
+[#trystero-design-phase-1]
+=== Phase 1 of the port to Trystero 0.27.0
+
+On the branch `port/trystero-0.27`, not interoperable before Phase 2. The
+port follows the change `trystero-0-27` (proposals), whose design numbers its
+decisions; those Phase 1 built are these.
+
+*The backend has no sealer (D4, D5).* Hashing, the derivation of a room's
+keys from their master, sealing and opening, room authentication and ids are
+synchronous functions of `protocol/` (`topics.hpp`, `ids.hpp`,
+`room_keys.hpp`, `seal.hpp`), over webcpp's default backends: a signal of a
+few kilobytes seals in microseconds with OpenSSL natively and BearSSL on
+emscripten, so the room seals and opens in the call, as Trystero awaits
+`encrypt` and `decrypt` in turn. `backend::factory` lost `sealer` and
+`make_sealer`; what stays asynchronous is the one costly step, the PBKDF2 of
+a room's password, 600,000 iterations of HMAC-SHA-256, some 0.2 s natively
+and several seconds in WebAssembly, which never runs on a room's thread:
+`factory::derive_password_master` completes on the room's executor after
+the call returns. The platform backend runs it natively with
+`webcpp::hash::async_pbkdf2` on a one-thread `webcpp::asio::thread_pool` it
+makes at the first call and joins when it is destroyed, and in a page with
+`async_pbkdf2` over `backends::webcrypto`, the page's `crypto.subtle`, on the
+backend's executor. A work executor in `app_config` was set aside: every
+native program would fill an option for a cost paid once a room.
+
+*A room's keys, their cache and their failure (D6).* A room without a
+password keys AES with the SHA-256 of `["trystero:room-aes:v3",<app>,<room>]`,
+as `JSON.stringify` writes it. With one, the app derives a PBKDF2 master
+under the salt SHA-256 of `["trystero:pbkdf2-master:v3",<app>,<room>]`, then
+HKDF-SHA-256 to the AES key (`trystero:room-aes:v3`) and to the HMAC key
+(`trystero:room-hmac:v3`), wipes the master, and keeps the keys of at most 64
+rooms, the least recently used out, as 0.27.0's `derivedRoomKeysCache`
+(`detail::room_keys_cache`); a derivation that fails is forgotten, so that a
+later join derives again, and is reported as `error::backend_failure`, since
+0.27.0 has no room error for it. The password stays the app's (0.1.0's
+ruling), so the cache is keyed by room id. A room announces nothing before
+its key exists: `join` returns at once, and the room starts once the
+derivation completes. The keys are held in `webcpp::crypto::secret<32>`,
+and every other buffer of a secret is wiped by trystero's
+`detail::wipe` before it is released.
+
+*Dependencies (D7).* `parts` links webcpp::hash and webcpp::crypto
+(`/webcpp/crypto//crypto`, `gcm-default` and `secp256k1-default`):
+libsecp256k1 arrives through webcpp::crypto, with the same feature
+`webcpp-secp256k1-tables`, and trystero includes no header of it. OpenSSL
+stays natively for TLS and for libdatachannel, and is the AES-GCM of
+webcpp::crypto's native default, but trystero's own code calls none of it.
+What webcpp::crypto and webcpp::hash allocate outside a room's resource is
+listed in <<trystero-allocation-outside>>.
+
+*A provisional identity (D8).* Before P-256, an app's peer id is 20 base62
+characters drawn at random when the app is made, and a peer's user id is
+its peer id: one peer per user. The values have 0.27.0's form, and the rooms
+meet each other over the memory relays and local relays.
+
+*The shared connection stays until Phase 2 reads 0.27.0's (D9).* 0.27.0
+removed 0.26.0's `shared-peer.ts`: each room negotiates its own connections,
+and its handshake binds app and room. Phase 1 keeps the connection an app's
+rooms share (<<trystero-design-sharing>>), its presence frames, its room
+tokens and its password handshake, `+__trystero_pw+`, all 0.26.0's, inside
+a room's connection; Phase 2's first task reads 0.27.0's peer and transport
+code and records a room's frames before any of it is removed.
+
 [#trystero-design-sharing]
 === Connections shared by the rooms of an app
+
+On the branch, this is 0.26.0's sharing, kept until Phase 2 retires it
+(<<trystero-design-phase-1>>).
 
 [cols="1,3,2,1",options="header"]
 |===
@@ -126,9 +195,11 @@ refactor (2026-11-14), since webcpp::asio, webcpp::beast and webcpp::webrtc
 give both targets one interface, where everything but WebRTC was written
 twice. The abstract classes stay, for the memory relays, which run whole
 rooms on both targets where node has no WebRTC, and for the interop's native
-peer, which wraps the platform backend. Only the sealer and the source of
-randomness are chosen per target, by `WEBCPP_TARGET_EMSCRIPTEN`, until
-webcpp::crypto exists (<<trystero-platform>>).
+peer, which wraps the platform backend. Only the PBKDF2 of a room's
+password is chosen per target, by `WEBCPP_TARGET_EMSCRIPTEN`: natively on a
+thread of the backend's own, in a page through Web Crypto
+(<<trystero-design-phase-1>>); randomness is webcpp::crypto's
+`random_device` on both (<<trystero-platform>>).
 
 [#trystero-design-webrtc]
 === Why webcpp::webrtc
@@ -241,10 +312,13 @@ The asynchronous operations are the exception, for the reason
 [#trystero-design-dependencies]
 === Dependencies
 
-trystero builds on webcpp::asio, and its platform backend on webcpp::webrtc
-and webcpp::beast. `/webcpp/trystero//trystero` is the rooms alone: it brings
-`/webcpp/asio//asio`, which links embind on emscripten, and on no target
-webcpp::webrtc. A program names `/webcpp/trystero//platform` on both
+trystero builds on webcpp::asio, webcpp::hash and webcpp::crypto, and its
+platform backend on webcpp::webrtc and webcpp::beast.
+`/webcpp/trystero//trystero` is the rooms alone: it brings
+`/webcpp/asio//asio`, which links embind on emscripten,
+`/webcpp/hash//hash`, and `/webcpp/crypto//crypto` with its defaults for
+AES-256-GCM (`gcm-default`) and secp256k1 (`secp256k1-default`, over
+libsecp256k1), and on no target webcpp::webrtc. A program names `/webcpp/trystero//platform` on both
 targets, which adds the backend to the rooms: `/webcpp/webrtc//webrtc` and
 `/webcpp//boost_url` on both; natively webcpp::webrtc's libdatachannel,
 under the MPL 2.0, and OpenSSL, under the Apache License 2.0, and for the

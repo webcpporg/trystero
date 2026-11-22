@@ -16,8 +16,9 @@ rooms over a backend of their own, in memory, as trystero's own tests run
 whole rooms over `test/support/memory_backend.hpp`, a backend whose Nostr
 relays forward ephemeral events to matching subscriptions, whose peer
 connections pair through their descriptions, whose data channels deliver in
-order, and whose sealer opens only what was sealed under the same key, each
-event posted to the `io_context`. It is in the namespace
+order, and whose derivation of a password's master runs webcpp::hash's
+PBKDF2 in the call, 1,000 iterations in place of 600,000 since its rooms
+meet only each other, each event posted to the `io_context`. It is in the namespace
 `webcpp::trystero::test`, outside the library's public headers, and a
 program may copy it.
 
@@ -27,9 +28,9 @@ paired end. A `filter` delivers, drops or holds frames; a held frame holds
 all later frames from its sending end behind it, preserving channel order
 until `release`. Deferred `open` calls open each end separately; `inject`
 and `fail` supply malformed frames and transport failure. With
-`hold_sealer_opens`, every sealer's opens wait, as Web Crypto's take their
-time in a page, until `release_sealer_opens` completes them in order;
-`held_sealer_opens` counts them.
+`derive_delay`, every derivation's completion waits, as a page's Web Crypto
+takes its time, until `release_derivations` completes them in order;
+`held_derivations` counts them.
 
 With `channel_capacity` enabled, the channel queues bytes and drains up to
 `drain_per_post` per post. It delivers a frame only after its last byte
@@ -73,8 +74,8 @@ list (<<trystero-building-project>>).
 
 | the public headers
 | Each compiled alone, on each target that builds it: the core, and the
-  platform backend's `backend.hpp`, `entropy.hpp`, `sealer.hpp` and
-  `websocket.hpp` with the backend's WebRTC, on both, natively against
+  platform backend's `backend.hpp` and `websocket.hpp` with the backend's
+  WebRTC, on both, natively against
   webcpp::webrtc's libdatachannel and OpenSSL and in a page over its own
   objects; and `platform/page.hpp`, on emscripten alone.
 
@@ -85,33 +86,53 @@ list (<<trystero-building-project>>).
   `WEBCPP_NO_EXCEPTIONS`), and keeps it when a developer defines it for
   trystero alone in a build that has them.
 
+| `crypto_layer`, `crypto_layer_release`
+| The protocol of Trystero 0.27.0 against the vectors its own code computed,
+  `test/fixtures/expected/trystero-0.27.0.json`, which
+  `test/oracle/record_0_27.mjs` records: topic paths, topics and their
+  kinds, `hash32` and `str_to_num`, domain tags, the relay shuffle, `gen_id`
+  and the ids derived from a compact key, strict base64url, room keys with
+  and without a password, room auth tokens, sealed texts and their AAD, the
+  texts `open` refuses, and the action wire's recorded frames; and
+  trystero's wipe. The 600,000 iterations of a password's PBKDF2 run in
+  `crypto_layer_release` alone, a release build.
+
 | `protocol`
-| The protocol against values Trystero JS 0.26.0 computed itself: topics,
-  room tokens, the relay shuffle, sealed text, Nostr event ids, inline and
-  chunked action frames, control frames, envelopes and presence, a JSON
-  payload's numbers and key order, and the bounds of a signal's fields.
+| What the branch keeps of 0.26.0 and what 0.27.0 did not change, against
+  values Trystero JS 0.26.0 computed itself: room tokens, envelopes and
+  presence, Nostr event ids, a JSON payload's numbers and key order; and the
+  rules no recorded value shows: an action's name, the wide chunks' bound,
+  an offer's size, big-endian fields, and the bounds of a signal's fields.
 
 | `signaling`
-| The signaling and the Nostr strategy alone: as an answerer, the signals
-  Trystero JS 0.26.0's own signal handler published for the same offers,
-  byte for byte, a signal or a relay's text read at its bound and
-  dropped one byte past it, and a relay's text read 16 deep and dropped one
-  level deeper.
+| The signaling and the Nostr strategy alone: an answerer's signals, a signal
+  or a relay's text read at its bound and dropped one byte past it, and a
+  relay's text read 16 deep and dropped one level deeper.
+
+| `subscription`, `user_table`
+| The listeners of an event, 0.27.0's emitter: in the order added, removed
+  while one runs, `once`, `replay`, one added while an event is reported
+  waiting for the next, and a subscription dropped leaving its listener; and
+  the users of a room, which their first peer joins and their last leaves.
 
 | `room`, `room_asyncify_release`
 | Whole rooms in one process, over the memory relays: every payload format,
-  100 KB transfers both ways, ping, passwords right and wrong, leaving and
+  100 KB transfers both ways, wide transfers received, frames of an action
+  not made dropped, request actions, receive gates and progress, listeners,
+  users, `self()`, sends to users and to absent targets, 0.27.0's room
+  errors and their pacing, relay connectivity, a password's keys derived
+  after the join returns, once per room and again after a failure, ping,
+  passwords right and wrong, leaving and
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
-  signals, offers being opened that keep their places when new ids arrive
-  at the same instant, one offer of a peer opened at a time, a relay that
+  signals, offers that keep their places when new ids arrive at the same
+  instant, one offer of a peer answered at a time, a relay that
   closes at once or rate-limits, a three-peer mesh, coroutines and view
   handlers, JSON payloads read in the room's resource up to its bound, and a
   rejected document receive.
 
 | `app_impl`, `app_impl_asyncify_release`
-| Configuration copying and validation, a self id that is not UTF-8 set
-  aside, resource ownership, weak room
+| Configuration copying and validation, resource ownership, weak room
   registration, shared adoption, stale replacement, reentrant adoption,
   last-user closure and quiet destruction with pending work.
 
@@ -141,7 +162,7 @@ list (<<trystero-building-project>>).
   cancelled, restarted or destroyed never fires, even when its expiry was
   already queued.
 
-| `platform_backend`, `platform_sealer`, `platform_websocket_unreachable`,
+| `platform_backend`, `platform_websocket_unreachable`,
   `platform_websocket_url`, and each `_no_exceptions`
 | The platform backend on both targets, natively and on emscripten under
   node, which has the page's WebSocket and Web Crypto but no WebRTC. The
@@ -150,14 +171,9 @@ list (<<trystero-building-project>>).
   it in the default resource, and gives it all back when it is destroyed
   (<<trystero-allocation-resource>>); its clocks are the standard library's,
   its randomness fills what it is given, differently each time, beyond a
-  piece of its source too (65536 bytes in a page), its executor is the one
-  it was given and its TLS context is made. The sealer opens what Trystero JS
-  sealed with Web Crypto, seals a text that opens again in Trystero's form,
-  takes a text sealed under another key, or no sealed text, for a wrong
-  password, completes after the call that started it, never inside it, and
-  completes each of two seals and two opens given in one call, which in a
-  page wait while it imports its key; in a page without `crypto.subtle` it
-  fails with `error::backend_failure`. A relay it cannot reach, of a URL the
+  piece of its source too, its executor is the one it was given and its TLS
+  context is made, its destruction waits for a derivation under way, and
+  without a page it watches no connectivity. A relay it cannot reach, of a URL the
   session refuses, `http://` and `https://` among them, reports exactly one
   close, after the call that made it, and so does one of a port on 127.0.0.1
   or `::1` where nothing listens, which is attempted: natively its TCP
@@ -207,8 +223,8 @@ list (<<trystero-building-project>>).
   `platform_page_websocket_ingress`, `platform_page_websocket_tls`,
   `platform_page_data_channel`, `platform_page_peer_connection`,
   `platform_page`, `platform_page_call`, `platform_page_handlers`,
-  `platform_page_sealer`, `platform_page_sealer_allocation`,
-  `platform_page_relay_allocation`, and each `_no_exceptions`
+  `platform_page_relay_allocation`, `platform_page_connectivity`, and each
+  `_no_exceptions`
 | The platform backend in a page, on emscripten under node, each test's
   `main` running its `io_context` as a page's program does: the relays'
   WebSocket, its bound on what a relay holds unsent, both the session's own
@@ -230,20 +246,16 @@ list (<<trystero-building-project>>).
   and breaks nothing; a call through a function the page kept after its
   `page_call`, or its `io_context`, was destroyed reaches nothing, and the
   handler reads the page's value as it is when it runs, and a number within
-  its range; the relay socket's and the sealer's handlers run outside the
-  page's events; a page whose `crypto.getRandomValues` throws or is missing
-  has no randomness and fails a seal, and one whose `crypto.subtle` settles
-  with something other than an `ArrayBuffer` fails a seal and an open, with
-  `error::backend_failure`, no JavaScript exception entering WebAssembly; and
-  a seal and an open allocate nothing outside the room's resource, neither
-  with `operator new` nor with the C library's functions.
+  its range; the relay socket's handlers run outside the page's events; and
+  the page's `online` and `offline` events reach an app's relays, which
+  `automatic` follows.
 |===
 
 The platform backend's tests run on each target that builds them, and once
 more without exceptions (<<trystero-platform-exceptions>>), as a program
 that uses the backend may be built, but for `platform_websocket`, which
-runs once, with the standard libraries' checks. The tests of a relay's URL,
-a page's calls and the sealer in a page, parts that parse no JSON, link
+runs once, with the standard libraries' checks. The tests of a relay's URL
+and a page's calls, parts that parse no JSON, link
 `platform-parts` (`$(platform-part)`) in place of the backend and the rooms:
 
 [listing]
@@ -281,8 +293,8 @@ Emscripten 6.0.11):
 include::{library-root}/test/Jamfile[tag=asyncify-release]
 ----
 
-From the root of a webcpp checkout, with libsecp256k1 found
-(<<trystero-building>>), each of these builds and runs the tests,
+From the root of a webcpp checkout, with the dependencies prepared
+(<<trystero-building-dependencies>>), each of these builds and runs the tests,
 natively, under AddressSanitizer and UndefinedBehaviorSanitizer, and on
 emscripten:
 
@@ -305,7 +317,15 @@ built from scratch, with `b2 -a`.
 
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
 against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
-`package-lock.json`, with Node, run as `node --conditions=development`:
+`package-lock.json`, with Node, run as `node --conditions=development`. On
+the branch `port/trystero-0.27`, not interoperable before Phase 2, both are
+off, their targets `explicit`: their Trystero is 0.26.0, whose wire the
+branch no longer speaks, and Phase 2 pins them to 0.27.0 and turns them
+back on. The branch's vectors come from `test/oracle/record_0_27.mjs`,
+which `node test/oracle/record_0_27.mjs <checkout>` runs against a checkout
+of 0.27.0 at `8d3f57e` and which writes
+`test/fixtures/expected/trystero-0.27.0.json`, the file the `crypto_layer`
+tests read:
 
 [listing]
 ----
@@ -315,7 +335,7 @@ include::{library-root}/test/oracle/Jamfile[tag=oracle]
 `oracle`, which names no target, runs Trystero's own functions over the
 inputs of `test/fixtures/cases/protocol.json` and checks that they still
 write `test/fixtures/expected/expected.json` byte for byte, the values the
-`protocol` and `platform_sealer` tests reproduce, and runs the twins of the
+`protocol` test reproduces, and runs the twins of the
 examples (<<trystero-testing-twins>>); `update-expected` is the only writer
 of the expected values and of each divergent twin's output.
 
@@ -415,9 +435,11 @@ program on Trystero 0.26.0, which the oracle lane runs through
 `TRYSTERO_RELAY_URL`, and the twin, whose output must be the program's
 `.expected`, or, for a difference, its own `.expected`, which must differ.
 The twins agree with {n-twins-agreeing} of the programs and diverge from
-{n-twins-divergent}; {n-examples-without-twin} have none, each with its
-reason in `test/oracle/twins/without-twin.txt`: the chat, a page that prints
-nothing, and a difference whose original has no counterpart.
+{n-twins-divergent}; {n-examples-without-twin} has none, with its reason in
+`test/oracle/twins/without-twin.txt`: the chat, a page that prints nothing.
+On the branch the twins and their outputs stay 0.26.0's, and the oracle lane
+that runs them is off, until Phase 2 runs them on 0.27.0
+(<<trystero-testing-lanes>>).
 
 Trystero JS has one self id per page, so a twin whose room meets a peer, as
 a {cpp} program's second app does, runs that peer as a second page, a worker

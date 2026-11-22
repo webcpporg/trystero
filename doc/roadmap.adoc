@@ -11,14 +11,19 @@
 What trystero does not port yet, and what it does not build itself yet
 (<<trystero-differences>> gives each feature left out with its reason):
 
-. *Media.* Audio and video tracks and streams, and Trystero's `@_stream`,
-`@_track` and `@_signal` actions with renegotiation. In the browser they are
+. *Media.* Audio and video tracks and streams, and Trystero's `@_stream` and
+`@_signal` actions with renegotiation. In the browser they are
 the page's `MediaStreamTrack` objects. Natively they would be libdatachannel's
 RTP tracks, whose encoding, decoding and capture are the application's. What
 that needs was measured: libdatachannel keeps only weak references to
 tracks, answers with every codec offered unless the answer is pruned, and
 echoes the offerer's `msid` into the answer. Media will be an interface of
 webcpp::webrtc's, which the backends' WebRTC is.
-. *Trystero's other features.* Request actions (`kind: 'request'`),
-decisions on incoming transfers and their progress, the application's own
-handshake, passive rooms, and the other strategies, among them MQTT and BitTorrent trackers.
+. *The port to Trystero 0.27.0.* On the branch `port/trystero-0.27`:
+Phase 2, identities and the handshake signed with ECDSA P-256, verified
+users and `maxUsers`, and the interop against 0.27.0, which merges the port;
+then Phase 3, each a change of its own, `makeState` and `makeUserState`,
+`roles`, and `scale`.
+. *Trystero's other features.* `requestMany`, the progress and the
+cancelling of sends and requests, passive rooms, and the other strategies,
+among them MQTT and BitTorrent trackers.

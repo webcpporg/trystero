@@ -34,7 +34,6 @@ local differences =
     diff_json_numbers
     diff_json_refused
     diff_passwords
-    diff_peer_join
     diff_peers
     diff_relay_config
     diff_relay_sockets

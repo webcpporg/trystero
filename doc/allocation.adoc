@@ -19,8 +19,10 @@ own state.
   receives the app's state, configuration copy including its password, self id,
   registry, shared
   connections, advertised tokens, kept frames, drain order and presence
-  frames. Peer connections, data channels and received frames use it even
-  while a room negotiates them. The logger, sink and every sentence of the
+  frames, and the keys its rooms derive from its password, with the cache
+  that keeps them and each derivation's copy of the password, its salt and
+  its master (<<trystero-design-phase-1>>). Peer connections, data channels
+  and received frames use it even while a room negotiates them. The logger, sink and every sentence of the
   app and its rooms use this resource too. It must be non-null, checked by
   `BOOST_ASSERT` at app construction.
 * `room_options::memory`, the app's resource when null, receives the room's
@@ -176,7 +178,7 @@ allocates through a `std::pmr::polymorphic_allocator<>`. Constructed with
 fits in three pointers and is nothrow-movable, and in storage of the
 allocator otherwise. It replaces every `std::function` of the backend
 interface (the handlers of its timer, WebSocket, data channel, peer
-connection and sealer), of the room and of the log's sink. Constructed from
+connection and key derivation), of the room and of the log's sink. Constructed from
 `f` alone it uses the default resource; the app moves `app_config::log`
 into its resource with the allocator-extended move.
 A move assignment carries the source's allocator with its target.
@@ -190,20 +192,19 @@ A move assignment carries the source's allocator with its target.
 `webcpp::asio::any_io_executor` is wrapped by Asio in a function
 object allocated with `std::allocator`, from Asio's per-thread recycling
 cache, which calls `std::aligned_alloc` on a miss (measured: two per post,
-in every round of five posts, natively and on emscripten). So the room, and
-the platform backend's sealer, post through the executor of an `io_context`
-when the executor they were given is one, where Asio allocates the operation
-as the handler's allocator says, and in a page the sealer awaits each Web
-Crypto promise through it too, so that its settlement is posted the same way.
-On another executor, a strand over the `io_context` for one, the wrapper
+in every round of five posts, natively and on emscripten). So the room posts
+through the executor of an `io_context` when the executor it was given is
+one, where Asio allocates the operation as the handler's allocator says. On
+another executor, a strand over the `io_context` for one, the wrapper
 stays Asio's (<<trystero-allocation-outside>>). The executor is the
 program's: the examples and the tests give the app and the backend the
 executor of their `io_context`.
 
 *The backends.* Each method of `backend::factory` that makes an object takes
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
-data channels and received frames use the app's resource; relay sockets,
-sealers and room timers use the room's. Objects and their handlers allocate
+data channels and received frames use the app's resource; relay sockets and
+room timers use the room's; a password's derivation, which makes no object,
+allocates its operation with its completion's allocator, the app's. Objects and their handlers allocate
 through that supplied resource. The backend's WebRTC
 (<<trystero-design-backend-webrtc>>) gives webcpp::webrtc's connections and
 channels a `std::pmr::polymorphic_allocator` on the app's resource, which
@@ -259,13 +260,22 @@ default resource as its default, and returns `std::pmr` types.
   API makes of a message before webcpp::webrtc reads it into the frame, and,
   natively, webcpp::webrtc's copies of what libdatachannel's threads report,
   in the standard allocator;
+* natively, OpenSSL's cipher context of each seal and each open of a signal,
+  webcpp::crypto's AES-256-GCM being OpenSSL's there: two allocations each,
+  the EVP context and its AES-GCM state, which the allocation test counts
+  apart; on emscripten the cipher is BearSSL's, which allocates nothing;
+* natively, the thread on which the platform backend runs a password's
+  PBKDF2, a `webcpp::asio::thread_pool` of one thread, made at the first
+  derivation and joined when the backend is destroyed, with its state and
+  the wrapper Asio puts around the completion it dispatches through the
+  backend's `any_io_executor`; and in a page what webcpp::hash's Web Crypto
+  backend and the page allocate for the derivation: a cost paid once per room
+  id an app derives, which no test of trystero's counts;
 * what `emscripten::val` holds, in the JavaScript heap;
 * Asio's own once-per-context allocations: its services, in a page
   webcpp::asio's bridge among them, and the scheduler's first operation;
 * the wrapper Asio puts around a post through an executor that is not the
-  executor of an `io_context`, a strand for one, and, given such an
-  executor, around the settlement of each Web Crypto promise of a page's
-  sealer;
+  executor of an `io_context`, a strand for one;
 * webcpp::webrtc's posts from libdatachannel's threads, which carry Asio's
   default allocator, since the resource is touched only on the room's
   executor; and the wrapper Asio puts around webcpp::webrtc's completions,
@@ -326,16 +336,12 @@ default resource as its default, and returns `std::pmr` types.
 * on Emscripten under Asyncify, the unwind data Asyncify allocates whenever
   the browser program's `run` suspends;
 * in the browser, the storage of the map in which webcpp::asio's bridge finds
-  each pending Web Crypto promise, in the allocator of the `io_context`,
-  made for the first and grown when more are pending at once than it holds,
-  and kept until the `io_context` is destroyed. The rest of a page's seal or
-  open, the wait for its promise and the post of its settlement, is in the
-  room's resource when the backend's executor is that of an `io_context`: the
-  test `platform_page_sealer_allocation`, after a first seal and open, sees
-  neither `operator new` nor the C library allocate from the start of a seal
-  or an open to its completion. The registrations of a WebSocket and of a
-  `page_call` are intrusive, the events of a socket are posted in the room's
-  resource, and the calls of a `page_call` in the resource it is given.
+  each pending promise, in the allocator of the `io_context`, made for the
+  first and grown when more are pending at once than it holds, and kept
+  until the `io_context` is destroyed. The registrations of a WebSocket and
+  of a `page_call` are intrusive, the events of a socket are posted in the
+  room's resource, and the calls of a `page_call` in the resource it is
+  given.
 
 webcpp::crypto's secp256k1 allocates nothing outside the room's resource:
 its key pair's context is the room's, and the secret, the context's seed and
@@ -378,14 +384,17 @@ is kept, by its address, in a table of a fixed size until it is freed.
   measure a round trip, one says goodbye, both are destroyed and the
   `io_context` is drained. From the first construction to the drain, while
   the rooms and the relay read and write their JSON texts, neither
-  `operator new` nor the C library sees an allocation. Once the rooms are
+  `operator new` nor the C library sees an allocation but, natively,
+  OpenSSL's, which the test counts apart: 16, two for each seal and each
+  open of the rooms' signals. Once the rooms are
   destroyed their resources still have memory out, the operations they left
   pending, and none once the `io_context` has drained.
 * Two apps with two rooms each exchange binary payloads, one room using the
   app's resource and one its own. Size-specific counters prove one payload
   copy into the distinct room resource, and no extra copy when resources
   match. From construction through the drain neither `operator new` nor the
-  C library sees an allocation, and every resource ends with nothing out.
+  C library sees an allocation but, natively, OpenSSL's 32, counted apart,
+  and every resource ends with nothing out.
 
 The counting resources also count a return of memory they never gave, a
 `std::pmr` object freed through the wrong resource, which must be none.

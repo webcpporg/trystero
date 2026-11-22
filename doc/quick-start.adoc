@@ -8,8 +8,8 @@
 == Quick start
 
 The quick start is one native program with two peers in it, `alice` and
-`bob`: each is an app of its own, with an id the program gives it, and both
-join the room `lobby` of the app `webcpp-trystero-quick-start`. alice greets
+`bob`: each is an app of its own, which draws its own id, and both join the
+room `lobby` of the app `webcpp-trystero-quick-start`. alice greets
 bob when he joins, bob answers, each prints what it received, and both
 leave, which ends the program. In the browser the same rooms run in a page,
 as the chat example shows (<<trystero-quick-start-browser>>).
@@ -18,10 +18,10 @@ as the chat example shows (<<trystero-quick-start-browser>>).
 [#trystero-quick-start-native]
 === Two peers in one program
 
-An app is one peer: its id among the peers, its relays and its STUN servers.
-The program gives each app its id, `app_config::self_id`, where an app would
-draw 20 random characters, so that what it prints is the same on every run.
-It meets over the relay whose URL is in the environment,
+An app is one peer: its id among the peers, 20 random characters it draws
+when it is made, as 0.27.0 has no custom id, its relays and its STUN
+servers. Each peer prints what it receives after the other's name, so that
+what the program prints is the same on every run. It meets over the relay whose URL is in the environment,
 `TRYSTERO_RELAY_URL`, which the lane `relayed` starts on 127.0.0.1, and
 then keeps its peers on the machine; without it, the program uses
 Trystero's public relays and STUN servers, as every program that names none
@@ -38,7 +38,7 @@ include::{examples}/quick_start.cpp[tag=config]
 room, and makes in each room the action `chat`, whose messages are
 `std::string`. alice greets each peer that joins, once its handshake
 completes, with a message to that peer alone, and prints what she receives,
-after its sender's id, then leaves. bob's part is a coroutine. `run`
+after bob's name, then leaves. bob's part is a coroutine. `run`
 returns once no work is left: each room closes its relays as it leaves, and
 each connection closes as soon as no room uses it:
 
@@ -47,8 +47,8 @@ each connection closes as soon as no room uses it:
 include::{examples}/quick_start.cpp[tag=main]
 ----
 
-bob awaits the first message with `async_receive`, prints it after its
-sender's id, answers its sender with `async_send`, and leaves with
+bob awaits the first message with `async_receive`, prints it after alice's
+name, answers its sender with `async_send`, and leaves with
 `async_leave`. `asio::as_tuple` hands each error over as a value, so a
 room left first ends the wait instead of throwing:
 
@@ -65,8 +65,9 @@ include::{examples}/quick_start.expected[]
 ----
 
 Its twin on Trystero JS prints the same two lines. Trystero draws one
-`selfId` per page, so bob is a second page there, and each peer prints the
-other's name where the {cpp} program prints the id it gave the app:
+`selfId` per page, so bob is a second page there. On the branch the twin is
+Trystero 0.26.0's, and the oracle lane that runs it is off until Phase 2
+(<<trystero-testing-lanes>>):
 
 [source,javascript]
 ----
@@ -90,5 +91,6 @@ include::{examples}/chat/chat.cpp[tag=state]
 <<trystero-platform-chat>> shows how it joins, sends, and runs its
 `io_context` from `main`, and <<trystero-building-examples>> serves it.
 Two tabs of the chat that join the same app and room meet; so do a native
-peer and a page, which the lane `interop` proves with Trystero JS pages in
-headless Chrome (<<trystero-testing-lanes>>).
+peer and a page. On `main` the lane `interop` proves it with Trystero JS
+pages in headless Chrome; on the branch it is off until Phase 2 meets
+Trystero 0.27.0's pages (<<trystero-testing-lanes>>).

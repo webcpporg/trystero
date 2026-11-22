@@ -15,11 +15,11 @@ https://github.com/paullouisageneau/libdatachannel[libdatachannel]'s and in a
 page the page's own `RTCPeerConnection` and `RTCDataChannel`
 (<<trystero-design-backend-webrtc>>); its relays' WebSockets are
 webcpp::beast's, natively Boost.Beast's own and in a page its `WebSocket`;
-its timers are webcpp::asio's `steady_timer`. Two parts are the target's own,
-chosen by `WEBCPP_TARGET_EMSCRIPTEN`: the sealer, natively OpenSSL's AES-GCM
-and in a page `crypto.subtle`, and the source of randomness, natively
-OpenSSL's generator and in a page `crypto.getRandomValues`, called from
-JavaScript that catches what it throws. Its clocks are the standard
+its timers are webcpp::asio's `steady_timer`; its randomness is
+webcpp::crypto's `random_device`. One part is the target's own, chosen by
+`WEBCPP_TARGET_EMSCRIPTEN`: the PBKDF2 of a room's password, natively on a
+thread of the backend's own and in a page through `crypto.subtle`
+(<<trystero-platform-randomness>>). Its clocks are the standard
 library's on both: `std::chrono::system_clock` for Nostr's `created_at`, and
 `std::chrono::steady_clock` for its timing, which Emscripten reads from the
 page's `Date.now()` and `performance.now()`.
@@ -255,26 +255,31 @@ Each drop reports one close, and the room reconnects with its backoff
 (<<trystero-protocol-discovery>>).
 
 [#trystero-platform-randomness]
-=== Randomness and sealing
+=== Randomness and a password's derivation
 
-The backend's randomness, the room's keys and nonces, and the IV of each
-seal come from the platform's one secure source, its result checked:
-OpenSSL's `RAND_bytes` natively, and in a page `crypto.getRandomValues`, at
-most 65536 bytes a call, which the backend calls from JavaScript that catches
-what it throws: a page whose `getRandomValues` is missing or throws has no
-randomness, and no JavaScript exception enters WebAssembly, where Emscripten's
-`getentropy` let it through. When it has none, `random()` aborts the program,
-since nothing is safe without it, and a seal fails with
-`error::backend_failure`.
+On the branch `port/trystero-0.27`, not interoperable before Phase 2. The
+backend's randomness, the ids and nonces a room draws, and the IV of each
+seal, come from webcpp::crypto's `random_device`, the platform's one secure
+source: `getentropy` natively, and in a page, through it,
+`crypto.getRandomValues`. When it has none, `random()` aborts the program,
+since nothing is safe without it. In a page whose `getRandomValues` is
+missing or throws, Emscripten's `getentropy` lets the exception into
+WebAssembly, where trystero 0.1.0's own source caught it in JavaScript: the
+program ends either way, and the guard belongs to webcpp::crypto's
+`random_device` (design Open Question 1). The room's signing key draws its
+secret and each signature's auxiliary bytes from `random_device` too.
 
-The sealer is asynchronous on both targets, as Web Crypto is: natively it
-works synchronously and posts its completion, and in a page it awaits each
-Web Crypto promise with webcpp::asio's `browser::async_await`, under a key it
-imports on its first operation, while the operations that arrive meanwhile
-wait with a copy of their text. A completion never runs inside the call that
-started it. A settlement that is not an `ArrayBuffer`, which only a page whose
-`crypto.subtle` was replaced gives, fails the seal or the open with
-`error::backend_failure`.
+The backend has no sealer: a room seals and opens its signals in the call,
+with webcpp::crypto's AES-256-GCM, natively OpenSSL's and in a page
+BearSSL's (<<trystero-design-phase-1>>). What stays asynchronous is the
+PBKDF2 of a room's password, `factory::derive_password_master`, 600,000
+iterations, which never runs on a room's thread: natively
+`webcpp::hash::async_pbkdf2` runs it on a `webcpp::asio::thread_pool` of one
+thread, which the backend makes at the first derivation and joins when it is
+destroyed; in a page `async_pbkdf2` over `backends::webcrypto` awaits
+`crypto.subtle` on the backend's executor. Either completes on the
+backend's executor, after the call that started it; a derivation that fails
+completes with `error::backend_failure`, its output zeroed.
 
 [#trystero-platform-exceptions]
 === Exceptions
@@ -422,14 +427,13 @@ is made to carry either.
 ==== No JavaScript exception enters WebAssembly
 
 The backend makes every call into JavaScript that can throw, a `WebSocket`
-constructor or `send`, a Web Crypto method, `crypto.getRandomValues`, in
-JavaScript that catches what it throws: webcpp::beast's page stream turns a
-socket that cannot be made into an error, and its relay reports its close; a
-Web Crypto call is made inside an `async` function, so that what it throws
-becomes the rejection of its promise, which the {cpp} turns into the error
-its interface has, and its settlement is read only when it is an
-`ArrayBuffer`; and `crypto.getRandomValues`, missing or throwing, is a
-platform without randomness (<<trystero-platform-randomness>>).
+constructor or `send`, or a Web Crypto method, in JavaScript that catches
+what it throws: webcpp::beast's page stream turns a socket that cannot be
+made into an error, and its relay reports its close; webcpp::hash's Web
+Crypto backend turns a PBKDF2 the page rejects into the derivation's error.
+On the branch `crypto.getRandomValues`, called by webcpp::crypto's
+`random_device` through `getentropy`, is the exception: missing or
+throwing, it ends the program (<<trystero-platform-randomness>>).
 webcpp::webrtc's JavaScript catches the page's WebRTC exceptions the same
 way. The bridge's functions catch what still escapes a delivery, put
 WebAssembly's stack pointer back and report it, and with exceptions a {cpp}
@@ -465,9 +469,11 @@ connection.
 [#trystero-platform-needs]
 ==== What a page needs
 
-* A secure context: https, or http on `localhost` or `127.0.0.1`. Elsewhere
-  `crypto.subtle`, which seals the signaling, does not exist, and every
-  sealing operation fails with `error::backend_failure`.
+* For a room with a password, a secure context: https, or http on
+  `localhost` or `127.0.0.1`. Elsewhere `crypto.subtle`, which derives the
+  password's master, does not exist, and the derivation fails with
+  `error::backend_failure`, which the room reports; a room without a
+  password needs no secure context.
 * No threads: Emscripten's threads need a cross-origin isolated page, so
   trystero uses none. Its Asio is webcpp::asio's, built without threads when
   the program has no pthread ABI, and `main` runs it on the page's one
@@ -514,8 +520,8 @@ for the page's life, and makes the action `chat` twice: once as
 include::{examples}/chat/chat.cpp[tag=state]
 ----
 
-The program joins the app and the room its user typed, and sets its
-handlers; it reads the page's form only once it knows it holds two strings,
+The program joins the app and the room its user typed, and adds its
+listeners; it reads the page's form only once it knows it holds two strings,
 since its handler lets no JavaScript error out
 (<<trystero-platform-run>>), and a received message goes from its frame
 straight into a JavaScript string:
