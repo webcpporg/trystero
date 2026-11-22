@@ -306,9 +306,10 @@ holds only what is specific to trystero.
   page the browser's `sctp.maxMessageSize`, both within 256 KiB), the limit
   its channels' sends check. A send the platform channel refuses closes the
   channel, so that a transfer ends with the peer rather than wait on a chunk
-  never sent; the memory network's `send_limit` refuses likewise. `peer_link::max_bulk_frame_bytes` is 64 KiB at 64 KiB or
-  more, else 16 KiB, and the action wire offers wide on 64 KiB; the memory
-  network says 256 KiB unless a test sets `memory_network::max_message_size`.
+  never sent; the memory network's `send_limit` refuses likewise.
+  `peer_link::max_bulk_frame_bytes` is 64 KiB at 64 KiB or more, else 16 KiB,
+  and the action wire offers wide on 64 KiB; the memory network says 256 KiB
+  unless a test sets `memory_network::max_message_size`.
   `room_test` checks the frames against the vectors' `bulk` and `bulk_wide`
   cases.
 - **A room frame advertises its room.** A frame of a local room's token that
