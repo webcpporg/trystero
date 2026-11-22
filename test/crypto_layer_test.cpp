@@ -9,6 +9,7 @@
 // The fixture's path is the test's one argument, as webcpp.run passes its input file. The
 // fixture is read with webcpp::document; section(name) gives a case the named section of it.
 
+#include <webcpp/trystero/detail/wipe.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
@@ -570,6 +571,27 @@ void open_refuses_a_plaintext_that_is_not_utf8() {
     }
 }
 
+// The library's own wipe zeroes a buffer and a plain object.
+void wipe_zeroes_what_it_is_given() {
+    std::array<unsigned char, 48> buffer{};
+    buffer.fill(0xA5);
+    webcpp::trystero::detail::wipe(buffer.data(), buffer.size());
+    BOOST_TEST(std::ranges::all_of(buffer, [](unsigned char byte) { return byte == 0; }));
+
+    struct plain {
+        std::uint64_t word;
+        std::array<std::uint8_t, 13> tail;
+    };
+
+    plain object{~std::uint64_t{0}, {}};
+    object.tail.fill(0xFF);
+    webcpp::trystero::detail::wipe_object(object);
+    BOOST_TEST_EQ(object.word, 0U);
+    BOOST_TEST(std::ranges::all_of(object.tail, [](std::uint8_t byte) { return byte == 0; }));
+
+    webcpp::trystero::detail::wipe(nullptr, 0);
+}
+
 void signal_aad_matches() {
     for (const auto entry : section("signal_aad")) {
         BOOST_TEST_EQ(
@@ -768,6 +790,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(open_refuses_what_trystero_refuses);
     webcpp::test::run_case(open_refuses_another_aad);
     webcpp::test::run_case(open_refuses_a_plaintext_that_is_not_utf8);
+    webcpp::test::run_case(wipe_zeroes_what_it_is_given);
     webcpp::test::run_case(signal_aad_matches);
     webcpp::test::run_case(action_frames_match);
     return boost::report_errors();

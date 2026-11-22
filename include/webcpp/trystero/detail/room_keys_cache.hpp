@@ -15,8 +15,8 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/room_keys.hpp>
 
-#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/crypto/secret.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
 
@@ -81,7 +81,7 @@ public:
     room_keys_cache& operator=(const room_keys_cache&) = delete;
 
     /** Wipes the password; a derivation under way completes without the cache. */
-    ~room_keys_cache() { webcpp::crypto::detail::wipe(password_.data(), password_.size()); }
+    ~room_keys_cache() { webcpp::trystero::detail::wipe(password_.data(), password_.size()); }
 
     /**
      * The keys of `room_id`, through `done`, posted to the executor: after the call returns, even
@@ -128,7 +128,7 @@ private:
         derivation& operator=(const derivation&) = delete;
 
         /** Wipes the password's copy; the master and the keys wipe themselves. */
-        ~derivation() { webcpp::crypto::detail::wipe(password.data(), password.size()); }
+        ~derivation() { webcpp::trystero::detail::wipe(password.data(), password.size()); }
 
         std::pmr::string room_id;
         std::pmr::string password;
@@ -182,7 +182,7 @@ private:
             }
         }
         const auto master = d->master.writable();
-        webcpp::crypto::detail::wipe(master.data(), master.size());
+        webcpp::trystero::detail::wipe(master.data(), master.size());
         const auto self = weak.lock();
         if (ec) {
             ec = make_error_code(error::backend_failure);

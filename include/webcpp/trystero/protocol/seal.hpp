@@ -14,8 +14,8 @@
 #include <webcpp/trystero/protocol/text.hpp>
 
 #include <webcpp/crypto/ciphers/aes256_gcm.hpp>
-#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/crypto/secret.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <boost/system/result.hpp>
 
@@ -89,12 +89,12 @@ inline boost::system::result<std::pmr::string> seal(
         cipher->seal(iv, aad ? detail::seal_bytes_of(*aad) : std::span<const std::uint8_t>{},
                      std::span<std::uint8_t>(packed).subspan(gcm_iv_size, plaintext.size()));
     if (!tag) {
-        webcpp::crypto::detail::wipe(packed.data(), packed.size());
+        webcpp::trystero::detail::wipe(packed.data(), packed.size());
         return tag.error();
     }
     packed.insert(packed.end(), tag->begin(), tag->end());
     auto out = to_base64url(packed, memory);
-    webcpp::crypto::detail::wipe(packed.data(), packed.size());
+    webcpp::trystero::detail::wipe(packed.data(), packed.size());
     return out;
 }
 
@@ -127,13 +127,13 @@ inline boost::system::result<std::pmr::string> open(
         all.first(gcm_iv_size), aad ? detail::seal_bytes_of(*aad) : std::span<const std::uint8_t>{},
         body, all.last(gcm_tag_size));
     if (!opened) {
-        webcpp::crypto::detail::wipe(packed->data(), packed->size());
+        webcpp::trystero::detail::wipe(packed->data(), packed->size());
         return error::decrypt_failed;
     }
     std::pmr::string out(reinterpret_cast<const char*>(body.data()), body.size(), memory);
-    webcpp::crypto::detail::wipe(packed->data(), packed->size());
+    webcpp::trystero::detail::wipe(packed->data(), packed->size());
     if (!json::quotable(out)) {
-        webcpp::crypto::detail::wipe(out.data(), out.size());
+        webcpp::trystero::detail::wipe(out.data(), out.size());
         return error::decrypt_failed;
     }
     return out;

@@ -17,9 +17,9 @@
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
-#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/hash/hmac.hpp>
 #include <webcpp/hash/pbkdf2.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <webcpp/asio/bind_allocator.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -851,7 +851,7 @@ public:
             ec = make_error_code(error::backend_failure);
         }
         if (ec) {
-            webcpp::crypto::detail::wipe(out.data(), out.size());
+            webcpp::trystero::detail::wipe(out.data(), out.size());
         }
         if (derive_delay) {
             held_derivations_.push_back({.ec = ec, .done = std::move(done)});

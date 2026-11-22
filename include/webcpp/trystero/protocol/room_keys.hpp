@@ -13,11 +13,11 @@
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/crypto/equal.hpp>
 #include <webcpp/crypto/secret.hpp>
 #include <webcpp/hash/hkdf.hpp>
 #include <webcpp/hash/hmac.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/system/result.hpp>
@@ -75,7 +75,7 @@ inline webcpp::crypto::secret<32> room_aes_key_without_password(
     auto digest = sha256(topic_path({domain_tag("room-aes", 3, memory), app_id, room_id}, memory));
     std::ranges::copy(digest, key.writable().begin());
     // webcpp::crypto has no public wipe of an array yet; its detail one is the library's own.
-    webcpp::crypto::detail::wipe_object(digest);
+    webcpp::trystero::detail::wipe_object(digest);
     return key;
 }
 

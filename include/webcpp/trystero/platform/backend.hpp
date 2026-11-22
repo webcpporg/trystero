@@ -22,10 +22,10 @@
 #include <webcpp/webrtc/options.hpp>
 #include <webcpp/webrtc/runtime.hpp>
 
-#include <webcpp/crypto/detail/wipe.hpp>
 #include <webcpp/crypto/random_device.hpp>  // lint-world: the backend's randomness
 #include <webcpp/hash/async.hpp>
 #include <webcpp/hash/hmac.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
 #include <webcpp/asio/bind_allocator.hpp>   // lint-world: binds an allocator only
@@ -419,7 +419,7 @@ public:
             ex_, webcpp::asio::bind_allocator(allocator, [out, done = std::move(done)](
                                                              boost::system::error_code ec) mutable {
                 if (ec) {
-                    webcpp::crypto::detail::wipe(out.data(), out.size());
+                    webcpp::trystero::detail::wipe(out.data(), out.size());
                     done(make_error_code(error::backend_failure));
                     return;
                 }
