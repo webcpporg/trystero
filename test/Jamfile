@@ -90,6 +90,12 @@ webcpp.run memory_backend : memory_backend_test.cpp ;
 # One room's connection to one peer alone, over a memory pair: 0.27.0's
 # bounds on the frames kept before its room binds it, and on a frame after.
 webcpp.run peer_link : peer_link_test.cpp ;
+# Natively once more with the standard libraries' checks, so that a frame that
+# ends its link during the replay, or a waiter failed during the end, fails at
+# once when it touches what it removed.
+webcpp.run peer_link_hardened : peer_link_test.cpp
+  : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
+  : native ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
 # The timer over webcpp::asio's steady_timer, which the platform backend

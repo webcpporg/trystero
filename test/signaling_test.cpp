@@ -727,6 +727,23 @@ void announcements_carry_a_fresh_nonce() {
     BOOST_TEST_EQ(nonces.size(), events.size());
 }
 
+// Once told to stop announcing, as a room is when it starts to leave, the strategy publishes no
+// announcement more: neither at its cadence, nor when the relay asks it to replay, nor when a peer
+// leaves; it still publishes a signal, and its subscription stays.
+void a_strategy_that_stops_announcing_announces_nothing() {
+    relay_harness h;
+    h.wait(std::chrono::milliseconds(233));
+    const auto events = h.events();
+    BOOST_TEST_EQ(events, 2U);  // at once, and after 233 ms
+    h.strategy->stop_announcing();
+    h.wait(std::chrono::milliseconds(60'000));
+    h.relay_says(relay_text("EOSE", h.subscription()));
+    h.strategy->restart_announcements();
+    BOOST_TEST_EQ(h.events(), events);
+    BOOST_TEST(h.publishes());
+    BOOST_TEST_EQ(h.requests(), 1U);
+}
+
 // A refused event or a closed subscription whose reason starts with "blocked:", "restricted:",
 // "auth-required:" or "pow:" retires the relay: the strategy closes it, publishes nothing on it
 // and never connects to it again.
@@ -1000,6 +1017,7 @@ int main(int argc, char* argv[]) {
     a_relay_text_past_its_depth_is_dropped();
     subscriptions_hold_250_topics_and_distinct_kinds();
     announcements_carry_a_fresh_nonce();
+    a_strategy_that_stops_announcing_announces_nothing();
     terminal_rejections_retire_a_relay();
     rate_limits_cool_a_relay_down_and_probation_ends_on_ok();
     closed_of_another_subscription_is_ignored();

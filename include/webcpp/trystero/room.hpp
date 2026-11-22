@@ -972,7 +972,9 @@ public:
             signaling::callbacks{
                 .publish = bind<void(std::size_t, std::string_view, std::string_view)>(
                     [weak](std::size_t relay, std::string_view topic, std::string_view content) {
-                        if (const auto self = weak.lock()) {
+                        // A leaving room publishes nothing more: no candidate, no retried offer,
+                        // as 0.27.0's signal handler checks isLeaving before each.
+                        if (const auto self = weak.lock(); self && !self->left_) {
                             self->strategy_->publish(relay, topic, content);
                         }
                     }),
@@ -1188,6 +1190,43 @@ public:
     /** Adds a listener of each problem the room handled itself. */
     subscription on_error(handler<void(const room_error&)> f, listen_options options) {
         return errors_.add(std::move(f), options);
+    }
+
+    /**
+     * A negotiation of this room opened a channel to `peer`: the connection becomes the room's link
+     * to the peer, made in the room's resource. A room keeps one link per peer, as 0.27.0's
+     * `connectPeer` keeps a connected peer that is not stale: a second connection that opens while
+     * the peer's link is live is closed, and one whose link is ending replaces it.
+     *
+     * Tip: the signaling calls it; the library's own tests call it with a pair of their own, as no
+     * signal reaches a room for a peer it is connected to.
+     */
+    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
+    void on_connected(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
+                      std::shared_ptr<backend::data_channel> channel) {
+        // NOLINTEND(performance-unnecessary-value-param)
+        const std::pmr::string peer(peer_view, memory_);
+        const auto link =
+            peer_link::make(peer, std::move(pc), std::move(channel), factory_, memory_);
+        if (left_) {
+            link->end("the room is left");
+            return;
+        }
+        if (const auto it = peers_.find(peer); it != peers_.end()) {
+            if (it->second.link->live()) {
+                log_("webrtc", "another connection with ", peer,
+                     " closed: the room keeps its live one");
+                link->end("the room keeps its live connection to the peer");
+                return;
+            }
+            remove_peer(peer, "replaced by a new connection to the peer");
+            // The removal's log may leave the room.
+            if (left_) {
+                link->end("the room is left");
+                return;
+            }
+        }
+        bind_peer(peer, link);
     }
 
     /** Holds the room's relays closed, or reconnects them; a room that left has none. */
@@ -1899,40 +1938,6 @@ private:
                 .plugin = copy.plugin,
             });
         });
-    }
-
-    /**
-     * A negotiation of this room opened a channel to `peer`: the connection becomes the room's link
-     * to the peer, made in the room's resource. A room keeps one link per peer, as 0.27.0's
-     * `connectPeer` keeps a connected peer that is not stale: a second connection that opens while
-     * the peer's link is live is closed, and one whose link is ending replaces it.
-     */
-    // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    void on_connected(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
-                      std::shared_ptr<backend::data_channel> channel) {
-        // NOLINTEND(performance-unnecessary-value-param)
-        const std::pmr::string peer(peer_view, memory_);
-        const auto link =
-            peer_link::make(peer, std::move(pc), std::move(channel), factory_, memory_);
-        if (left_) {
-            link->end("the room is left");
-            return;
-        }
-        if (const auto it = peers_.find(peer); it != peers_.end()) {
-            if (it->second.link->live()) {
-                log_("webrtc", "another connection with ", peer,
-                     " closed: the room keeps its live one");
-                link->end("the room keeps its live connection to the peer");
-                return;
-            }
-            remove_peer(peer, "replaced by a new connection to the peer");
-            // The removal's log may leave the room.
-            if (left_) {
-                link->end("the room is left");
-                return;
-            }
-        }
-        bind_peer(peer, link);
     }
 
     /** Binds this room to `link` for `peer`, in the order the specification sets: the negotiation

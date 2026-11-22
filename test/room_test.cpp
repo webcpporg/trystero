@@ -68,6 +68,81 @@ using trystero::test::relay_b;
 using trystero::test::relayed_signal;
 using trystero::test::run_until;
 
+/** An app's state and a room of it, without their handles, for a case that calls the room as its
+ * signaling does. The case abandons the room before the fixture goes. */
+struct app_room {
+    std::shared_ptr<trystero::detail::app_impl> app;
+    std::shared_ptr<trystero::detail::room_impl> room;
+};
+
+app_room make_app_room(fixture& f, std::string_view self_id, std::string_view room_id,
+                       std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
+    const std::pmr::polymorphic_allocator<> alloc(memory);
+    trystero::app_config config{
+        .app_id = app_id,
+        .relay_urls = {relay_a, relay_b},
+        .memory = memory,
+    };
+    app_room out;
+    out.app = std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
+                                                               std::move(config), self_id);
+    out.room = trystero::detail::room_impl::make(out.app, {}, room_id);
+    return out;
+}
+
+/** A connection negotiated over the memory network outside any room: its local end, which a case
+ * hands a room as its signaling would, and the remote end's channel, which records what it
+ * receives. */
+struct raw_pair {
+    std::shared_ptr<trystero::backend::peer_connection> local_pc;
+    std::shared_ptr<trystero::backend::data_channel> local;
+    std::shared_ptr<trystero::backend::peer_connection> remote_pc;
+    std::shared_ptr<trystero::backend::data_channel> remote;
+    std::shared_ptr<std::vector<std::vector<std::uint8_t>>> received =
+        std::make_shared<std::vector<std::vector<std::uint8_t>>>();
+};
+
+raw_pair negotiate(fixture& f) {
+    auto* m = std::pmr::get_default_resource();
+    raw_pair p;
+    p.local_pc = f.net.make_peer_connection({}, m);
+    p.remote_pc = f.net.make_peer_connection({}, m);
+    p.local = p.local_pc->create_data_channel("data");
+    auto remote = std::make_shared<std::shared_ptr<trystero::backend::data_channel>>();
+    p.remote_pc->set_handlers({
+        .ice_candidate = {},
+        .data_channel =
+            [remote](std::shared_ptr<trystero::backend::data_channel> c) {
+                *remote = std::move(c);
+            },
+        .state = {},
+    });
+    std::pmr::string offer(m);
+    std::pmr::string answer(m);
+    p.local_pc->set_local_description([&offer](trystero::backend::error_code, std::string_view,
+                                               std::string_view sdp) { offer = sdp; });
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !offer.empty(); })));
+    p.remote_pc->set_remote_description("offer", offer, [](trystero::backend::error_code) {});
+    p.remote_pc->set_local_description([&answer](trystero::backend::error_code, std::string_view,
+                                                 std::string_view sdp) { answer = sdp; });
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !answer.empty(); })));
+    p.local_pc->set_remote_description("answer", answer, [](trystero::backend::error_code) {});
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return p.local->is_open() && *remote && (*remote)->is_open(); })));
+    p.remote_pc->set_handlers({});
+    p.remote = *remote;
+    p.remote->set_handlers({
+        .open = {},
+        .message =
+            [received = p.received](trystero::backend::bytes frame) {
+                received->emplace_back(frame.begin(), frame.end());
+            },
+        .close = {},
+        .buffered_amount_low = {},
+    });
+    return p;
+}
+
 void two_peers_join_and_exchange_every_payload_format() {
     fixture f;
     // "A..." sorts below "z...", so A offers and z answers; the other test below swaps nothing but
@@ -1918,6 +1993,98 @@ void three_peers_form_a_mesh() {
     BOOST_TEST(run_until(f.io, [&] { return heard == 2; }));
 }
 
+// A room keeps one connection per peer, as 0.27.0's connectPeer keeps a connected peer that is not
+// stale: a second connection that opens while the peer's link is live is closed, and the peer
+// stays; once the link is no longer live, the next connection replaces it, the peer leaving first.
+void a_room_keeps_one_connection_per_peer() {
+    counting_resource a_memory;  // first: A's connections are made in it, which names A's ends
+    fixture f{true};
+    const std::string b_id = "BBBBBBBBBBBBBBBBBBBB";
+    const auto a = make_app_room(f, "AAAAAAAAAAAAAAAAAAAA", "one", &a_memory);
+    std::size_t a_leaves = 0;
+    a.room->on_peer_leave(a.room->bind<void(const trystero::peer_event&)>(
+                              [&](const trystero::peer_event&) { ++a_leaves; }),
+                          {});
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config(b_id));
+    auto b = join(b_app, "one");
+    std::size_t b_leaves = 0;
+    b.on_peer_leave([&](const trystero::peer_event&) { ++b_leaves; });
+    webcpp::test::require(BOOST_TEST(
+        run_until(f, [&] { return a.room->peers().size() == 1 && b.peers().size() == 1; })));
+    // The connection the room uses: the one open pair left once the negotiations settled.
+    const auto live_before = f.net.live_connections();
+    {
+        auto second = negotiate(f);
+        a.room->on_connected(b_id, second.local_pc, second.local);
+        BOOST_TEST(!second.local->is_open());
+        BOOST_TEST(run_until(f, [&] { return !second.remote->is_open(); }));
+        trystero::test::advance(f, 1000ms);
+        BOOST_TEST_EQ(a.room->peers().size(), 1U);
+        BOOST_TEST_EQ(b.peers().size(), 1U);
+        BOOST_TEST_EQ(a_leaves, 0U);
+        BOOST_TEST_EQ(b_leaves, 0U);
+        BOOST_TEST(second.received->empty());
+    }
+    BOOST_TEST(run_until(f, [&] { return f.net.live_connections() == live_before; }));
+    // The live link's channel closes at A's end; its close is still to be reported when the next
+    // connection opens, which replaces it.
+    std::shared_ptr<trystero::backend::data_channel> a_end;
+    for (std::size_t id = 0; id < f.net.made_connections && !a_end; ++id) {
+        const auto pc = f.net.find(id);
+        const auto channel = pc ? pc->channel() : nullptr;
+        const auto remote = channel ? channel->remote() : nullptr;
+        // A's end of the pair the rooms use: in A's resource, both ends open.
+        if (channel && channel->is_open() && remote && remote->is_open() &&
+            channel->memory() == &a_memory) {
+            a_end = channel;
+        }
+    }
+    auto third = negotiate(f);
+    webcpp::test::require(BOOST_TEST(a_end != nullptr));
+    a_end->close();
+    a.room->on_connected(b_id, third.local_pc, third.local);
+    BOOST_TEST(third.local->is_open());
+    BOOST_TEST(run_until(f, [&] { return a_leaves == 1; }));
+    // The new link carries the room's handshake: without a password, A says it is ready.
+    BOOST_TEST(run_until(f, [&] { return !third.received->empty(); }));
+    if (!third.received->empty()) {
+        BOOST_TEST_EQ(static_cast<int>(third.received->front().front()),
+                      static_cast<int>(trystero::protocol::action_wire_version));
+    }
+    a.room->abandon();
+}
+
+// A room that starts to leave negotiates nothing more, as 0.27.0's signal handler drops every
+// signal while its room is leaving: a peer that announces itself during the farewell, with an id
+// above the room's own, gets no offer, and no connection is made for it.
+void a_leaving_room_negotiates_nothing() {
+    fixture f{true};
+    const std::string a_id = "AAAAAAAAAAAAAAAAAAAA";
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config(a_id));
+    auto a = join(a_app, "farewell");
+    flooder peer(f, "farewell");
+    std::size_t offers = 0;
+    peer.on_text = [&](std::string_view text) {
+        if (const auto s = relayed_signal(text); s && s->peer == a_id && !s->offer.empty()) {
+            ++offers;
+        }
+    };
+    const std::string newcomer = "zzzzzzzzzzzzzzzzzzzz";
+    peer.watch(trystero::protocol::peer_topic(app_id, "farewell", newcomer));
+    // A answers a newcomer while joined: the case would see its offer.
+    peer.announce_as(newcomer, 1);
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return offers == 1; })));
+    const auto made = f.net.made_connections;
+    bool gone = false;
+    peer.watch(trystero::protocol::peer_topic(app_id, "farewell", "yyyyyyyyyyyyyyyyyyyy"));
+    webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
+    a.async_leave([&](boost::system::error_code) { gone = true; });
+    peer.announce_as("yyyyyyyyyyyyyyyyyyyy", 1);
+    BOOST_TEST(run_until(f, [&] { return gone; }));
+    BOOST_TEST_EQ(offers, 1U);
+    BOOST_TEST_EQ(f.net.made_connections, made);
+}
+
 /** Two apps, A and B, whose rooms "r1" and "r2" have met: each room sees the other app's peer. */
 struct two_rooms_each {
     fixture f;
@@ -3650,6 +3817,8 @@ int main() {
     run_case(counter_announcements_are_paced);
     run_case(three_peers_form_a_mesh);
     run_case(rooms_of_one_app_have_their_own_connections);
+    run_case(a_room_keeps_one_connection_per_peer);
+    run_case(a_leaving_room_negotiates_nothing);
     run_case(leaving_one_room_keeps_the_other_rooms_connection);
     run_case(frames_travel_bare);
     run_case(an_app_joins_more_than_64_rooms);

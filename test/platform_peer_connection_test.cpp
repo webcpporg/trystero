@@ -346,8 +346,7 @@ void two_connections_open_a_data_channel_and_exchange_bytes() {
     BOOST_TEST(p.answer_end->is_open());
     const backend::bytes hello{1, 2, 3, 250};
     p.offer_end->send(hello);
-    // One byte more than any frame is dropped before it is read; the largest one arrives.
-    p.answer_end->send(backend::bytes(protocol::max_bulk_frame_bytes + 1, 6));
+    // The largest frame arrives.
     p.answer_end->send(backend::bytes(protocol::max_bulk_frame_bytes, 7));
     if (!BOOST_TEST(run_until(
             p.io, [&] { return p.at_answerer.size() == 1 && p.at_offerer.size() == 1; }))) {
@@ -355,9 +354,13 @@ void two_connections_open_a_data_channel_and_exchange_bytes() {
     }
     BOOST_TEST_ALL_EQ(p.at_answerer.front().begin(), p.at_answerer.front().end(), hello.begin(),
                       hello.end());
-    BOOST_TEST_EQ(p.at_offerer.size(), 1U);
     BOOST_TEST_EQ(p.at_offerer.front().size(), protocol::max_bulk_frame_bytes);
     BOOST_TEST_LE(p.offer_end->buffered_amount(), backend::data_channel::low_threshold);
+    // One byte more than any frame reaches no handler and closes the channel, as 0.27.0's
+    // failData closes it; the other end sees the close.
+    p.answer_end->send(backend::bytes(protocol::max_bulk_frame_bytes + 1, 6));
+    BOOST_TEST(run_until(p.io, [&] { return !p.offer_end->is_open() && p.answer_closes == 1; }));
+    BOOST_TEST_EQ(p.at_offerer.size(), 1U);
     // Every handler ran on the executor, never on libdatachannel's threads.
     BOOST_TEST(!p.off_thread);
 }
@@ -762,6 +765,7 @@ struct mixed_pair {
     std::optional<webcpp::webrtc::data_channel> sender;
     std::shared_ptr<backend::data_channel> channel;
     std::vector<backend::bytes> received;
+    std::size_t closes = 0;  // the closes the backend's channel reported
     bool negotiated = false;
     std::vector<std::string> to_remote;
     std::vector<std::string> to_local;
@@ -869,7 +873,7 @@ struct mixed_pair {
         channel->set_handlers({
             .open = {},
             .message = [this](backend::bytes frame) { received.push_back(std::move(frame)); },
-            .close = {},
+            .close = [this] { ++closes; },
             .buffered_amount_low = {},
         });
         local->set_local_description(
@@ -885,9 +889,9 @@ struct mixed_pair {
 };
 
 // A peer may send what is no frame: a text message, which a data channel of webcpp::webrtc
-// delivers as text, is dropped, and the frames around it arrive. The remote peer is
-// webcpp::webrtc's own, which sends text.
-void a_text_message_is_dropped_and_the_frames_around_it_arrive() {
+// delivers as text, closes the channel, as 0.27.0's failData closes it; the frame before it
+// arrives, and nothing after it. The remote peer is webcpp::webrtc's own, which sends text.
+void a_text_message_closes_the_channel() {
     mixed_pair p;
     p.connect();
     const std::vector<std::uint8_t> before{1, 2, 3};
@@ -895,12 +899,10 @@ void a_text_message_is_dropped_and_the_frames_around_it_arrive() {
     BOOST_TEST(!p.sender->send(asio::buffer(before)));
     BOOST_TEST(!p.sender->send_text("1e300"));
     BOOST_TEST(!p.sender->send(asio::buffer(after)));
-    require(BOOST_TEST(run_until(p.io, [&] { return p.received.size() == 2; })));
+    require(BOOST_TEST(run_until(p.io, [&] { return p.closes == 1; })));
+    BOOST_TEST(!p.channel->is_open());
+    require(BOOST_TEST_EQ(p.received.size(), 1U));
     BOOST_TEST_ALL_EQ(p.received[0].begin(), p.received[0].end(), before.begin(), before.end());
-    BOOST_TEST_ALL_EQ(p.received[1].begin(), p.received[1].end(), after.begin(), after.end());
-    // Nothing more arrives: the text was dropped, not delivered late.
-    run_until(p.io, [] { return false; }, 200ms);
-    BOOST_TEST_EQ(p.received.size(), 2U);
 }
 
 }  // namespace
@@ -919,7 +921,7 @@ int main() {
     the_backend_makes_at_most_its_budget_in_a_minute();
     the_runtime_holds_at_most_its_cap_at_once();
     a_url_libdatachannel_cannot_parse_is_left_out();
-    a_text_message_is_dropped_and_the_frames_around_it_arrive();
+    a_text_message_closes_the_channel();
     pending_frames_and_delivery_use_the_channels_resource();
     return boost::report_errors();
 }

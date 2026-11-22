@@ -56,12 +56,14 @@ using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
  *
  * It reads every message as it comes, with `async_receive`, on the executor. A text message, as a
  * peer can send, or a binary one larger than any frame (`protocol::max_bulk_frame_bytes`, a wide
- * chunk's bound), is then dropped: neither can be a frame. Frames received while no message handler
- * is installed wait in the room's resource, in order, up to `max_pending_frames` for
- * `pending_frames_ttl` from the first, Trystero's pending-data bounds; exceeding either closes the
- * channel. Installing a receiver posts their delivery, so that `set_handlers` never calls it
- * inline. In the browser, a message larger than webcpp::webrtc's `options::max_message_size`, or
- * past its receive budget, closes the channel too.
+ * chunk's bound), closes the channel: neither can be a frame, and 0.27.0's `failData` (`peer.ts`)
+ * ends the peer for either. Frames received while no message handler is installed wait in the
+ * room's resource, in order, up to `max_pending_frames` for `pending_frames_ttl` from the first;
+ * exceeding either closes the channel. That wait covers only the gap between the channel's opening
+ * and the room's link taking over its events (`detail::peer_link`), which applies 0.27.0's own
+ * bounds on the frames its room has not bound yet. Installing a receiver posts their delivery, so
+ * that `set_handlers` never calls it inline. In the browser, a message larger than webcpp::webrtc's
+ * `options::max_message_size`, or past its receive budget, closes the channel too.
  *
  * Tip: a received frame is read once, by webcpp::webrtc, into a vector of the room's resource,
  * which the message handler then owns; what the platform holds before is the platform's.
@@ -268,13 +270,17 @@ private:
             close();
             return;
         }
+        // Trystero frames are binary, and none is larger than a wide chunk: a message that is
+        // neither closes the channel, as 0.27.0's failData (peer.ts) closes it, before the frame
+        // goes anywhere.
+        if (text || frame_.size() > protocol::max_bulk_frame_bytes) {
+            frame_.clear();
+            close();
+            return;
+        }
         auto frame = std::exchange(frame_, backend::bytes(memory_));
         if (!closed_) {
             receive();
-        }
-        // Trystero frames are binary, and none is larger than a wide chunk.
-        if (text || frame.size() > protocol::max_bulk_frame_bytes) {
-            return;
         }
         on_message(std::move(frame));
     }

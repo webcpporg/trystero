@@ -146,6 +146,34 @@ void frames_before_bind_are_kept_in_order() {
     BOOST_TEST_EQ(p.ends, 0U);
 }
 
+// A frame whose call ends the link stops the replay of the frames kept: none after it is handed
+// over, and the end is reported once.
+void a_frame_that_ends_the_link_stops_the_replay() {
+    link_pair p;
+    p.receive(1, 1);
+    p.receive(1, 2);
+    p.receive(1, 3);
+    const std::pmr::polymorphic_allocator<> alloc(std::pmr::get_default_resource());
+    p.link->bind({
+        .frame = {std::allocator_arg, alloc,
+                  [&p](trystero::backend::bytes frame) {
+                      p.got.emplace_back(frame.begin(), frame.end());
+                      if (p.got.size() == 2) {
+                          p.link->end("ended by the room");
+                      }
+                  }},
+        .ended = {std::allocator_arg, alloc,
+                  [&p](std::string_view why) {
+                      p.ended = why;
+                      ++p.ends;
+                  }},
+    });
+    BOOST_TEST_EQ(p.got.size(), 2U);
+    BOOST_TEST_EQ(p.ends, 1U);
+    BOOST_TEST_EQ(p.ended, "ended by the room");
+    BOOST_TEST(!p.link->live());
+}
+
 // The link keeps 64 frames before its bind, 0.27.0's maxQueuedDataFrames; a 65th ends it, and a
 // room that binds it then hears of its end at once.
 void a_65th_pending_frame_ends_the_link() {
@@ -307,6 +335,7 @@ void drain_waiters_complete_in_order_and_fail_at_the_end() {
 int main() {
     using webcpp::test::run_case;
     run_case(frames_before_bind_are_kept_in_order);
+    run_case(a_frame_that_ends_the_link_stops_the_replay);
     run_case(a_65th_pending_frame_ends_the_link);
     run_case(pending_frames_end_the_link_after_10_s);
     run_case(an_unbound_frame_above_17_kib_ends_the_link);
