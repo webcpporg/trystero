@@ -386,6 +386,29 @@ void an_automatic_app_follows_the_pages_events() {
                                }));
 }
 
+// The last user's release ends the watch of the page: an app a pending operation still holds
+// hears no page event after it, so nothing reaches the rooms or the program's log.
+void the_last_user_ends_the_page_watch() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    net.page_events = true;
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    app->add_user();
+    net.page_connectivity(false);
+    settle(io);
+    BOOST_TEST(app->relays_offline());
+    app->release_user();
+    log.clear();
+    net.page_connectivity(true);
+    settle(io);
+    BOOST_TEST(app->relays_offline());
+    BOOST_TEST(log.empty());
+    BOOST_TEST(room->events == (std::vector<std::string>{"relays offline"}));
+}
+
 // Every allocation of the app's construction, of its registry, of an adoption, of a stale
 // connection's replacement and end, of the list of live connections and of the last user's release
 // goes through its resource: the default resource refuses every request meanwhile.
@@ -918,6 +941,7 @@ int main() {
     run_case(no_custom_self_id);
     run_case(the_connectivity_reaches_every_room);
     run_case(an_automatic_app_follows_the_pages_events);
+    run_case(the_last_user_ends_the_page_watch);
     run_case(every_allocation_goes_through_the_apps_resource);
     run_case(the_registry_holds_rooms_by_a_weak_reference);
     run_case(adopt_starts_one_connection_per_peer);

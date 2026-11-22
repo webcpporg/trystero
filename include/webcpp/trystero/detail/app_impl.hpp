@@ -224,6 +224,9 @@ public:
      * connected, its reconnection delay back at its least, as each call does; `automatic` follows
      * the page's events from now on, and reconnects the relays a program held offline.
      *
+     * Tip: a value outside the enumeration, which only a cast can make, is stored and taken as
+     * `online`, where 0.27.0 throws "invalid relay connectivity mode".
+     *
      * @return The connectivity now in place, `mode`.
      */
     relay_connectivity set_connectivity(relay_connectivity mode) {
@@ -249,9 +252,12 @@ public:
     /** How long a peer of a room joined from now on has to finish the handshake. */
     [[nodiscard]] std::chrono::milliseconds handshake_timeout() const { return handshake_timeout_; }
 
-    /** Gives a room joined from now on `timeout` to finish each handshake, in place of
-     * @ref default_handshake_timeout: the library's own tests make one side of a handshake
-     * patient with it. */
+    /** Gives every room joined from now on `timeout` to finish each handshake, in place of
+     * @ref default_handshake_timeout, until it is set again: the library's own tests make one
+     * side of a handshake patient with it.
+     *
+     * Tip: the value is the app's, not a join's: a caller that wants it for one join sets the
+     * default back after it, as `test::join_patient` does. */
     void set_handshake_timeout(std::chrono::milliseconds timeout) { handshake_timeout_ = timeout; }
 
     /** How long the higher id holds a second connection to a peer that neither sends on it nor
@@ -308,7 +314,8 @@ public:
     /** Counts a user: the `app` handle, or a room not yet ended. */
     void add_user() { ++users_; }
 
-    /** Releases a user; the last one's release ends every connection. */
+    /** Releases a user; the last one's release ends every connection and the watch of the page's
+     * connectivity, so a page event after it reaches neither the rooms nor the program's log. */
     void release_user() {
         if (users_ == 0) {
             return;
@@ -317,6 +324,7 @@ public:
         if (users_ != 0) {
             return;
         }
+        page_watch_.reset();
         auto connections = std::exchange(connections_, decltype(connections_)(memory_));
         for (auto& [peer, c] : connections) {
             c->end("the app has no room left");
@@ -767,9 +775,10 @@ private:
     std::chrono::milliseconds handshake_timeout_ = default_handshake_timeout;
     relay_connectivity connectivity_ = relay_connectivity::automatic;
     bool relays_offline_ = false;
-    // The page's connectivity, watched while the relays are automatic: last, so that it ends first.
-    std::shared_ptr<void> page_watch_;
     user_resolver user_resolver_;
+    // The page's connectivity, watched while the relays are automatic and the app has a user:
+    // last, so that it ends first.
+    std::shared_ptr<void> page_watch_;
 };
 
 }  // namespace webcpp::trystero::detail

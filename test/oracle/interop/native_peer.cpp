@@ -597,7 +597,8 @@ int main(int argc, char* argv[]) {
         second_delay.expires_after(millis(args["room2Delay"], std::chrono::milliseconds(0)));
         second_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                second = std::make_unique<extra_room>(app, "second", args["room2"], {});
+                second = std::make_unique<extra_room>(app, "second", args["room2"],
+                                                      trystero::room_options{});
             }
         });
     }
@@ -607,7 +608,8 @@ int main(int argc, char* argv[]) {
         third_delay.expires_after(millis(args["room3Delay"], std::chrono::milliseconds(0)));
         third_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                third = std::make_unique<extra_room>(app, "third", args["room3"], {});
+                third = std::make_unique<extra_room>(app, "third", args["room3"],
+                                                     trystero::room_options{});
             }
         });
     }

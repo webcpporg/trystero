@@ -179,7 +179,8 @@ public:
      * joined meanwhile too; `online` reconnects at once every relay not connected, as each call
      * does, which then subscribes and announces again; `automatic`, the default, follows the
      * page's `online` and `offline` events, and natively, where there are none, is online: set
-     * after `offline`, it reconnects the relays.
+     * after `offline`, it reconnects the relays. Unlike 0.27.0, `automatic` does not reconnect the
+     * relays when the page becomes visible again: the port does not follow `visibilitychange`.
      *
      * Tip: what the relays carry is how peers find each other; a connection already made goes on
      * while the relays are offline.

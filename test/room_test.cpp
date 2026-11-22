@@ -3040,6 +3040,71 @@ void offline_holds_and_online_reconnects() {
     BOOST_TEST(b_app.relay_connectivity() == trystero::relay_connectivity::automatic);
 }
 
+// Offline also holds a relay waiting to reconnect: the reconnection pending when the app goes
+// offline never fires, however long the app stays offline.
+void offline_holds_a_relay_waiting_to_reconnect() {
+    fixture f{true};
+    f.net.make_unreachable(relay_a);
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("backoffAAAAAAAAAAAAA"));
+    const auto a = join(a_app, "backoff");
+    // relay_b subscribed and relay_a's first attempt failed: its reconnection is pending.
+    webcpp::test::require(BOOST_TEST(run_until(
+        f, [&] { return subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 1}; })));
+    BOOST_TEST_EQ(f.net.websocket_connects, 2U);
+    a_app.set_relay_connectivity(trystero::relay_connectivity::offline);
+    advance(f, 10min);
+    BOOST_TEST_EQ(f.net.websocket_connects, 2U);
+    BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 0}));
+}
+
+// Online reconnects a relay waiting in its backoff at once, and its delay bound is back at its
+// least, 3333 ms, as 0.27.0's `reconnectRelaySockets` clears `socketRetryPeriods`: the attempt
+// that fails right after waits within 3333 ms, not within the minute the backoff had reached.
+void online_reconnects_a_backoff_relay_at_once() {
+    fixture f{true};
+    f.net.make_unreachable(relay_a);
+    auto config = app_config("backoffAAAAAAAAAAAAA");
+    std::vector<std::string> waits;
+    config.log = [&](std::string_view category, std::string_view text) {
+        const std::string_view lost = "could not reach wss://relay-a.test, next attempt within ";
+        if (category == "nostr" && text.starts_with(lost)) {
+            waits.emplace_back(text.substr(lost.size()));
+        }
+    };
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(config));
+    const auto a = join(a_app, "backoff");
+    // Ten minutes of failures take relay_a's bound to its most, 60 s.
+    advance(f, 10min);
+    webcpp::test::require(BOOST_TEST(!waits.empty()));
+    BOOST_TEST_EQ(waits.front(), "3333 ms");
+    BOOST_TEST_EQ(waits.back(), "60000 ms");
+    const auto connects = f.net.websocket_connects;
+    const auto failures = waits.size();
+    a_app.set_relay_connectivity(trystero::relay_connectivity::online);
+    BOOST_TEST_EQ(f.net.websocket_connects, connects + 1);  // relay_a alone, at once
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return waits.size() == failures + 1; })));
+    BOOST_TEST_EQ(waits.back(), "3333 ms");
+    advance(f, 3333ms);
+    BOOST_TEST_EQ(f.net.websocket_connects, connects + 2);
+    BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 1}));
+}
+
+// Online while online leaves the connected relays alone: no socket is closed or opened, and their
+// subscriptions stay.
+void online_while_online_leaves_connected_relays_alone() {
+    fixture f{true};
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("steadyAAAAAAAAAAAAAA"));
+    const auto a = join(a_app, "steady");
+    webcpp::test::require(BOOST_TEST(run_until(
+        f, [&] { return subscriptions(f) == std::pair<std::size_t, std::size_t>{1, 1}; })));
+    BOOST_TEST_EQ(f.net.websocket_connects, 2U);
+    a_app.set_relay_connectivity(trystero::relay_connectivity::online);
+    a_app.set_relay_connectivity(trystero::relay_connectivity::online);
+    advance(f, 1min);
+    BOOST_TEST_EQ(f.net.websocket_connects, 2U);
+    BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{1, 1}));
+}
+
 // Natively the app has no page to follow, as the memory network has none unless asked: it is
 // automatic from the start and its relays connect, automatic again reconnects nothing, and
 // automatic after offline reconnects the relays, as 0.27.0's `'auto'` does after a program's
@@ -3725,6 +3790,9 @@ int main() {
     run_case(messages_waiting_at_a_leave_are_dropped);
     run_case(a_message_posted_before_the_room_ended_is_dropped);
     run_case(offline_holds_and_online_reconnects);
+    run_case(offline_holds_a_relay_waiting_to_reconnect);
+    run_case(online_reconnects_a_backoff_relay_at_once);
+    run_case(online_while_online_leaves_connected_relays_alone);
     run_case(automatic_is_online_natively);
     run_case(automatic_follows_the_pages_events);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.

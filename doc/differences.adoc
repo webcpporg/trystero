@@ -73,7 +73,7 @@ has nothing of it to run beside its twin.
 |===
 | Behaviour | Trystero JS | Here | Why
 
-| Scope of sharing and of the self id | the page: one `selfId` for every app and room, one manager per strategy | an `app` object: its self id, drawn for it, and its connections | no static state; several peers in one process
+| Scope of sharing and of the self id | the page: one peer id for each app id, from an endpoint identity the page creates once and caches, one manager per strategy | an `app` object: its self id, drawn for it, and its connections | no static state; several peers in one process
 
 | Passwords across rooms | independently configured per room, including mixed passwords on one shared connection | one immutable `app_config::password` for every room, separate apps and self ids for different passwords | the initial sealed negotiation authenticates one password domain before any of its rooms reuse the connection; the JS wire remains unchanged
 
@@ -135,17 +135,17 @@ reason of each other row.
 [#trystero-differences-shown]
 === The differences, shown
 
-Each difference below is shown by a {cpp} program and, but for the last,
-its twin, the same program written for Trystero JS: the part of the {cpp}
-program that differs, the twin whole, then what the twin printed on Trystero
-0.26.0, then what the {cpp} program printed. Both ran, and the outputs are
-theirs: a program and its twin each join over a Nostr relay of their own on
-127.0.0.1, whose URL is in their environment, `TRYSTERO_RELAY_URL`, and two
-peers of one program meet there, as two apps in {cpp} and as two pages in
-Trystero JS (<<trystero-testing-twins>>). The lane `relayed` runs the
-programs again, and the oracle lane the twins, and each fails when its
-program no longer prints what is shown here. The twins of the programs of
-`example/` agree with {n-twins-agreeing} of them, the quick start among them
+Each difference below is shown by a {cpp} program and its twin, the same
+program written for Trystero JS: the part of the {cpp} program that differs,
+the twin whole, then what the twin printed on Trystero 0.26.0, then what the
+{cpp} program printed. Both ran, and the outputs are theirs: a program and
+its twin each join over a Nostr relay of their own on 127.0.0.1, whose URL
+is in their environment, `TRYSTERO_RELAY_URL`, and two peers of one program
+meet there, as two apps in {cpp} and as two pages in Trystero JS
+(<<trystero-testing-twins>>). The lane `relayed` runs the programs again,
+and the oracle lane the twins, and each fails when its program no longer
+prints what is shown here. The twins of the programs of `example/` agree
+with {n-twins-agreeing} of them, the quick start among them
 (<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
 difference below; {n-examples-without-twin} program has no twin, the chat
 page, with its reason in `test/oracle/twins/without-twin.txt`.
@@ -501,6 +501,9 @@ its reason.
 [cols="2,5",options="header"]
 |===
 | Behaviour | Why no program shows it
+
+| Scope of sharing and of the self id
+| Both sides draw their peer ids, so a program and its twin print ids that no two runs share, and neither API lets a program name one: what differs is which object holds an id and its connections, which the `app_impl` and `shared` tests hold over the memory relays.
 
 | A peer kicked from a room, or that kicked us, over a live connection; frames after the higher id's own kick; a connection whose last room was kicked
 | A kick follows a room proof that fails over a live connection, and two {cpp} apps never send one: an app has one password for every room, and apps of different passwords share no connection. A Trystero JS page that mixes passwords does, so the interop lane's wrong room proofs show trystero's side, against a page and not a twin (<<trystero-testing-lanes>>), and the `shared` test holds the rest over the memory relays.

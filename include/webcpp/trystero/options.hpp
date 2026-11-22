@@ -148,7 +148,11 @@ enum class relay_connectivity {
      * is online again, Trystero's `'offline'`. */
     offline,
     /** Following the page, Trystero's `'auto'`, the default: offline from the page's `offline`
-     * event until its `online` event; natively, where no such event exists, online. */
+     * event until its `online` event; natively, where no such event exists, online.
+     *
+     * Tip: unlike 0.27.0, which also reconnects the relays when the page becomes visible again
+     * (its `visibilitychange` listener), the port follows only the `online` and `offline` events.
+     */
     automatic,
 };
 
