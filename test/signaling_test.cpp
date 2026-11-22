@@ -395,7 +395,10 @@ void an_unwanted_peers_offer_is_ignored(const fixture_value& oracle) {
 /** A relay's connection that keeps what the strategy sends it. */
 class recording_socket final : public backend::websocket {
 public:
-    void send(std::string_view text) override { sent.emplace_back(text); }
+    bool send(std::string_view text) override {
+        sent.emplace_back(text);
+        return true;
+    }
 
     void close() override { closed = true; }
 

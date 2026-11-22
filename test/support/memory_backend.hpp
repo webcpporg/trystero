@@ -208,6 +208,9 @@ public:
      * a socket of it handed to its room. A test that measures a window of a room's life reads it
      * to know whether relay traffic, which parses JSON at both ends, happened in that window. */
     std::size_t texts = 0;
+    /** Whether a socket of the relay drops each EVENT it is sent, its `send` returning false, as
+     * a connection whose writes fail; memory_network::fail_publish sets it. */
+    bool fail_events = false;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
     std::size_t rate_limit_next = 0;
     /** Closes each connection right after its subscription, as a relay does after a text longer
@@ -265,15 +268,17 @@ public:
         });
     }
 
-    void send(std::string_view text) override {
-        if (!open_) {
-            return;
+    bool send(std::string_view text) override {
+        if (!open_ ||
+            (relay_ != nullptr && relay_->fail_events && text.starts_with(R"(["EVENT")"))) {
+            return false;
         }
         post_in(io_, memory_, [self = shared_from_this(), text = std::pmr::string(text, memory_)] {
             if (self->open_ && self->relay_) {
                 self->relay_->receive(self, text);
             }
         });
+        return true;
     }
 
     /** Delivers a text the relay made in this socket's resource; the relay counts it in its
@@ -829,6 +834,10 @@ public:
     }
 
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
+
+    /** Makes every write of an event to the relay at `url` fail from now on: its sockets drop each
+     * EVENT, their `send` returning false, as a connection whose writes fail. */
+    void fail_publish(std::string_view url) { relay(url).fail_events = true; }
 
     std::shared_ptr<backend::peer_connection> make_peer_connection(
         std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) override {

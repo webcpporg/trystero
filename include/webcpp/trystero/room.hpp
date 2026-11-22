@@ -776,22 +776,69 @@ inline std::optional<response_envelope> read_response(std::string_view metadata,
  * `{ok: false, err: roomFullMsg}`. */
 inline constexpr std::string_view room_full_ready = R"({"ok":false,"err":"room full"})";
 
-/** Whether a ready frame's payload is a full room's refusal: a JSON object whose `ok` is false and
- * whose `err` is "room full", as 0.27.0's room reads `data.ok === false` and `data.err`. */
-inline bool refuses_full(protocol::payload_format format, std::string_view payload,
-                         const decoding& to) {
+/** The longest reason of a ban a room reports, in UTF-16 code units, 0.27.0's `<= 512`. */
+inline constexpr std::size_t max_ban_reason_units = 512;
+
+/** A refusal a peer's ready frame carries, 0.27.0's `{ok: false, err}`. */
+struct ready_refusal {
+    /** Why the peer refuses this side. */
+    enum class kind {
+        /** Its room is full, 0.27.0's `roomFullMsg`. */
+        room_full,
+        /** It bans this side, 0.27.0's `peerBannedMsg`. */
+        banned,
+    };
+
+    /** Why. */
+    kind why = kind::room_full;
+    /** A ban's reason, when the peer gave a text of at most @ref max_ban_reason_units UTF-16 code
+     * units. */
+    std::optional<std::pmr::string> reason;
+};
+
+/**
+ * The refusal a ready frame's payload carries, as 0.27.0's room reads `data.ok === false` and
+ * `data.err`: a JSON object whose `ok` is false and whose `err` is "room full" or "peer banned";
+ * nothing for any other payload, which is a plain ready frame. A ban's `reason` is kept when it is
+ * a text of at most 512 UTF-16 code units, one that ends in a lone surrogate read with the
+ * replacement character in its place, as a response's reason is.
+ */
+inline std::optional<ready_refusal> read_refusal(protocol::payload_format format,
+                                                 std::string_view payload, const decoding& to) {
     if (format != protocol::payload_format::json) {
-        return false;
+        return std::nullopt;
     }
-    const auto v = webcpp::document::parse(payload, json_payload_limits(payload, to),
-                                           std::pmr::polymorphic_allocator<std::byte>(to.memory));
+    const std::pmr::polymorphic_allocator<std::byte> memory(to.memory);
+    auto v = webcpp::document::parse(payload, json_payload_limits(payload, to), memory);
+    if (!v.has_value() && payload.find("\\u") != std::string_view::npos) {
+        const auto readable = without_lone_surrogates(payload, to.memory);
+        v = webcpp::document::parse(readable, json_payload_limits(readable, to), memory);
+    }
     if (!v.has_value() || !v->root().is_object()) {
-        return false;
+        return std::nullopt;
     }
     const auto ok = v->root()["ok"];
     const auto err = v->root()["err"];
-    return ok.is_boolean() && !ok.value_or(true) && err.is_string() &&
-           protocol::json::text_of(err) == "room full";
+    if (!ok.is_boolean() || ok.value_or(true) || !err.is_string()) {
+        return std::nullopt;
+    }
+    const auto why = protocol::json::text_of(err);
+    if (why == "room full") {
+        return ready_refusal{.why = ready_refusal::kind::room_full, .reason = std::nullopt};
+    }
+    if (why != "peer banned") {
+        return std::nullopt;
+    }
+    ready_refusal out{.why = ready_refusal::kind::banned, .reason = std::nullopt};
+    if (const auto reason = v->root()["reason"]; reason.is_string()) {
+        const auto text = protocol::json::text_of(reason);
+        std::size_t units = 0;
+        protocol::for_each_utf16_code_unit(text, [&units](std::uint32_t) { ++units; });
+        if (units <= max_ban_reason_units) {
+            out.reason.emplace(text, to.memory);
+        }
+    }
+    return out;
 }
 
 /**
@@ -822,6 +869,19 @@ struct completion {
     }
 };
 
+/** A ping waiting for its answer: when it was sent, and what it completes. */
+struct pending_ping {
+    /** When the request was sent. */
+    detail::time_point started{};
+    /** The user's completion, with the round trip. */
+    completion<void(boost::system::error_code, std::chrono::milliseconds)> handler;
+};
+
+/** What a request completes: a request action's handler, with the answer, or a ping, with the
+ * round trip. */
+using request_completion =
+    std::variant<completion<void(boost::system::error_code, incoming)>, pending_ping>;
+
 /**
  * Everything a joined room is: the strategy, the negotiations, its connection to each peer and
  * their handshakes, the action wire and the actions the application made. `room` and `action` are
@@ -834,11 +894,16 @@ struct completion {
  * | \@_hsdata         | a step of the identity handshake, a JSON text of at most 64 KiB   |
  * | \@_hsready        | the sender's side of the handshake passed, at most 128 KiB: an    |
  * |                   | empty text; or a full room refuses the receiver,                  |
- * |                   | `{"ok":false,"err":"room full"}`                                  |
- * | \@_ping, \@_pong  | round-trip measurement                                            |
+ * |                   | `{"ok":false,"err":"room full"}`; or the sender bans it,          |
+ * |                   | `{"ok":false,"err":"peer banned"[,"reason":<reason>]}`, which     |
+ * |                   | only a Trystero peer with `roles()` sends                         |
+ * | \@_ping           | a request of an empty text, answered with an empty text: a round  |
+ * |                   | trip                                                              |
  * | \@_leave          | the sender leaves the room                                        |
  * | \@_response       | the answer to a request, `{"r":<id>}` or `{"r":<id>,"e":<reason>}`  |
- * |                   | in its metadata, as 0.27.0's request actions answer               |
+ * |                   | in its metadata, as 0.27.0's request actions answer; an offer of  |
+ * |                   | one that answers no request of the receiver's is rejected with    |
+ * |                   | "unexpected response"                                             |
  */
 class room_impl final : public std::enable_shared_from_this<room_impl>, public room_endpoint {
 public:
@@ -1028,8 +1093,14 @@ public:
                 .fail_peer = bind<void(std::string_view, std::string_view)>(
                     [weak](std::string_view peer, std::string_view reason) {
                         if (const auto self = weak.lock()) {
-                            self->kick(peer, reason);
+                            self->fail_peer(peer, reason);
                         }
+                    }),
+                .expects = bind<bool(std::string_view, std::string_view, std::string_view)>(
+                    [weak](std::string_view peer, std::string_view name,
+                           std::string_view metadata) {
+                        const auto self = weak.lock();
+                        return self && self->expects(peer, name, metadata);
                     }),
                 .admit = bind<admission(std::string_view, std::string_view, std::size_t,
                                         std::string_view)>(
@@ -1479,17 +1550,38 @@ public:
             complete(std::move(handler), make_error_code(error::room_left), incoming{});
             return;
         }
-        auto peer = peers_.find(options.target);
-        if (peer == peers_.end() || !peer->second.active) {
-            // A user's peer of the lowest id, as 0.27.0's resolveRequestTarget picks it.
-            if (const auto of_user = users_.peers_of(options.target); !of_user.empty()) {
-                peer = peers_.find(*std::ranges::min_element(of_user));
-            }
-        }
-        if (peer == peers_.end() || !peer->second.active) {
+        const auto peer = request_target(options.target);
+        if (peer.empty()) {
             complete(std::move(handler), make_error_code(error::not_connected), incoming{});
             return;
         }
+        send_request(peer, name, std::move(payload), options.metadata, options.timeout,
+                     std::move(handler));
+    }
+
+    /** The active peer a request to `target` goes to, a view of its id in the room: the peer of
+     * that id, else the user's peer of the lowest id, as 0.27.0's `resolveRequestTarget` picks
+     * it; empty when none is active. */
+    std::string_view request_target(std::string_view target) const {
+        auto peer = peers_.find(target);
+        if (peer == peers_.end() || !peer->second.active) {
+            if (const auto of_user = users_.peers_of(target); !of_user.empty()) {
+                peer = peers_.find(*std::ranges::min_element(of_user));
+            }
+        }
+        return peer != peers_.end() && peer->second.active ? std::string_view(peer->first)
+                                                           : std::string_view();
+    }
+
+    /**
+     * Sends a request of action `name` to the active peer `peer`, as 0.27.0's request actions
+     * send it: its id a random UUID, `{"r":<id>[,"m":<metadata>]}` its metadata; `handler`
+     * completes once, with the answer or the first failure.
+     */
+    void send_request(std::string_view peer, std::string_view name, encoded_payload payload,
+                      std::string_view user_metadata,
+                      std::optional<std::chrono::milliseconds> timeout,
+                      request_completion handler) {
         // 0.27.0's crypto.randomUUID(), from the backend's randomness.
         std::array<std::uint8_t, 16> random{};
         factory_.random(random);
@@ -1497,28 +1589,27 @@ public:
         std::pmr::string id(uuid.data(), uuid.size(), memory_);
         std::pmr::string metadata(R"({"r":)", memory_);
         protocol::json::detail::append_utf8(metadata, id);
-        if (!options.metadata.empty()) {
+        if (!user_metadata.empty()) {
             metadata += R"(,"m":)";
-            metadata += options.metadata;
+            metadata += user_metadata;
         }
         metadata += '}';
         const auto weak = weak_from_this();
         auto& waiter = requests_
                            .try_emplace(std::pmr::string(id, memory_),
                                         request_waiter{
-                                            .peer = std::pmr::string(peer->first, memory_),
+                                            .peer = std::pmr::string(peer, memory_),
                                             .handler = std::move(handler),
                                             .timer = nullptr,
                                         })
                            .first->second;
-        if (options.timeout) {
+        if (timeout) {
             waiter.timer = factory_.make_timer(memory_);
-            waiter.timer->start(
-                *options.timeout, bind<void()>([weak, id = std::pmr::string(id, memory_)] {
-                    if (const auto self = weak.lock()) {
-                        self->finish_request(id, make_error_code(error::request_timed_out), {});
-                    }
-                }));
+            waiter.timer->start(*timeout, bind<void()>([weak, id = std::pmr::string(id, memory_)] {
+                if (const auto self = weak.lock()) {
+                    self->finish_request(id, make_error_code(error::request_timed_out), {});
+                }
+            }));
         }
         const std::string_view target = waiter.peer;
         wire_->send(name, payload.format, metadata, std::move(payload.ref), std::span(&target, 1),
@@ -1661,19 +1752,19 @@ public:
         return out;
     }
 
-    /** Sends `\@_ping` to an active peer, and completes with the time until its `\@_pong`. */
-    void ping(std::string_view peer,
+    /** Requests `\@_ping` of an active peer, or of a user's, with an empty text, as 0.27.0's
+     * `ping` requests it, and completes with the time until its answer. */
+    void ping(std::string_view target,
               completion<void(boost::system::error_code, std::chrono::milliseconds)> handler) {
-        const auto it = peers_.find(peer);
-        if (left_ || it == peers_.end() || !it->second.active) {
+        const auto peer = left_ ? std::string_view() : request_target(target);
+        if (peer.empty()) {
             complete(std::move(handler),
                      make_error_code(left_ ? error::room_left : error::no_such_peer),
                      std::chrono::milliseconds{});
             return;
         }
-        it->second.pings.push_back(
-            {.started = steady_now(factory_), .handler = std::move(handler)});
-        send_internal("@_ping", it->first);
+        send_request(peer, "@_ping", {}, {}, std::nullopt,
+                     pending_ping{.started = steady_now(factory_), .handler = std::move(handler)});
     }
 
     /** Says `\@_leave` to every peer, then ends the room after Trystero's 99 ms. A leave asked
@@ -1805,11 +1896,6 @@ private:
         }
     }
 
-    struct pending_ping {
-        detail::time_point started{};
-        completion<void(boost::system::error_code, std::chrono::milliseconds)> handler;
-    };
-
     /** A peer's run of the identity handshake: 0.27.0's `run` for the peer's connection, whose
      * steps the handshake manager hands it, and the manager's `done`, called once. */
     struct identity_run {
@@ -1829,8 +1915,7 @@ private:
     };
 
     struct peer_state {
-        explicit peer_state(std::pmr::polymorphic_allocator<> a)
-            : local_dtls(a), remote_dtls(a), pings(a) {}
+        explicit peer_state(std::pmr::polymorphic_allocator<> a) : local_dtls(a), remote_dtls(a) {}
 
         std::shared_ptr<peer_link> link;
         /** The DTLS fingerprints of the link's local and remote descriptions. */
@@ -1840,9 +1925,8 @@ private:
         std::shared_ptr<identity_run> run;
         std::optional<identity_handshake::verified> identity;
         bool active = false;  // its handshake completed: the manager's `phase::active`
-        /** A full room's refusal arrived before the peer was verified, 0.27.0's deferredReady. */
-        bool refusal_before_verified = false;
-        std::pmr::deque<pending_ping> pings;
+        /** A refusal that arrived before the peer was verified, 0.27.0's deferredReady. */
+        std::optional<ready_refusal> refusal_before_verified;
     };
 
     /** A link the room let go, until its last frames had their time to leave. */
@@ -1883,7 +1967,7 @@ private:
     /** A request sent, waiting for its answer. */
     struct request_waiter {
         std::pmr::string peer;
-        completion<void(boost::system::error_code, incoming)> handler;
+        request_completion handler;
         std::shared_ptr<backend::timer> timer;
     };
 
@@ -2273,12 +2357,12 @@ private:
         // Only an identity kept in the peer's state ends the run verified; a run whose peer went
         // ends as disconnected, never as verified.
         bool kept = false;
-        bool refused = false;
+        std::optional<ready_refusal> refused;
         if (out.done) {
             if (auto* const state = running(peer, run)) {
                 state->identity = std::move(*out.done);
                 kept = true;
-                refused = std::exchange(state->refusal_before_verified, false);
+                refused = std::exchange(state->refusal_before_verified, std::nullopt);
             }
         }
         if (!out.send.empty()) {
@@ -2288,7 +2372,7 @@ private:
         // deferredReady, from the microtask that runs while the steps await their last send: the
         // steps then end on a peer that is gone.
         if (refused) {
-            refused_by_full(peer);
+            refused_by(peer, *refused);
         }
         if (!out.failure.empty()) {
             finish_identity(*run, out.failure);
@@ -2378,23 +2462,16 @@ private:
         if (name == "@_hsready") {
             if (it_peer != peers_.end() && !left_) {
                 on_ready(it_peer->first, it_peer->second,
-                         refuses_full(m.format, as_text(m.payload()), decoding()));
+                         read_refusal(m.format, as_text(m.payload()), decoding()));
             }
         } else if (name == "@_hsdata") {
             if (it_peer != peers_.end() && !left_) {
                 handshakes_->receive_data(it_peer->first, as_text(m.payload()));
             }
         } else if (name == "@_ping") {
-            if (it_peer != peers_.end()) {
-                send_internal("@_pong", it_peer->first);
-            }
-        } else if (name == "@_pong") {
-            if (it_peer != peers_.end() && !it_peer->second.pings.empty()) {
-                auto ping = std::move(it_peer->second.pings.front());
-                it_peer->second.pings.pop_front();
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    steady_now(factory_) - ping.started);
-                complete(std::move(ping.handler), boost::system::error_code{}, elapsed);
+            // 0.27.0's internal request action, whose listener answers each request with "".
+            if (const auto envelope = read_request(m.metadata(), decoding())) {
+                respond(m.peer, envelope->id, {});
             }
         } else if (name == "@_leave") {
             remove_peer(m.peer, "peer left the room");
@@ -2505,7 +2582,29 @@ private:
         if (node.mapped().timer) {
             node.mapped().timer->cancel();
         }
-        complete(std::move(node.mapped().handler), ec, std::move(m));
+        if (auto* const ping = std::get_if<pending_ping>(&node.mapped().handler)) {
+            const auto elapsed = ec ? std::chrono::milliseconds{}
+                                    : std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          steady_now(factory_) - ping->started);
+            complete(std::move(ping->handler), ec, elapsed);
+            return;
+        }
+        complete(std::move(std::get<0>(node.mapped().handler)), ec, std::move(m));
+    }
+
+    /** Whether the room expects a message of `name` from `peer`, 0.27.0's `receiveScope`: an
+     * answer only when it answers a request of the room's sent to that peer, every other
+     * message always. */
+    bool expects(std::string_view peer, std::string_view name, std::string_view metadata) const {
+        if (name != "@_response") {
+            return true;
+        }
+        const auto envelope = read_response(metadata, decoding());
+        if (!envelope) {
+            return false;
+        }
+        const auto it = requests_.find(envelope->id);
+        return it != requests_.end() && it->second.peer == peer;
     }
 
     /** Fails every request sent to `peer`, or every request when it is empty. */
@@ -2531,6 +2630,24 @@ private:
                     bind<void(boost::system::error_code)>([](boost::system::error_code) {}));
     }
 
+    /**
+     * Drops a peer the action wire caught breaking the protocol, 0.27.0's `onPeerError`: a peer
+     * of the room, pending or active, is reported as `error::peer_error` with the reason as its
+     * message, then told to leave and dropped; one the room does not have is ignored, as
+     * 0.27.0's `hasAnyPeer` checks.
+     */
+    void fail_peer(std::string_view peer_view, std::string_view reason_view) {
+        const auto it = peers_.find(peer_view);
+        if (it == peers_.end()) {
+            return;
+        }
+        // Copies: the kick frees the views' storage.
+        const std::pmr::string peer(it->first, memory_);
+        const std::pmr::string reason(reason_view, memory_);
+        report(peer, make_error_code(error::peer_error), reason);
+        kick(peer, reason);
+    }
+
     void kick(std::string_view peer, std::string_view reason) {
         const auto it = peers_.find(peer);
         if (it == peers_.end()) {
@@ -2542,37 +2659,69 @@ private:
 
     /**
      * A peer's ready frame, 0.27.0's `handshakeReadyAction.onMessage`: kept until the peer is
-     * verified, as its `deferredReady`, then a full room's refusal ends a pending peer, and
-     * another ready frame goes to the handshake manager.
+     * verified, as its `deferredReady`, then a refusal ends a pending peer, and another ready
+     * frame goes to the handshake manager.
      */
-    void on_ready(std::string_view peer, peer_state& state, bool refusal) {
+    void on_ready(std::string_view peer, peer_state& state, std::optional<ready_refusal> refusal) {
         if (!state.identity) {
             // The last frame received wins, as 0.27.0 keeps one deferredReady; a plain one is the
             // manager's remote readiness, which it keeps itself.
-            state.refusal_before_verified = refusal;
-            if (!refusal) {
+            const bool plain = !refusal;
+            state.refusal_before_verified = std::move(refusal);
+            if (plain) {
                 handshakes_->receive_ready(peer);
             }
             return;
         }
         if (refusal) {
-            refused_by_full(peer);
+            refused_by(peer, *refusal);
             return;
         }
         handshakes_->receive_ready(peer);
     }
 
-    /** A pending peer whose room is full refused this one, 0.27.0's `processHandshakeReady` on
-     * `room full`: `error::room_full` with the peer's id, and the peer goes, unannounced. */
-    void refused_by_full(std::string_view peer_view) {
+    /**
+     * A pending peer refused this one, 0.27.0's `processHandshakeReady` on `ok: false`; an active
+     * peer's refusal, or one of a peer whose handshake ended, is ignored.
+     *
+     * | Refusal       | Report                                          | Then                     |
+     * | `room full`   | `error::room_full`, "room full", the peer's id  | the peer goes,           |
+     * |               |                                                 | unannounced              |
+     * | `peer banned` | `error::banned`, "peer banned" or "peer banned: | the peer is told to      |
+     * |               | <reason>", the reason, the peer's id            | leave and goes,          |
+     * |               |                                                 | unannounced              |
+     */
+    void refused_by(std::string_view peer_view, const ready_refusal& refusal) {
         const auto it = peers_.find(peer_view);
         if (it == peers_.end() || it->second.active || !handshakes_->phase_of(peer_view)) {
             return;
         }
         const std::pmr::string peer(it->first, memory_);
         handshakes_->clear(peer);
-        report(peer, make_error_code(error::room_full), "room full");
-        remove_peer(peer, "room full", true);
+        if (refusal.why == ready_refusal::kind::room_full) {
+            report(peer, make_error_code(error::room_full), "room full");
+            remove_peer(peer, "room full", true);
+            return;
+        }
+        // 0.27.0's mkBannedErr: the reason in the message when it is not empty, and as the reason
+        // whenever the peer gave one.
+        std::pmr::string message("peer banned", memory_);
+        if (refusal.reason && !refusal.reason->empty()) {
+            message += ": ";
+            message += *refusal.reason;
+        }
+        room_error e;
+        e.code = make_error_code(error::banned);
+        e.message = message;
+        e.peer_id = peer;
+        if (refusal.reason) {
+            e.reason = *refusal.reason;
+        }
+        report(e);
+        // 0.27.0's kickPeer with peerBannedErr: the farewell, then exitPeer, which lets the
+        // connection flush and does not announce the room again.
+        send_internal("@_leave", peer);
+        remove_peer(peer, "peer banned", true);
     }
 
     /** Whether `link` is still the one of `peer`. */
@@ -2750,12 +2899,12 @@ private:
     }
 
     /**
-     * Lets a peer go: its user leaves with its last peer, its handshake, its pings, its transfers
-     * and its requests end, and its negotiation is forgotten.
+     * Lets a peer go: its user leaves with its last peer, its handshake, its transfers and its
+     * requests, its pings among them, end, and its negotiation is forgotten.
      *
-     * @param refused Whether a full room refused it, or this side was refused by one: its
-     * connection then ends once the refusal had its time to leave, and the room does not announce
-     * itself again for it, as 0.27.0's exitPeer with `roomFullErr`.
+     * @param refused Whether a full room refused it, or this side was refused by one or banned:
+     * its connection then ends once the refusal had its time to leave, and the room does not
+     * announce itself again for it, as 0.27.0's exitPeer with `roomFullErr` or `peerBannedErr`.
      */
     void remove_peer(std::string_view peer_view, std::string_view reason, bool refused = false) {
         const auto it = peers_.find(peer_view);
@@ -2781,10 +2930,6 @@ private:
             flush_then_end(state.link, reason);
         } else {
             state.link->end(reason);
-        }
-        for (auto& ping : state.pings) {
-            complete(std::move(ping.handler), make_error_code(error::peer_disconnected),
-                     std::chrono::milliseconds{});
         }
         wire_->clear_peer(peer, make_error_code(error::peer_disconnected));
         fail_requests(peer, make_error_code(error::peer_disconnected));
@@ -2829,10 +2974,6 @@ private:
         for (auto& [id, state] : peers) {
             handshakes_->clear(id);
             state.link->end("the room is left");
-            for (auto& ping : state.pings) {
-                complete(std::move(ping.handler), make_error_code(error::room_left),
-                         std::chrono::milliseconds{});
-            }
             if (wire_) {
                 wire_->clear_peer(id, make_error_code(error::room_left));
             }
@@ -2939,8 +3080,8 @@ class request_action;
  * of its own to each peer, as 0.27.0's rooms do, and exchange the messages of the actions it makes,
  * written bare on the connection. A peer joins once 0.27.0's identity handshake has bound its
  * endpoint and user keys to both DTLS fingerprints, and its user is the one it proved. On the
- * branch `port/trystero-0.27` it is not interoperable with Trystero 0.27.0 before Phase 2 ends: its
- * ping is not yet 0.27.0's, and no interop lane proves it.
+ * branch `port/trystero-0.27` it is not interoperable with Trystero 0.27.0 before Phase 2 ends: no
+ * interop lane proves it yet.
  *
  * Every room uses its app's immutable password, under which the signals that make its connections
  * are sealed: as in 0.27.0, the sealing alone keeps peers of another password out, which never
@@ -3211,12 +3352,17 @@ public:
     /**
      * Measures the round trip to a peer, Trystero's `ping`.
      *
-     * Completes with `(error_code, std::chrono::milliseconds)`: the time from sending `\@_ping`
-     * to receiving its `\@_pong`, or `error::no_such_peer` when the peer is not active,
-     * `error::peer_disconnected` when it leaves first, and `error::room_left`.
+     * A ping is 0.27.0's internal request action `\@_ping`: a request of an empty text, which the
+     * peer answers with an empty text through `\@_response`.
+     *
+     * Completes with `(error_code, std::chrono::milliseconds)`: the time from sending the request
+     * to receiving its answer, or `error::no_such_peer` when the peer is not active,
+     * `error::request_rejected` when it refuses the request, `error::peer_disconnected` when it
+     * leaves first, and `error::room_left`.
      *
      * @tparam CompletionToken An Asio completion token for `void(error_code, milliseconds)`.
-     * @param peer The peer's id, copied at the call, so a deferred operation does not depend on
+     * @param peer The peer's id, or a user's, whose active peer of the lowest id is asked, as
+     * 0.27.0's request picks it; copied at the call, so a deferred operation does not depend on
      * the caller's string.
      * @param token The completion token.
      * @return What the token's initiation returns.

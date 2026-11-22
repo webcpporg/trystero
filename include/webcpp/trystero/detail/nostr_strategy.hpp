@@ -151,8 +151,10 @@ private:
  * |                    | connection stayed open for 60 s                                          |
  * | reopened relay     | its subscriptions asked again and the announcement replayed once, or     |
  * |                    | both after its cooldown; the cadence is not started over                 |
- * | every relay failed | reported once, when each relay's first connection closed before it      |
- * |                    | opened and none opened yet, as 0.27.0 reports `relay-failed`            |
+ * | every relay failed | reported once, as 0.27.0 reports `relay-failed`: when each relay's      |
+ * |                    | first connection closed before it opened and none opened yet; or when   |
+ * |                    | no relay's first announcement was written and each relay either failed |
+ * |                    | so or had its first announcement fail, unsigned or unwritten            |
  * | offline            | every socket closed, no reconnection; the cadence goes on, skipping      |
  * | online             | each relay not connected connects at once, its delay bound back to 3.3 s |
  *
@@ -176,7 +178,7 @@ public:
     using announcement_handler = handler<std::pmr::string(std::string_view nonce)>;
 
     /** Every allocation goes through `memory`, the parsed relay messages' documents included;
-     * `all_failed`, when set, is called once every relay failed (see the table). */
+     * `all_failed`, when set, is called once every relay failed (see the table), at most once. */
     nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls,
                    std::pmr::vector<std::pmr::string> topics, std::string_view announce_topic,
                    announcement_handler announcement, message_handler on_message, logger log,
@@ -359,6 +361,17 @@ private:
         retired,
     };
 
+    /** How a relay's first announcement went, 0.27.0's `InitialAnnounceOutcome`. */
+    enum class first_announcement {
+        /** Not made yet. */
+        pending,
+        /** Written, or skipped because the relay could not take it then, which 0.27.0's
+         * `publishTopic` returns from without failing. */
+        succeeded,
+        /** It could not be signed or written. */
+        failed,
+    };
+
     /** Where a relay's subscriptions are, Trystero's `BatchSyncState`. */
     enum class sync {
         /** Not asked for, or closed by the relay. */
@@ -391,6 +404,10 @@ private:
         // Whether the announce cadence started on this relay: a reopening or an EOSE that came late
         // then replays the announcement.
         bool announced = false;
+        // How the cadence's first announcement went, and how many of its announcements in a row
+        // failed since one was written.
+        first_announcement initial = first_announcement::pending;
+        std::size_t announce_errors = 0;
         health state = health::healthy;
         // The cooldown's length, which a probation remembers as its last.
         std::chrono::milliseconds cooldown{};
@@ -434,19 +451,19 @@ private:
     }
 
     /** Signs an event of `content` on `topic` and sends it on `r`; one that cannot be signed is
-     * logged and dropped. */
-    void send_event(relay_state& r, std::string_view topic, std::string_view content) {
+     * logged and dropped. Whether it was signed and its socket took it. */
+    bool send_event(relay_state& r, std::string_view topic, std::string_view content) {
         const auto* key = room_signer();
         if (key == nullptr) {
-            return;
+            return false;
         }
         const auto message =
             protocol::nostr::event_message(*key, unix_now(factory_), topic, content, memory_);
         if (!message) {
             log_("nostr", "cannot sign an event: ", message.error());
-            return;
+            return false;
         }
-        r.socket->send(*message);
+        return r.socket->send(*message);
     }
 
     /** `r`'s health now: a cooldown that ended is a probation, as `getRelayHealth` reads it. */
@@ -653,7 +670,7 @@ private:
         log_("nostr", was_open ? "lost " : "could not reach ", r.url, ", next attempt within ",
              r.retry.count(), " ms");
         if (!r.opened_before && !std::exchange(r.boot_failed, true)) {
-            report_if_all_failed();
+            report_if_all_boot_failed();
             // The report reaches the user's log sink, which may leave the room and so stop this.
             if (stopped_) {
                 return;
@@ -676,17 +693,65 @@ private:
                                          }});
     }
 
-    /** Calls `all_failed` once, when no relay opened yet and the first connection of every relay
-     * closed before it opened, as 0.27.0's `maybeReportAllBootFailed` reports `relay-failed`. */
-    void report_if_all_failed() {
-        if (any_opened_ || all_failed_reported_ || relays_.empty() ||
+    /** Reports every relay failed, when no relay opened yet and the first connection of every
+     * relay closed before it opened, as 0.27.0's `maybeReportAllBootFailed` reports
+     * `relay-failed`. */
+    void report_if_all_boot_failed() {
+        if (any_opened_ || relays_.empty() ||
             !std::ranges::all_of(relays_, [](const relay_state& r) { return r.boot_failed; })) {
             return;
         }
-        all_failed_reported_ = true;
+        report_all_failed();
+    }
+
+    /** Reports every relay failed, when no relay's first announcement succeeded and each relay
+     * either failed to boot or had its first announcement settled, as 0.27.0's `queueAnnounce`
+     * reports `relay-failed` once an initial announcement fails. */
+    void report_if_no_first_announcement() {
+        const auto succeeded = [](const relay_state& r) {
+            return r.initial == first_announcement::succeeded;
+        };
+        const auto settled = [](const relay_state& r) {
+            return r.boot_failed || r.initial != first_announcement::pending;
+        };
+        if (relays_.empty() || std::ranges::any_of(relays_, succeeded) ||
+            !std::ranges::all_of(relays_, settled)) {
+            return;
+        }
+        report_all_failed();
+    }
+
+    /** Calls `all_failed` once in the strategy's life, whichever path reports it first, as 0.27.0's
+     * `reportAllRelaysFailed` reports once per room. */
+    void report_all_failed() {
+        if (std::exchange(all_failed_reported_, true)) {
+            return;
+        }
         log_("nostr", "every relay failed");
         if (all_failed_) {
             all_failed_();
+        }
+    }
+
+    /** Records how an announcement of the cadence went on `r`, as 0.27.0's `queueAnnounce` does:
+     * a failure is logged once per run of failures, and a failed first announcement may mean that
+     * every relay failed. */
+    void announced_on(std::size_t index, bool sent) {
+        auto& r = relays_[index];
+        const bool first = r.initial == first_announcement::pending;
+        if (sent) {
+            r.announce_errors = 0;
+            if (first) {
+                r.initial = first_announcement::succeeded;
+            }
+            return;
+        }
+        if (r.announce_errors++ == 0) {
+            log_("nostr", "announce failed on ", r.url);
+        }
+        if (first) {
+            r.initial = first_announcement::failed;
+            report_if_no_first_announcement();
         }
     }
 
@@ -703,8 +768,13 @@ private:
             !r.open || remaining > time_point::duration::zero()) {
             next = std::max(steady_announce,
                             std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
+            announced_on(index, true);  // skipped, which 0.27.0 counts as no failure
         } else {
-            send_event(r, announce_topic_, announcement());
+            announced_on(index, send_event(r, announce_topic_, announcement()));
+            // The report reaches the user's log sink, which may leave the room and so stop this.
+            if (stopped_ || !announcing_) {
+                return;
+            }
         }
         if (const auto attempt = r.announce_attempt++; attempt < warmup.size()) {
             next = std::min(next, warmup[attempt]);

@@ -232,8 +232,14 @@ public:
         handler<bool(std::string_view name)> has_listener;
         /** Hands a received message to the room. */
         handler<void(incoming&&)> deliver;
-        /** Drops a peer that broke the protocol, with the reason. */
+        /** Drops a peer that broke the protocol, with the reason, 0.27.0's `onPeerError`. */
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
+        /** Whether a message of an action the room has is one it expects from the peer now, with
+         * its metadata, 0.27.0's `receiveScope`: an answer must answer a request of the room's.
+         * An inline message it does not expect is dropped, an offer rejected with "unexpected
+         * response"; empty, every message is expected. */
+        handler<bool(std::string_view peer, std::string_view name, std::string_view metadata)>
+            expects = nullptr;
         /** Asks the receive gate of an action the room has about a message, with its payload's
          * size and its metadata; empty, every message is received unasked. */
         handler<admission(std::string_view peer, std::string_view name, std::size_t size,
@@ -330,7 +336,7 @@ public:
     void handle(std::string_view peer, backend::bytes&& frame) {
         const auto decoded = protocol::decode_action(frame);
         if (!decoded.frame) {
-            cb_.fail_peer(peer, "invalid action frame");
+            cb_.fail_peer(peer, violation(decoded.error));
             return;
         }
         if (const auto* p = std::get_if<protocol::proposal>(&*decoded.frame)) {
@@ -457,6 +463,25 @@ private:
     };
 
     pmr_allocator allocator() const { return {memory_}; }
+
+    /** Why a frame that cannot be decoded drops its peer, in 0.27.0's words (`handleData`). */
+    static std::string_view violation(protocol::wire_error error) {
+        switch (error) {
+            case protocol::wire_error::incompatible_version:
+                return "incompatible action protocol version";
+            case protocol::wire_error::invalid_control: return "invalid action control";
+            case protocol::wire_error::invalid_header: return "invalid action header";
+            case protocol::wire_error::invalid_proposal: return "invalid action proposal";
+            case protocol::wire_error::invalid_frame: break;
+        }
+        return "invalid action frame";
+    }
+
+    /** Whether the room expects a message of an action it has from `peer`, 0.27.0's
+     * `receiveScope`. */
+    bool expected(std::string_view peer, std::string_view name, std::string_view metadata) {
+        return !cb_.expects || cb_.expects(peer, name, metadata);
+    }
 
     /** Asks the receive gate about a message; open without one. */
     admission gate(std::string_view peer, std::string_view name, std::size_t size,
@@ -684,6 +709,9 @@ private:
         if (!cb_.has_action(p.name)) {
             return;  // as Trystero drops a frame of an unregistered action
         }
+        if (!expected(peer, p.name, p.metadata)) {
+            return;  // as 0.27.0's resolveAdmission drops an inline message out of scope
+        }
         if (p.payload.size() > payload_limit(p.name)) {
             refused(peer, p.name, p.metadata, size_limit_reason);
             return;
@@ -749,6 +777,10 @@ private:
         };
         if (!cb_.has_action(p.name)) {
             reject("unregistered action", false);
+            return;
+        }
+        if (!expected(peer, p.name, p.metadata)) {
+            reject("unexpected response", false);
             return;
         }
         if (p.size > payload_limit(p.name)) {

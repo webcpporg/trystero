@@ -120,11 +120,15 @@ public:
     virtual ~websocket() = default;
 
     /**
-     * Sends a text message; one sent before the connection opens or after it closes is dropped.
+     * Sends a text message; one sent before the connection opens, while it closes or after it
+     * closed is dropped, and so is one the connection cannot queue.
      *
      * @param text The message, read during the call.
+     * @return Whether the message was taken to be written; false when it was dropped. A room
+     * counts an announcement that was dropped as failed, as 0.27.0's strategy counts one whose
+     * write fails.
      */
-    virtual void send(std::string_view text) = 0;
+    virtual bool send(std::string_view text) = 0;
 
     /** Closes the connection, which the handler `close` reports. */
     virtual void close() = 0;

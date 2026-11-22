@@ -825,16 +825,14 @@ void action_frames_match() {
 
 // The handshake's frames 0.27.0 writes (handshake_frames), each the inline frame of its action, as
 // the port's encoder writes it for a room: the ready frame, `@_hsready` with the empty text of
-// 0.27.0's `payload || ''`; a step of the identity handshake, `@_hsdata` with its JSON; and the
-// refusal of a full room, `@_hsready` with its JSON. The ban's frame comes with the task that
-// sends it (2.5b).
+// 0.27.0's `payload || ''`; a step of the identity handshake, `@_hsdata` with its JSON; the
+// refusal of a full room, `@_hsready` with its JSON; and a ban, `@_hsready` with its JSON, which
+// the port never sends, having no roles, and which room_test's `a_ban_from_a_peer_reports_banned`
+// injects byte for byte.
 void handshake_frames_match() {
     std::size_t matched = 0;
     for (const auto entry : section("handshake_frames")) {
         const auto name = str(entry["case"]);
-        if (name != "ready" && name != "step 1" && name != "room full") {
-            continue;
-        }
         const bool ready = name == "ready";
         BOOST_TEST_EQ(str(entry["action"]), name == "step 1" ? "@_hsdata" : "@_hsready");
         const auto payload = str(entry["payload_json"]);
@@ -842,7 +840,10 @@ void handshake_frames_match() {
             BOOST_TEST_EQ(payload, R"("")");
         } else if (name == "room full") {
             BOOST_TEST_EQ(payload, R"({"ok":false,"err":"room full"})");
+        } else if (name == "banned") {
+            BOOST_TEST_EQ(payload, R"({"ok":false,"err":"peer banned","reason":"spam"})");
         } else {
+            BOOST_TEST_EQ(name, "step 1");
             BOOST_TEST(payload.starts_with(R"({"__trystero_id":1,)"));
         }
         BOOST_TEST(entry["delivered"].value_or(false) == true);
@@ -866,7 +867,33 @@ void handshake_frames_match() {
         BOOST_TEST(is_recorded(encoded, frames[0]));
         ++matched;
     }
-    BOOST_TEST_EQ(matched, 3U);
+    BOOST_TEST_EQ(matched, 4U);
+}
+
+// 0.27.0's ping (ping_frames): a request of the internal action `@_ping`, an empty text whose
+// metadata `{"r":<id>}` names the request, answered by the other peer with an empty text through
+// `@_response` under the same metadata; the port writes both frames byte for byte. room_test's
+// `ping_is_a_request_action` checks a room's own frames against them.
+void ping_frames_match() {
+    const auto entry = section("ping_frames");
+    BOOST_TEST_EQ(str(entry["action"]), "@_ping");
+    BOOST_TEST_EQ(str(entry["response"]), "");
+    std::string metadata(R"({"r":")");
+    metadata += str(entry["request_id"]);
+    metadata += "\"}";
+    std::vector<fixture_value> frames;
+    for (const auto frame : entry["frames"]) {
+        frames.push_back(frame);
+    }
+    if (!BOOST_TEST_EQ(frames.size(), 2U)) {
+        return;
+    }
+    BOOST_TEST_EQ(str(frames[0]["from"]), "A");
+    BOOST_TEST(is_recorded(tp::encode_inline("@_ping", tp::payload_format::text, metadata, {}),
+                           frames[0]));
+    BOOST_TEST_EQ(str(frames[1]["from"]), "B");
+    BOOST_TEST(is_recorded(tp::encode_inline("@_response", tp::payload_format::text, metadata, {}),
+                           frames[1]));
 }
 
 // The P-256 identity of 0.27.0 (Phase 2): keys, compact keys, the user key's text, the user-proof
@@ -1831,6 +1858,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(signal_aad_matches);
     webcpp::test::run_case(action_frames_match);
     webcpp::test::run_case(handshake_frames_match);
+    webcpp::test::run_case(ping_frames_match);
     webcpp::test::run_case(p256_keys_derive_their_ids);
     webcpp::test::run_case(compact_keys_are_read_as_0_27_0_reads_them);
     webcpp::test::run_case(user_identity_text_matches);
