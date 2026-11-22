@@ -14,6 +14,7 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/protocol/handshake_reason.hpp>
 #include <webcpp/trystero/protocol/identity.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
@@ -32,28 +33,8 @@
 
 namespace webcpp::trystero::protocol {
 
-/** The member that names a step of the handshake, 0.27.0's `hsStepKey`: `__${libId}_id`. */
-inline constexpr std::string_view handshake_step_key = "__trystero_id";
-
 /** The shortest nonce a step may carry, in UTF-16 code units: 0.27.0's `n.length < 16` refusal. */
 inline constexpr std::size_t min_nonce_units = 16;
-
-/** The reasons a handshake fails, 0.27.0's messages without their `Trystero: ` prefix. */
-namespace handshake_reason {
-/** A step of the wrong shape, a key that does not derive the id claimed, or a signature that does
- * not verify, 0.27.0's `peerIdentityErr`. */
-inline constexpr std::string_view identity = "peer identity verification failed";
-/** The fingerprints claimed are not those of the description this side applied. */
-inline constexpr std::string_view dtls_mismatch = "DTLS fingerprint mismatch";
-/** A description of the connection has no fingerprint. */
-inline constexpr std::string_view dtls_missing = "DTLS fingerprint missing";
-/** The peer sent more than 16 messages the handshake had not read. */
-inline constexpr std::string_view too_many_messages = "too many pending handshake messages";
-/** The handshake did not complete in 10 seconds. */
-inline constexpr std::string_view timed_out = "handshake timed out after 10000ms";
-/** The peer left while its handshake ran, 0.27.0's `handshakeDisconnectErr`. */
-inline constexpr std::string_view disconnected = "peer disconnected during handshake";
-}  // namespace handshake_reason
 
 namespace detail {
 

@@ -12,7 +12,7 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/protocol/handshake.hpp>
+#include <webcpp/trystero/protocol/handshake_reason.hpp>
 
 #include <boost/system/error_code.hpp>
 

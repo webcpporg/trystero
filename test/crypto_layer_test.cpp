@@ -1332,8 +1332,10 @@ trystero::user_identity user_of(std::string_view label) {
     return made.value();
 }
 
-/** Makes the C++ side of `role` ("initiator" or "responder") of a recorded case. */
-std::unique_ptr<handshake_side> side_of(const fixture_value& c, std::string_view role) {
+/** Makes the C++ side of `role` ("initiator" or "responder") of a recorded case; `room` and `nonce`
+ * replace the recorded room and own nonce when not empty. */
+std::unique_ptr<handshake_side> side_of(const fixture_value& c, std::string_view role,
+                                        std::string_view room = {}, std::string_view nonce = {}) {
     const bool initiator = role == "initiator";
     const auto self = c[role];
     const auto remote = c[initiator ? "responder" : "initiator"];
@@ -1352,8 +1354,9 @@ std::unique_ptr<handshake_side> side_of(const fixture_value& c, std::string_view
             .endpoint_key = side->endpoint.compact,
             .user = side->user,
         },
-        side->cache, str(c["app"]), str(c["room"]), str(remote["peer_id"]), initiator,
-        side->local_dtls, side->remote_dtls, nonce_random_of(str(c["nonces"][initiator ? 0 : 1])),
+        side->cache, str(c["app"]), room.empty() ? str(c["room"]) : room, str(remote["peer_id"]),
+        initiator, side->local_dtls, side->remote_dtls,
+        nonce_random_of(nonce.empty() ? str(c["nonces"][initiator ? 0 : 1]) : nonce),
         std::pmr::get_default_resource());
     return side;
 }
@@ -1488,6 +1491,7 @@ void handshake_steps_are_read_as_0_27_0_reads_them() {
     }
     BOOST_TEST_EQ(read(message_of(c, 1), 2).failure, identity);  // another step
     BOOST_TEST_EQ(read(step1("__trystero_id", "\"1\""), 1).failure, identity);
+    BOOST_TEST_EQ(read(step1("__trystero_id", "1.5"), 1).failure, identity);  // not truncated to 1
     BOOST_TEST(read(step1("__trystero_id", "1.0"), 1).claims.has_value());
     BOOST_TEST(read(step1("__trystero_id", "1e0"), 1).claims.has_value());
     BOOST_TEST_EQ(read(step1("n", "123456789012345"), 1).failure, identity);
@@ -1560,10 +1564,10 @@ void js_handshake_signatures_verify() {
     const auto compact = [](std::string_view label) {
         return str(p256_key_entry(label)["compact"]);
     };
-    BOOST_TEST_EQ(verifies(compact("endpoint-b"), step2.endpoint_signature, transcript),
-                  c["transcript_verified"]["step2_endpoint"].value_or(false));
-    BOOST_TEST_EQ(verifies(compact("user-b"), step2.user_signature, transcript),
-                  c["transcript_verified"]["step2_user"].value_or(false));
+    BOOST_TEST(c["transcript_verified"]["step2_endpoint"].value_or(false));
+    BOOST_TEST(verifies(compact("endpoint-b"), step2.endpoint_signature, transcript));
+    BOOST_TEST(c["transcript_verified"]["step2_user"].value_or(false));
+    BOOST_TEST(verifies(compact("user-b"), step2.user_signature, transcript));
     BOOST_TEST(verifies(compact("endpoint-a"), step3.endpoint_signature, transcript));
     BOOST_TEST(verifies(compact("user-a"), step3.user_signature, transcript));
     // Of another key, or of another transcript, they do not.
@@ -1627,6 +1631,24 @@ void cpp_initiator_meets_the_js_responder() {
     BOOST_TEST_EQ(finished.send, tp::write_handshake_step(step3, std::pmr::get_default_resource()));
     BOOST_TEST(verifies(a->endpoint.compact, step3.endpoint_signature, str(c["transcript"])));
     BOOST_TEST(verifies(a->user.public_key(), step3.user_signature, str(c["transcript"])));
+}
+
+void signatures_of_another_transcript_are_refused() {
+    const auto c = handshake_case("verified");
+    // A responder of another room reads the recorded steps 1 and 3: its transcript differs, so
+    // the initiator's signatures do not verify.
+    const auto other_room = side_of(c, "responder", "another-room");
+    other_room->machine->start();
+    BOOST_TEST(other_room->machine->receive(message_of(c, 1)).failure.empty());
+    const auto refused = other_room->machine->receive(message_of(c, 3));
+    BOOST_TEST_EQ(refused.failure, tp::handshake_reason::identity);
+    BOOST_TEST(!refused.done.has_value());
+    // An initiator of another nonce reads the recorded step 2, a replay of another run's.
+    const auto other_nonce = side_of(c, "initiator", {}, "00000000-0000-4000-8000-000000000000");
+    other_nonce->machine->start();
+    const auto replayed = other_nonce->machine->receive(message_of(c, 2));
+    BOOST_TEST_EQ(replayed.failure, tp::handshake_reason::identity);
+    BOOST_TEST(!replayed.done.has_value());
 }
 
 void handshake_failures_match() {
@@ -1809,6 +1831,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(js_handshake_signatures_verify);
     webcpp::test::run_case(cpp_responder_meets_the_js_initiator);
     webcpp::test::run_case(cpp_initiator_meets_the_js_responder);
+    webcpp::test::run_case(signatures_of_another_transcript_are_refused);
     webcpp::test::run_case(handshake_failures_match);
     webcpp::test::run_case(uuid_nonces_have_16_units_or_more);
     webcpp::test::run_case(a_run_without_fingerprints_fails_at_its_start);
