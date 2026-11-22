@@ -14,7 +14,6 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -116,11 +115,11 @@ struct payload_ref {
     std::shared_ptr<const void> owner;
 };
 
-/** What the wire sends through: a room's use of a peer's connection, a `detail::binding`. */
+/** What the wire sends through: a room's connection to a peer, a `detail::peer_link`. */
 class channel_link {
 public:
-    /** Sends a room frame; false when the channel is no longer open. */
-    virtual bool send(std::span<const std::uint8_t> room_frame) = 0;
+    /** Sends an action frame as it is; false when the channel is no longer open. */
+    virtual bool send(std::span<const std::uint8_t> frame) = 0;
     /** The bytes the channel buffers, not yet sent; 0 once it ended. */
     [[nodiscard]] virtual std::size_t buffered_amount() const = 0;
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
@@ -136,9 +135,9 @@ protected:
 
 /**
  * Sends and receives a room's actions over Trystero's action wire (protocol/action_wire.hpp), after
- * its action wire manager and action receiver. Every frame it sends is a room frame: it writes the
- * room envelope's header and the action frame into one buffer, once per send, shared by every
- * target.
+ * its action wire manager and action receiver. Every frame it sends is an action frame, written
+ * bare on the room's channel as 0.27.0's `sendFrame` writes it: once per send, into one buffer
+ * shared by every target.
  *
  * | Rule                     | Value                                                              |
  * | inline                   | when header, metadata and payload fit 16 KiB                       |
@@ -162,10 +161,9 @@ protected:
  * |                          | is dropped                                                         |
  * | protocol violations      | the peer is dropped                                                |
  *
- * Trystero sends wide chunks to a peer whose connection's SCTP takes 64 KiB messages. A room frame
- * adds its envelope's header to the action frame, so a wide chunk would no longer fit such a
- * message: the wire offers every transfer without the flag, as Trystero does to a transport that
- * reports no `maxBulkFrameBytes`, and receives wide transfers as Trystero does.
+ * Trystero sends wide chunks to a peer whose connection's SCTP takes 64 KiB messages. The backend
+ * does not report that size: the wire offers every transfer without the flag, as Trystero does to
+ * a transport that reports no `maxBulkFrameBytes`, and receives wide transfers as Trystero does.
  *
  * Frames of an action the room has not made are not kept, as Trystero keeps none: a page that makes
  * an action after it joined misses what came before. An action listens while it has a message
@@ -182,7 +180,7 @@ public:
         /** The peer's channel, gone once the peer is. */
         std::weak_ptr<channel_link> target;
 
-        /** Sends a room frame; false when the channel is gone or no longer open. */
+        /** Sends an action frame; false when the channel is gone or no longer open. */
         [[nodiscard]] bool send(std::span<const std::uint8_t> frame) const {
             const auto t = target.lock();
             return t && t->send(frame);
@@ -239,11 +237,10 @@ public:
     };
 
     /** Every allocation goes through `memory`. */
-    action_wire(backend::factory& factory, std::string_view room_token,
-                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory)
+    action_wire(backend::factory& factory, std::size_t max_receive_bytes, callbacks cb,
+                std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          token_(room_token, memory),
           max_receive_bytes_(max_receive_bytes),
           cb_(std::move(cb)),
           outgoing_(memory),
@@ -277,9 +274,8 @@ public:
         const auto state =
             std::allocate_shared<fan_out>(allocator(), chosen.size(), std::move(done));
         if (protocol::fits_inline(metadata.size(), payload.data.size())) {
-            auto frame = protocol::begin_room_frame(
-                token_, protocol::inline_header_size + metadata.size() + payload.data.size(),
-                memory_);
+            auto frame =
+                begin_frame(protocol::inline_header_size + metadata.size() + payload.data.size());
             protocol::append_inline(frame, name, format, metadata, payload.data);
             const std::shared_ptr<const backend::bytes> shared =
                 std::allocate_shared<backend::bytes>(allocator(), std::move(frame));
@@ -312,11 +308,9 @@ public:
         }
     }
 
-    /** One action frame from a peer: `action` is a view into `frame`, which the message keeps if it
-     * is delivered. */
-    void handle(std::string_view peer, backend::bytes&& frame,
-                std::span<const std::uint8_t> action) {
-        const auto decoded = protocol::decode_action(action);
+    /** One action frame from a peer, which the message keeps if it is delivered. */
+    void handle(std::string_view peer, backend::bytes&& frame) {
+        const auto decoded = protocol::decode_action(frame);
         if (!decoded.frame) {
             cb_.fail_peer(peer, "invalid action frame");
             return;
@@ -494,10 +488,18 @@ private:
         }));
     }
 
+    /** An empty frame in the wire's resource, with room reserved for `size` bytes, which the
+     * caller then writes once. */
+    [[nodiscard]] backend::bytes begin_frame(std::size_t size) const {
+        backend::bytes out(memory_);
+        out.reserve(size);
+        return out;
+    }
+
     std::shared_ptr<const backend::bytes> control_frame(void (*append)(backend::bytes&,
                                                                        std::uint32_t),
                                                         std::uint32_t id) {
-        auto frame = protocol::begin_room_frame(token_, protocol::control_header_size, memory_);
+        auto frame = begin_frame(protocol::control_header_size);
         append(frame, id);
         return std::allocate_shared<backend::bytes>(allocator(), std::move(frame));
     }
@@ -506,8 +508,7 @@ private:
                    protocol::payload_format format, std::string_view metadata,
                    const payload_ref& payload, const std::shared_ptr<fan_out>& state) {
         const std::uint32_t id = next_id_++;
-        auto offer = protocol::begin_room_frame(
-            token_, protocol::offer_header_size + metadata.size(), memory_);
+        auto offer = begin_frame(protocol::offer_header_size + metadata.size());
         protocol::append_offer(offer, name, format, metadata, id, payload.data.size(),
                                protocol::chunk_width::narrow);
         std::pmr::string peer(peer_view, memory_);  // the transfer's handlers outlive this call
@@ -576,8 +577,7 @@ private:
             return;
         }
         const auto length = std::min(protocol::chunk_size, payload.data.size() - offset);
-        auto frame =
-            protocol::begin_room_frame(token_, protocol::chunk_header_size + length, memory_);
+        auto frame = begin_frame(protocol::chunk_header_size + length);
         protocol::append_chunk(frame, id, offset, payload.data.subspan(offset, length));
         const auto weak = weak_from_this();
         send_when_drained(
@@ -704,8 +704,7 @@ private:
         // Each rejection returns at once: a control frame that cannot go drops the peer. The room
         // hears of the rejections of an action it has.
         const auto reject = [&](std::string_view reason, bool registered = true) {
-            auto frame = protocol::begin_room_frame(
-                token_, protocol::control_header_size + reason.size(), memory_);
+            auto frame = begin_frame(protocol::control_header_size + reason.size());
             protocol::append_rejected(frame, p.id, reason);
             if (registered) {
                 refused(peer, p.name, p.metadata, reason);
@@ -770,8 +769,7 @@ private:
                            const std::pmr::string name(b->second.name, self->memory_);
                            const std::pmr::string metadata(b->second.metadata, self->memory_);
                            self->release_bulk(it->second, b);
-                           auto frame = protocol::begin_room_frame(
-                               self->token_, protocol::control_header_size + 32, self->memory_);
+                           auto frame = self->begin_frame(protocol::control_header_size + 32);
                            protocol::append_rejected(frame, id, "action transfer timed out");
                            self->refused(peer, name, metadata, "action transfer timed out");
                            self->control(peer, frame);
@@ -937,7 +935,6 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    std::pmr::string token_;
     std::size_t max_receive_bytes_;
     callbacks cb_;
     std::uint32_t next_id_ = 0;

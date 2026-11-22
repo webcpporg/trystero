@@ -43,13 +43,13 @@
  * The one exception is a data channel message, handed over by value: the receiver keeps the frame,
  * and taking ownership of it is what spares a copy.
  *
- * Tip: every method that makes an object takes a memory resource last, the app's for a peer
- * connection and the room's for the rest, and the backend allocates the object, its handlers and
- * what it hands to the room (a frame, a text) through it, on the room's executor only.
+ * Tip: every method that makes an object takes a memory resource last, the room's for every object
+ * it makes, and the backend allocates the object, its handlers and what it hands to the room (a
+ * frame, a text) through it, on the room's executor only.
  */
 namespace webcpp::trystero::backend {
 
-/** A data channel frame in a memory resource: a received one in the app's, as its connection. */
+/** A data channel frame in a memory resource: a received one in the room's, as its connection. */
 using bytes = std::pmr::vector<std::uint8_t>;
 
 /** The error code every completion of a backend reports, empty on success. */
@@ -139,7 +139,7 @@ public:
     struct handlers {
         /** The channel opened. */
         handler<void()> open;
-        /** A binary message arrived, handed over in the app's resource. */
+        /** A binary message arrived, handed over in the connection's resource, the room's. */
         handler<void(bytes)> message;
         /** The channel closed; called once. */
         handler<void()> close;
@@ -286,8 +286,8 @@ public:
  * browser, one per application natively, one per test.
  *
  * Each object it makes is allocated, with its handlers and what it hands to the room, in the memory
- * resource it is given, the app's for a peer connection and the room's for the rest: that resource
- * must outlive the object and every operation the object leaves pending.
+ * resource it is given, the room's for every object it makes: that resource must outlive the object
+ * and every operation the object leaves pending.
  *
  * @see "Allocation", in the guide.
  */
@@ -312,8 +312,8 @@ public:
      * Makes a peer connection that gathers its candidates through `servers`.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The app's resource, which the connection, its channels, its handlers and its
-     * texts are allocated in, as the app owns the connection once a room adopted it.
+     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * texts are allocated in, as the room owns the connection: it ends with the room or the peer.
      * @return The connection, or null when the platform refuses to make one: the room then
      * reports the negotiation with that peer as failed, through `room::on_error`.
      */

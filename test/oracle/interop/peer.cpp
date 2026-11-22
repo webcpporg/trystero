@@ -19,7 +19,6 @@
 // | room3           | a third room of the same app, optional                             |
 // | room2Delay      | the ms before joining room2, optional (0)                          |
 // | room3Delay      | the ms before joining room3, optional (0)                          |
-// | idle            | the app's idle_timeout in ms, optional (123,333)                   |
 // | handshake       | every room's handshake timeout in ms, optional (10,000)            |
 // | ping2           | any value: ping each peer of room2 every second, optional          |
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
@@ -214,7 +213,6 @@ trystero::app_config config_of_page() {
         config.ice_servers.push_back(
             {.urls = {std::pmr::string(ice)}, .username = {}, .credential = {}});
     }
-    config.idle_timeout = millis(param("idle"), std::chrono::milliseconds(123'333));
     config.log = log;
     return config;
 }

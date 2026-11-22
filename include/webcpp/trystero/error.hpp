@@ -45,7 +45,7 @@ enum class error {
     /** The data channel stopped draining while a transfer waited for it. */
     channel_stalled,
     /**
-     * A peer sharing a connection answered the room's password handshake under another password,
+     * A connected peer answered the room's password handshake under another password,
      * or sent a handshake message the protocol does not expect, Trystero's "incorrect password for
      * overlapping room".
      *
@@ -58,9 +58,8 @@ enum class error {
      * A peer's handshake failed, 0.27.0's `handshake-failed` room error, which
      * `room_error_code_name` names.
      *
-     * Nothing reports it before Phase 2's handshake: the password
-     * handshake of rooms sharing a connection reports its failures as `wrong_password` and
-     * `handshake_timed_out`, which name what failed.
+     * Nothing reports it before Phase 2's handshake: the provisional password handshake reports its
+     * failures as `wrong_password` and `handshake_timed_out`, which name what failed.
      */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
@@ -72,8 +71,6 @@ enum class error {
     invalid_configuration,
     /** The app already holds a room of that id; a room is joined once per app. */
     already_joined,
-    /** The app already holds as many rooms as a peer accepts, 64 of them. */
-    too_many_rooms,
     /** The room holds as many peers as it accepts, 0.27.0's "room full". */
     room_full,
     /** The peer is banned from the room, 0.27.0's "peer banned". */
@@ -167,7 +164,6 @@ private:
             case error::backend_failure: return "the WebRTC backend refused an operation";
             case error::invalid_configuration: return "the configuration is unusable";
             case error::already_joined: return "the app has already joined a room of that id";
-            case error::too_many_rooms: return "the app holds as many rooms as a peer accepts, 64";
             case error::room_full: return "room full";
             case error::banned: return "peer banned";
             case error::relay_failed: return "all signaling relays failed";

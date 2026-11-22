@@ -14,7 +14,6 @@
 
 #include <webcpp/document/parse.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
@@ -41,9 +40,8 @@ struct app_config {
      * The password shared by every room of this app, Trystero's `password`.
      *
      * The app copies it into its resource and keeps it unchanged. Different passwords require
-     * separate apps with distinct peer ids, so a connection authenticated in one domain cannot
-     * be reused in another. Empty means a passwordless domain. Signals are still sealed with the
-     * app and room ids, and the room handshake then has no password challenge.
+     * separate apps with distinct peer ids. Empty means a passwordless domain. Signals are still
+     * sealed with the app and room ids, and the room handshake then has no password challenge.
      */
     std::pmr::string password = {};
     /**
@@ -66,13 +64,6 @@ struct app_config {
      */
     std::pmr::vector<backend::ice_server> ice_servers = {};
     /**
-     * How long a connection with no room bound to it after a departure stays open, Trystero's
-     * `sharedPeerIdleMs`; 0 closes it at once.
-     *
-     * A negative value is replaced with 0, and reported with `error::invalid_configuration`.
-     */
-    std::chrono::milliseconds idle_timeout{123'333};
-    /**
      * Where the app's and its rooms' diagnostics go: called with a category ("app", "nostr",
      * "signal", "webrtc", "room" or "action") and a sentence; empty means none, and then no text
      * is composed.
@@ -81,9 +72,8 @@ struct app_config {
      */
     detail::logger::sink log = {};
     /**
-     * The resource every allocation of the app goes through: its state, its connections, the peer
-     * connections and data channels its rooms' negotiations make, the frames received on them, the
-     * sentences of its log; not null.
+     * The resource every allocation of the app goes through: its state, its rooms' keys and the
+     * sentences of its log, and each room's whose `room_options::memory` is null; not null.
      *
      * What libdatachannel, OpenSSL and the browser's JavaScript allocate stays theirs. The app uses
      * the resource from its executor only, so it need not be thread-safe when that executor runs
@@ -124,15 +114,15 @@ struct room_options {
      */
     std::uint64_t max_json_document_bytes = webcpp::document::parse_options().max_document_bytes;
     /**
-     * The resource every allocation of the room goes through: its state, bindings, negotiations,
-     * relays, actions, sent frames, transfers and JSON.
+     * The resource every allocation of the room goes through: its state, negotiations, peer
+     * connections and data channels, the frames sent and received on them, relays, actions,
+     * transfers and JSON.
      *
      * Null means the app's resource.
      *
      * It must outlive the room, every value it hands out and every operation it leaves pending: on
      * Asio, until its io_context has run out of the room's work or has been destroyed; in the
-     * browser, until its pending promises have settled. Received frames and shared connections use
-     * the app's resource.
+     * browser, until its pending promises have settled.
      */
     std::pmr::memory_resource* memory = nullptr;
 };

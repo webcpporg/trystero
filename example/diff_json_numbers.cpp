@@ -51,8 +51,6 @@ int main() {
         c.app_id = "webcpp-trystero-differences";
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when both leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     trystero::app other_app(io.get_executor(), backend, config());

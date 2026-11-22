@@ -87,8 +87,6 @@ has nothing of it to run beside its twin.
 
 | Passwords across rooms | configured per room | one immutable `app_config::password` for every room, separate apps and peer ids for different passwords | the shared connection's sealed negotiation authenticates one password domain before any of its rooms reuse it
 
-| Rooms per app | unbounded | `join` refuses the 65th, counting rooms in their farewell | the shared connection advertises each room's token, and a 65th would cost every connection of the app
-
 | Relay sockets and the Nostr key | one socket per relay URL for the page, shared by the rooms that name it; a signing key per room | a socket per room and relay; a signing key per room | invisible to peers; sockets shared through the app in a later change
 
 | Relay and ICE configuration | each room's own | the app's, for every room | one configuration for what the rooms share
@@ -201,46 +199,6 @@ behaves otherwise than its twin printed. The twins of the programs of
 (<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
 difference below; {n-examples-without-twin} program has no twin, the chat
 page, with its reason in `test/oracle/twins/without-twin.txt`.
-
-[#trystero-differences-rooms]
-==== Rooms per app
-
-Trystero JS:: `joinRoom` joins every room a page asks for: the 65th, 66th and
-67th rooms of one `appId` are each a room, each with connections of its own.
-0.26.0 joined them too, and advertised every room of the app over every
-connection the app's rooms shared, so that a peer advertised a 65th room
-token over one connection dropped that connection, "too many advertised
-rooms" (`dist/shared-peer.mjs:457`).
-trystero:: `app::join` refuses a 65th room with `error::too_many_rooms`. A
-room still in its farewell, the 99 ms of `async_leave`, counts, so another
-room can be joined once that leave has completed.
-Why:: On the branch an app's rooms still share 0.26.0's connection
-(<<trystero-design-phase-1>>), which advertises each room's token: a 65th
-would be advertised over every connection of the app. Phase 2 retires the
-sharing, and this difference with it.
-
-[source]
-----
-include::{examples}/diff_rooms_per_app.cpp[tag=example,indent=0]
-----
-
-.The twin, on Trystero JS
-[source,javascript]
-----
-include::{twins}/diff_rooms_per_app.mjs[lines=7..]
-----
-
-.Trystero JS 0.26.0 printed
-[listing]
-----
-include::{twins}/diff_rooms_per_app.expected[]
-----
-
-.trystero prints
-[listing]
-----
-include::{examples}/diff_rooms_per_app.expected[]
-----
 
 [#trystero-differences-passwords]
 ==== Passwords across rooms

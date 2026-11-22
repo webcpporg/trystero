@@ -185,21 +185,6 @@ inline std::pmr::string peer_topic(
 }
 
 /**
- * The token that names a room inside a data channel's envelope: the hexadecimal SHA-256 of
- * "Trystero:<app>:<room>".
- *
- * @param app_id The application's id.
- * @param room_id The room's id.
- * @param memory The resource the token is allocated in.
- * @return The token, 64 hexadecimal digits.
- */
-inline std::pmr::string room_token(
-    std::string_view app_id, std::string_view room_id,
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return to_hex(sha256_of({"Trystero:", app_id, ":", room_id}), memory);
-}
-
-/**
  * Trystero's `hash32`: FNV-1a over the UTF-8 bytes, then MurmurHash3's final mix.
  *
  * @param utf8 The text, in UTF-8.

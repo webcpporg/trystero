@@ -1038,9 +1038,9 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 /**
  * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
  * exchange binary payloads: from construction until the io_context drains, neither operator new nor
- * the C library sees an allocation. A payload received by the room with its own resource is copied
- * into that resource once, the received frame staying the app's; by the room in the app's resource,
- * the payload taken out of the frame is moved into the value (doc: #trystero-allocation).
+ * the C library sees an allocation. Each room's connections are in its own resource, the frames
+ * received on them too: in either room the payload taken out of the frame is moved into the value,
+ * and the app's resource sees nothing of the room with its own (doc: #trystero-allocation).
  */
 void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource network_memory;
@@ -1102,9 +1102,10 @@ void rooms_of_one_app_allocate_through_their_resources() {
                     webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
                                                  [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 1; }));
-                BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
-                BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
-                z_memory.sized = 0;
+                // The frame, and the payload taken out and moved on, both in the room's resource,
+                // as its connection is since each room has its own; nothing in the app's.
+                BOOST_TEST_EQ(z_room_memory.sized, 2U);
+                BOOST_TEST_EQ(z_memory.sized, 0U);
                 a1.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_shared, &a_memory),
                     webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),

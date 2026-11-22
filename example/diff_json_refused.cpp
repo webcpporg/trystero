@@ -24,7 +24,6 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -72,18 +71,14 @@ public:
     [[nodiscard]] bool is_open() const override { return channel_->is_open(); }
 
     void send(std::span<const std::uint8_t> frame) override {
-        const auto envelope = protocol::decode_envelope(frame);
-        if (envelope && envelope->type == protocol::envelope::kind::room) {
-            const auto decoded = protocol::decode_action(envelope->payload);
-            const auto* const p =
-                decoded.frame ? std::get_if<protocol::proposal>(&*decoded.frame) : nullptr;
-            if (p != nullptr && p->kind == protocol::frame_kind::inline_payload &&
-                p->format == protocol::payload_format::text && p->name == action_name) {
-                const auto action = protocol::encode_inline(p->name, protocol::payload_format::json,
-                                                            p->metadata, p->payload, memory_);
-                channel_->send(protocol::room_frame(envelope->token, action, memory_));
-                return;
-            }
+        const auto decoded = protocol::decode_action(frame);
+        const auto* const p =
+            decoded.frame ? std::get_if<protocol::proposal>(&*decoded.frame) : nullptr;
+        if (p != nullptr && p->kind == protocol::frame_kind::inline_payload &&
+            p->format == protocol::payload_format::text && p->name == action_name) {
+            channel_->send(protocol::encode_inline(p->name, protocol::payload_format::json,
+                                                   p->metadata, p->payload, memory_));
+            return;
         }
         channel_->send(frame);
     }
@@ -223,8 +218,6 @@ int main() {
         c.app_id = "webcpp-trystero-differences";
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when both leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     // The other peer, as a Trystero JS page would be: its app's backend marks the text payloads of

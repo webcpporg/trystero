@@ -37,7 +37,6 @@ local differences =
     diff_peers
     diff_relay_config
     diff_relay_sockets
-    diff_rooms_per_app
     diff_send_to_absent_peer
     ;
 for local difference in $(differences)

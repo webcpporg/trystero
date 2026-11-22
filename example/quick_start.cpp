@@ -49,8 +49,6 @@ trystero::app_config config_for(const char* relay) {
     }
     // Without a relay, both lists stay empty: Trystero's defaults, as a user's program has them,
     // the public relays its app id selects and Trystero's public STUN servers.
-    // A connection closes as soon as no room uses it, so that the program ends once both leave.
-    config.idle_timeout = std::chrono::milliseconds{0};
     return config;
 }
 

@@ -48,8 +48,6 @@ int main() {
         c.password = password;
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when all leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     // The other peer, as another page would be, with the same passwords for the same rooms.

@@ -9,8 +9,9 @@
 // place of the page's RTCPeerConnection and RTCDataChannel: what a peer can send that is no frame
 // is dropped. A text message "1e300" once threw a RangeError out of `new Uint8Array`, and
 // "300000000" made a 300 MB frame: webcpp::webrtc delivers a text as the few bytes it holds, which
-// the channel drops; a binary message larger than any room frame is dropped too. Only the frame
-// sent last reaches the handler, and nothing larger than the largest message sent is allocated.
+// the channel drops; a binary message larger than any frame, a wide chunk's 64 KiB, is dropped too.
+// Only the frame sent last reaches the handler, and nothing larger than the largest message sent is
+// allocated.
 //
 // main runs the io_context under a work guard, which the verdict releases when the last frame
 // arrives; a frame that does not come within 10 s fails by name.
@@ -124,7 +125,7 @@ int main() {
 
     deliver(val("1e300"));
     deliver(val("300000000"));
-    deliver(val::global("ArrayBuffer").new_(val(20'000)));
+    deliver(val::global("ArrayBuffer").new_(val(70'000)));
     deliver(val::global("ArrayBuffer").new_(val(3)));
 
     s.io.run_for(10s);  // lint-run: the test's event loop, held by its work guard until the verdict
@@ -134,6 +135,6 @@ int main() {
     // The first frame to arrive is the last one sent: the run stopped there.
     BOOST_TEST_EQ(s.messages, 1U);
     BOOST_TEST_EQ(s.last_size, 3U);
-    BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
+    BOOST_TEST_LE(s.memory.largest, std::size_t{70'000});
     return webcpp::test::exit_status(boost::report_errors());
 }

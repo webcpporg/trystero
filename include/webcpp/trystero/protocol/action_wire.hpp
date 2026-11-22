@@ -9,7 +9,7 @@
 
 #include <webcpp/trystero/config.hpp>
 
-#include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/endian/conversion.hpp>
@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory_resource>
@@ -98,6 +99,8 @@ enum class chunk_width : std::uint8_t {
     /** Chunks of @ref wide_chunk_size, for a connection whose SCTP takes 64 KiB messages. */
     wide,
 };
+/** The largest action frame, Trystero's `maxActionFrameBytes`: 16 KiB. */
+inline constexpr std::size_t max_action_frame_bytes = std::size_t{16} * 1024;
 /** The largest chunk frame of a wide transfer, Trystero's `maxBulkFrameBytes`: 64 KiB. */
 inline constexpr std::size_t max_bulk_frame_bytes = std::size_t{64} * 1024;
 /** The size of an inline frame's header, Trystero's `inlineHeaderSize`. */

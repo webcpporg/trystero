@@ -23,7 +23,6 @@
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
 
-#include <cstddef>
 #include <memory>
 #include <memory_resource>
 #include <span>
@@ -53,8 +52,9 @@ struct app_access {
 }  // namespace detail
 
 /**
- * This program in one app: one peer id, and one connection per remote peer, shared by the rooms it
- * joins, as a Trystero JS page shares them.
+ * This program in one app: one peer id, the relays and the configuration its rooms share, as a
+ * Trystero JS page's rooms share them; each room has its own connection to each peer, as 0.27.0's
+ * rooms do.
  *
  * Every room uses the app's immutable password;
  * different passwords require separate apps with distinct peer ids.
@@ -70,15 +70,11 @@ public:
     /** The executor every handler and completion of the app and its rooms runs on. */
     using executor_type = webcpp::asio::any_io_executor;
 
-    /** The most rooms an app holds at once: a Trystero JS peer drops a connection that advertises
-     * more, its limit of 64 room tokens per connection. */
-    static constexpr std::size_t max_rooms = 64;
-
     /**
      * Makes an app: draws its id, 20 random base62 characters, and keeps the configuration.
      *
-     * What no peer could use (a negative idle time, an ICE server WebRTC refuses) is set aside,
-     * and reported to `on_error`.
+     * What no peer could use (an ICE server WebRTC refuses) is set aside, and reported to
+     * `on_error`.
      *
      * @param ex The executor of the app and of its rooms.
      * @param factory The backend, which must outlive the app and its rooms.
@@ -95,8 +91,6 @@ public:
      */
     app(app&& other) noexcept = default;
 
-    // Releasing the last user ends every connection, which logs in the app's resource: a resource
-    // that fails then ends the program, as in the destructor.
     /**
      * Releases the state it held, then takes the state of the app moved from, which may then only
      * be destroyed or assigned; the rooms of the state released go on.
@@ -104,7 +98,7 @@ public:
      * @param other The app moved from.
      * @return This app.
      */
-    app& operator=(app&& other) noexcept {  // NOLINT(bugprone-exception-escape)
+    app& operator=(app&& other) noexcept {
         if (this != &other) {
             if (impl_) {
                 impl_->release_user();
@@ -114,16 +108,14 @@ public:
         return *this;
     }
 
-    /** Not copyable: an app is one peer id and its connections. */
+    /** Not copyable: an app is one peer id. */
     app(const app&) = delete;
 
-    /** Not copy-assignable: an app is one peer id and its connections. */
+    /** Not copy-assignable: an app is one peer id. */
     app& operator=(const app&) = delete;
 
-    // Releasing the last user ends every connection, which logs in the app's resource: a resource
-    // that fails then ends the program, as in any destructor.
     /** Releases the state; its rooms go on, and their connections with them. */
-    ~app() {  // NOLINT(bugprone-exception-escape)
+    ~app() {
         if (impl_) {
             impl_->release_user();
         }
@@ -231,7 +223,7 @@ public:
      * @param room_id The room's id, Trystero's `roomId`, read during the call.
      * @param options The receive bounds and the resource of the room.
      * @return The room, or `error::already_joined` while a room of that id is joined in the app,
-     * as 0.27.0 refuses a second join, or `error::too_many_rooms` when `max_rooms` rooms count.
+     * as 0.27.0 refuses a second join.
      */
     [[nodiscard]] boost::system::result<room> join(std::string_view room_id,
                                                    room_options options = {}) {
@@ -240,12 +232,9 @@ public:
             if (!existing->leaving()) {
                 return error::already_joined;
             }
-            // Trystero's rejoin (dist/strategy.mjs:38): the old room's presence(0) goes before
-            // the new room's presence(1).
+            // A rejoin during the farewell ends the old room first, as 0.27.0's joinRoom
+            // finalizes a leaving slot's cleanup (strategy.ts:180-182).
             existing->finish_farewell();
-        }
-        if (impl_->counted_rooms() >= max_rooms) {
-            return error::too_many_rooms;
         }
         return room(detail::room_impl::make(impl_, options, room_id));
     }

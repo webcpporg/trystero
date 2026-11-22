@@ -100,8 +100,8 @@ inline webcpp::document::result<std::pmr::string> candidate_json(
  * disconnected, connected (or ICE completed), connecting (or ICE checking), and new.
  *
  * Tip: the connection, its channels, its handlers, its operations and the texts it hands to the
- * app are in the app's resource; what the platform holds (libdatachannel's objects, or the page's)
- * is the platform's.
+ * room are in the room's resource; what the platform holds (libdatachannel's objects, or the
+ * page's) is the platform's.
  *
  * @see "The backend's WebRTC", in the guide.
  */
@@ -148,7 +148,7 @@ public:
      * @param bind_address The local address it binds to, natively; empty for every interface.
      * @param factory The backend, which makes its channels' timers, and which outlives every
      * operation of the connection.
-     * @param memory The app's resource: the connection, its channels, its handlers and its texts
+     * @param memory The room's resource: the connection, its channels, its handlers and its texts
      * are allocated in it.
      * @return The connection, or webcpp::webrtc's error: `too_many_peer_connections` past the
      * runtime's cap, `syntax_error` for an ICE server URL the platform cannot parse,
@@ -317,7 +317,7 @@ public:
      */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
-        // The document lives in the app's resource for the call: the platform copies the views.
+        // The document lives in the room's resource for the call: the platform copies the views.
         const auto document = webcpp::document::parse(
             candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_bytes),
             std::pmr::polymorphic_allocator<std::byte>(memory_));

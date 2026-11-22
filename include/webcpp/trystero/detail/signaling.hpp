@@ -181,8 +181,6 @@ public:
 
     /** What the signaling asks of its room. */
     struct callbacks {
-        /** Whether the room claims a signal over an existing app connection. */
-        handler<bool(std::string_view peer)> claim;
         /** Publishes a signal on a topic, through the relay given. */
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)> publish;
         /** A negotiation ended with an open data channel: the connection is the room's. */
@@ -199,16 +197,14 @@ public:
         handler<void(const room_error&)> failed;
     };
 
-    /** Every allocation goes through `memory`, the parsed signals' documents included, but the
-     * peer connections, which are made in `connection_memory`, the app's: the
-     * one a negotiation opens becomes the app's connection. */
+    /** Every allocation goes through `memory`, the room's, the parsed signals' documents and the
+     * peer connections included: the one a negotiation opens becomes the room's, and ends with the
+     * room or the peer. */
     signaling(backend::factory& factory, std::string_view app_id, std::string_view room_id,
               std::string_view self_id, std::span<const backend::ice_server> ice_servers,
-              callbacks cb, logger log, std::pmr::memory_resource* memory,
-              std::pmr::memory_resource* connection_memory)
+              callbacks cb, logger log, std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          connection_memory_(connection_memory),
           app_id_(app_id, memory),
           room_id_(room_id, memory),
           self_id_(self_id, memory),
@@ -242,9 +238,6 @@ public:
         const auto message =
             document.has_value() ? protocol::read_signal(document->root()) : std::nullopt;
         if (!message || message->peer_id == self_id_) {
-            return;
-        }
-        if (cb_.claim && cb_.claim(message->peer_id)) {
             return;
         }
         auto it = peers_.find(message->peer_id);
@@ -511,7 +504,7 @@ private:
             }
             return nullptr;
         }
-        auto pc = factory_.make_peer_connection(ice_servers_, connection_memory_);
+        auto pc = factory_.make_peer_connection(ice_servers_, memory_);
         if (!pc) {
             refused(peer);
         }
@@ -1255,7 +1248,6 @@ private:
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    std::pmr::memory_resource* connection_memory_;
     // The room's AES key, once the room gave it (set_key).
     webcpp::crypto::secret<32> key_;
     bool keyed_ = false;

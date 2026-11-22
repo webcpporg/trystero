@@ -11,7 +11,6 @@
 // pmr::document, within protocol::json::protocol_limits of its bound.
 
 #include <webcpp/trystero/protocol/action_wire.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
@@ -125,14 +124,6 @@ private:
         return this == &other;
     }
 };
-
-void topics(const fixture_value& fixture) {
-    for (const auto t : fixture["topics"]) {
-        const auto app = str(t["app_id"]);
-        const auto room = str(t["room_id"]);
-        BOOST_TEST_EQ(tp::room_token(app, room), str(t["room_token"]));
-    }
-}
 
 /** A relay's echo of a client's `["EVENT",<event>]`: the event's text whole, less the client's
  * first 9 bytes and its last, in `["EVENT","sub",<event>]`. */
@@ -401,38 +392,6 @@ void wide_bulk_frames_are_bounded() {
     BOOST_TEST(is_invalid(tp::encode_inline("chat", tp::payload_format::binary, "", long_payload)));
 }
 
-void envelopes(const fixture_value& fixture) {
-    const auto env = fixture["envelope"];
-    const auto token = str(env["room_token"]);
-    BOOST_TEST_EQ(token, tp::room_token("my-app", "room-1"));
-    const auto frames = env["frames"];
-    const auto present = tp::presence_frame(token, true);
-    const auto expected_present = hex(frames[0]);
-    BOOST_TEST_ALL_EQ(present.begin(), present.end(), expected_present.begin(),
-                      expected_present.end());
-    // The envelope's recorded vector (expected.json, from 0.26.0) wraps these bytes, a version-2
-    // action frame's start: the envelope carries any payload, whatever the action wire's version.
-    const tp::bytes action{2, 0, 99, 104, 97, 116};
-    const auto room_frame = tp::room_frame(token, action);
-    const auto expected_room = hex(frames[1]);
-    BOOST_TEST_ALL_EQ(room_frame.begin(), room_frame.end(), expected_room.begin(),
-                      expected_room.end());
-    const auto absent = tp::presence_frame(token, false);
-    const auto expected_absent = hex(frames[2]);
-    BOOST_TEST_ALL_EQ(absent.begin(), absent.end(), expected_absent.begin(), expected_absent.end());
-    const auto room = hex(frames[1]);
-    const auto decoded = tp::decode_envelope(room);
-    BOOST_TEST(decoded->type == tp::envelope::kind::room);
-    BOOST_TEST_EQ(decoded->token, token);
-    BOOST_TEST_ALL_EQ(decoded->payload.begin(), decoded->payload.end(), action.begin(),
-                      action.end());
-    const auto presence = tp::decode_envelope(hex(frames[2]));
-    BOOST_TEST(presence->type == tp::envelope::kind::presence);
-    BOOST_TEST(!presence->present);
-    BOOST_TEST(!tp::decode_envelope(tp::bytes{1, 0, 0}).has_value());
-    BOOST_TEST(!tp::decode_envelope(tp::bytes{9, 0, 1, 65}).has_value());
-}
-
 void signals() {
     std::optional<wd::pmr::document> document;  // the views read_signal returns point into it
     const auto read = [&document](std::string_view text) -> std::optional<tp::signal_message> {
@@ -503,7 +462,7 @@ void offer_sizes_at_two_to_the_53() {
 }
 
 // Every field wider than a byte is big-endian, as DataView writes it, high bytes included: the
-// oracle's frames have a short metadata, small ids, offsets and sizes, and a token of 64 bytes.
+// oracle's frames have a short metadata, small ids, offsets and sizes.
 void wide_fields_are_big_endian() {
     const std::string metadata(0x0102, 'm');
     const auto offer =
@@ -532,22 +491,6 @@ void wide_fields_are_big_endian() {
     const tp::bytes expected_accepted{3, 3, 0xff, 0xfe, 0xfd, 0xfc};
     BOOST_TEST_ALL_EQ(accepted.begin(), accepted.end(), expected_accepted.begin(),
                       expected_accepted.end());
-
-    const std::string token(0x012c, 't');
-    const auto presence = tp::presence_frame(token, true);
-    BOOST_TEST_EQ(presence.size(), 4 + token.size());
-    BOOST_TEST_EQ(presence[2], 0x01);
-    BOOST_TEST_EQ(presence[3], 0x2c);
-    const auto room = tp::room_frame(token, data);
-    BOOST_TEST_EQ(room.size(), 3 + token.size() + data.size());
-    BOOST_TEST_EQ(room[1], 0x01);
-    BOOST_TEST_EQ(room[2], 0x2c);
-    const std::string longest(tp::max_room_token_bytes, 't');
-    const auto longest_frame = tp::room_frame(longest, data);
-    const auto envelope = tp::decode_envelope(longest_frame);
-    if (BOOST_TEST(envelope.has_value())) {
-        BOOST_TEST_EQ(envelope->token.size(), tp::max_room_token_bytes);
-    }
 }
 
 // Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
@@ -1095,13 +1038,11 @@ int main(int argc, char* argv[]) {
         return boost::report_errors();
     }
     const auto fixture = loaded->root();
-    topics(fixture);
     nostr_events(fixture);
     nostr_message_fields(fixture);
     event_ids_are_their_own(fixture);
     action_names();
     wide_bulk_frames_are_bounded();
-    envelopes(fixture);
     offer_sizes_at_two_to_the_53();
     wide_fields_are_big_endian();
     signals();

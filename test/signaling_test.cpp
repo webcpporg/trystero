@@ -249,7 +249,6 @@ struct answerer {
             net, str(oracle["app_id"]), str(oracle["room_id"]), str(oracle["self_id"]),
             std::span<const backend::ice_server>(),
             detail::signaling::callbacks{
-                .claim = {},
                 .publish =
                     [this](std::size_t relay, std::string_view topic, std::string_view content) {
                         published.push_back({
@@ -261,7 +260,7 @@ struct answerer {
                 .connected = {},
                 .failed = [this](const trystero::room_error& e) { failures.push_back(e.code); },
             },
-            detail::logger(), memory(), memory());
+            detail::logger(), memory());
         signaling->set_key(room_key(oracle));
     }
 

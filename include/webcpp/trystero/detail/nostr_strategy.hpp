@@ -276,6 +276,16 @@ public:
         }
     }
 
+    /** Announces nothing from now on, the relays left as they are, as 0.27.0's room cancels its
+     * announce timers once it starts to leave (strategy.ts's onBeforeLeave): a peer that hears no
+     * announcement of a leaving room offers it nothing. */
+    void stop_announcing() {
+        announcing_ = false;
+        for (auto& r : relays_) {
+            r.announce_timer.reset();
+        }
+    }
+
     /** How many relays the strategy uses. */
     std::size_t relay_count() const { return relays_.size(); }
 
@@ -617,7 +627,7 @@ private:
      * as Trystero's `replayAnnouncements` does; only once the room announced there. */
     void replay_announcement(std::size_t index) {
         auto& r = relays_[index];
-        if (!r.announced || blocked(r)) {
+        if (!announcing_ || !r.announced || blocked(r)) {
             return;
         }
         send_event(r, announce_topic_, announcement());
@@ -682,7 +692,7 @@ private:
 
     void announce(std::size_t index) {
         auto& r = relays_[index];
-        if (stopped_ || r.state == health::retired) {
+        if (stopped_ || !announcing_ || r.state == health::retired) {
             return;
         }
         r.announced = true;
@@ -872,6 +882,8 @@ private:
     std::pmr::vector<relay_state> relays_;
     recent_event_ids seen_;
     bool stopped_ = false;
+    // Whether the room still announces itself: not once it started to leave.
+    bool announcing_ = true;
     // Whether start() ran, and whether the relays are held closed.
     bool started_ = false;
     bool held_ = false;

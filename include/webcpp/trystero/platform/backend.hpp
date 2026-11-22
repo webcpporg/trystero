@@ -364,7 +364,7 @@ public:
      * `RTCPeerConnection` refuses the connection for a server it cannot use.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The app's resource, which the connection, its channels, its handlers and its
+     * @param memory The room's resource, which the connection, its channels, its handlers and its
      * texts are allocated in.
      * @return The connection, or null when the backend made
      * `backend_config::max_peer_connections_per_minute` in the last minute, when its runtime holds

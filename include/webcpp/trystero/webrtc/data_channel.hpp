@@ -11,7 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/handler.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/action_wire.hpp>
 
 #include <webcpp/webrtc/data_channel.hpp>
 #include <webcpp/webrtc/error.hpp>
@@ -47,7 +47,7 @@ namespace webcpp::trystero::webrtc {
 /** The executor of the backend's WebRTC objects: the app's. */
 using executor_type = webcpp::asio::any_io_executor;
 
-/** The allocator of their state, their queues and their texts: the app's resource. */
+/** The allocator of their state, their queues and their texts: the room's resource. */
 using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
 
 /**
@@ -55,15 +55,15 @@ using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
  * frames.
  *
  * It reads every message as it comes, with `async_receive`, on the executor. A text message, as a
- * peer can send, or a binary one larger than any room frame (`protocol::max_room_frame_bytes`), is
- * then dropped: neither can be a frame. Frames received while no message handler is installed wait
- * in the app's resource, in order, up to `max_pending_frames` for `pending_frames_ttl` from the
- * first, Trystero's pending-data bounds; exceeding either closes the channel. Installing a receiver
- * posts their delivery, so that `set_handlers` never calls it inline. In the browser, a message
- * larger than webcpp::webrtc's `options::max_message_size`, or past its receive budget, closes the
- * channel too.
+ * peer can send, or a binary one larger than any frame (`protocol::max_bulk_frame_bytes`, a wide
+ * chunk's bound), is then dropped: neither can be a frame. Frames received while no message handler
+ * is installed wait in the room's resource, in order, up to `max_pending_frames` for
+ * `pending_frames_ttl` from the first, Trystero's pending-data bounds; exceeding either closes the
+ * channel. Installing a receiver posts their delivery, so that `set_handlers` never calls it
+ * inline. In the browser, a message larger than webcpp::webrtc's `options::max_message_size`, or
+ * past its receive budget, closes the channel too.
  *
- * Tip: a received frame is read once, by webcpp::webrtc, into a vector of the app's resource,
+ * Tip: a received frame is read once, by webcpp::webrtc, into a vector of the room's resource,
  * which the message handler then owns; what the platform holds before is the platform's.
  *
  * @see "The backend's WebRTC", in the guide.
@@ -91,7 +91,7 @@ public:
      * @param channel The channel, made or accepted by a connection of the same executor and
      * allocator.
      * @param factory The backend, which makes the timer of the pending frames, in `memory`.
-     * @param memory The app's resource, the channel's: the wrapper, its handlers and its frames
+     * @param memory The room's resource, the channel's: the wrapper, its handlers and its frames
      * are allocated in it.
      * @return The channel.
      */
@@ -272,8 +272,8 @@ private:
         if (!closed_) {
             receive();
         }
-        // Trystero frames are binary, and none is larger than the largest room frame.
-        if (text || frame.size() > protocol::max_room_frame_bytes) {
+        // Trystero frames are binary, and none is larger than a wide chunk.
+        if (text || frame.size() > protocol::max_bulk_frame_bytes) {
             return;
         }
         on_message(std::move(frame));

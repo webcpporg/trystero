@@ -123,8 +123,6 @@ int main() {
         out.app_id = "webcpp-trystero-differences";
         out.relay_urls = {std::pmr::string(c.relay)};
         out.ice_servers = {{.urls = {std::pmr::string(c.stun)}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when all leave.
-        out.idle_timeout = std::chrono::milliseconds{0};
         return out;
     };
     // The other peer, as another page would be: the lobby with the first configuration, the

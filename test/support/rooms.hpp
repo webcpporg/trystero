@@ -47,8 +47,8 @@
 
 // The rooms' shared test helpers: a memory network with two relays, an app over them and a join
 // that must succeed, a watcher of a room's relay traffic, a flood of announcements, the virtual
-// clock's own waits, and a JSON document to send. A case of room_test.cpp, connection_test.cpp or
-// shared_test.cpp includes this header for them.
+// clock's own waits, and a JSON document to send. A case of room_test.cpp includes this header for
+// them.
 namespace webcpp::trystero::test {
 
 using namespace std::chrono_literals;

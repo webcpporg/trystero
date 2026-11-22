@@ -22,7 +22,6 @@
 // | --room3         | a third room of the same app, optional                             |
 // | --room2Delay    | the ms before joining room2, optional (0)                          |
 // | --room3Delay    | the ms before joining room3, optional (0)                          |
-// | --idle          | the app's idle_timeout in ms, optional (123,333)                   |
 // | --handshake     | every room's handshake timeout in ms, optional (10,000)            |
 // | --delayOpen     | defer native open delivery while transport messages arrive, optional |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
@@ -186,7 +185,6 @@ trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
         config.ice_servers.push_back(
             {.urls = {std::pmr::string(args["ice"])}, .username = {}, .credential = {}});
     }
-    config.idle_timeout = millis(args["idle"], std::chrono::milliseconds(123'333));
     config.log = [](std::string_view category, std::string_view text) {
         record_connection(category, text);
         std::cerr << category << ": " << text << '\n';

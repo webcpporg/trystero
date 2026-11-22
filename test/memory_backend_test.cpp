@@ -4,7 +4,7 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// The memory backend's hooks, which the tests of shared connections drive: a filter that delivers,
+// The memory backend's hooks, which the tests of rooms drive: a filter that delivers,
 // drops or holds frames in the channel's order, deferred opens, injected frames, a forced failure,
 // and a channel that buffers and drains.
 
