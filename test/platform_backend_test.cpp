@@ -178,11 +178,11 @@ std::span<const std::uint8_t> bytes_of(std::string_view text) {
 }
 
 // The master of the password "hunter2" in the room "lobby" of "example.com/app", as 0.27.0
-// derived it (fixtures/expected/trystero-0.27.0.json, room_keys_password), after the call
-// returned, on the io_context's thread, and computed in no handler of the io_context: natively
-// the one handler it runs is the completion, so the 600,000 iterations ran on the backend's own
-// thread; in a page the browser's crypto.subtle computes them.
-void its_pbkdf2_is_trysteros_and_computed_in_no_handler_of_the_io_context() {
+// derived it (fixtures/expected/trystero-0.27.0.json, room_keys_password), completed after the
+// call returned and on the io_context's thread; natively the io_context runs one handler for it.
+// Where the 600,000 iterations run (the backend's own thread natively, crypto.subtle in a page)
+// is the backend's design, which this case does not observe.
+void its_pbkdf2_is_trysteros_and_completes_on_the_io_context() {
     asio::io_context io;
     trystero::platform::backend backend(io.get_executor());
     const auto salt = trystero::protocol::pbkdf2_salt("example.com/app", "lobby");
@@ -198,7 +198,7 @@ void its_pbkdf2_is_trysteros_and_computed_in_no_handler_of_the_io_context() {
                                    });
     returned = true;
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
-    BOOST_TEST_EQ(io.run_one(), 1U);  // lint-run: the completion, however long the work takes
+    BOOST_TEST_EQ(io.run_one(), 1U);  // lint-run: one handler, however long the work takes
     BOOST_TEST(done.has_value());
 #endif
     io.run();  // lint-run: the derivation's completion, however long it takes
@@ -265,7 +265,7 @@ int main() {
     run_case(its_clocks_are_the_standard_librarys);
     run_case(its_randomness_fills_and_differs);
     run_case(its_randomness_fills_more_than_a_piece);
-    run_case(its_pbkdf2_is_trysteros_and_computed_in_no_handler_of_the_io_context);
+    run_case(its_pbkdf2_is_trysteros_and_completes_on_the_io_context);
     run_case(its_destruction_waits_for_a_derivation);
     run_case(its_executor_and_tls_context_are_there);
     run_case(it_watches_no_connectivity_without_a_page);
