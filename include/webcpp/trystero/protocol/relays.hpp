@@ -97,7 +97,7 @@ void seeded_shuffle(std::span<T> xs, std::uint32_t seed) {
     const auto rand = [&state] {
         state += 0x6d2b79f5U;
         std::uint32_t t = (state ^ (state >> 15U)) * (1U | state);
-        t = (t + (t ^ (t >> 7U)) * (61U | t)) ^ t;
+        t = (t + ((t ^ (t >> 7U)) * (61U | t))) ^ t;
         return static_cast<double>(t ^ (t >> 14U)) / 4294967296.0;
     };
     for (std::size_t i = xs.size(); i != 0;) {

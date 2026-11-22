@@ -365,10 +365,12 @@ struct extra_room {
             record("peer-leave", {{"room", which}, {"peer", event.peer_id}});
         });
         room.on_error([this](const trystero::room_error& e) {
-            record("error", {{"room", which},
-                             {"peer", e.peer_id},
-                             {"error", e.code.message()},
-                             {"what", e.message}});
+            record("error", {
+                                {"room", which},
+                                {"peer", e.peer_id},
+                                {"error", e.code.message()},
+                                {"what", e.message},
+                            });
         });
         chat.on_message([this](std::string text, const trystero::message_info& info) {
             record("chat", {{"room", which}, {"from", info.from}, {"text", text}});

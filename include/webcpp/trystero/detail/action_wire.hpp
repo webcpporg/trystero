@@ -864,47 +864,13 @@ private:
         std::pmr::vector<waiting_inline> ready(memory_);
         std::pmr::vector<std::pair<std::pmr::string, std::uint32_t>> accepted(memory_);
         for (auto& [peer, in] : incoming_) {
-            std::pmr::deque<waiting_inline> still_waiting(memory_);
-            for (auto& w : in.waiting) {
-                if (now - w.arrived > pending_data_timeout) {
-                    continue;  // expired, as Trystero's sweep drops it, even if its action is here
-                }
-                if (cb_.has_listener(w.message.name())) {
-                    ready.push_back(std::move(w));
-                } else {
-                    still_waiting.push_back(std::move(w));
-                }
-            }
-            in.waiting = std::move(still_waiting);
-            if (in.active) {
-                continue;
-            }
-            for (auto& [id, b] : in.bulk) {
-                if (b.receiving || !cb_.has_listener(b.name) ||
-                    reserved_bytes_ + b.size > max_receive_bytes_) {
-                    continue;
-                }
-                b.receiving = true;
-                reserved_bytes_ += b.size;
-                in.active = id;
-                accepted.emplace_back(peer, id);  // the peer's id copied into the room's resource
-                break;
+            take_ready_inline(in, now, ready);
+            if (!in.active) {
+                accept_next_transfer(peer, in, accepted);
             }
         }
         for (auto& w : ready) {
-            // A frame kept before its action had a gate is asked now, as Trystero asks it when it
-            // flushes; the gate's code, or a delivery, may have ended its peer.
-            if (!w.admitted) {
-                const auto& m = w.message;
-                const auto verdict = gate(m.peer, m.name(), m.payload().size(), m.metadata());
-                if (verdict == admission::refused) {
-                    refused(m.peer, m.name(), m.metadata(), "payload rejected by receiver");
-                    continue;
-                }
-            }
-            if (cb_.may_receive(w.message.peer, w.message.name())) {
-                cb_.deliver(std::move(w.message));
-            }
+            deliver_ready(w);
         }
         for (const auto& [peer, id] : accepted) {
             // A delivery or an earlier acceptance may have dropped this peer.
@@ -912,6 +878,60 @@ private:
                 it != incoming_.end() && it->second.active == id) {
                 control(peer, *control_frame(protocol::append_accepted, id));
             }
+        }
+    }
+
+    /** Moves a peer's inline frames whose action now has a listener to `ready`, and drops those
+     * that waited past `pending_data_timeout`, as Trystero's sweep drops them, even if their
+     * action is here. */
+    void take_ready_inline(peer_in& in, time_point now, std::pmr::vector<waiting_inline>& ready) {
+        std::pmr::deque<waiting_inline> still_waiting(memory_);
+        for (auto& w : in.waiting) {
+            if (now - w.arrived > pending_data_timeout) {
+                continue;
+            }
+            if (cb_.has_listener(w.message.name())) {
+                ready.push_back(std::move(w));
+            } else {
+                still_waiting.push_back(std::move(w));
+            }
+        }
+        in.waiting = std::move(still_waiting);
+    }
+
+    /** Marks the first of an idle peer's transfers that has a listener and fits the receive
+     * budget as receiving, and records it in `accepted`, the peer's id copied into the room's
+     * resource. */
+    void accept_next_transfer(
+        const std::pmr::string& peer, peer_in& in,
+        std::pmr::vector<std::pair<std::pmr::string, std::uint32_t>>& accepted) {
+        for (auto& [id, b] : in.bulk) {
+            if (b.receiving || !cb_.has_listener(b.name) ||
+                reserved_bytes_ + b.size > max_receive_bytes_) {
+                continue;
+            }
+            b.receiving = true;
+            reserved_bytes_ += b.size;
+            in.active = id;
+            accepted.emplace_back(peer, id);
+            return;
+        }
+    }
+
+    /** Delivers an inline frame whose action now has a listener. A frame kept before its action
+     * had a gate is asked now, as Trystero asks it when it flushes; the gate's code, or a
+     * delivery, may have ended its peer. */
+    void deliver_ready(waiting_inline& w) {
+        if (!w.admitted) {
+            const auto& m = w.message;
+            const auto verdict = gate(m.peer, m.name(), m.payload().size(), m.metadata());
+            if (verdict == admission::refused) {
+                refused(m.peer, m.name(), m.metadata(), "payload rejected by receiver");
+                return;
+            }
+        }
+        if (cb_.may_receive(w.message.peer, w.message.name())) {
+            cb_.deliver(std::move(w.message));
         }
     }
 

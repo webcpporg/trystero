@@ -432,9 +432,9 @@ private:
      * `plaintext` sealed as a signal of this side's, under the room key, with a fresh IV from the
      * backend's randomness, as 0.27.0's `toCipher` seals it.
      */
-    boost::system::result<std::pmr::string> seal_signal(std::string_view type,
-                                                        std::string_view offer_id,
-                                                        std::string_view plaintext) {
+    [[nodiscard]] boost::system::result<std::pmr::string> seal_signal(std::string_view type,
+                                                                      std::string_view offer_id,
+                                                                      std::string_view plaintext) {
         BOOST_ASSERT(keyed_);
         std::array<std::uint8_t, protocol::gcm_iv_size> iv{};
         factory_.random(iv);
@@ -444,10 +444,9 @@ private:
 
     /** `sealed` opened as a signal of `peer`'s, under the room key, as 0.27.0's `toPlain` opens
      * it. */
-    boost::system::result<std::pmr::string> open_signal(std::string_view type,
-                                                        std::string_view peer,
-                                                        std::string_view offer_id,
-                                                        std::string_view sealed) const {
+    [[nodiscard]] boost::system::result<std::pmr::string> open_signal(
+        std::string_view type, std::string_view peer, std::string_view offer_id,
+        std::string_view sealed) const {
         const auto aad = protocol::signal_aad(type, peer, offer_id, memory_);
         return protocol::open(key_, sealed, std::string_view(aad), memory_);
     }

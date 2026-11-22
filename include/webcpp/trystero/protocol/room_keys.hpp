@@ -104,7 +104,7 @@ inline std::array<std::uint8_t, 32> pbkdf2_salt(
  * @param memory The resource the infos are allocated in.
  * @return The keys, or the error of the derivation.
  */
-inline boost::system::result<room_keys> derive_room_keys(
+[[nodiscard]] inline boost::system::result<room_keys> derive_room_keys(
     std::span<const std::uint8_t, 32> master,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     constexpr std::array<std::uint8_t, 32> no_salt{};
@@ -133,7 +133,7 @@ inline boost::system::result<room_keys> derive_room_keys(
  * @param peer_id The id of the peer the token is for.
  * @param seq The token's sequence number.
  * @param memory The resource the text is allocated in.
- * @pre `seq` is at most @ref max_room_auth_seq: a number a peer sends is checked by
+ * @pre `seq` is at most @ref max_room_auth_seq, since a number a peer sends is checked by
  * @ref verify_room_auth, which refuses a larger one, before it reaches here.
  * @return The text.
  */

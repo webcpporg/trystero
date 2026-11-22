@@ -195,20 +195,20 @@ public:
      *
      * It stands in for `webcpp::crypto::curves::secp256k1::keypair::generate`, which
      * webcpp::crypto does not offer yet, and follows its contract so that it is replaced by it
-     * when that reaches main: up to @ref max_key_draws secrets of 32 bytes from
-     * `webcpp::crypto::random_device`, drawn again only when one is not a valid secret key, which
-     * is negligibly rare; each is wiped once it is used.
+     * when that reaches main: up to @ref max_key_draws secrets of 32 bytes from the system's
+     * generator, through webcpp::crypto, drawn again only when one is not a valid secret key,
+     * which is negligibly rare; each is wiped once it is used.
      *
      * @param memory The resource the signing context and the public key's text are allocated in;
      * it must outlive the signer.
      * @return The signer; `webcpp::crypto::error::entropy_unavailable` when the system's generator
      * fails or every draw is refused; any other error of `keypair::make`.
      */
-    static boost::system::result<signer> generate(
+    [[nodiscard]] static boost::system::result<signer> generate(
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
         for (std::size_t draw = 0; draw < max_key_draws; ++draw) {
             webcpp::crypto::secret<32> secret;
-            if (!webcpp::crypto::random_device().fill(secret.writable())) {
+            if (!webcpp::crypto::random_device().fill(secret.writable())) {  // lint-world: the key
                 return webcpp::crypto::error::entropy_unavailable;
             }
             auto made = from_secret(secret.bytes(), memory);
@@ -228,7 +228,7 @@ public:
      * @return The signer; `webcpp::crypto::error::invalid_secret_key` when the bytes are not a
      * valid secret key; any other error of `keypair::make`.
      */
-    static boost::system::result<signer> from_secret(
+    [[nodiscard]] static boost::system::result<signer> from_secret(
         std::span<const std::uint8_t, 32> secret,
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
         auto key = webcpp::crypto::curves::secp256k1::keypair::make(secret, memory);
@@ -250,8 +250,8 @@ public:
     [[nodiscard]] std::string_view pubkey_hex() const { return pubkey_; }
 
     /**
-     * Signs an event id with BIP-340 Schnorr, with 32 bytes of auxiliary randomness from
-     * `webcpp::crypto::random_device`, as Trystero's `schnorr.signAsync` draws its own.
+     * Signs an event id with BIP-340 Schnorr, with 32 bytes of auxiliary randomness from the
+     * system's generator, through webcpp::crypto, as Trystero's `schnorr.signAsync` draws its own.
      *
      * @param event_id The 32 bytes to sign.
      * @return The 64-byte signature, an event's `sig`; `webcpp::crypto::error::entropy_unavailable`
@@ -260,7 +260,7 @@ public:
     [[nodiscard]] boost::system::result<std::array<std::uint8_t, 64>> sign(
         std::span<const std::uint8_t, 32> event_id) const {
         webcpp::crypto::secret<32> aux;
-        if (!webcpp::crypto::random_device().fill(aux.writable())) {
+        if (!webcpp::crypto::random_device().fill(aux.writable())) {  // lint-world: aux randomness
             return webcpp::crypto::error::entropy_unavailable;
         }
         return key_.sign_schnorr(event_id, aux.bytes());
@@ -306,7 +306,7 @@ inline bool verify(std::span<const std::uint8_t, 64> sig, std::span<const std::u
  * @pre `topic` and `content` are UTF-8, as a room's are: a topic is ASCII, a content a signal's
  * text.
  */
-inline boost::system::result<std::pmr::string> event_message(
+[[nodiscard]] inline boost::system::result<std::pmr::string> event_message(
     const signer& key, std::chrono::sys_seconds created_at, std::string_view topic,
     std::string_view content,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {

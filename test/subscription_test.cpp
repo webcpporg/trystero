@@ -177,7 +177,8 @@ void replay_reports_what_is_current() {
     BOOST_TEST_ALL_EQ(replayed.begin(), replayed.end(), with_nested.begin(), with_nested.end());
     // Without `replay` the items are not read.
     std::vector<int> none;
-    static_cast<void>(e.add([&](int v) { none.push_back(v); }, {}, current));
+    static_cast<void>(
+        e.add([&](int v) { none.push_back(v); }, {.once = false, .replay = false}, current));
     BOOST_TEST(none.empty());
 }
 

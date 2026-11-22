@@ -94,7 +94,7 @@ private:
         const std::pmr::string self_id = std::move(setup.self_id);
         trystero::app_config config = std::move(static_cast<trystero::app_config&>(setup));
         if (self_id.empty()) {
-            return trystero::app(std::move(ex), factory, std::move(config));
+            return {std::move(ex), factory, std::move(config)};
         }
         return trystero::detail::app_access::make(std::move(ex), factory, std::move(config),
                                                   self_id);
@@ -103,7 +103,7 @@ private:
 
 /** Gives the rooms `a` joins from now on `timeout` to finish each handshake, in place of 0.27.0's
  * 10 s, through the app's detail seam: a test makes one side of a handshake patient. */
-inline void set_handshake_timeout(trystero::app& a, std::chrono::milliseconds timeout) {
+inline void set_handshake_timeout(const trystero::app& a, std::chrono::milliseconds timeout) {
     trystero::detail::app_access::impl(a).set_handshake_timeout(timeout);
 }
 
@@ -138,7 +138,7 @@ inline trystero::room join(trystero::app& a, std::string_view room_id,
 /** Names the user of each remote peer of `a`'s rooms as `net.assign_user` gave it, through the
  * app's state, since a room reads a peer's user from no backend: until identities are derived from
  * keys, each peer is a user of its own. */
-inline void group_users(trystero::app& a, const memory_network& net) {
+inline void group_users(const trystero::app& a, const memory_network& net) {
     trystero::detail::app_access::impl(a).resolve_users_with(
         [&net](std::string_view peer) { return net.user_of(peer); });
 }

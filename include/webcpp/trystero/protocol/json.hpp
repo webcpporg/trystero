@@ -148,8 +148,8 @@ inline bool quotable(std::string_view text) {
 
 /**
  * Appends `text` as the string `JSON.stringify` writes, whatever its bytes: quoted, `"` and `\\`
- * escaped, `\b`, `\f`, `\n`, `\r` and `\t` by their letters, the other controls below 0x20 as
- * lowercase `\u00XX`, and every other byte as it is (DEL and U+2028 too, as `JSON.stringify`
+ * escaped, `\\b`, `\\f`, `\\n`, `\\r` and `\\t` by their letters, the other controls below 0x20
+ * as lowercase `\\u00XX`, and every other byte as it is (DEL and U+2028 too, as `JSON.stringify`
  * writes them).
  *
  * It is the library's one writer of a string that is not refused.

@@ -444,7 +444,7 @@ public:
     }
 
     /**
-     * Fills `out` from `webcpp::crypto::random_device`, the system's generator, in a page its
+     * Fills `out` from the system's generator, through webcpp::crypto, in a page its
      * `crypto.getRandomValues`; the program aborts when it has none.
      *
      * @param out The bytes to fill.

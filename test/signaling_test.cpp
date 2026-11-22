@@ -273,6 +273,40 @@ struct answerer {
     }
 };
 
+/** The topic of the peer an offer of the fixture is from: its `peerId`. The fixture's topics are
+ * 0.26's; the signals go to the offerer's topic as 0.27.0 names it. */
+std::string offerer_topic(const fixture_value& oracle, std::string_view offer) {
+    constexpr std::string_view key = R"("peerId":")";
+    const auto found = offer.find(key);
+    require(BOOST_TEST(found != std::string_view::npos));
+    const auto from = found + key.size();
+    const auto closing = offer.find('"', from);
+    require(BOOST_TEST(closing != std::string_view::npos));
+    const auto offerer = offer.substr(from, closing - from);
+    return std::string(
+        trystero::protocol::peer_topic(str(oracle["app_id"]), str(oracle["room_id"]), offerer));
+}
+
+/** Checks a published signal against the one Trystero published: its relay, its topic, what its
+ * sealed text opens to, and its bytes but for that text. */
+void check_published(const fixture_value& oracle, const published_signal& published,
+                     const fixture_value& signal, std::string_view topic) {
+    BOOST_TEST_EQ(published.relay, 0U);
+    BOOST_TEST_EQ(published.topic, topic);
+    const read_signal_text read(published.text);
+    const auto& m = *read.message;
+    const bool answer = !m.answer.empty();
+    const auto sealed = answer ? m.answer : m.candidate;
+    const auto aad =
+        tp::signal_aad(answer ? "answer" : "candidate", str(oracle["self_id"]), m.offer_id);
+    const auto plain = tp::open(room_key(oracle), sealed, std::string_view(aad));
+    if (BOOST_TEST(plain.has_value())) {
+        BOOST_TEST_EQ(*plain, str(answer ? oracle["answer_sdp"] : oracle["candidate"]));
+        BOOST_TEST_EQ(published.text,
+                      replaced(str(signal["text"]), old_sealed(oracle, *plain), sealed));
+    }
+}
+
 // For each offer, the signaling opens it, applies it to an answering connection, and publishes the
 // answer, then the candidate it held, on the offerer's topic, each written as Trystero's answerer
 // writes it: {peerId, answer, offerId} and {peerId, candidate, offerId}, its offerId last, or none
@@ -292,36 +326,11 @@ void an_answerers_signals_are_trysteros(const fixture_value& oracle) {
         }
         const auto expected = c["published"];
         BOOST_TEST_EQ(a.published.size(), expected.size());
-        // The fixture's topics are 0.26's; the signals go to the offerer's topic as 0.27.0 names
-        // it.
-        const auto offer = str(c["offer"]);
-        constexpr std::string_view key = R"("peerId":")";
-        const auto found = offer.find(key);
-        BOOST_TEST(found != std::string_view::npos);
-        const auto from = found + key.size();
-        const auto closing = offer.find('"', from);
-        BOOST_TEST(closing != std::string_view::npos);
-        const auto offerer = offer.substr(from, closing - from);
-        const std::string topic = std::string(
-            trystero::protocol::peer_topic(str(oracle["app_id"]), str(oracle["room_id"]), offerer));
+        const std::string topic = offerer_topic(oracle, str(c["offer"]));
         std::size_t i = 0;
         for (const auto signal : expected) {
             if (i < a.published.size()) {
-                BOOST_TEST_EQ(a.published[i].relay, 0U);
-                BOOST_TEST_EQ(a.published[i].topic, topic);
-                const read_signal_text read(a.published[i].text);
-                const auto& m = *read.message;
-                const bool answer = !m.answer.empty();
-                const auto sealed = answer ? m.answer : m.candidate;
-                const auto aad = tp::signal_aad(answer ? "answer" : "candidate",
-                                                str(oracle["self_id"]), m.offer_id);
-                const auto plain = tp::open(room_key(oracle), sealed, std::string_view(aad));
-                if (BOOST_TEST(plain.has_value())) {
-                    BOOST_TEST_EQ(*plain, str(answer ? oracle["answer_sdp"] : oracle["candidate"]));
-                    BOOST_TEST_EQ(
-                        a.published[i].text,
-                        replaced(str(signal["text"]), old_sealed(oracle, *plain), sealed));
-                }
+                check_published(oracle, a.published[i], signal, topic);
             }
             ++i;
         }
@@ -538,10 +547,13 @@ struct relay_harness {
     relay_harness(const relay_harness&) = delete;
     relay_harness& operator=(const relay_harness&) = delete;
 
+    // The strategy's stop allocates what it logs; a failure to allocate there ends the test, as
+    // in any destructor.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~relay_harness() { strategy->stop(); }
 
     /** The texts of `type` the strategy sent, parsed, in order. */
-    std::vector<webcpp::document::document> sent(std::string_view type) const {
+    [[nodiscard]] std::vector<webcpp::document::document> sent(std::string_view type) const {
         std::vector<webcpp::document::document> out;
         for (const auto& text : net.socket->sent) {
             auto parsed = webcpp::document::parse(text);
@@ -553,17 +565,17 @@ struct relay_harness {
     }
 
     /** The id of the strategy's first subscription. */
-    std::string subscription() const {
+    [[nodiscard]] std::string subscription() const {
         const auto requests = sent("REQ");
         require(BOOST_TEST(!requests.empty()));
         return std::string(str(requests.front().root()[1]));
     }
 
     /** How many events the strategy sent. */
-    std::size_t events() const { return sent("EVENT").size(); }
+    [[nodiscard]] std::size_t events() const { return sent("EVENT").size(); }
 
     /** Whether a signal published now goes out: it is the last text sent. */
-    bool publishes() {
+    [[nodiscard]] bool publishes() const {
         const auto before = net.socket->sent.size();
         strategy->publish(0, "a-peer-topic", "probe");
         return net.socket->sent.size() == before + 1;
@@ -586,7 +598,7 @@ struct relay_harness {
     }
 
     /** How many REQs the strategy sent on its connection. */
-    std::size_t requests() const { return sent("REQ").size(); }
+    [[nodiscard]] std::size_t requests() const { return sent("REQ").size(); }
 
     /** Hands the strategy `text` as the relay's. */
     void relay_says(std::string_view text) { net.handlers.message(text); }
@@ -595,7 +607,7 @@ struct relay_harness {
     void wait(std::chrono::milliseconds by) { require(BOOST_TEST(net.advance(by))); }
 
     /** Whether a logged sentence holds `part`. */
-    bool logged_with(std::string_view part) const {
+    [[nodiscard]] bool logged_with(std::string_view part) const {
         return std::ranges::any_of(logged, [part](const std::string& line) {
             return line.find(part) != std::string::npos;
         });

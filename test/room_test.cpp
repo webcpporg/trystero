@@ -237,14 +237,15 @@ struct wire_bench {
 
     wire_bench() {
         using trystero::detail::action_wire;
-        const auto memory = std::pmr::get_default_resource();
+        auto* const memory = std::pmr::get_default_resource();
         clock_start = f.net.make_timer(memory);
         wire = std::make_shared<action_wire>(
             f.net, "token", trystero::room_options{}.max_receive_bytes,
             action_wire::callbacks{
                 .find_link = [this](std::string_view, bool) -> std::optional<action_wire::link> {
                     return action_wire::link{
-                        std::weak_ptr<trystero::detail::channel_link>(channel)};
+                        std::weak_ptr<trystero::detail::channel_link>(channel),
+                    };
                 },
                 .peers = [memory](bool) { return std::pmr::vector<std::string_view>(memory); },
                 .may_receive = [](std::string_view, std::string_view) { return true; },
@@ -265,7 +266,7 @@ struct wire_bench {
     }
 
     /** Hands the wire an action frame of `peer`. */
-    void receive(std::string_view peer, trystero::backend::bytes frame) {
+    void receive(std::string_view peer, trystero::backend::bytes frame) const {
         const auto view = std::span<const std::uint8_t>(frame);
         wire->handle(peer, std::move(frame), view);
     }
@@ -285,7 +286,7 @@ struct wire_bench {
 // any order, each once; a chunk of another length, or one that came already, drops the peer.
 void a_wide_transfer_arrives_in_wide_chunks_in_any_order() {
     namespace tp = trystero::protocol;
-    trystero::bytes payload(200 * 1024);
+    trystero::bytes payload(std::size_t{200} * 1024);
     for (std::size_t i = 0; i < payload.size(); ++i) {
         payload[i] = static_cast<std::uint8_t>(i * 31);
     }
@@ -451,7 +452,7 @@ void a_control_frame_into_a_full_channel_drops_the_peer() {
     if (BOOST_TEST_EQ(b.dropped.size(), 1U)) {
         BOOST_TEST_EQ(b.dropped[0], "unable to send action control");
     }
-    wire_bench at_bound;
+    const wire_bench at_bound;
     at_bound.channel->buffered = tp::max_control_buffered_bytes;
     at_bound.receive("A", tp::encode_offer("file", tp::payload_format::binary, "", 1, 20000));
     BOOST_TEST_EQ(at_bound.channel->sent.size(), 1U);
@@ -554,7 +555,7 @@ void password_room_keys_complete_after_the_join_returns() {
     f.net.derive_delay = true;
     const std::string a_id = "0aaaaaaaaaaaaaaaaaaa";
     const std::string b_id = "0bbbbbbbbbbbbbbbbbbb";
-    announcement_watcher watcher(f, "keyed", {a_id, b_id});
+    const announcement_watcher watcher(f, "keyed", {a_id, b_id});
     trystero::test::app a_app(f.io.get_executor(), f.net, app_config(a_id, "s3cret"));
     auto a = join(a_app, "keyed");
     BOOST_TEST_EQ(f.net.derivations, 1U);
@@ -697,13 +698,16 @@ void the_room_keys_cache_keeps_64_rooms() {
         f.net, app_id, "s3cret", std::pmr::get_default_resource());
     std::map<std::string, std::vector<std::array<std::uint8_t, 32>>> keys;
     const auto get = [&](const std::string& room) {
-        cache->get(room, [&keys, room](boost::system::error_code ec,
-                                       const trystero::protocol::room_keys& k) {
-            BOOST_TEST(!ec);
-            std::array<std::uint8_t, 32> aes{};
-            std::ranges::copy(k.aes.bytes(), aes.begin());
-            keys[room].push_back(aes);
-        });
+        // The room's list, made now: the completion holds a pointer, which moves without
+        // allocating, where a copy of the name would.
+        auto* const list = &keys[room];
+        cache->get(room,
+                   [list](boost::system::error_code ec, const trystero::protocol::room_keys& k) {
+                       BOOST_TEST(!ec);
+                       std::array<std::uint8_t, 32> aes{};
+                       std::ranges::copy(k.aes.bytes(), aes.begin());
+                       list->push_back(aes);
+                   });
     };
     constexpr std::size_t capacity = trystero::detail::room_keys_cache::capacity;
     BOOST_TEST_EQ(capacity, 64U);
@@ -990,7 +994,12 @@ void a_forged_answer_changes_nothing() {
 
     std::vector<report> errors;
     a.on_error([&](const trystero::room_error& e) {
-        errors.push_back({e.code, std::string(e.message), std::string(e.peer_id), e.stage});
+        errors.push_back({
+            .code = e.code,
+            .message = std::string(e.message),
+            .peer_id = std::string(e.peer_id),
+            .stage = e.stage,
+        });
     });
     flooder attacker(f, "forged");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "forged", a_id);
@@ -1459,12 +1468,12 @@ void each_room_signs_with_its_own_key() {
     std::set<std::string> keys;
     {
         auto one = join(a_app, "one");
-        auto two = join(a_app, "two");
+        const auto two = join(a_app, "two");
         webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(one_topic))));
         webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(two_topic))));
         for (const auto& topic : {one_topic, two_topic}) {
             std::set<std::string> room_keys;
-            for (const auto url : {relay_a, relay_b}) {
+            for (const auto* const url : {relay_a, relay_b}) {
                 const auto signers = signers_of(f, url, topic);
                 room_keys.insert(signers.begin(), signers.end());
             }
@@ -1481,7 +1490,7 @@ void each_room_signs_with_its_own_key() {
     const auto again = join(a_app, "one");
     webcpp::test::require(BOOST_TEST(run_until(f, announced_twice(one_topic))));
     const auto signers = signers_of(f, relay_a, one_topic);
-    BOOST_TEST(keys.find(signers.front()) == keys.end());
+    BOOST_TEST(!keys.contains(signers.front()));
     BOOST_TEST(
         std::ranges::all_of(signers, [&](const std::string& k) { return k == signers.front(); }));
 }
@@ -2433,7 +2442,7 @@ void second_on_request_is_refused() {
         ask.on_request([](std::string q, const trystero::message_info&) { return q; });
     BOOST_TEST(third.has_value() && third->active());
 
-    auto gate = ask.on_receive([](const trystero::receive_info&) { return true; });
+    const auto gate = ask.on_receive([](const trystero::receive_info&) { return true; });
     webcpp::test::require(BOOST_TEST(gate.has_value()));
     BOOST_TEST(ask.on_receive([](const trystero::receive_info&) { return true; }).has_error());
     auto chat = a.make_action<std::string>("chat");
@@ -2474,9 +2483,11 @@ void a_request_is_answered_or_refused() {
     std::optional<std::pair<boost::system::error_code, std::string>> answered;
     ask.async_request(
         "banana",
-        trystero::request_options{.target = trystero::peer_id(b.self_id()),
-                                  .metadata = R"({"k":[1,2]})",
-                                  .timeout = std::nullopt},
+        trystero::request_options{
+            .target = trystero::peer_id(b.self_id()),
+            .metadata = R"({"k":[1,2]})",
+            .timeout = std::nullopt,
+        },
         [&](boost::system::error_code ec, std::string r) { answered.emplace(ec, std::move(r)); });
     BOOST_TEST(run_until(f.io, [&] { return answered.has_value(); }));
     BOOST_TEST(!answered->first);
@@ -2486,7 +2497,7 @@ void a_request_is_answered_or_refused() {
 
     std::optional<boost::system::error_code> refused;
     ask.async_request("no", trystero::request_options{.target = trystero::peer_id(b.self_id())},
-                      [&](boost::system::error_code ec, std::string r) {
+                      [&](boost::system::error_code ec, const std::string& r) {
                           refused = ec;
                           BOOST_TEST(r.empty());
                       });
@@ -2498,14 +2509,17 @@ void a_request_is_answered_or_refused() {
     a.make_request_action<std::string>("later").async_request(
         "hello",
         trystero::request_options{
-            .target = trystero::peer_id(b.self_id()), .metadata = {}, .timeout = 50ms},
-        [&](boost::system::error_code ec, std::string) { timed_out = ec; });
+            .target = trystero::peer_id(b.self_id()),
+            .metadata = {},
+            .timeout = 50ms,
+        },
+        [&](boost::system::error_code ec, const std::string&) { timed_out = ec; });
     BOOST_TEST(run_until(f.io, [&] { return timed_out.has_value(); }));
     BOOST_TEST(*timed_out == trystero::error::request_timed_out);
 
     std::optional<boost::system::error_code> absent;
     ask.async_request("x", trystero::request_options{.target = "nobody"},
-                      [&](boost::system::error_code ec, std::string) { absent = ec; });
+                      [&](boost::system::error_code ec, const std::string&) { absent = ec; });
     BOOST_TEST(run_until(f.io, [&] { return absent.has_value(); }));
     BOOST_TEST(*absent == trystero::error::not_connected);
 }
@@ -2542,8 +2556,9 @@ void messages_wait_for_a_listener() {
             got.push_back("second " + std::to_string(v.at(0)));
         });
     BOOST_TEST(run_until(f.io, [&] { return got.size() == 6; }));
-    const std::vector<std::string> both{"first 0",  "second 0", "first 1",
-                                        "second 1", "first 2",  "second 2"};
+    const std::vector<std::string> both{
+        "first 0", "second 0", "first 1", "second 1", "first 2", "second 2",
+    };
     BOOST_TEST_ALL_EQ(got.begin(), got.end(), both.begin(), both.end());
 
     first.unsubscribe();
@@ -2586,7 +2601,7 @@ void a_receive_gate_decides_and_progress_is_reported() {
     BOOST_TEST(gate.has_value());
     std::vector<std::size_t> got;
     receive.on_message(
-        [&](trystero::bytes v, const trystero::message_info&) { got.push_back(v.size()); });
+        [&](const trystero::bytes& v, const trystero::message_info&) { got.push_back(v.size()); });
     std::vector<double> shares;
     receive.on_receive_progress([&](double share, const trystero::progress_info& info) {
         shares.push_back(share);
@@ -2776,8 +2791,10 @@ void leaves_are_reported_peer_then_user() {
     webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
     b.reset();
     BOOST_TEST(run_until(f.io, [&] { return order.size() == 2; }));
-    const std::vector<std::string> expected{"peer leavesBBBBBBBBBBBBBB",
-                                            "user leavesBBBBBBBBBBBBBB"};
+    const std::vector<std::string> expected{
+        "peer leavesBBBBBBBBBBBBBB",
+        "user leavesBBBBBBBBBBBBBB",
+    };
     BOOST_TEST_ALL_EQ(order.begin(), order.end(), expected.begin(), expected.end());
 }
 
@@ -2792,7 +2809,7 @@ struct one_user_two_peers {
           a(join(a_app, "users")) {
         f.net.assign_user(b1_app.self_id(), user);
         f.net.assign_user(b2_app.self_id(), user);
-        for (auto* app : {&a_app, &b1_app, &b2_app}) {
+        for (const auto* app : {&a_app, &b1_app, &b2_app}) {
             group_users(*app, f.net);
         }
         a.on_peer_join([this](const trystero::peer_event& e) {
@@ -2832,8 +2849,11 @@ void send_to_a_user_reaches_each_of_its_peers() {
     const std::string b1_id(t.b1_app.self_id());
     const std::string b2_id(t.b2_app.self_id());
     const std::string user(one_user_two_peers::user);
-    const std::vector<std::string> joins{"peer join " + b1_id + " " + user, "user join " + user,
-                                         "peer join " + b2_id + " " + user};
+    const std::vector<std::string> joins{
+        "peer join " + b1_id + " " + user,
+        "user join " + user,
+        "peer join " + b2_id + " " + user,
+    };
     BOOST_TEST_ALL_EQ(t.events.begin(), t.events.end(), joins.begin(), joins.end());
 
     const auto users = t.a.users();
@@ -2868,9 +2888,13 @@ void send_to_a_user_reaches_each_of_its_peers() {
     auto note = t.a.make_action<std::string>("note");
     std::vector<std::string> heard;
     t.b1->make_action<std::string>("note").on_message(
-        [&](std::string text, const trystero::message_info&) { heard.push_back("b1 " + text); });
+        [&](const std::string& text, const trystero::message_info&) {
+            heard.push_back("b1 " + text);
+        });
     t.b2->make_action<std::string>("note").on_message(
-        [&](std::string text, const trystero::message_info&) { heard.push_back("b2 " + text); });
+        [&](const std::string& text, const trystero::message_info&) {
+            heard.push_back("b2 " + text);
+        });
     std::optional<boost::system::error_code> sent;
     note.async_send("to the user",
                     trystero::send_options{.targets = {trystero::peer_id(user)}, .metadata = {}},
@@ -2884,12 +2908,17 @@ void send_to_a_user_reaches_each_of_its_peers() {
     // A user and one of its peers together reach each peer once.
     heard.clear();
     sent.reset();
-    note.async_send(
-        "once each",
-        trystero::send_options{.targets = {trystero::peer_id(b2_id), trystero::peer_id(user),
-                                           trystero::peer_id(b1_id)},
-                               .metadata = {}},
-        [&](boost::system::error_code ec) { sent = ec; });
+    note.async_send("once each",
+                    trystero::send_options{
+                        .targets =
+                            {
+                                trystero::peer_id(b2_id),
+                                trystero::peer_id(user),
+                                trystero::peer_id(b1_id),
+                            },
+                        .metadata = {},
+                    },
+                    [&](boost::system::error_code ec) { sent = ec; });
     BOOST_TEST(run_until(f.io, [&] { return sent.has_value() && heard.size() == 2; }));
     run_until(f.io, [] { return false; }, 100ms);
     BOOST_TEST_EQ(heard.size(), 2U);
@@ -2899,7 +2928,9 @@ void send_to_a_user_reaches_each_of_its_peers() {
     auto ask = t.a.make_request_action<std::string>("ask");
     for (auto* b : {&*t.b1, &*t.b2}) {
         const auto answered = b->make_request_action<std::string>("ask").on_request(
-            [b](std::string, const trystero::message_info&) { return std::string(b->self_id()); });
+            [b](const std::string&, const trystero::message_info&) {
+                return std::string(b->self_id());
+            });
         webcpp::test::require(BOOST_TEST(answered.has_value()));
     }
     std::optional<std::string> answer;
@@ -2929,9 +2960,11 @@ void a_user_leaves_with_its_last_peer() {
     BOOST_TEST_EQ(t.a.users().size(), 1U);
     t.b2.reset();
     BOOST_TEST(run_until(f.io, [&] { return t.events.size() == 3; }));
-    const std::vector<std::string> all{"peer leave " + b1_id + " " + user,
-                                       "peer leave " + b2_id + " " + user,
-                                       "user leave " + user + " " + b2_id};
+    const std::vector<std::string> all{
+        "peer leave " + b1_id + " " + user,
+        "peer leave " + b2_id + " " + user,
+        "user leave " + user + " " + b2_id,
+    };
     BOOST_TEST_ALL_EQ(t.events.begin(), t.events.end(), all.begin(), all.end());
     BOOST_TEST(t.a.users().empty());
     BOOST_TEST(t.a.peers().empty());
@@ -2986,12 +3019,14 @@ void send_to_an_absent_target_fails() {
     auto b = join(b_app, "absent");
     std::size_t heard = 0;
     b.make_action<std::string>("note").on_message(
-        [&](std::string, const trystero::message_info&) { ++heard; });
+        [&](const std::string&, const trystero::message_info&) { ++heard; });
     webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
     sent.clear();
     note.async_send("both",
                     trystero::send_options{
-                        .targets = {trystero::peer_id(b_app.self_id()), "nobody"}, .metadata = {}},
+                        .targets = {trystero::peer_id(b_app.self_id()), "nobody"},
+                        .metadata = {},
+                    },
                     record);
     BOOST_TEST(run_until(f.io, [&] { return sent.size() == 1 && heard == 1; }));
     if (!sent.empty()) {
@@ -3213,7 +3248,7 @@ void a_request_is_refused_by_a_gone_listener_or_the_gate() {
     static const reasons category{};
     auto cut = b.make_request_action<std::string>("cut");
     BOOST_TEST(
-        cut.on_request([](std::string q,
+        cut.on_request([](const std::string& q,
                           const trystero::message_info&) -> boost::system::result<std::string> {
                return boost::system::error_code(q == "pair" ? 1 : 2, category);
            })
@@ -3223,7 +3258,7 @@ void a_request_is_refused_by_a_gone_listener_or_the_gate() {
     const auto ask = [&](std::string_view name, std::string q) {
         a.make_request_action<std::string>(name).async_request(
             std::move(q), trystero::request_options{.target = trystero::peer_id(b.self_id())},
-            [&](boost::system::error_code ec, std::string) { results.push_back(ec); });
+            [&](boost::system::error_code ec, const std::string&) { results.push_back(ec); });
         return run_until(f.io, [&, n = results.size() + 1] { return results.size() == n; });
     };
     BOOST_TEST(ask("gone", "q"));
@@ -3261,11 +3296,11 @@ void a_request_fails_when_its_peer_or_its_room_goes() {
     std::optional<boost::system::error_code> peer_gone;
     a1.make_request_action<std::string>("slow").async_request(
         "q", trystero::request_options{.target = trystero::peer_id(b2.self_id())},
-        [&](boost::system::error_code ec, std::string) { peer_gone = ec; });
+        [&](boost::system::error_code ec, const std::string&) { peer_gone = ec; });
     std::optional<boost::system::error_code> room_gone;
     a2.make_request_action<std::string>("slow").async_request(
         "q", trystero::request_options{.target = trystero::peer_id(b2.self_id())},
-        [&](boost::system::error_code ec, std::string) { room_gone = ec; });
+        [&](boost::system::error_code ec, const std::string&) { room_gone = ec; });
     run_until(f.io, [] { return false; }, 100ms);
     BOOST_TEST(!peer_gone && !room_gone);
     b1.reset();
@@ -3299,7 +3334,7 @@ void an_action_name_keeps_its_first_kind() {
     BOOST_TEST(
         !ask_chat.on_receive_progress([](double, const trystero::progress_info&) {}).active());
     ask_chat.async_request("q", trystero::request_options{.target = "anyone"},
-                           [&](boost::system::error_code ec, std::string r) {
+                           [&](boost::system::error_code ec, const std::string& r) {
                                failed.push_back(ec);
                                BOOST_TEST(r.empty());
                            });
@@ -3316,7 +3351,7 @@ void an_action_name_keeps_its_first_kind() {
                message_gate.error() == trystero::error::action_redefined);
     say_ask.async_send("hello", [&](boost::system::error_code ec) { failed.push_back(ec); });
     say_ask.async_receive(
-        [&](boost::system::error_code ec, std::string v, const trystero::message_info&) {
+        [&](boost::system::error_code ec, const std::string& v, const trystero::message_info&) {
             failed.push_back(ec);
             BOOST_TEST(v.empty());
         });
@@ -3434,14 +3469,14 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     flooder attacker(f, "reports");
     const auto a_topic = trystero::protocol::peer_topic(app_id, "reports", a_id);
     const auto offer = [&](std::size_t i) {
+        const auto since_epoch = f.net.steady_now().time_since_epoch();
         attacker.publish(a_topic,
                          {
                              .peer_id = "0garbage" + std::to_string(i),
                              .offer_id = "o",
                              .offer = "not a sealed offer",
                          },
-                         std::to_string(i) + "-" +
-                             std::to_string(f.net.steady_now().time_since_epoch().count()));
+                         std::to_string(i) + "-" + std::to_string(since_epoch.count()));
     };
     for (std::size_t i = 0; i < 2 * remembered; ++i) {
         offer(i % remembered);
@@ -3522,8 +3557,11 @@ void peer_connect_failed_says_whether_turn_was_configured() {
             auto c = app_config(id);
             if (turn) {
                 c.ice_servers.push_back({
-                    .urls = {std::pmr::string("stun:stun.example:3478"),
-                             std::pmr::string("TURNS:turn.example:5349")},
+                    .urls =
+                        {
+                            std::pmr::string("stun:stun.example:3478"),
+                            std::pmr::string("TURNS:turn.example:5349"),
+                        },
                     .username = std::pmr::string("user"),
                     .credential = std::pmr::string("secret"),
                 });
@@ -3548,8 +3586,11 @@ void peer_connect_failed_says_whether_turn_was_configured() {
             BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "peer-connect-failed");
             BOOST_TEST_EQ(e.peer_id, peer);
             BOOST_TEST_EQ(e.turn_configured, turn);
-            BOOST_TEST_EQ(e.message,
-                          "could not connect to peer " + peer + " after exchanging SDP; " + hint);
+            std::string expected = "could not connect to peer ";
+            expected += peer;
+            expected += " after exchanging SDP; ";
+            expected += hint;
+            BOOST_TEST_EQ(e.message, expected);
             BOOST_TEST_EQ(e.room_id, "connect");
         }
         BOOST_TEST(a.peers().empty());
@@ -3559,17 +3600,19 @@ void peer_connect_failed_says_whether_turn_was_configured() {
 // The names of the codes are 0.27.0's RoomErrorCode, and every other code has none.
 void error_names_match_trystero() {
     using trystero::error;
-    const std::array<std::pair<error, std::string_view>, 9> named{{
-        {error::room_full, "room-full"},
-        {error::banned, "banned"},
-        {error::relay_failed, "relay-failed"},
-        {error::identity_failed, "identity-failed"},
-        {error::plugin_failed, "plugin-failed"},
-        {error::decrypt_failed, "decrypt-failed"},
-        {error::peer_connect_failed, "peer-connect-failed"},
-        {error::handshake_failed, "handshake-failed"},
-        {error::peer_error, "peer-error"},
-    }};
+    const std::array<std::pair<error, std::string_view>, 9> named{
+        {
+            {error::room_full, "room-full"},
+            {error::banned, "banned"},
+            {error::relay_failed, "relay-failed"},
+            {error::identity_failed, "identity-failed"},
+            {error::plugin_failed, "plugin-failed"},
+            {error::decrypt_failed, "decrypt-failed"},
+            {error::peer_connect_failed, "peer-connect-failed"},
+            {error::handshake_failed, "handshake-failed"},
+            {error::peer_error, "peer-error"},
+        },
+    };
     for (const auto& [e, name] : named) {
         BOOST_TEST_EQ(trystero::room_error_code_name(e), name);
     }

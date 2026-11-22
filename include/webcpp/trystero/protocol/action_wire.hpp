@@ -592,9 +592,10 @@ inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
         result.error = wire_error::incompatible_version;
         return result;
     }
-    const auto kind = static_cast<std::uint8_t>(bytes_in[1] & 15U);
-    const auto format = static_cast<std::uint8_t>((bytes_in[1] >> 4U) & 3U);
-    const auto flags = static_cast<std::uint8_t>(bytes_in[1] >> 6U);
+    const std::uint32_t kind_byte = bytes_in[1];
+    const auto kind = static_cast<std::uint8_t>(kind_byte & 15U);
+    const auto format = static_cast<std::uint8_t>((kind_byte >> 4U) & 3U);
+    const auto flags = static_cast<std::uint8_t>(kind_byte >> 6U);
     constexpr auto offer = static_cast<std::uint8_t>(frame_kind::offer);
     if (kind > static_cast<std::uint8_t>(frame_kind::cancelled) ||
         format > static_cast<std::uint8_t>(payload_format::binary) ||

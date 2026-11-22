@@ -401,9 +401,10 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         // The event's first tag, ["x", <topic>].
         const std::string_view topic = protocol::json::text_of(event["tags"].at(0).at(1));
         if (record_published) {
-            published.push_back(
-                {std::pmr::string(topic, memory_),
-                 std::pmr::string(protocol::json::text_of(event["pubkey"]), memory_)});
+            published.push_back({
+                .topic = std::pmr::string(topic, memory_),
+                .pubkey = std::pmr::string(protocol::json::text_of(event["pubkey"]), memory_),
+            });
         }
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();

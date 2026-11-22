@@ -1,3 +1,9 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
 // Records webcpp::trystero's Phase 1 test vectors from Trystero 0.27.0's own code, run in Node
 // (>= 23.6, which strips TypeScript's types). Usage:
 //   node record.mjs <trystero-0.27.0 checkout> > phase1.json

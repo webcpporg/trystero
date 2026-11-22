@@ -254,6 +254,9 @@ public:
     R call_first(Args... args) {  // NOLINT(performance-unnecessary-value-param): views, references
         const auto it = std::ranges::find_if(entries_, [](const auto& e) { return e->active; });
         BOOST_ASSERT(it != entries_.end());
+        // A copy, which the check takes for a needless one: the listener may remove itself, or
+        // others, which releases the entries' own.
+        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
         const std::shared_ptr<entry> e = *it;
         if (e->once) {
             e->active = false;

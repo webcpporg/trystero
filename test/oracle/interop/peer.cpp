@@ -271,10 +271,12 @@ void join_extra(extra_room& extra, std::string_view room_id) {
         record("peer-leave", {{"room", extra.which}, {"peer", event.peer_id}});
     });
     extra.room->on_error([&extra](const trystero::room_error& e) {
-        record("error", {{"room", extra.which},
-                         {"peer", e.peer_id},
-                         {"error", e.code.message()},
-                         {"what", e.message}});
+        record("error", {
+                            {"room", extra.which},
+                            {"peer", e.peer_id},
+                            {"error", e.code.message()},
+                            {"what", e.message},
+                        });
     });
     extra.chat->on_message([&extra](std::string text, const trystero::message_info& info) {
         record("chat", {{"room", extra.which}, {"from", info.from}, {"text", text}});

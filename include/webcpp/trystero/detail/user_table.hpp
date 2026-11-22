@@ -88,8 +88,7 @@ public:
         if (!peers.empty()) {
             return std::nullopt;
         }
-        auto node = peers_by_user_.extract(user);
-        return std::move(node.key());
+        return std::move(peers_by_user_.extract(user).key());
     }
 
     /** The peers of a user, in the order they were added; none for a user not in the table. The

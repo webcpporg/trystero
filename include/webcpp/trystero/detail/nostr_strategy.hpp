@@ -131,8 +131,8 @@ private:
 };
 
 /**
- * Trystero's Nostr strategy, as 0.27.0's `@trystero-p2p/nostr` runs it: subscriptions on each relay
- * to the room's topics, announcements on the root topic at Trystero's cadence, and signals
+ * Trystero's Nostr strategy, as 0.27.0's `\@trystero-p2p/nostr` runs it: subscriptions on each
+ * relay to the room's topics, announcements on the root topic at Trystero's cadence, and signals
  * published on the relay that carried the message they answer, every event signed with the room's
  * own key.
  *
@@ -803,7 +803,12 @@ private:
             return;
         }
         const bool rejected = o != nullptr && !o->accepted;
-        const std::string_view reason = c != nullptr ? c->reason : o != nullptr ? o->reason : "";
+        std::string_view reason;
+        if (c != nullptr) {
+            reason = c->reason;
+        } else if (o != nullptr) {
+            reason = o->reason;
+        }
         const bool refused = rejected || c != nullptr;
         const bool rate_limited = refused && reason.starts_with("rate-limited:");
         const bool is_terminal = terminal(reason);

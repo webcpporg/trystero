@@ -688,6 +688,37 @@ inline std::optional<request_envelope> read_request(std::string_view metadata, c
     return out;
 }
 
+/** The value of a hexadecimal digit, either case, or nothing for another character. */
+inline std::optional<std::uint32_t> hex_digit_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return static_cast<std::uint32_t>(c - '0');
+    }
+    if (c >= 'a' && c <= 'f') {
+        return static_cast<std::uint32_t>(c - 'a' + 10);
+    }
+    if (c >= 'A' && c <= 'F') {
+        return static_cast<std::uint32_t>(c - 'A' + 10);
+    }
+    return std::nullopt;
+}
+
+/** The UTF-16 code unit of the `\\uXXXX` escape at `at` of a JSON text, or nothing when none
+ * starts there. */
+inline std::optional<std::uint32_t> unicode_escape_at(std::string_view json, std::size_t at) {
+    if (at + 6 > json.size() || json[at] != '\\' || json[at + 1] != 'u') {
+        return std::nullopt;
+    }
+    std::uint32_t unit = 0;
+    for (std::size_t i = at + 2; i < at + 6; ++i) {
+        const auto digit = hex_digit_value(json[i]);
+        if (!digit) {
+            return std::nullopt;
+        }
+        unit = (unit << 4U) | *digit;
+    }
+    return unit;
+}
+
 /**
  * A JSON text with each lone surrogate escape, `\\ud83d` without its low half, written as the
  * replacement character's, `\\ufffd`, which webcpp::document's parser can read: it refuses a lone
@@ -697,26 +728,6 @@ inline std::optional<request_envelope> read_request(std::string_view metadata, c
  */
 inline std::pmr::string without_lone_surrogates(std::string_view json,
                                                 std::pmr::memory_resource* memory) {
-    const auto unit_at = [json](std::size_t at) -> std::optional<std::uint32_t> {
-        if (at + 6 > json.size() || json[at] != '\\' || json[at + 1] != 'u') {
-            return std::nullopt;
-        }
-        std::uint32_t unit = 0;
-        for (std::size_t i = at + 2; i < at + 6; ++i) {
-            const char c = json[i];
-            unit <<= 4U;
-            if (c >= '0' && c <= '9') {
-                unit |= static_cast<std::uint32_t>(c - '0');
-            } else if (c >= 'a' && c <= 'f') {
-                unit |= static_cast<std::uint32_t>(c - 'a' + 10);
-            } else if (c >= 'A' && c <= 'F') {
-                unit |= static_cast<std::uint32_t>(c - 'A' + 10);
-            } else {
-                return std::nullopt;
-            }
-        }
-        return unit;
-    };
     const auto high = [](std::uint32_t u) { return u >= 0xD800U && u <= 0xDBFFU; };
     const auto low = [](std::uint32_t u) { return u >= 0xDC00U && u <= 0xDFFFU; };
     std::pmr::string out(memory);
@@ -726,13 +737,13 @@ inline std::pmr::string without_lone_surrogates(std::string_view json,
             out += json[i++];
             continue;
         }
-        const auto unit = unit_at(i);
+        const auto unit = unicode_escape_at(json, i);
         if (!unit) {
             out.append(json.substr(i, std::min<std::size_t>(2, json.size() - i)));  // \n, \", ...
             i += 2;
             continue;
         }
-        if (const auto next = unit_at(i + 6); high(*unit) && next && low(*next)) {
+        if (const auto next = unicode_escape_at(json, i + 6); high(*unit) && next && low(*next)) {
             out.append(json.substr(i, 12));  // a pair
             i += 12;
         } else if (high(*unit) || low(*unit)) {
@@ -878,6 +889,18 @@ public:
      * app, and asks for the room's keys, the strategy starting once they exist. */
     void start() {
         const auto weak = weak_from_this();
+        make_wire(weak);
+        make_signaling(weak);
+        make_strategy(weak);
+        // A room joined while the app's relays are offline opens none until they are online.
+        if (app_->relays_offline()) {
+            strategy_->hold();
+        }
+        register_and_advertise();
+    }
+
+    /** Makes the action wire, whose callbacks reach the room while it lives. */
+    void make_wire(const std::weak_ptr<room_impl>& weak) {
         wire_ = std::allocate_shared<action_wire>(
             allocator(), factory_, token_, options_.max_receive_bytes,
             action_wire::callbacks{
@@ -942,6 +965,10 @@ public:
                         }),
             },
             memory_);
+    }
+
+    /** Makes the signaling, whose callbacks reach the room while it lives. */
+    void make_signaling(const std::weak_ptr<room_impl>& weak) {
         signaling_ = std::allocate_shared<signaling>(
             allocator(), factory_, app_->app_id(), room_id_, app_->self_id(), app_->ice_servers(),
             signaling::callbacks{
@@ -970,6 +997,11 @@ public:
                 }),
             },
             log_, memory_, app_->memory());
+    }
+
+    /** Makes the strategy on the app's relays and the room's topics, whose callbacks reach the
+     * room while it lives. */
+    void make_strategy(const std::weak_ptr<room_impl>& weak) {
         // The self topic before the root topic, as Trystero's rooms subscribe them, so that the
         // REQ lists them, and their kinds, in 0.27.0's order.
         std::pmr::vector<std::pmr::string> topics(memory_);
@@ -997,11 +1029,6 @@ public:
                     self->report({}, code, code.message(buffer.data(), buffer.size()));
                 }
             }));
-        // A room joined while the app's relays are offline opens none until they are online.
-        if (app_->relays_offline()) {
-            strategy_->hold();
-        }
-        register_and_advertise();
     }
 
     /** Registers the membership, asks for the keys that start discovery, and advertises it on
@@ -1257,9 +1284,9 @@ public:
     }
 
     /** Sets the listener that answers a request action's requests, unless one is in place. */
-    boost::system::result<subscription> add_request_listener(std::string_view name,
-                                                             request_handler f,
-                                                             listen_options options) {
+    [[nodiscard]] boost::system::result<subscription> add_request_listener(std::string_view name,
+                                                                           request_handler f,
+                                                                           listen_options options) {
         auto& slot = slot_for(name);
         if (!slot.requests.empty()) {
             return error::already_subscribed;
@@ -1272,9 +1299,8 @@ public:
     }
 
     /** Sets an action's receive gate, unless one is in place. */
-    boost::system::result<subscription> add_receive_gate(std::string_view name,
-                                                         handler<bool(const receive_info&)> f,
-                                                         listen_options options) {
+    [[nodiscard]] boost::system::result<subscription> add_receive_gate(
+        std::string_view name, handler<bool(const receive_info&)> f, listen_options options) {
         auto& slot = slot_for(name);
         if (!slot.gate.empty()) {
             return error::already_subscribed;
@@ -1436,11 +1462,17 @@ public:
         }
         metadata += '}';
         static constexpr std::string_view null = "null";
-        send_response(peer, metadata,
-                      {.format = protocol::payload_format::json,
-                       .ref = {.data = std::span(reinterpret_cast<const std::uint8_t*>(null.data()),
-                                                 null.size()),
-                               .owner = nullptr}});
+        send_response(
+            peer, metadata,
+            {
+                .format = protocol::payload_format::json,
+                .ref =
+                    {
+                        .data = std::span(reinterpret_cast<const std::uint8_t*>(null.data()),
+                                          null.size()),
+                        .owner = nullptr,
+                    },
+            });
     }
 
     /**
@@ -1800,16 +1832,24 @@ private:
         });
     }
 
-    /** Posts a message to an action's listeners, or, when none is left once the post runs, to its
-     * next receive. A slot lives as long as its room. */
+    /**
+     * Posts a message to an action's listeners, or, when none is left once the post runs, to its
+     * next receive. A slot lives as long as its room.
+     *
+     * Tip: `hand_over` posts here again when listeners came back meanwhile, a loop through the
+     * executor and not a recursion, since each post runs once the call that made it has returned.
+     * It is called through a pointer, so that the analysis of calls (misc-no-recursion) sees no
+     * cycle through Asio's post.
+     */
     void post_message(action_slot& slot, incoming&& m) {
-        post([weak = weak_from_this(), slot = &slot, m = std::move(m)]() mutable {
+        post([weak = weak_from_this(), slot = &slot, m = std::move(m),
+              hand_over_to = &room_impl::hand_over]() mutable {
             const auto self = weak.lock();
             if (!self) {
                 return;
             }
             if (slot->messages.empty()) {
-                self->hand_over(*slot, std::move(m));
+                ((*self).*hand_over_to)(*slot, std::move(m));
                 return;
             }
             m.shared = slot->messages.size() > 1;
@@ -2154,9 +2194,9 @@ private:
      * such handshake, and Phase 2's dual-signature handshake (Task 2.4) replaces it.
      */
     std::pmr::string handshake_proof(std::string_view challenge) const {
-        return protocol::to_hex(protocol::sha256_of({challenge, ":", app_->password(), ":",
-                                                     app_->app_id(), ":", room_id_}),
-                                memory_);
+        const auto digest = protocol::sha256_of(
+            {challenge, ":", app_->password(), ":", app_->app_id(), ":", room_id_});
+        return protocol::to_hex(digest, memory_);
     }
 
     void fail_handshake(std::string_view peer_view) {
@@ -2344,7 +2384,8 @@ private:
         if (it == requests_.end()) {
             return;
         }
-        auto node = requests_.extract(it);
+        // A node handle's mapped value is mutable through a const handle.
+        const auto node = requests_.extract(it);
         if (node.mapped().timer) {
             node.mapped().timer->cancel();
         }
@@ -3133,8 +3174,10 @@ public:
                 if (redefined) {
                     impl->complete(std::move(handler), make_error_code(error::action_redefined),
                                    detail::empty_payload<T>(impl->memory()),
-                                   message_info{.from = std::pmr::string(impl->memory()),
-                                                .metadata = std::pmr::string(impl->memory())});
+                                   message_info{
+                                       .from = std::pmr::string(impl->memory()),
+                                       .metadata = std::pmr::string(impl->memory()),
+                                   });
                     return;
                 }
                 // The decoding step is allocated as the user's handler is, which it carries.

@@ -151,7 +151,7 @@ private:
             entries_.erase(recency_.back());
             recency_.pop_back();
         }
-        auto d = std::allocate_shared<derivation>(allocator(), memory_, room_id, password_);
+        const auto d = std::allocate_shared<derivation>(allocator(), memory_, room_id, password_);
         d->salt = protocol::pbkdf2_salt(app_id_, room_id, memory_);
         d->waiters.push_back(std::move(done));
         recency_.emplace_front(room_id);

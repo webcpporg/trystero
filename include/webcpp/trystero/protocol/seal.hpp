@@ -71,7 +71,7 @@ inline std::span<const std::uint8_t> seal_bytes_of(std::string_view text) noexce
  * @param memory The resource the sealed text and the working buffer are allocated in.
  * @return The sealed text, @ref sealed_size characters, or the error of the cipher.
  */
-inline boost::system::result<std::pmr::string> seal(
+[[nodiscard]] inline boost::system::result<std::pmr::string> seal(
     const webcpp::crypto::secret<32>& key, std::span<const std::uint8_t, gcm_iv_size> iv,
     std::string_view plaintext, std::optional<std::string_view> aad,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
@@ -110,7 +110,7 @@ inline boost::system::result<std::pmr::string> seal(
  * the AAD, or a plaintext that is not UTF-8 (design D12); or the error of the cipher, when it
  * cannot be made.
  */
-inline boost::system::result<std::pmr::string> open(
+[[nodiscard]] inline boost::system::result<std::pmr::string> open(
     const webcpp::crypto::secret<32>& key, std::string_view sealed,
     std::optional<std::string_view> aad,
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {

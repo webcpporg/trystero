@@ -65,13 +65,14 @@ webcpp.compile config_all_off : config_test.cpp
 # backend of support/memory_backend.hpp: on both targets.
 # tag::both-targets[]
 webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
-# The crypto layer of the port to Trystero 0.27.0 against the vectors recorded from its own
-# code (oracle/record_0_27.mjs).
+# The crypto layer of the port to Trystero 0.27.0 against the vectors
+# recorded from its own code (oracle/record_0_27.mjs).
 webcpp.run crypto_layer : crypto_layer_test.cpp
   : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
-# The PBKDF2 case of crypto_layer (600,000 iterations) is compiled only where WEBCPP_TRYSTERO_TEST_SLOW_KDF
-# is defined, which this target alone defines, in a release build: the debug run of crypto_layer
-# skips it by construction, so this target runs it in every lane.
+# The PBKDF2 case of crypto_layer (600,000 iterations) is compiled only
+# where WEBCPP_TRYSTERO_TEST_SLOW_KDF is defined, which this target alone
+# defines, in a release build: the debug run of crypto_layer skips it by
+# construction, so this target runs it in every lane.
 webcpp.run crypto_layer_release : crypto_layer_test.cpp
   : <testing.input-file>fixtures/expected/trystero-0.27.0.json <variant>release
     <define>WEBCPP_TRYSTERO_TEST_SLOW_KDF ;
@@ -218,8 +219,9 @@ webcpp.run platform_page_call : platform_page_call_test.cpp : $(platform-part) :
 # A relay socket's handlers and a derivation's completion run outside the
 # page's events.
 webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
-# The page's online and offline events, which an app's automatic relays follow, reach the
-# backend's watch after each event, and nothing once the watch is destroyed.
+# The page's online and offline events, which an app's automatic relays
+# follow, reach the backend's watch after each event, and nothing once the
+# watch is destroyed.
 webcpp.run platform_page_connectivity : platform_page_connectivity_test.cpp
   : $(platform) : emscripten ;
 # end::page[]

@@ -51,7 +51,7 @@ inline constexpr std::size_t uuid_text_size = 36;
  * @return `ceil(n * 1.15) + 4`.
  */
 constexpr std::size_t gen_id_draw_size(std::size_t n) {
-    return (n * 115 + 99) / 100 + 4;
+    return (((n * 115) + 99) / 100) + 4;
 }
 
 /**
@@ -165,7 +165,7 @@ inline std::pmr::string compact_public_key(
 inline std::optional<std::array<std::uint8_t, 65>> parse_compact_public_key(
     std::string_view compact) {
     constexpr std::size_t half = 43;
-    if (compact.size() != 2 * half + 1 || compact[half] != '.') {
+    if (compact.size() != (2 * half) + 1 || compact[half] != '.') {
         return std::nullopt;
     }
     std::array<std::uint8_t, 65> out{};
