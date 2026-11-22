@@ -153,6 +153,8 @@ private:
  * |                    | both after its cooldown; the cadence is not started over                 |
  * | every relay failed | reported once, when each relay's first connection closed before it      |
  * |                    | opened and none opened yet, as 0.27.0 reports `relay-failed`            |
+ * | offline            | every socket closed, no reconnection; the cadence goes on, skipping      |
+ * | online             | each relay not connected connects at once, its delay bound back to 3.3 s |
  *
  * Tip: the bound of the reconnection delay comes back down only after a connection that lasted,
  * so that a relay that closes us at once after each open, as one that sends a text longer than we
@@ -195,10 +197,62 @@ public:
         }
     }
 
-    /** Connects to every relay; each subscribes and announces once it opens. */
+    /** Connects to every relay, unless they are held closed; each subscribes and announces once
+     * it opens. */
     void start() {
+        started_ = true;
         for (std::size_t i = 0; i < relays_.size(); ++i) {
             connect(i);
+        }
+    }
+
+    /**
+     * Closes every relay's socket and holds it closed, reconnecting none until @ref reconnect,
+     * 0.27.0's `holdRelaySockets`: a socket closed so is no failure, and its close is not
+     * reported. The announce cadence goes on, each announcement skipped as on a closed relay.
+     */
+    void hold() {
+        if (stopped_ || std::exchange(held_, true)) {
+            return;
+        }
+        log_("nostr", "holding the relays closed");
+        for (auto& r : relays_) {
+            ++r.attempt;  // what the closed socket still reports reaches nothing
+            r.reconnect_timer.reset();
+            if (r.subscription_timer) {
+                r.subscription_timer->cancel();
+            }
+            r.subscription_retry_pending = false;
+            r.pending.clear();
+            r.subscribed = sync::unsynced;
+            r.open = false;
+            if (r.socket) {
+                r.socket->close();
+                r.socket.reset();
+            }
+        }
+    }
+
+    /**
+     * Connects at once every relay that has no socket, whether held closed or waiting to
+     * reconnect, each delay bound back at its least, 0.27.0's `reconnectRelaySockets`; a relay
+     * that opened before subscribes and announces again once it reopens.
+     */
+    void reconnect() {
+        if (stopped_) {
+            return;
+        }
+        held_ = false;
+        if (!started_) {
+            return;  // the room's keys are not there yet: start() connects
+        }
+        for (std::size_t i = 0; i < relays_.size(); ++i) {
+            auto& r = relays_[i];
+            r.retry = first_retry;
+            if (!r.socket) {
+                r.reconnect_timer.reset();
+                connect(i);
+            }
         }
     }
 
@@ -310,7 +364,10 @@ private:
             : url(address, memory), subscriptions(memory), pending(memory) {}
 
         std::pmr::string url;
+        // The socket, from its connection until it closes; null meanwhile.
         std::shared_ptr<backend::websocket> socket;
+        // Which connection the socket's handlers report: one a hold closed reports nothing.
+        std::uint64_t attempt = 0;
         // The ids of the subscriptions, one per max_topics_per_subscription topics, kept across
         // reconnections, as Trystero's batcher keeps its subIds.
         std::pmr::vector<std::pmr::string> subscriptions;
@@ -405,11 +462,12 @@ private:
     }
 
     void connect(std::size_t index) {
-        if (stopped_ || relays_[index].state == health::retired) {
+        if (stopped_ || held_ || relays_[index].state == health::retired) {
             return;
         }
         const auto weak = weak_from_this();
         const auto a = allocator();
+        const auto attempt = ++relays_[index].attempt;
         relays_[index].socket =
             factory_.connect(relays_[index].url,
                              {
@@ -417,8 +475,9 @@ private:
                                      {
                                          std::allocator_arg,
                                          a,
-                                         [weak, index] {
-                                             if (const auto self = weak.lock()) {
+                                         [weak, index, attempt] {
+                                             if (const auto self = weak.lock();
+                                                 self && self->current(index, attempt)) {
                                                  self->on_open(index);
                                              }
                                          },
@@ -427,8 +486,9 @@ private:
                                      {
                                          std::allocator_arg,
                                          a,
-                                         [weak, index](std::string_view text) {
-                                             if (const auto self = weak.lock()) {
+                                         [weak, index, attempt](std::string_view text) {
+                                             if (const auto self = weak.lock();
+                                                 self && self->current(index, attempt)) {
                                                  self->on_relay_message(index, text);
                                              }
                                          },
@@ -437,14 +497,20 @@ private:
                                      {
                                          std::allocator_arg,
                                          a,
-                                         [weak, index] {
-                                             if (const auto self = weak.lock()) {
+                                         [weak, index, attempt] {
+                                             if (const auto self = weak.lock();
+                                                 self && self->current(index, attempt)) {
                                                  self->on_close(index);
                                              }
                                          },
                                      },
                              },
                              memory_);
+    }
+
+    /** Whether `attempt` is the connection of relay `index` now. */
+    [[nodiscard]] bool current(std::size_t index, std::uint64_t attempt) const {
+        return relays_[index].attempt == attempt;
     }
 
     void on_open(std::size_t index) {
@@ -567,6 +633,7 @@ private:
         auto& r = relays_[index];
         const bool was_open = r.open;
         r.open = false;
+        r.socket.reset();
         if (stopped_ || r.state == health::retired) {
             return;
         }
@@ -800,6 +867,9 @@ private:
     std::pmr::vector<relay_state> relays_;
     recent_event_ids seen_;
     bool stopped_ = false;
+    // Whether start() ran, and whether the relays are held closed.
+    bool started_ = false;
+    bool held_ = false;
     // Whether a relay ever opened, and whether the failure of every relay was reported.
     bool any_opened_ = false;
     bool all_failed_reported_ = false;

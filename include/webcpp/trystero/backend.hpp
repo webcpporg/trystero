@@ -368,6 +368,26 @@ public:
      * @return The current time.
      */
     virtual std::chrono::steady_clock::time_point steady_now() = 0;  // lint-world: a type only
+
+    /**
+     * Watches the page's connectivity, its `online` and `offline` events, which an app's relays
+     * follow while they are `relay_connectivity::automatic`, as 0.27.0's relay manager listens to
+     * them.
+     *
+     * This default watches nothing, as natively, where no such event exists: the app's relays then
+     * stay online.
+     *
+     * @param changed Called on the app's executor after each event, never inside it: `true` after
+     * an `online` event, `false` after an `offline` one; never once the watch is destroyed.
+     * @param memory The app's resource, which the watch and `changed` are allocated in.
+     * @return The watch, whose destruction ends it; null when the platform has no such events.
+     */
+    virtual std::shared_ptr<void> watch_connectivity(handler<void(bool online)> changed,
+                                                     std::pmr::memory_resource* memory) {
+        (void)changed;
+        (void)memory;
+        return nullptr;
+    }
 };
 
 }  // namespace webcpp::trystero::backend

@@ -73,16 +73,24 @@ struct fixture {
     fixture() { relays.relay(relay_url); }
 };
 
-trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
+/** The configuration of a test's app, whose self id `make_app` gives it. */
+trystero::app_config app_config(std::string_view password = {}) {
     trystero::app_config c;
     c.app_id = "webcpp-trystero-native-tests";
     c.relay_urls = {relay_url};
     // Nothing answers there: with every connection bound to 127.0.0.1, the loopback's host
     // candidate is the only one, and it is enough.
     c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-    c.self_id = self_id;
     c.password = password;
     return c;
+}
+
+/** An app named `self_id` in place of a drawn id, through the detail seam the library keeps for
+ * its own tests, so that which of two peers is the lower id, and offers, is known. */
+trystero::app make_app(trystero::app::executor_type ex, trystero::backend::factory& backend,
+                       std::string_view self_id, std::string_view password = {}) {
+    return trystero::detail::app_access::make(std::move(ex), backend, app_config(password),
+                                              self_id);
 }
 
 /** Joins `room_id`, which must succeed: a failure ends the test. */
@@ -107,11 +115,9 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 
 void native_rooms_join_and_exchange_every_format() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend,
-                        app_config("AAAAAAAAAAAAAAAAAAAA", "s3cret"));
+    auto a_app = make_app(f.io.get_executor(), f.backend, "AAAAAAAAAAAAAAAAAAAA", "s3cret");
     auto a = join(a_app, "lobby");
-    trystero::app z_app(f.io.get_executor(), f.backend,
-                        app_config("zzzzzzzzzzzzzzzzzzzz", "s3cret"));
+    auto z_app = make_app(f.io.get_executor(), f.backend, "zzzzzzzzzzzzzzzzzzzz", "s3cret");
     auto z = join(z_app, "lobby");
     std::string text;
     std::optional<webcpp::document::document> json;
@@ -167,11 +173,9 @@ void native_rooms_join_and_exchange_every_format() {
 
 void another_password_never_joins() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend,
-                        app_config("BBBBBBBBBBBBBBBBBBBB", "s3cret"));
+    auto a_app = make_app(f.io.get_executor(), f.backend, "BBBBBBBBBBBBBBBBBBBB", "s3cret");
     const auto a = join(a_app, "private");
-    trystero::app b_app(f.io.get_executor(), f.backend,
-                        app_config("CCCCCCCCCCCCCCCCCCCC", "guess"));
+    auto b_app = make_app(f.io.get_executor(), f.backend, "CCCCCCCCCCCCCCCCCCCC", "guess");
     auto b = join(b_app, "private");
     std::vector<boost::system::error_code> errors;
     b.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
@@ -186,13 +190,13 @@ void another_password_never_joins() {
 
 void leaving_is_seen_over_a_real_connection() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend, app_config("DDDDDDDDDDDDDDDDDDDD"));
+    auto a_app = make_app(f.io.get_executor(), f.backend, "DDDDDDDDDDDDDDDDDDDD");
     auto a = join(a_app, "leave");
     std::vector<std::string> left;
     a.on_peer_leave([&](const trystero::peer_event& e) { left.emplace_back(e.peer_id); });
     {
         // The leaver's app goes with its room, as a program that leaves for good ends it.
-        trystero::app b_app(f.io.get_executor(), f.backend, app_config("EEEEEEEEEEEEEEEEEEEE"));
+        auto b_app = make_app(f.io.get_executor(), f.backend, "EEEEEEEEEEEEEEEEEEEE");
         auto b = join(b_app, "leave");
         if (!BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }))) {
             return;

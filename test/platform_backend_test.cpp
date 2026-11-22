@@ -18,6 +18,9 @@
 //   a thread of its own and in a page through WebCrypto, and completes on its executor after the
 //   call returned; destroyed during a derivation, it waits for it.
 // - Its executor is the one it was given, and its relays' TLS context was made.
+// - It watches no connectivity natively, where no `online` or `offline` event exists, nor under
+//   node, whose global object takes no listener: an app's automatic relays stay online
+//   (platform_page_connectivity tests a page's events).
 //
 // main runs the io_context for the wait; a wait that does not come within 10 s fails by name. A
 // derivation's run waits for its completion however long the loaded machine takes.
@@ -236,6 +239,17 @@ void its_executor_and_tls_context_are_there() {
     BOOST_TEST(backend.tls_context().has_value());
 }
 
+void it_watches_no_connectivity_without_a_page() {
+    asio::io_context io;
+    trystero::platform::backend backend(io.get_executor());
+    bool called = false;
+    const auto watch = backend.watch_connectivity([&called](bool) { called = true; },
+                                                  std::pmr::get_default_resource());
+    BOOST_TEST(watch == nullptr);
+    io.run_for(20ms);  // lint-run: nothing is posted
+    BOOST_TEST(!called);
+}
+
 }  // namespace
 
 int main() {
@@ -248,5 +262,6 @@ int main() {
     run_case(its_pbkdf2_is_trysteros_and_off_the_rooms_thread);
     run_case(its_destruction_waits_for_a_derivation);
     run_case(its_executor_and_tls_context_are_there);
+    run_case(it_watches_no_connectivity_without_a_page);
     return webcpp::test::exit_status(boost::report_errors());
 }

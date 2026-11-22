@@ -828,11 +828,11 @@ public:
           factory_(app_->factory()),
           log_(app_->log()),
           options_{
-              .handshake_timeout = options.handshake_timeout,
               .max_receive_bytes = options.max_receive_bytes,
               .max_json_document_bytes = options.max_json_document_bytes,
               .memory = memory_,
           },
+          handshake_timeout_(app_->handshake_timeout()),
           room_id_(room_id, memory_),
           token_(protocol::room_token(app_->app_id(), room_id_, memory_)),
           root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
@@ -997,6 +997,10 @@ public:
                     self->report({}, code, code.message(buffer.data(), buffer.size()));
                 }
             }));
+        // A room joined while the app's relays are offline opens none until they are online.
+        if (app_->relays_offline()) {
+            strategy_->hold();
+        }
         register_and_advertise();
     }
 
@@ -1197,6 +1201,18 @@ public:
 
     /** Tries to bind a peer after its frame for this room was kept, which advertised the room. */
     void frame_kept(std::string_view peer) override { try_bind(peer, bind_event::frame); }
+
+    /** Holds the room's relays closed, or reconnects them; a room that left has none. */
+    void relays_offline(bool offline) override {
+        if (left_) {
+            return;
+        }
+        if (offline) {
+            strategy_->hold();
+        } else {
+            strategy_->reconnect();
+        }
+    }
 
     /** Forgets history and removes only the binding belonging to the ended connection. */
     void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
@@ -2055,8 +2071,7 @@ private:
                 memory_);
             state.handshake_timer = factory_.make_timer(memory_);
             state.handshake_timer->start(
-                options_.handshake_timeout,
-                bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
+                handshake_timeout_, bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
                     const auto self = weak.lock();
                     if (!self) {
                         return;
@@ -2390,7 +2405,7 @@ private:
         r.dropping = own_kick && !lower;
         r.timer = factory_.make_timer(memory_);
         r.timer->start(
-            rebinding_step(options_.handshake_timeout, r.ends),
+            rebinding_step(handshake_timeout_, r.ends),
             bind<void()>([weak = weak_from_this(), peer = std::pmr::string(peer, memory_)] {
                 if (const auto self = weak.lock()) {
                     self->on_rebinding_time(peer);
@@ -2545,6 +2560,8 @@ private:
     backend::factory& factory_;
     logger log_;
     room_options options_;
+    // How long a peer has to finish the handshake: the app's, 10 s.
+    std::chrono::milliseconds handshake_timeout_;
     std::pmr::string room_id_;
     std::pmr::string token_;
     std::pmr::string root_topic_;

@@ -218,6 +218,10 @@ webcpp.run platform_page_call : platform_page_call_test.cpp : $(platform-part) :
 # A relay socket's handlers and a derivation's completion run outside the
 # page's events.
 webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
+# The page's online and offline events, which an app's automatic relays follow, reach the
+# backend's watch after each event, and nothing once the watch is destroyed.
+webcpp.run platform_page_connectivity : platform_page_connectivity_test.cpp
+  : $(platform) : emscripten ;
 # end::page[]
 
 # The same, built without exceptions, as a page's program may be: no
@@ -243,6 +247,8 @@ webcpp.run platform_page_relay_allocation_no_exceptions : platform_page_relay_al
 webcpp.run platform_page_call_no_exceptions : platform_page_call_test.cpp
   : $(platform-part) <exception-handling>off : emscripten ;
 webcpp.run platform_page_handlers_no_exceptions : platform_page_handlers_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_connectivity_no_exceptions : platform_page_connectivity_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 

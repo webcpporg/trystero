@@ -33,6 +33,10 @@
 #include <webcpp/asio/ssl.hpp>              // lint-world: the relays' TLS
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
 #include <webcpp/asio/thread_pool.hpp>  // lint-world: the thread a PBKDF2 runs on
+#else
+#include <webcpp/trystero/platform/page.hpp>
+
+#include <emscripten/val.h>
 #endif
 
 #include <boost/system/result.hpp>
@@ -60,6 +64,72 @@
  * the program runs.
  */
 namespace webcpp::trystero::platform {
+
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+namespace detail {
+
+/**
+ * The page's `online` and `offline` events, a listener of each on the page's global object, each
+ * of which posts `changed` with `true` or `false` to the executor; the listeners are removed when
+ * it is destroyed, and a call posted then reaches nothing.
+ */
+class connectivity_watch {
+public:
+    /** What each listener runs, on the executor. */
+    struct event {
+        /** The watcher's handler, which both listeners share. */
+        std::shared_ptr<handler<void(bool)>> changed;
+        /** Whether the event is `online`. */
+        bool online = false;
+
+        /** Calls the handler; the event itself is not read. */
+        void operator()(const emscripten::val& /*event*/) const { (*changed)(online); }
+    };
+
+    /** Whether the page's global object takes listeners: a page's window or worker does, node's
+     * global object does not. */
+    static bool page_has_events() {
+        return emscripten::val::global("addEventListener")
+            .typeOf()
+            .strictlyEquals(emscripten::val("function"));
+    }
+
+    /** Adds both listeners, whose calls go through the bridge of `ex`'s io_context. */
+    connectivity_watch(const webcpp::asio::any_io_executor& ex, handler<void(bool)> changed,
+                       std::pmr::memory_resource* memory)
+        : changed_(std::allocate_shared<handler<void(bool)>>(
+              std::pmr::polymorphic_allocator<>(memory), std::move(changed))),
+          online_(ex, event{.changed = changed_, .online = true}, memory),
+          offline_(ex, event{.changed = changed_, .online = false}, memory),
+          online_function_(online_.function()),
+          offline_function_(offline_.function()) {
+        const auto page = emscripten::val::global();
+        page.call<void>("addEventListener", emscripten::val("online"), online_function_);
+        page.call<void>("addEventListener", emscripten::val("offline"), offline_function_);
+    }
+
+    /** Not copyable: the page holds its listeners. */
+    connectivity_watch(const connectivity_watch&) = delete;
+    /** Not copy-assignable. */
+    connectivity_watch& operator=(const connectivity_watch&) = delete;
+
+    /** Removes both listeners from the page. */
+    ~connectivity_watch() {
+        const auto page = emscripten::val::global();
+        page.call<void>("removeEventListener", emscripten::val("online"), online_function_);
+        page.call<void>("removeEventListener", emscripten::val("offline"), offline_function_);
+    }
+
+private:
+    std::shared_ptr<handler<void(bool)>> changed_;
+    page_call<event> online_;
+    page_call<event> offline_;
+    emscripten::val online_function_;
+    emscripten::val offline_function_;
+};
+
+}  // namespace detail
+#endif
 
 /**
  * What a backend makes its peer connections, its relays' WebSockets and its own state with, beside
@@ -398,6 +468,29 @@ public:
     std::chrono::steady_clock::time_point steady_now() override {  // lint-world: a type only
         return std::chrono::steady_clock::now();                   // lint-world: Trystero's timing
     }
+
+#ifdef WEBCPP_TARGET_EMSCRIPTEN
+    /**
+     * Watches the page's `online` and `offline` events, through listeners on its global object
+     * whose calls post to the backend's executor; natively, where there are none, it watches
+     * nothing, as the interface's default does.
+     *
+     * @param changed Called on the backend's executor after each event: `true` after `online`,
+     * `false` after `offline`.
+     * @param memory The app's resource, which the watch, its listeners' state and the calls they
+     * post are allocated in.
+     * @return The watch, whose destruction removes the listeners; null where the page's global
+     * object takes no listener, as node's.
+     */
+    std::shared_ptr<void> watch_connectivity(handler<void(bool online)> changed,
+                                             std::pmr::memory_resource* memory) override {
+        if (!detail::connectivity_watch::page_has_events()) {
+            return nullptr;
+        }
+        return std::allocate_shared<detail::connectivity_watch>(
+            std::pmr::polymorphic_allocator<>(memory), ex_, std::move(changed), memory);
+    }
+#endif
 
 private:
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on

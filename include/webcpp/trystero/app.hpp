@@ -42,6 +42,12 @@ namespace detail {
 struct app_access {
     /** The state of `a`, which must hold one. */
     [[nodiscard]] static app_impl& impl(const app& a);
+
+    /** An app as `app`'s constructor makes it, but whose self id is `self_id` in place of one
+     * drawn: the library's own tests name their peers, so that which of two is the lower id is
+     * known. `self_id` is at most `protocol::max_peer_id_bytes` of UTF-8, and not empty. */
+    [[nodiscard]] static app make(webcpp::asio::any_io_executor ex, backend::factory& factory,
+                                  app_config config, std::string_view self_id);
 };
 
 }  // namespace detail
@@ -69,10 +75,10 @@ public:
     static constexpr std::size_t max_rooms = 64;
 
     /**
-     * Makes an app: draws its id unless the configuration names one, and keeps the configuration.
+     * Makes an app: draws its id, 20 random base62 characters, and keeps the configuration.
      *
-     * What no peer could use (an id longer than any peer accepts, a negative idle time, an ICE
-     * server WebRTC refuses) is set aside, and reported to `on_error`.
+     * What no peer could use (a negative idle time, an ICE server WebRTC refuses) is set aside,
+     * and reported to `on_error`.
      *
      * @param ex The executor of the app and of its rooms.
      * @param factory The backend, which must outlive the app and its rooms.
@@ -80,9 +86,7 @@ public:
      * @pre `config.memory` is not null.
      */
     app(executor_type ex, backend::factory& factory, app_config config)
-        : impl_(make(std::move(ex), factory, std::move(config))) {
-        impl_->add_user();
-    }
+        : app(make(std::move(ex), factory, std::move(config))) {}
 
     /**
      * Takes the state of the app moved from, which may then only be destroyed or assigned.
@@ -146,7 +150,8 @@ public:
     }
 
     /**
-     * This peer's id in every room of the app, Trystero's `selfId`.
+     * This peer's id in every room of the app, Trystero's `selfId`: drawn when the app is made, as
+     * 0.27.0 has no custom one.
      *
      * @return The id, valid as long as the app.
      */
@@ -164,6 +169,38 @@ public:
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const {
         BOOST_ASSERT(impl_);
         return impl_->relay_urls();
+    }
+
+    /**
+     * Sets how the relays of every room of the app connect, Trystero's `setRelayConnectivity`,
+     * for this app alone (a process may hold several).
+     *
+     * `offline` closes every relay socket of the app's rooms and holds them closed, those of a room
+     * joined meanwhile too; `online` reconnects at once every relay not connected, as each call
+     * does, which then subscribes and announces again; `automatic`, the default, follows the
+     * page's `online` and `offline` events, and natively, where there are none, is online: set
+     * after `offline`, it reconnects the relays.
+     *
+     * Tip: what the relays carry is how peers find each other; a connection already made goes on
+     * while the relays are offline.
+     *
+     * @param mode The connectivity to set.
+     * @return The connectivity now in place, `mode`.
+     */
+    trystero::relay_connectivity set_relay_connectivity(trystero::relay_connectivity mode) {
+        BOOST_ASSERT(impl_);
+        return impl_->set_connectivity(mode);
+    }
+
+    /**
+     * How the relays of every room of the app connect, Trystero's `setRelayConnectivity()`
+     * without an argument.
+     *
+     * @return The connectivity last set, `relay_connectivity::automatic` until one is.
+     */
+    [[nodiscard]] trystero::relay_connectivity relay_connectivity() const {
+        BOOST_ASSERT(impl_);
+        return impl_->connectivity();
     }
 
     /**
@@ -191,9 +228,9 @@ public:
      * the relays and announces this peer on the room's topic.
      *
      * @param room_id The room's id, Trystero's `roomId`, read during the call.
-     * @param options The handshake timeout, receive bound and resource of the room.
+     * @param options The receive bounds and the resource of the room.
      * @return The room, or `error::already_joined` while a room of that id is joined in the app,
-     * or `error::too_many_rooms` when `max_rooms` rooms count.
+     * as 0.27.0 refuses a second join, or `error::too_many_rooms` when `max_rooms` rooms count.
      */
     [[nodiscard]] boost::system::result<room> join(std::string_view room_id,
                                                    room_options options = {}) {
@@ -213,14 +250,21 @@ public:
     }
 
 private:
+    /** Takes the state `make` made, as its first user. */
+    explicit app(std::shared_ptr<detail::app_impl> impl) : impl_(std::move(impl)) {
+        impl_->add_user();
+    }
+
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<detail::app_impl> make(executor_type ex, backend::factory& factory,
-                                                  app_config config) {
+                                                  app_config config,
+                                                  std::string_view self_id = {}) {
         // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory = config.memory;
         BOOST_ASSERT_MSG(memory != nullptr, "app_config::memory names no resource");
         return std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(memory),
-                                                      std::move(ex), factory, std::move(config));
+                                                      std::move(ex), factory, std::move(config),
+                                                      self_id);
     }
 
     friend struct detail::app_access;
@@ -231,6 +275,14 @@ private:
 inline detail::app_impl& detail::app_access::impl(const app& a) {
     BOOST_ASSERT(a.impl_);
     return *a.impl_;
+}
+
+// NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
+inline app detail::app_access::make(webcpp::asio::any_io_executor ex, backend::factory& factory,
+                                    app_config config, std::string_view self_id) {
+    // NOLINTEND(performance-unnecessary-value-param)
+    BOOST_ASSERT(!self_id.empty());
+    return app(app::make(std::move(ex), factory, std::move(config), self_id));
 }
 
 }  // namespace webcpp::trystero

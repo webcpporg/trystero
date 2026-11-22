@@ -23,7 +23,7 @@
 // | --room2Delay    | the ms before joining room2, optional (0)                          |
 // | --room3Delay    | the ms before joining room3, optional (0)                          |
 // | --idle          | the app's idle_timeout in ms, optional (123,333)                   |
-// | --handshake     | every room's handshake_timeout in ms, optional (10,000)            |
+// | --handshake     | every room's handshake timeout in ms, optional (10,000)            |
 // | --delayOpen     | defer native open delivery while transport messages arrive, optional |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
@@ -176,7 +176,6 @@ std::map<std::string, std::string> arguments(int argc, char* const* argv) {
 trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
     trystero::app_config config;
     config.app_id = args["app"];
-    config.self_id = args["self"];
     config.password = args["password"];
     for (std::string_view relays = args["relays"]; !relays.empty();) {
         const auto comma = relays.find(',');
@@ -193,13 +192,6 @@ trystero::app_config app_config_of(std::map<std::string, std::string>& args) {
         std::cerr << category << ": " << text << '\n';
     };
     return config;
-}
-
-/** A room's options: the driver's handshake timeout. */
-trystero::room_options options_of(std::map<std::string, std::string>& args) {
-    return {
-        .handshake_timeout = millis(args["handshake"], std::chrono::milliseconds(10'000)),
-    };
 }
 
 /** Joins `room_id` through `app`; when the app refuses, the process ends after an event. */
@@ -487,7 +479,7 @@ struct command_reader {
             return true;
         }
         if (command.starts_with("replace")) {
-            replace(room, join(app, args["room"] + "-replaced", options_of(args)));
+            replace(room, join(app, args["room"] + "-replaced", {}));
             return true;
         }
         if (command.starts_with("leave")) {
@@ -519,11 +511,18 @@ int main(int argc, char* argv[]) {
     boost::asio::io_context io;
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     backend.delay_open = !args["delayOpen"].empty();
-    trystero::app app(io.get_executor(), backend, app_config_of(args));
+    // The driver's self id and its rooms' handshake timeout through the app's detail seams, which
+    // the library keeps for its own tests: 0.27.0 has no option for either.
+    trystero::app app = args["self"].empty()
+                            ? trystero::app(io.get_executor(), backend, app_config_of(args))
+                            : trystero::detail::app_access::make(io.get_executor(), backend,
+                                                                 app_config_of(args), args["self"]);
+    trystero::detail::app_access::impl(app).set_handshake_timeout(
+        millis(args["handshake"], std::chrono::milliseconds(10'000)));
     app.on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });
-    trystero::room room = join(app, args["room"], options_of(args));
+    trystero::room room = join(app, args["room"], {});
     record("joined", {{"self", room.self_id()}, {"relays", room.relay_urls()}});
 
     auto chat = room.make_action<std::string>("chat");
@@ -598,8 +597,7 @@ int main(int argc, char* argv[]) {
         second_delay.expires_after(millis(args["room2Delay"], std::chrono::milliseconds(0)));
         second_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                second =
-                    std::make_unique<extra_room>(app, "second", args["room2"], options_of(args));
+                second = std::make_unique<extra_room>(app, "second", args["room2"], {});
             }
         });
     }
@@ -609,7 +607,7 @@ int main(int argc, char* argv[]) {
         third_delay.expires_after(millis(args["room3Delay"], std::chrono::milliseconds(0)));
         third_delay.async_wait([&](boost::system::error_code ec) {
             if (!ec) {
-                third = std::make_unique<extra_room>(app, "third", args["room3"], options_of(args));
+                third = std::make_unique<extra_room>(app, "third", args["room3"], {});
             }
         });
     }

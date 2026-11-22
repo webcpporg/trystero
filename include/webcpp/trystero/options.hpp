@@ -27,7 +27,9 @@ namespace webcpp::trystero {
 
 /**
  * What an app is made with: the part of Trystero's `joinRoom` configuration that every room of
- * the app shares, its peer id among it, and the one connection per remote peer its rooms share.
+ * the app shares.
+ *
+ * It names no peer id: 0.27.0 has no custom `peerId`, and the app draws its own (`app::self_id`).
  *
  * The app copies every part of it into `memory`. It is move-only, as its `log` is: pass it moved,
  * or build it in place with designated initializers.
@@ -35,14 +37,6 @@ namespace webcpp::trystero {
 struct app_config {
     /** The application's id, Trystero's `appId`: rooms of different apps never meet. */
     std::pmr::string app_id = {};
-    /**
-     * This program's id in every room of the app, Trystero's `selfId`; empty means 20 random
-     * characters, drawn once for the app.
-     *
-     * Other peers ignore an id longer than `protocol::max_peer_id_bytes` (64): the app replaces
-     * one with 20 random characters, and reports it with `error::invalid_configuration`.
-     */
-    std::pmr::string self_id = {};
     /**
      * The password shared by every room of this app, Trystero's `password`.
      *
@@ -108,13 +102,11 @@ struct app_config {
 /**
  * What a room of an app is joined with: the part of Trystero's `joinRoom` configuration that is
  * the room's own.
+ *
+ * It has no handshake timeout: 0.27.0 removed `handshakeTimeoutMs`, and a peer has 10 s, its
+ * default, to finish the handshake.
  */
 struct room_options {
-    /**
-     * How long a connected peer has to finish the handshake before it is dropped, Trystero's
-     * `handshakeTimeoutMs`.
-     */
-    std::chrono::milliseconds handshake_timeout{10'000};
     /**
      * The most bytes the room reserves at once for the transfers it receives, across peers,
      * Trystero's `maxReceiveBytes`.
@@ -143,6 +135,21 @@ struct room_options {
      * the app's resource.
      */
     std::pmr::memory_resource* memory = nullptr;
+};
+
+/**
+ * How the relays of an app's rooms connect, Trystero's `RelayConnectivity`, which
+ * `app::set_relay_connectivity` sets for one app.
+ */
+enum class relay_connectivity {
+    /** Connected: a relay closed is reconnected, Trystero's `'online'`. */
+    online,
+    /** Held closed: every relay socket is closed, and none is opened or reconnected until the app
+     * is online again, Trystero's `'offline'`. */
+    offline,
+    /** Following the page, Trystero's `'auto'`, the default: offline from the page's `offline`
+     * event until its `online` event; natively, where no such event exists, online. */
+    automatic,
 };
 
 /**

@@ -69,6 +69,9 @@ public:
      * room acts only on what it holds on `ended`. */
     virtual void connection_ended(const std::shared_ptr<connection>& ended, std::string_view peer,
                                   std::string_view reason) = 0;
+    /** The app's relays went offline (`offline`), so the room closes its relay sockets and holds
+     * them closed, or online, so it reconnects every one not connected. */
+    virtual void relays_offline(bool offline) = 0;
 
 protected:
     room_endpoint() = default;
@@ -90,15 +93,23 @@ public:
     /** The executor shared by the app and its rooms. */
     using executor_type = webcpp::asio::any_io_executor;
 
-    /** Copies the configuration into its resource, draws the self id unless it names one, and sets
-     * aside what no peer could use, each kept as a report. */
-    app_impl(executor_type ex, backend::factory& factory, app_config config)
+    /**
+     * Copies the configuration into its resource, draws the self id, sets aside what no peer could
+     * use, each kept as a report, and watches the page's connectivity, which the relays follow
+     * while they are `relay_connectivity::automatic`.
+     *
+     * Tip: `self_id`, when not empty, is the self id in place of one drawn: the library's own
+     * tests name their peers, so that which of two is the lower id is known. It is at most
+     * `protocol::max_peer_id_bytes` of UTF-8.
+     */
+    app_impl(executor_type ex, backend::factory& factory, app_config config,
+             std::string_view self_id = {})
         : memory_(config.memory),
           ex_(std::move(ex)),
           factory_(factory),
           log_(std::move(config.log), memory_),
           app_id_(config.app_id, memory_),
-          self_id_(config.self_id, memory_),
+          self_id_(self_id, memory_),
           password_(config.password, memory_),
           room_keys_(std::allocate_shared<room_keys_cache>(allocator(), ex_, factory_, app_id_,
                                                            password_, memory_)),
@@ -110,16 +121,9 @@ public:
           rooms_(memory_),
           connections_(memory_),
           seconds_(memory_) {
-        if (self_id_.size() > protocol::max_peer_id_bytes) {
-            self_id_.clear();
-            set_aside("self_id is longer than any peer accepts, so the app uses a random one");
-        }
-        // A signal writes the id as a JSON string, which holds UTF-8 alone, as any JavaScript
-        // string is once encoded.
-        if (!protocol::json::quotable(self_id_)) {
-            self_id_.clear();
-            set_aside("self_id is not UTF-8, which no peer reads, so the app uses a random one");
-        }
+        // A signal writes the id as a JSON string, which holds UTF-8 alone.
+        BOOST_ASSERT(self_id_.size() <= protocol::max_peer_id_bytes &&
+                     protocol::json::quotable(self_id_));
         if (self_id_.empty()) {
             self_id_ = detail::random_id(factory_, protocol::peer_id_size, memory_);
         }
@@ -155,6 +159,7 @@ public:
                 relay_urls_.emplace_back(url);
             }
         }
+        watch_page();
     }
 
     /** The app state has one identity and cannot be copied. */
@@ -204,6 +209,50 @@ public:
 
     /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
+
+    /** How the relays of the app's rooms connect: `relay_connectivity::automatic` until the
+     * program sets another. */
+    [[nodiscard]] relay_connectivity connectivity() const { return connectivity_; }
+
+    /** Whether the relays of the app's rooms are held closed now: offline, or automatic since the
+     * page's `offline` event. A room joined meanwhile opens none. */
+    [[nodiscard]] bool relays_offline() const { return relays_offline_; }
+
+    /**
+     * Sets how the relays of the app's rooms connect, as 0.27.0's `setRelayConnectivity` sets it
+     * for its page: `offline` holds every relay closed; `online` reconnects at once every relay not
+     * connected, its reconnection delay back at its least, as each call does; `automatic` follows
+     * the page's events from now on, and reconnects the relays a program held offline.
+     *
+     * @return The connectivity now in place, `mode`.
+     */
+    relay_connectivity set_connectivity(relay_connectivity mode) {
+        if (mode == relay_connectivity::automatic) {
+            const bool held = connectivity_ != relay_connectivity::automatic && relays_offline_;
+            connectivity_ = mode;
+            watch_page();
+            if (held) {
+                set_relays_offline(false);
+            }
+            return connectivity_;
+        }
+        page_watch_.reset();
+        connectivity_ = mode;
+        set_relays_offline(mode == relay_connectivity::offline);
+        return connectivity_;
+    }
+
+    /** How long a peer has to finish the handshake by default: 10 s, 0.27.0's
+     * `defaultHandshakeTimeoutMs`, which no option changes. */
+    static constexpr std::chrono::milliseconds default_handshake_timeout{10'000};
+
+    /** How long a peer of a room joined from now on has to finish the handshake. */
+    [[nodiscard]] std::chrono::milliseconds handshake_timeout() const { return handshake_timeout_; }
+
+    /** Gives a room joined from now on `timeout` to finish each handshake, in place of
+     * @ref default_handshake_timeout: the library's own tests make one side of a handshake
+     * patient with it. */
+    void set_handshake_timeout(std::chrono::milliseconds timeout) { handshake_timeout_ = timeout; }
 
     /** How long the higher id holds a second connection to a peer that neither sends on it nor
      * closes it (`hold_second`). */
@@ -654,6 +703,42 @@ private:
         }
     }
 
+    /**
+     * Watches the page's connectivity through the backend, while the relays are automatic, unless
+     * it is watched already.
+     *
+     * Tip: the handler names the app by its address: the watch is the app's, and the backend calls
+     * no handler of a watch once it is destroyed.
+     */
+    void watch_page() {
+        if (page_watch_) {
+            return;
+        }
+        page_watch_ =
+            factory_.watch_connectivity(bind<void(bool)>([this](bool online) {
+                                            if (connectivity_ == relay_connectivity::automatic) {
+                                                set_relays_offline(!online);
+                                            }
+                                        }),
+                                        memory_);
+    }
+
+    /** Holds the relays of every room closed (`offline`), or reconnects them. */
+    void set_relays_offline(bool offline) {
+        relays_offline_ = offline;
+        log_("app", offline ? "the relays go offline" : "the relays go online");
+        // A room may leave from inside the call, through the log sink: the registry is read first.
+        std::pmr::vector<std::shared_ptr<room_endpoint>> rooms(memory_);
+        for (const auto& [token, e] : rooms_) {
+            if (auto room = e.room.lock()) {
+                rooms.push_back(std::move(room));
+            }
+        }
+        for (const auto& room : rooms) {
+            room->relays_offline(offline);
+        }
+    }
+
     void set_aside(std::string_view what) {
         log_("app", what);
         setup_reports_.emplace_back(what);
@@ -679,6 +764,11 @@ private:
     std::pmr::map<std::pmr::string, std::shared_ptr<connection>, std::less<>> connections_;
     std::pmr::map<std::pmr::string, std::shared_ptr<second_connection>, std::less<>> seconds_;
     std::size_t users_ = 0;
+    std::chrono::milliseconds handshake_timeout_ = default_handshake_timeout;
+    relay_connectivity connectivity_ = relay_connectivity::automatic;
+    bool relays_offline_ = false;
+    // The page's connectivity, watched while the relays are automatic: last, so that it ends first.
+    std::shared_ptr<void> page_watch_;
     user_resolver user_resolver_;
 };
 

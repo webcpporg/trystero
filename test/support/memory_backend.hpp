@@ -199,6 +199,9 @@ public:
     /** Closes every connection that has a subscription, as a relay that goes away does. */
     void close_all();
 
+    /** How many subscriptions the relay holds, of every socket. */
+    [[nodiscard]] std::size_t subscription_count() const { return subscriptions_.size(); }
+
     std::size_t events_seen = 0;
     /** How many texts went through the relay: each text it received from a socket, and each text
      * a socket of it handed to its room. A test that measures a window of a room's life reads it
@@ -742,7 +745,39 @@ public:
         auto socket = std::allocate_shared<memory_websocket>(
             std::pmr::polymorphic_allocator<>(memory), io_, relay, std::move(h), memory);
         socket->open();
+        ++websocket_connects;
         return socket;
+    }
+
+    /** How many WebSockets were asked for, of every relay, reachable or not. */
+    std::size_t websocket_connects = 0;
+
+    /** When true, the network has a page's `online` and `offline` events, which
+     * page_connectivity() fires; false, as natively, it watches nothing. */
+    bool page_events = false;
+
+    /** A watch while `page_events` holds, its handler kept in `memory`; else none. */
+    std::shared_ptr<void> watch_connectivity(handler<void(bool online)> changed,
+                                             std::pmr::memory_resource* memory) override {
+        if (!page_events) {
+            return nullptr;
+        }
+        auto watch = std::allocate_shared<handler<void(bool)>>(
+            std::pmr::polymorphic_allocator<>(memory), std::move(changed));
+        watches_.push_back(watch);
+        return watch;
+    }
+
+    /** Fires the page's `online` (`online` true) or `offline` event: each watch not destroyed is
+     * called after it, posted, as a page's listener posts. */
+    void page_connectivity(bool online) {
+        for (const auto& w : watches_) {
+            webcpp::asio::post(io_, [w, online] {
+                if (const auto watch = w.lock()) {
+                    (*watch)(online);
+                }
+            });
+        }
     }
 
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
@@ -997,6 +1032,7 @@ private:
     std::map<std::size_t, std::weak_ptr<memory_data_channel>> deferred_;  // ends waiting for open()
     std::deque<held_derivation> held_derivations_;
     std::shared_ptr<virtual_clock_state> clock_;
+    std::vector<std::weak_ptr<handler<void(bool)>>> watches_;  // made by watch_connectivity
 };
 
 inline memory_peer_connection::~memory_peer_connection() {

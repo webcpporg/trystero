@@ -57,10 +57,17 @@ constexpr const char* relay_a = "wss://relay-a.test";
 constexpr const char* relay_b = "wss://relay-b.test";
 constexpr const char* app_id = "webcpp-trystero-tests";
 
+/** What an app of the tests is made with: its configuration, and the self id the test names in
+ * place of one drawn, so that which of two peers is the lower id is known. */
+struct app_setup : trystero::app_config {
+    /** The app's self id, at most `protocol::max_peer_id_bytes` of UTF-8; empty draws one. */
+    std::pmr::string self_id;
+};
+
 /** An app of the tests' app id over the two memory relays, with `self_id`; with
  * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */
-inline trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
-    trystero::app_config c;
+inline app_setup app_config(std::string_view self_id, std::string_view password = {}) {
+    app_setup c;
     c.app_id = app_id;
     c.relay_urls = {relay_a, relay_b};
     c.self_id = self_id;
@@ -71,6 +78,45 @@ inline trystero::app_config app_config(std::string_view self_id, std::string_vie
         };
     }
     return c;
+}
+
+/** An app of the tests: a `trystero::app` whose self id is its setup's, through the detail seam
+ * the library keeps for its own tests, since 0.27.0 has no custom self id. */
+class app : public trystero::app {
+public:
+    /** Makes the app of `setup` over `factory`; an empty self id is drawn, as an app draws it. */
+    app(trystero::app::executor_type ex, backend::factory& factory, app_setup setup)
+        : trystero::app(make(std::move(ex), factory, std::move(setup))) {}
+
+private:
+    static trystero::app make(trystero::app::executor_type ex, backend::factory& factory,
+                              app_setup setup) {
+        const std::pmr::string self_id = std::move(setup.self_id);
+        trystero::app_config config = std::move(static_cast<trystero::app_config&>(setup));
+        if (self_id.empty()) {
+            return trystero::app(std::move(ex), factory, std::move(config));
+        }
+        return trystero::detail::app_access::make(std::move(ex), factory, std::move(config),
+                                                  self_id);
+    }
+};
+
+/** Gives the rooms `a` joins from now on `timeout` to finish each handshake, in place of 0.27.0's
+ * 10 s, through the app's detail seam: a test makes one side of a handshake patient. */
+inline void set_handshake_timeout(trystero::app& a, std::chrono::milliseconds timeout) {
+    trystero::detail::app_access::impl(a).set_handshake_timeout(timeout);
+}
+
+/** Joins `room_id` with `timeout` for each handshake of the room, which must succeed: a failure
+ * ends the test; the app's later rooms have 10 s again. */
+inline trystero::room join_patient(trystero::app& a, std::string_view room_id,
+                                   std::chrono::milliseconds timeout,
+                                   trystero::room_options options = {}) {
+    set_handshake_timeout(a, timeout);
+    auto r = a.join(room_id, options);
+    set_handshake_timeout(a, trystero::detail::app_impl::default_handshake_timeout);
+    webcpp::test::require(BOOST_TEST(r.has_value()));
+    return std::move(*r);
 }
 
 /** The owned document of a JSON text, as an action of JSON sends it; a text that does not parse

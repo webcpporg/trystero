@@ -50,6 +50,15 @@ concept has_password_option = requires(Options options) { options.password; };
 static_assert(has_password_option<trystero::app_config>);
 static_assert(!has_password_option<trystero::room_options>);
 
+// The options 0.27.0 removed: a custom peer id (`peerId`, once `selfId`) and `handshakeTimeoutMs`.
+template <class Options>
+concept has_self_id_option = requires(Options options) { options.self_id; };
+template <class Options>
+concept has_handshake_timeout_option = requires(Options options) { options.handshake_timeout; };
+static_assert(!has_self_id_option<trystero::app_config>);
+static_assert(!has_handshake_timeout_option<trystero::room_options>);
+static_assert(!has_handshake_timeout_option<trystero::app_config>);
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
                std::chrono::milliseconds limit = 5s) {
     const auto end = std::chrono::steady_clock::now() + limit;
@@ -83,6 +92,10 @@ public:
     }
 
     [[nodiscard]] bool keeps_frames_from(std::string_view /*peer*/) const override { return keeps; }
+
+    void relays_offline(bool offline) override {
+        events.emplace_back(offline ? "relays offline" : "relays online");
+    }
 
     void frame_kept(std::string_view peer) override {
         events.push_back("kept " + std::string(peer));
@@ -196,8 +209,8 @@ std::vector<std::string> urls_of(std::span<const trystero::backend::ice_server> 
     return out;
 }
 
-// An empty self id is drawn from the factory, the ICE servers default to Trystero's, and the
-// relays are derived from the app id; nothing is set aside.
+// The self id is drawn from the factory, the ICE servers default to Trystero's, and the relays
+// are derived from the app id; nothing is set aside.
 void the_configuration_is_copied_and_completed() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -223,22 +236,19 @@ void the_configuration_is_copied_and_completed() {
     BOOST_TEST(app->live_connections().empty());
 }
 
-// What the configuration names is kept: a self id of 64 bytes, the relays, a redundancy that
-// their list makes moot, the ICE servers with their scheme lowercased.
+// What the configuration names is kept: the relays, a redundancy that their list makes moot, the
+// ICE servers with their scheme lowercased.
 void what_the_configuration_names_is_kept() {
     asio::io_context io;
     trystero::test::memory_network net(io);
     lines log;
-    const std::string id(trystero::protocol::max_peer_id_bytes, 'x');
     const auto app = make_app(io, net, log, [&](trystero::app_config& c) {
-        c.self_id = id;
         c.password = "the immutable password of every room in this app";
         c.relay_urls.emplace_back("wss://relay.example");
         c.relay_redundancy = 1;
         c.ice_servers.push_back(server("STUN:stun.example:3478"));
         c.idle_timeout = 0ms;
     });
-    BOOST_TEST_EQ(app->self_id(), id);
     BOOST_TEST_EQ(app->password(), "the immutable password of every room in this app");
     BOOST_TEST_EQ(app->relay_urls().size(), 1U);
     BOOST_TEST_EQ(app->relay_urls()[0], "wss://relay.example");
@@ -247,24 +257,21 @@ void what_the_configuration_names_is_kept() {
     BOOST_TEST(app->setup_reports().empty());
 }
 
-// An over-long self id, a negative idle time and every ICE server no peer connection could be
-// made with are set aside, each reported once and logged, in that order.
+// A negative idle time and every ICE server no peer connection could be made with are set aside,
+// each reported once and logged, in that order.
 void what_no_peer_could_use_is_set_aside() {
     asio::io_context io;
     trystero::test::memory_network net(io);
     lines log;
     const auto app = make_app(io, net, log, [](trystero::app_config& c) {
-        c.self_id = std::pmr::string(trystero::protocol::max_peer_id_bytes + 1, 'x');
         c.idle_timeout = -1ms;
         c.ice_servers.push_back(server("http://example"));
         c.ice_servers.push_back(server("stun:stun.example"));
         c.ice_servers.push_back({});
     });
-    BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST(app->idle_timeout() == 0ms);
     BOOST_TEST(urls_of(app->ice_servers()) == (std::vector<std::string>{"stun:stun.example"}));
     const std::vector<std::string> expected{
-        "self_id is longer than any peer accepts, so the app uses a random one",
         "idle_timeout is negative, so the app closes an unused connection at once",
         "the ICE server http://example is not stun:, stuns:, turn: or turns:, so the app goes on "
         "without it",
@@ -279,31 +286,104 @@ void what_no_peer_could_use_is_set_aside() {
     BOOST_TEST(log == logged);
 }
 
-// A self id that is not UTF-8, which a signal could not write as a JSON string, is set aside for a
-// random one, reported and logged; one in UTF-8 past ASCII is kept as it is.
-void a_self_id_that_is_not_utf8_is_set_aside() {
+// No configuration names the self id, as 0.27.0 has no custom one: each app draws its own, 20
+// base62 characters from the factory's randomness, so that two apps of one network differ; and no
+// room option names a handshake timeout (the static assertions above).
+void no_custom_self_id() {
     asio::io_context io;
     trystero::test::memory_network net(io);
-    for (const std::string_view id :
-         {std::string_view("peer\xff"), std::string_view("\xc3\xa9t\xc3\xa9")}) {
-        lines log;
-        const auto app = make_app(io, net, log, [&](trystero::app_config& c) { c.self_id = id; });
-        const auto reports = app->setup_reports();
-        if (id == "peer\xff") {
-            BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
-            BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::base62_alphabet),
-                          std::string_view::npos);
-            const std::vector<std::string> expected{
-                "self_id is not UTF-8, which no peer reads, so the app uses a random one",
-            };
-            BOOST_TEST(std::vector<std::string>(reports.begin(), reports.end()) == expected);
-            BOOST_TEST(log == lines{"app: " + expected[0]});
-        } else {
-            BOOST_TEST_EQ(app->self_id(), id);
-            BOOST_TEST(reports.empty());
-            BOOST_TEST(log.empty());
-        }
+    lines log;
+    const auto before = net.random_bytes;
+    const auto a = make_app(io, net, log);
+    BOOST_TEST_GT(net.random_bytes, before);
+    const auto b = make_app(io, net, log);
+    for (const auto& app : {a, b}) {
+        BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
+        BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::base62_alphabet),
+                      std::string_view::npos);
     }
+    BOOST_TEST_NE(a->self_id(), b->self_id());
+    BOOST_TEST(a->setup_reports().empty());
+    BOOST_TEST(log.empty());
+}
+
+// The connectivity reaches every room of the app, as 0.27.0's `setRelayConnectivity` reaches every
+// socket: `offline` holds the relays at each call, `online` reconnects them at each call, and
+// `automatic` reconnects only relays a program held offline. Natively there is no page to watch:
+// the app is automatic and online from the start, and asks the backend for a watch again each time
+// it becomes automatic.
+void the_connectivity_reaches_every_room() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    lines log;
+    const auto app = make_app(io, net, log);
+    BOOST_TEST(app->connectivity() == trystero::relay_connectivity::automatic);
+    BOOST_TEST(!app->relays_offline());
+    const auto r1 = std::make_shared<fake_room>();
+    const auto r2 = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", r1);
+    app->register_room("r2", "T2", r2);
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::offline) ==
+               trystero::relay_connectivity::offline);
+    BOOST_TEST(app->relays_offline());
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::offline) ==
+               trystero::relay_connectivity::offline);
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::automatic) ==
+               trystero::relay_connectivity::automatic);
+    BOOST_TEST(!app->relays_offline());
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::automatic) ==
+               trystero::relay_connectivity::automatic);
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::online) ==
+               trystero::relay_connectivity::online);
+    BOOST_TEST(app->set_connectivity(trystero::relay_connectivity::online) ==
+               trystero::relay_connectivity::online);
+    BOOST_TEST(app->connectivity() == trystero::relay_connectivity::online);
+    const std::vector<std::string> expected{
+        "relays offline", "relays offline", "relays online", "relays online", "relays online",
+    };
+    BOOST_TEST(r1->events == expected);
+    BOOST_TEST(r2->events == expected);
+    BOOST_TEST(log == (lines{
+                          "app: the relays go offline",
+                          "app: the relays go offline",
+                          "app: the relays go online",
+                          "app: the relays go online",
+                          "app: the relays go online",
+                      }));
+}
+
+// Where the page has events, an automatic app follows them, each after the event, and an app a
+// program set online or offline does not, until it is automatic again.
+void an_automatic_app_follows_the_pages_events() {
+    asio::io_context io;
+    trystero::test::memory_network net(io);
+    net.page_events = true;
+    lines log;
+    const auto app = make_app(io, net, log);
+    const auto room = std::make_shared<fake_room>();
+    app->register_room("r1", "T1", room);
+    net.page_connectivity(false);
+    BOOST_TEST(room->events.empty());  // the event is posted
+    settle(io);
+    BOOST_TEST(app->relays_offline());
+    BOOST_TEST(app->connectivity() == trystero::relay_connectivity::automatic);
+    net.page_connectivity(true);
+    settle(io);
+    BOOST_TEST(!app->relays_offline());
+    app->set_connectivity(trystero::relay_connectivity::online);
+    net.page_connectivity(false);
+    settle(io);
+    BOOST_TEST(!app->relays_offline());
+    app->set_connectivity(trystero::relay_connectivity::automatic);
+    net.page_connectivity(false);
+    settle(io);
+    BOOST_TEST(app->relays_offline());
+    BOOST_TEST(room->events == (std::vector<std::string>{
+                                   "relays offline",
+                                   "relays online",
+                                   "relays online",
+                                   "relays offline",
+                               }));
 }
 
 // Every allocation of the app's construction, of its registry, of an adoption, of a stale
@@ -319,7 +399,7 @@ void every_allocation_goes_through_the_apps_resource() {
     config.app_id = "app";
     const std::string expected_password(60, 'p');
     config.password = expected_password;
-    config.self_id = std::pmr::string(40, 'x');  // beyond the short string
+    const std::string self_id(40, 'x');  // beyond the short string
     config.ice_servers.push_back(server("stun:stun.example:3478"));
     std::size_t sentences = 0;
     config.log = [&sentences](std::string_view, std::string_view) { ++sentences; };
@@ -330,7 +410,8 @@ void every_allocation_goes_through_the_apps_resource() {
     auto* const previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
     {
         app = std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(&pool),
-                                                     io.get_executor(), net, std::move(config));
+                                                     io.get_executor(), net, std::move(config),
+                                                     self_id);
         BOOST_TEST_EQ(app->password(), expected_password);
         app->register_room("r1", "a room token longer than the short string", room);
         app->add_user();
@@ -443,7 +524,9 @@ std::shared_ptr<detail::app_impl> make_app_as(asio::io_context& io,
                                               trystero::test::memory_network& net, lines& log,
                                               std::string_view self) {
     net.virtual_clock = true;
-    return make_app(io, net, log, [self](trystero::app_config& c) { c.self_id = self; });
+    return std::make_shared<detail::app_impl>(
+        io.get_executor(), net, trystero::app_config{.app_id = "app", .log = record_log(log)},
+        self);
 }
 
 // The lower id holds the second until the peer closes the first, as Trystero JS closes the other
@@ -832,7 +915,9 @@ int main() {
     run_case(the_configuration_is_copied_and_completed);
     run_case(what_the_configuration_names_is_kept);
     run_case(what_no_peer_could_use_is_set_aside);
-    run_case(a_self_id_that_is_not_utf8_is_set_aside);
+    run_case(no_custom_self_id);
+    run_case(the_connectivity_reaches_every_room);
+    run_case(an_automatic_app_follows_the_pages_events);
     run_case(every_allocation_goes_through_the_apps_resource);
     run_case(the_registry_holds_rooms_by_a_weak_reference);
     run_case(adopt_starts_one_connection_per_peer);

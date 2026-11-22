@@ -20,7 +20,7 @@
 // | room2Delay      | the ms before joining room2, optional (0)                          |
 // | room3Delay      | the ms before joining room3, optional (0)                          |
 // | idle            | the app's idle_timeout in ms, optional (123,333)                   |
-// | handshake       | every room's handshake_timeout in ms, optional (10,000)            |
+// | handshake       | every room's handshake timeout in ms, optional (10,000)            |
 // | ping2           | any value: ping each peer of room2 every second, optional          |
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
 #include <webcpp/trystero.hpp>
@@ -204,7 +204,6 @@ std::uint32_t checksum(const trystero::bytes& data) {
 trystero::app_config config_of_page() {
     trystero::app_config config;
     config.app_id = param("app");
-    config.self_id = param("self");
     config.password = param("password");
     for (std::string relays = param("relays"); !relays.empty();) {
         const auto comma = relays.find(',');
@@ -220,17 +219,10 @@ trystero::app_config config_of_page() {
     return config;
 }
 
-/** A room's options: the page's handshake timeout. */
-trystero::room_options options_of_page() {
-    return {
-        .handshake_timeout = millis(param("handshake"), std::chrono::milliseconds(10'000)),
-    };
-}
-
 /** Joins `room_id` through `app`; null, with an event, when the app refuses. */
 std::unique_ptr<trystero::room> join(trystero::app& app, const std::string& room_id,
                                      std::string_view which) {
-    auto joined = app.join(room_id, options_of_page());
+    auto joined = app.join(room_id);
     if (!joined) {
         record("not-joined", {{"room", which}, {"error", joined.error().message()}});
         return nullptr;
@@ -245,7 +237,7 @@ std::unique_ptr<trystero::room> join(trystero::app& app, const std::string& room
  */
 void join_extra(extra_room& extra, std::string_view room_id) {
     page& app = the_page();
-    auto joined = app.app->join(room_id, options_of_page());
+    auto joined = app.app->join(room_id);
     if (!joined) {
         record("error", {
                             {"room", extra.which},
@@ -328,7 +320,15 @@ void ping_second() {
 
 void start() {
     page& app = the_page();
-    app.app = std::make_unique<trystero::app>(app.io.get_executor(), app.backend, config_of_page());
+    // The page's self id and its rooms' handshake timeout through the app's detail seams, which
+    // the library keeps for its own tests: 0.27.0 has no option for either.
+    const std::string self = param("self");
+    app.app = std::make_unique<trystero::app>(
+        self.empty() ? trystero::app(app.io.get_executor(), app.backend, config_of_page())
+                     : trystero::detail::app_access::make(app.io.get_executor(), app.backend,
+                                                          config_of_page(), self));
+    trystero::detail::app_access::impl(*app.app).set_handshake_timeout(
+        millis(param("handshake"), std::chrono::milliseconds(10'000)));
     app.app->on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });

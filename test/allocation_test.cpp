@@ -637,20 +637,20 @@ seen exchange_through_the_rooms_resources(Make make, bool planting = false) {
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
-    trystero::app a_app(io.get_executor(), network,
-                        {
-                            .app_id = "allocation",
-                            .self_id = "AAAAAAAAAAAAAAAAAAAA",
-                            .relay_urls = {std::pmr::string(relay)},
-                            .memory = &a_memory,
-                        });
-    trystero::app z_app(io.get_executor(), network,
-                        {
-                            .app_id = "allocation",
-                            .self_id = "zzzzzzzzzzzzzzzzzzzz",
-                            .relay_urls = {std::pmr::string(relay)},
-                            .memory = &z_memory,
-                        });
+    auto a_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                    {
+                                                        .app_id = "allocation",
+                                                        .relay_urls = {std::pmr::string(relay)},
+                                                        .memory = &a_memory,
+                                                    },
+                                                    "AAAAAAAAAAAAAAAAAAAA");
+    auto z_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                    {
+                                                        .app_id = "allocation",
+                                                        .relay_urls = {std::pmr::string(relay)},
+                                                        .memory = &z_memory,
+                                                    },
+                                                    "zzzzzzzzzzzzzzzzzzzz");
     auto a = join(a_app, "room");
     auto z = join(z_app, "room");
     std::size_t received = 0;
@@ -846,11 +846,10 @@ void warm(webcpp::asio::io_context& io) {
 
 // tag::config[]
 /** An app's configuration, every part of it in `memory`, made before the window. */
-trystero::app_config app_config_in(counting_resource& memory, std::string_view self_id,
-                                   std::string_view relay, std::size_t& lines) {
+trystero::app_config app_config_in(counting_resource& memory, std::string_view relay,
+                                   std::size_t& lines) {
     return trystero::app_config{
         .app_id = std::pmr::string("allocation", &memory),
-        .self_id = std::pmr::string(self_id, &memory),
         .password = std::pmr::string("a password", &memory),
         .relay_urls =
             std::pmr::vector<std::pmr::string>({std::pmr::string(relay, &memory)}, &memory),
@@ -931,13 +930,15 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         // moved-from object behind: MSVC's debug standard library keeps, in a moved-from
         // std::pmr::string or vector, 16 bytes of its resource for the container's debug
         // proxy, which the test would count as the app's until the end of the function.
-        trystero::app z_app(io.get_executor(), network,
-                            app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines));
+        auto z_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                        app_config_in(z_memory, relay, z_lines),
+                                                        "zzzzzzzzzzzzzzzzzzzz");
         auto z = join(z_app, "room", options_in(z_memory));
         run_for(io, 100ms);
         {
-            trystero::app a_app(io.get_executor(), network,
-                                app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
+            auto a_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                            app_config_in(a_memory, relay, a_lines),
+                                                            "AAAAAAAAAAAAAAAAAAAA");
             auto a = join(a_app, "room", options_in(a_memory));
             a.on_peer_leave([&left](const trystero::peer_event&) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
@@ -1017,8 +1018,8 @@ void rooms_of_one_app_allocate_through_their_resources() {
         // Construct configurations in their resources before the counting window. They, and the
         // payloads, are destroyed before the resources are checked: a moved-from object may still
         // hold memory of its resource (MSVC's debug containers keep an iterator proxy).
-        auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
-        auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
+        auto a_config = app_config_in(a_memory, "wss://relay.test", lines);
+        auto z_config = app_config_in(z_memory, "wss://relay.test", lines);
         const auto a_own = options_in(a_room_memory);
         const auto z_own = options_in(z_room_memory);
         // An inline payload of a size no other allocation has: its frame is at most 256 bytes
@@ -1034,8 +1035,10 @@ void rooms_of_one_app_allocate_through_their_resources() {
             start_counting_openssl();
             counting = true;
             {
-                trystero::app a(io.get_executor(), network, std::move(a_config));
-                trystero::app z(io.get_executor(), network, std::move(z_config));
+                auto a = trystero::detail::app_access::make(
+                    io.get_executor(), network, std::move(a_config), "AAAAAAAAAAAAAAAAAAAA");
+                auto z = trystero::detail::app_access::make(
+                    io.get_executor(), network, std::move(z_config), "zzzzzzzzzzzzzzzzzzzz");
                 auto a1 = join(a, "shared", options_in(a_memory));
                 auto a2 = join(a, "own", a_own);
                 auto z1 = join(z, "shared", options_in(z_memory));

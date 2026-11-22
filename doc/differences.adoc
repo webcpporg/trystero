@@ -73,7 +73,7 @@ has nothing of it to run beside its twin.
 |===
 | Behaviour | Trystero JS | Here | Why
 
-| Scope of sharing and of the self id | the page: one `selfId` for every app and room, one manager per strategy | an `app` object: its self id and its connections | no static state; several peers in one process; an id across apps is a program's choice (`app_config::self_id`) and never reaches the wire of another app
+| Scope of sharing and of the self id | the page: one `selfId` for every app and room, one manager per strategy | an `app` object: its self id, drawn for it, and its connections | no static state; several peers in one process
 
 | Passwords across rooms | independently configured per room, including mixed passwords on one shared connection | one immutable `app_config::password` for every room, separate apps and self ids for different passwords | the initial sealed negotiation authenticates one password domain before any of its rooms reuse the connection; the JS wire remains unchanged
 
@@ -90,8 +90,6 @@ has nothing of it to run beside its twin.
 | An answer to an earlier challenge | checked against the current challenge only | accepted when it is correct for any of the last 8 challenges sent since the last completed handshake | a late answer of an ended binding is honest and proves the password; failing it reports a false error
 
 | Frames after the higher id's own kick | kept for the next binding | dropped until the higher id sends presence | they belong to the ended binding; flushed into the next one, they would answer or be answered in its place
-
-| Joining a room already joined | the same room | `error::already_joined` | a `room` is a handle whose destruction leaves
 
 | Rooms per app | unbounded; a peer advertising a 65th is dropped by the other side | `join` refuses the 65th, counting rooms in their farewell | the 65th would cost every connection of the app
 
@@ -118,8 +116,6 @@ has nothing of it to run beside its twin.
 | A protocol text of thousands of values | parsed | refused once its image passes twice its bound and 64 KiB | no Trystero message holds more than a few dozen values, and a document's value takes some 200 bytes of image
 
 | A protocol text nested deeper than 16 | parsed | dropped as a malformed one is | no Trystero message nests deeper than 4, a relay's event and its tags, and each level of a parse is a level of recursion, which a hostile relay would otherwise take to 256
-
-| A self id that is not UTF-8 | impossible: a JavaScript string | set aside for a random one, with a configuration report | JSON carries UTF-8 alone, and a signal writes the id as a JSON string
 
 | A JSON payload's number that a double cannot hold: an integer past 2^53^, a decimal of more digits, one past a double's range | sent as the nearest double, and one past a double's range as `null`: a JavaScript number is a double | sent exact, as webcpp::document holds it; a Trystero JS peer reads the nearest double, or `Infinity` | webcpp::document keeps every number exact, and writes each one a double holds as JavaScript does
 
@@ -151,42 +147,8 @@ programs again, and the oracle lane the twins, and each fails when its
 program no longer prints what is shown here. The twins of the programs of
 `example/` agree with {n-twins-agreeing} of them, the quick start among them
 (<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
-difference below; {n-examples-without-twin} programs have no twin, the last
-difference below and the chat page, each with its reason in
-`test/oracle/twins/without-twin.txt`.
-
-[#trystero-differences-already-joined]
-==== Joining a room already joined
-
-Trystero JS:: `joinRoom` with the id of a room the page holds returns that
-room.
-trystero:: `app::join` refuses with `error::already_joined` while a room of
-that id is joined.
-Why:: A `room` is a handle whose destruction leaves the room: two handles of
-one room would leave it twice.
-
-[source]
-----
-include::{examples}/diff_already_joined.cpp[tag=example,indent=0]
-----
-
-.The twin, on Trystero JS
-[source,javascript]
-----
-include::{twins}/diff_already_joined.mjs[lines=7..]
-----
-
-.Trystero JS prints
-[listing]
-----
-include::{twins}/diff_already_joined.expected[]
-----
-
-.trystero prints
-[listing]
-----
-include::{examples}/diff_already_joined.expected[]
-----
+difference below; {n-examples-without-twin} program has no twin, the chat
+page, with its reason in `test/oracle/twins/without-twin.txt`.
 
 [#trystero-differences-rooms]
 ==== Rooms per app
@@ -223,45 +185,6 @@ include::{twins}/diff_rooms_per_app.expected[]
 [listing]
 ----
 include::{examples}/diff_rooms_per_app.expected[]
-----
-
-[#trystero-differences-self-id]
-==== The self id
-
-Trystero JS:: A page has one `selfId`, drawn once when Trystero's module
-loads, and every room of every app announces it, so a peer that meets the
-page in two apps sees the same id in both. Its one manager of shared
-connections keys them by app id, so the two apps share the id and not their
-connections.
-trystero:: Each app draws its own self id and holds its own connections, so a
-peer that meets the program in rooms of two apps sees two ids, and two rooms
-of one app show one. A program that wants one id across apps names it,
-`app_config::self_id`.
-Why:: No static state, so that one process holds several peers; an id shared
-across apps is the program's choice, and never reaches another app's wire
-unless the program chooses it.
-
-[source]
-----
-include::{examples}/diff_self_id.cpp[tag=example,indent=0]
-----
-
-.The twin, on Trystero JS
-[source,javascript]
-----
-include::{twins}/diff_self_id.mjs[lines=7..]
-----
-
-.Trystero JS prints
-[listing]
-----
-include::{twins}/diff_self_id.expected[]
-----
-
-.trystero prints
-[listing]
-----
-include::{examples}/diff_self_id.expected[]
 ----
 
 [#trystero-differences-passwords]
@@ -567,31 +490,6 @@ include::{twins}/diff_json_refused.expected[]
 [listing]
 ----
 include::{examples}/diff_json_refused.expected[]
-----
-
-[#trystero-differences-self-id-not-utf8]
-==== A self id that is not UTF-8
-
-Trystero JS:: Has none: it draws its `selfId` when its module loads and takes
-none from a program.
-trystero:: An app given a self id that is not UTF-8 sets it aside for 20
-random characters, and reports `error::invalid_configuration` to
-`app::on_error`.
-Why:: JSON carries UTF-8 alone, and a signal writes the id as a JSON string.
-
-This program has no twin, since no program of Trystero's can give it an id
-(`test/oracle/twins/without-twin.txt`), and it joins no room, so it needs no
-relay: it runs with the ordinary examples.
-
-[source]
-----
-include::{examples}/diff_self_id_not_utf8.cpp[tag=example,indent=0]
-----
-
-.trystero prints
-[listing]
-----
-include::{examples}/diff_self_id_not_utf8.expected[]
 ----
 
 [#trystero-differences-unshown]

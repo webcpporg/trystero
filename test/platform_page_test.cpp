@@ -65,8 +65,8 @@ namespace {
 struct page {
     test::fixture f;
     asio::executor_work_guard<asio::io_context::executor_type> guard{f.io.get_executor()};
-    std::optional<trystero::app> a_app;
-    std::optional<trystero::app> z_app;
+    std::optional<trystero::test::app> a_app;
+    std::optional<trystero::test::app> z_app;
     std::optional<trystero::room> a;
     std::optional<trystero::room> z;
     std::optional<trystero::action<std::string>> chat_a;

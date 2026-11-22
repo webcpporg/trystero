@@ -31,7 +31,6 @@ webcpp.drive quick_start : quick_start.cpp
 # The programs of the appendix "Differences" (doc: #trystero-differences).
 # tag::differences[]
 local differences =
-    diff_already_joined
     diff_json_numbers
     diff_json_refused
     diff_passwords
@@ -40,7 +39,6 @@ local differences =
     diff_relay_config
     diff_relay_sockets
     diff_rooms_per_app
-    diff_self_id
     diff_send_to_absent_peer
     ;
 for local difference in $(differences)
@@ -49,7 +47,4 @@ for local difference in $(differences)
       : <library>/webcpp/trystero//platform <threading>multi : run_over_relay.mjs : : native ;
 }
 webcpp.lane relayed : quick_start $(differences) : native ;
-# One needs no relay, its app joining no room, and has no twin.
-webcpp.example diff_self_id_not_utf8.cpp
-  : <library>/webcpp/trystero//platform <threading>multi : native ;
 # end::differences[]
