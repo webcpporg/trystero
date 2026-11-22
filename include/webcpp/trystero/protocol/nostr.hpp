@@ -17,7 +17,7 @@
 
 #include <webcpp/crypto/curves/secp256k1.hpp>
 #include <webcpp/crypto/error.hpp>
-#include <webcpp/crypto/random_device.hpp>  // lint-world: a signer's key and aux randomness
+#include <webcpp/crypto/random_device.hpp>  // lint-world: a signature's aux randomness
 #include <webcpp/crypto/secret.hpp>
 
 #include <boost/hash2/sha2.hpp>
@@ -186,37 +186,23 @@ inline std::array<std::uint8_t, 32> event_id(
  */
 class signer {
 public:
-    /** How many secrets @ref generate draws before it gives up, as webcpp::crypto's
-     * `keypair::generate` does with its `max_draws`. */
-    static constexpr std::size_t max_key_draws = 4;
-
     /**
-     * Makes a key from a random secret, as Trystero's `createSigner` does.
-     *
-     * It stands in for `webcpp::crypto::curves::secp256k1::keypair::generate`, which
-     * webcpp::crypto does not offer yet, and follows its contract so that it is replaced by it
-     * when that reaches main: up to @ref max_key_draws secrets of 32 bytes from the system's
-     * generator, through webcpp::crypto, drawn again only when one is not a valid secret key,
-     * which is negligibly rare; each is wiped once it is used.
+     * Makes a key from a random secret, as Trystero's `createSigner` does: webcpp::crypto's
+     * `secp256k1::keypair::generate`, which draws the secret from the system's generator, again
+     * when one is not a valid secret key (at most four draws), and wipes each.
      *
      * @param memory The resource the signing context and the public key's text are allocated in;
      * it must outlive the signer.
      * @return The signer; `webcpp::crypto::error::entropy_unavailable` when the system's generator
-     * fails or every draw is refused; any other error of `keypair::make`.
+     * fails or every draw is refused; any other error of `keypair::generate`.
      */
     [[nodiscard]] static boost::system::result<signer> generate(
         std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-        for (std::size_t draw = 0; draw < max_key_draws; ++draw) {
-            webcpp::crypto::secret<32> secret;
-            if (!webcpp::crypto::random_device().fill(secret.writable())) {  // lint-world: the key
-                return webcpp::crypto::error::entropy_unavailable;
-            }
-            auto made = from_secret(secret.bytes(), memory);
-            if (made || made.error() != webcpp::crypto::error::invalid_secret_key) {
-                return made;
-            }
+        auto key = webcpp::crypto::curves::secp256k1::keypair::generate(memory);
+        if (!key) {
+            return key.error();
         }
-        return webcpp::crypto::error::entropy_unavailable;
+        return from_keypair(std::move(*key), memory);
     }
 
     /**
@@ -235,11 +221,7 @@ public:
         if (!key) {
             return key.error();
         }
-        const auto xonly = key->xonly_public_key();
-        if (!xonly) {
-            return xonly.error();
-        }
-        return signer(std::move(*key), to_hex(*xonly, memory));
+        return from_keypair(std::move(*key), memory);
     }
 
     /**
@@ -267,6 +249,16 @@ public:
     }
 
 private:
+    /** The signer of a key pair: its x-only public key's text, in `memory`. */
+    static boost::system::result<signer> from_keypair(
+        webcpp::crypto::curves::secp256k1::keypair key, std::pmr::memory_resource* memory) {
+        const auto xonly = key.xonly_public_key();
+        if (!xonly) {
+            return xonly.error();
+        }
+        return signer(std::move(key), to_hex(*xonly, memory));
+    }
+
     signer(webcpp::crypto::curves::secp256k1::keypair key, std::pmr::string pubkey)
         : key_(std::move(key)), pubkey_(std::move(pubkey)) {}
 
