@@ -95,7 +95,9 @@ inline std::pmr::string domain_tag(
     out += ':';
     out += name;
     out += ":v";
-    out += std::to_string(version);
+    // Written in `memory`: no std::string, which MSVC's debug library gives a proxy from the
+    // global heap even for a text this short.
+    json::append_integer(out, version);
     return out;
 }
 
