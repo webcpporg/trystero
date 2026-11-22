@@ -24,6 +24,7 @@
 #include <webcpp/trystero.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/platform/page.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/asio/executor_work_guard.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -319,13 +320,14 @@ void ping_second() {
 
 void start() {
     page& app = the_page();
-    // The page's self id through the app's detail seam, which the library keeps for its own
-    // tests: 0.27.0 has no option for it.
+    // The page's endpoint key, named by its label (the scalar is the label's SHA-256), through the
+    // app's detail seam, which the library keeps for its own tests: 0.27.0 has no option for it.
     const std::string self = param("self");
     app.app = std::make_unique<trystero::app>(
         self.empty() ? trystero::app(app.io.get_executor(), app.backend, config_of_page())
                      : trystero::detail::app_access::make(app.io.get_executor(), app.backend,
-                                                          config_of_page(), self));
+                                                          config_of_page(),
+                                                          trystero::protocol::sha256(self)));
     app.app->on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });

@@ -14,6 +14,7 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -73,7 +74,7 @@ struct fixture {
     fixture() { relays.relay(relay_url); }
 };
 
-/** The configuration of a test's app, whose self id `make_app` gives it. */
+/** The configuration of a test's app, whose endpoint key `make_app` gives it. */
 trystero::app_config app_config(std::string_view password = {}) {
     trystero::app_config c;
     c.app_id = "webcpp-trystero-native-tests";
@@ -85,12 +86,12 @@ trystero::app_config app_config(std::string_view password = {}) {
     return c;
 }
 
-/** An app named `self_id` in place of a drawn id, through the detail seam the library keeps for
- * its own tests, so that which of two peers is the lower id, and offers, is known. */
+/** An app whose endpoint key is named `label` (its scalar the label's SHA-256), through the
+ * detail seam the library keeps for its own tests, so that its peer id is known. */
 trystero::app make_app(trystero::app::executor_type ex, trystero::backend::factory& backend,
-                       std::string_view self_id, std::string_view password = {}) {
+                       std::string_view label, std::string_view password = {}) {
     return trystero::detail::app_access::make(std::move(ex), backend, app_config(password),
-                                              self_id);
+                                              trystero::protocol::sha256(label));
 }
 
 /** Joins `room_id`, which must succeed: a failure ends the test. */

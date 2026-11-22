@@ -13,12 +13,13 @@
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/post.hpp>
-#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/room_keys_cache.hpp>
 #include <webcpp/trystero/detail/wipe.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/options.hpp>
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
@@ -27,15 +28,18 @@
 #include <webcpp/trystero/subscription.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
+#include <webcpp/crypto/curves/p256.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -66,10 +70,11 @@ protected:
 };
 
 /**
- * The state an `app` and its rooms share: the configuration, the self id, the rooms by id, the
- * rooms' keys and the relays' connectivity. Nothing else is shared, as in 0.27.0, whose rooms share
- * the identity and the relays alone: each room has its own connection to each peer. Every
- * allocation goes through `app_config::memory`.
+ * The state an `app` and its rooms share: the configuration, the endpoint key and the self id it
+ * derives, the user identity, the rooms by id, the rooms' keys and the relays' connectivity.
+ * Nothing else is shared, as in 0.27.0, whose rooms share the identity and the relays alone: each
+ * room has its own connection to each peer. Every allocation goes through `app_config::memory`,
+ * except the key of a user identity the program gives, which is in the program's resource.
  *
  * Tip: its users are the `app` handle and every room not yet ended; when the last goes, it stops
  * watching the page's connectivity at that call. Its destructor ends nothing: it may run while the
@@ -81,22 +86,32 @@ public:
     using executor_type = webcpp::asio::any_io_executor;
 
     /**
-     * Copies the configuration into its resource, draws the self id, sets aside what no peer could
-     * use, each kept as a report, and watches the page's connectivity, which the relays follow
-     * while they are `relay_connectivity::automatic`.
+     * Copies the configuration into its resource, makes the endpoint key and the user identity,
+     * sets aside what no peer could use, each kept as a report, and watches the page's
+     * connectivity, which the relays follow while they are `relay_connectivity::automatic`.
      *
-     * Tip: `self_id`, when not empty, is the self id in place of one drawn: the library's own
-     * tests name their peers, so that which of two is the lower id is known. It is at most
-     * `protocol::max_peer_id_bytes` of UTF-8.
+     * The endpoint key is drawn from the system's generator, 0.27.0's `createEndpointIdentity`,
+     * and derives the self id; the user identity is the configuration's, or an ephemeral one made
+     * here. When either cannot be made, @ref identity_failure says which, and the self id is
+     * empty if the endpoint key is the one missing.
+     *
+     * Tip: `endpoint_scalar`, when not empty, is the endpoint key's scalar in place of one drawn:
+     * the library's own tests fix their peers' keys, so that their ids are known; a scalar that is
+     * no valid key, zero for instance, makes the endpoint key fail.
      */
     app_impl(executor_type ex, backend::factory& factory, app_config config,
-             std::string_view self_id = {})
+             std::span<const std::uint8_t> endpoint_scalar = {})
         : memory_(config.memory),
           ex_(std::move(ex)),
           factory_(factory),
           log_(std::move(config.log), memory_),
           app_id_(config.app_id, memory_),
-          self_id_(self_id, memory_),
+          endpoint_(make_endpoint(endpoint_scalar)),
+          endpoint_key_(memory_),
+          self_id_(memory_),
+          identity_(std::move(config.identity)),
+          persistence_(identity_ ? identity_persistence::imported
+                                 : identity_persistence::ephemeral),
           password_(config.password, memory_),
           room_keys_(std::allocate_shared<room_keys_cache>(allocator(), ex_, factory_, app_id_,
                                                            password_, memory_)),
@@ -105,12 +120,7 @@ public:
           setup_reports_(memory_),
           errors_(allocator()),
           rooms_(memory_) {
-        // A signal writes the id as a JSON string, which holds UTF-8 alone.
-        BOOST_ASSERT(self_id_.size() <= protocol::max_peer_id_bytes &&
-                     protocol::json::quotable(self_id_));
-        if (self_id_.empty()) {
-            self_id_ = detail::random_id(factory_, protocol::peer_id_size, memory_);
-        }
+        resolve_identity();
         if (ice_servers_.empty()) {
             ice_servers_ = default_ice_servers(memory_);
         }
@@ -182,8 +192,36 @@ public:
     /** The application id shared by every room. */
     [[nodiscard]] std::string_view app_id() const { return app_id_; }
 
-    /** The local peer id shared by every room. */
+    /** The local peer id shared by every room, derived from the endpoint key; empty when the
+     * endpoint key could not be made. */
     [[nodiscard]] std::string_view self_id() const { return self_id_; }
+
+    /** The endpoint key's compact public key; empty when it could not be made. */
+    [[nodiscard]] std::string_view endpoint_key() const { return endpoint_key_; }
+
+    /** The id of the user every room of the app presents; empty when the ephemeral user identity
+     * could not be made. */
+    [[nodiscard]] std::string_view user_id() const {
+        return identity_ ? identity_->user_id() : std::string_view();
+    }
+
+    /** Where the user identity comes from: the configuration's, or made with the app. */
+    [[nodiscard]] identity_persistence persistence() const { return persistence_; }
+
+    /**
+     * Why the app has no identity, the message 0.27.0's rooms report with `identity-failed`:
+     * "endpoint identity resolution failed" when the endpoint key could not be made, "identity
+     * resolution failed" when the ephemeral user identity could not be; empty when both exist.
+     */
+    [[nodiscard]] std::string_view identity_failure() const {
+        if (!endpoint_) {
+            return "endpoint identity resolution failed";
+        }
+        if (!identity_) {
+            return "identity resolution failed";
+        }
+        return {};
+    }
 
     /** The immutable password shared by this app's rooms. */
     [[nodiscard]] std::string_view password() const { return password_; }
@@ -354,6 +392,39 @@ private:
         }
     }
 
+    /** The endpoint key of `scalar`, or one drawn when it is empty; nothing when the key cannot be
+     * made. */
+    static std::optional<webcpp::crypto::curves::p256::keypair> make_endpoint(
+        std::span<const std::uint8_t> scalar) {
+        using keypair = webcpp::crypto::curves::p256::keypair;
+        auto made = scalar.empty() ? keypair::generate() : keypair::make(scalar);
+        if (!made) {
+            return std::nullopt;
+        }
+        return std::move(*made);
+    }
+
+    /** Derives the self id from the endpoint key, and makes the ephemeral user identity when the
+     * configuration gave none; logs what could not be made. */
+    void resolve_identity() {
+        if (endpoint_) {
+            if (const auto point = endpoint_->public_key()) {
+                endpoint_key_ = protocol::compact_public_key(point->uncompressed(), memory_);
+                self_id_ = protocol::derive_peer_id(endpoint_key_, memory_);
+            } else {
+                endpoint_.reset();
+            }
+        }
+        if (!identity_) {
+            if (auto made = create_user_identity(memory_)) {
+                identity_ = std::move(*made);
+            }
+        }
+        if (const auto failure = identity_failure(); !failure.empty()) {
+            log_("app", failure);
+        }
+    }
+
     void set_aside(std::string_view what) {
         log_("app", what);
         setup_reports_.emplace_back(what);
@@ -366,7 +437,11 @@ private:
     backend::factory& factory_;
     logger log_;
     std::pmr::string app_id_;
+    std::optional<webcpp::crypto::curves::p256::keypair> endpoint_;
+    std::pmr::string endpoint_key_;  // the endpoint key's compact public key
     std::pmr::string self_id_;
+    std::optional<user_identity> identity_;
+    identity_persistence persistence_;
     std::pmr::string password_;
     std::shared_ptr<room_keys_cache> room_keys_;
     std::pmr::vector<std::pmr::string> relay_urls_;

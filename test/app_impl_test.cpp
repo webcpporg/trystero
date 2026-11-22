@@ -10,7 +10,9 @@
 // has its own.
 
 #include <webcpp/trystero/detail/app_impl.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/options.hpp>
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -124,8 +126,9 @@ std::vector<std::string> urls_of(std::span<const trystero::backend::ice_server> 
     return out;
 }
 
-// The self id is drawn from the factory, the ICE servers default to Trystero's, and the relays
-// are derived from the app id; nothing is set aside.
+// The self id derives from the endpoint key the app drew, the user id from the ephemeral user
+// identity it made, the ICE servers default to Trystero's, and the relays are derived from the app
+// id; nothing is set aside.
 void the_configuration_is_copied_and_completed() {
     asio::io_context io;
     trystero::test::memory_network net(io);
@@ -136,6 +139,11 @@ void the_configuration_is_copied_and_completed() {
     BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST_EQ(app->self_id().find_first_not_of(trystero::protocol::base62_alphabet),
                   std::string_view::npos);
+    BOOST_TEST_EQ(app->self_id(), trystero::protocol::derive_peer_id(app->endpoint_key()));
+    BOOST_TEST(trystero::protocol::parse_compact_public_key(app->endpoint_key()).has_value());
+    BOOST_TEST_EQ(app->user_id().size(), trystero::protocol::user_id_size);
+    BOOST_TEST(app->persistence() == trystero::identity_persistence::ephemeral);
+    BOOST_TEST(app->identity_failure().empty());
     BOOST_TEST(urls_of(app->ice_servers()) == urls_of(trystero::default_ice_servers()));
     const auto derived =
         trystero::protocol::derive_relays("app", trystero::protocol::default_nostr_relays, 5);
@@ -194,16 +202,17 @@ void what_no_peer_could_use_is_set_aside() {
     BOOST_TEST(log == logged);
 }
 
-// No configuration names the self id, as 0.27.0 has no custom one: each app draws its own, 20
-// base62 characters from the factory's randomness, so that two apps of one network differ; and no
-// room option names a handshake timeout (the static assertions above).
+// No configuration names the self id, as 0.27.0 has no custom one: each app draws its own
+// endpoint key from the system's generator, as 0.27.0 draws it with WebCrypto, not from the
+// factory's randomness, and derives its 20 base62 characters from it, so that two apps of one
+// network differ; and no room option names a handshake timeout (the static assertions above).
 void no_custom_self_id() {
     asio::io_context io;
     trystero::test::memory_network net(io);
     lines log;
     const auto before = net.random_bytes;
     const auto a = make_app(io, net, log);
-    BOOST_TEST_GT(net.random_bytes, before);
+    BOOST_TEST_EQ(net.random_bytes, before);
     const auto b = make_app(io, net, log);
     for (const auto& app : {a, b}) {
         BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
@@ -328,7 +337,6 @@ void every_allocation_goes_through_the_apps_resource() {
     config.app_id = "app";
     const std::string expected_password(60, 'p');
     config.password = expected_password;
-    const std::string self_id(40, 'x');  // beyond the short string
     config.ice_servers.push_back(server("stun:stun.example:3478"));
     std::size_t sentences = 0;
     config.log = [&sentences](std::string_view, std::string_view) { ++sentences; };
@@ -336,9 +344,11 @@ void every_allocation_goes_through_the_apps_resource() {
     std::shared_ptr<detail::app_impl> app;
     auto* const previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
     {
+        // The endpoint key and the ephemeral user identity drawn, their texts derived.
         app = std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(&pool),
-                                                     io.get_executor(), net, std::move(config),
-                                                     self_id);
+                                                     io.get_executor(), net, std::move(config));
+        BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
+        BOOST_TEST_EQ(app->user_id().size(), trystero::protocol::user_id_size);
         BOOST_TEST_EQ(app->password(), expected_password);
         app->register_room("a room id longer than the short string", room);
         app->add_user();

@@ -23,6 +23,7 @@
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <memory_resource>
 #include <span>
@@ -42,19 +43,21 @@ struct app_access {
     /** The state of `a`, which must hold one. */
     [[nodiscard]] static app_impl& impl(const app& a);
 
-    /** An app as `app`'s constructor makes it, but whose self id is `self_id` in place of one
-     * drawn: the library's own tests name their peers, so that which of two is the lower id is
-     * known. `self_id` is at most `protocol::max_peer_id_bytes` of UTF-8, and not empty. */
+    /** An app as `app`'s constructor makes it, but whose endpoint key is made of
+     * `endpoint_scalar` in place of one drawn: the library's own tests fix their peers' keys, so
+     * that their ids are known. A scalar that is no valid key, zero for instance, makes the
+     * endpoint fail, as a system without a generator does. */
     [[nodiscard]] static app make(webcpp::asio::any_io_executor ex, backend::factory& factory,
-                                  app_config config, std::string_view self_id);
+                                  app_config config,
+                                  std::span<const std::uint8_t, 32> endpoint_scalar);
 };
 
 }  // namespace detail
 
 /**
- * This program in one app: one peer id, the relays and the configuration its rooms share, as a
- * Trystero JS page's rooms share them; each room has its own connection to each peer, as 0.27.0's
- * rooms do.
+ * This program in one app: one endpoint key and the peer id it derives, one user, the relays and
+ * the configuration its rooms share, as a Trystero JS page's rooms share them; each room has its
+ * own connection to each peer, as 0.27.0's rooms do.
  *
  * Every room uses the app's immutable password;
  * different passwords require separate apps with distinct peer ids.
@@ -71,10 +74,13 @@ public:
     using executor_type = webcpp::asio::any_io_executor;
 
     /**
-     * Makes an app: draws its id, 20 random base62 characters, and keeps the configuration.
+     * Makes an app: draws its P-256 endpoint key, whose public key derives its id, makes an
+     * ephemeral user identity unless the configuration gives one, and keeps the configuration.
      *
      * What no peer could use (an ICE server WebRTC refuses) is set aside, and reported to
-     * `on_error`.
+     * `on_error`. A key that cannot be made (a system without a generator) leaves the app without
+     * an identity: its `self_id` is empty when the endpoint key is the one missing, and each room
+     * it joins reports `error::identity_failed`, then ends, as 0.27.0's rooms fail their setup.
      *
      * @param ex The executor of the app and of its rooms.
      * @param factory The backend, which must outlive the app and its rooms.
@@ -108,10 +114,10 @@ public:
         return *this;
     }
 
-    /** Not copyable: an app is one peer id. */
+    /** Not copyable: an app is one endpoint key. */
     app(const app&) = delete;
 
-    /** Not copy-assignable: an app is one peer id. */
+    /** Not copy-assignable: an app is one endpoint key. */
     app& operator=(const app&) = delete;
 
     /** Releases the state; its rooms go on, and their connections with them. */
@@ -142,14 +148,26 @@ public:
     }
 
     /**
-     * This peer's id in every room of the app, Trystero's `selfId`: drawn when the app is made, as
-     * 0.27.0 has no custom one.
+     * This peer's id in every room of the app, Trystero's `selfId`: 20 base62 characters derived
+     * from the endpoint key the app made, as 0.27.0 derives it; 0.27.0 has no custom one.
      *
-     * @return The id, valid as long as the app.
+     * @return The id, valid as long as the app; empty when the endpoint key could not be made.
      */
     [[nodiscard]] std::string_view self_id() const {
         BOOST_ASSERT(impl_);
         return impl_->self_id();
+    }
+
+    /**
+     * The id of the user every room of the app presents, 0.27.0's `selfUserId`: the user identity
+     * of `app_config::identity`, or of the ephemeral one the app made.
+     *
+     * @return The id, 22 base62 characters, valid as long as the app; empty when the ephemeral
+     * user identity could not be made.
+     */
+    [[nodiscard]] std::string_view user_id() const {
+        BOOST_ASSERT(impl_);
+        return impl_->user_id();
     }
 
     /**
@@ -246,15 +264,15 @@ private:
     }
 
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
-    static std::shared_ptr<detail::app_impl> make(executor_type ex, backend::factory& factory,
-                                                  app_config config,
-                                                  std::string_view self_id = {}) {
+    static std::shared_ptr<detail::app_impl> make(
+        executor_type ex, backend::factory& factory, app_config config,
+        std::span<const std::uint8_t> endpoint_scalar = {}) {
         // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory = config.memory;
         BOOST_ASSERT_MSG(memory != nullptr, "app_config::memory names no resource");
         return std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(memory),
                                                       std::move(ex), factory, std::move(config),
-                                                      self_id);
+                                                      endpoint_scalar);
     }
 
     friend struct detail::app_access;
@@ -269,10 +287,10 @@ inline detail::app_impl& detail::app_access::impl(const app& a) {
 
 // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
 inline app detail::app_access::make(webcpp::asio::any_io_executor ex, backend::factory& factory,
-                                    app_config config, std::string_view self_id) {
+                                    app_config config,
+                                    std::span<const std::uint8_t, 32> endpoint_scalar) {
     // NOLINTEND(performance-unnecessary-value-param)
-    BOOST_ASSERT(!self_id.empty());
-    return app(app::make(std::move(ex), factory, std::move(config), self_id));
+    return app(app::make(std::move(ex), factory, std::move(config), endpoint_scalar));
 }
 
 }  // namespace webcpp::trystero

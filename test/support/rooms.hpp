@@ -14,6 +14,7 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/clock.hpp>
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
@@ -23,6 +24,7 @@
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/asio/io_context.hpp>
+#include <webcpp/crypto/curves/p256.hpp>
 
 #include <webcpp/document/document.hpp>
 #include <webcpp/document/parse.hpp>
@@ -44,6 +46,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 // The rooms' shared test helpers: a memory network with two relays, an app over them and a join
 // that must succeed, a watcher of a room's relay traffic, a flood of announcements, the virtual
@@ -57,47 +60,102 @@ constexpr const char* relay_a = "wss://relay-a.test";
 constexpr const char* relay_b = "wss://relay-b.test";
 constexpr const char* app_id = "webcpp-trystero-tests";
 
-/** What an app of the tests is made with: its configuration, and the self id the test names in
- * place of one drawn, so that which of two peers is the lower id is known. */
+/** The scalar of the endpoint key a test names by `label`: the SHA-256 of the label, a valid
+ * P-256 scalar for every label the tests use. */
+inline std::array<std::uint8_t, 32> endpoint_scalar(std::string_view label) {
+    return protocol::sha256(label);
+}
+
+/** The peer id an app whose endpoint key is named `label` derives. */
+inline std::string peer_id_of(std::string_view label) {
+    const auto scalar = endpoint_scalar(label);
+    const auto key = webcpp::crypto::curves::p256::keypair::make(scalar);
+    webcpp::test::require(BOOST_TEST(key.has_value()));
+    const auto point = key->public_key();
+    webcpp::test::require(BOOST_TEST(point.has_value()));
+    return std::string(
+        protocol::derive_peer_id(protocol::compact_public_key(point->uncompressed())));
+}
+
+/** `n` labels, `prefix` and a number each, ordered by the peer ids they derive, lowest first: a
+ * test that needs one peer to initiate, the lower id, names its apps with them. */
+inline std::vector<std::string> ordered_labels(std::size_t n, std::string_view prefix = "peer") {
+    std::vector<std::pair<std::string, std::string>> by_id;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::string label(prefix);
+        label += '-';
+        label += std::to_string(i);
+        by_id.emplace_back(peer_id_of(label), std::move(label));
+    }
+    std::ranges::sort(by_id);
+    std::vector<std::string> out;
+    for (auto& [id, label] : by_id) {
+        out.push_back(std::move(label));
+    }
+    return out;
+}
+
+/** A label, `prefix` and a number, whose peer id is below `id` (`below`) or above it: a test whose
+ * peer must offer to, or be offered by, peers of given ids names its app with it. */
+inline std::string label_beside(std::string_view id, bool below, std::string_view prefix = "side") {
+    for (std::size_t i = 0;; ++i) {
+        std::string label(prefix);
+        label += '-';
+        label += std::to_string(i);
+        const auto derived = peer_id_of(label);
+        if (below ? derived < id : derived > id) {
+            return label;
+        }
+    }
+}
+
+/** What an app of the tests is made with: its configuration, and the label of its endpoint key,
+ * so that its peer id is known. */
 struct app_setup : trystero::app_config {
-    /** The app's self id, at most `protocol::max_peer_id_bytes` of UTF-8; empty draws one. */
-    std::pmr::string self_id;
+    /** The label of the app's endpoint key (@ref endpoint_scalar); empty draws a key. */
+    std::pmr::string label;
 };
 
-/** An app of the tests' app id over the two memory relays, with `self_id`; with
+/** An app of the tests' app id over the two memory relays, its endpoint key named `label`; with
  * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */
-inline app_setup app_config(std::string_view self_id, std::string_view password = {}) {
+inline app_setup app_config(std::string_view label, std::string_view password = {}) {
     app_setup c;
     c.app_id = app_id;
     c.relay_urls = {relay_a, relay_b};
-    c.self_id = self_id;
+    c.label = label;
     c.password = password;
     if (std::getenv("WEBCPP_TEST_TRYSTERO_VERBOSE") != nullptr) {
-        c.log = [id = std::pmr::string(self_id)](std::string_view category, std::string_view text) {
+        c.log = [id = std::pmr::string(label)](std::string_view category, std::string_view text) {
             std::cerr << "  [" << id << "] " << category << ": " << text << "\n";
         };
     }
     return c;
 }
 
-/** An app of the tests: a `trystero::app` whose self id is its setup's, through the detail seam
- * the library keeps for its own tests, since 0.27.0 has no custom self id. */
+/** A `trystero::app` whose endpoint key is named `label`, through the detail seam the library
+ * keeps for its own tests, since 0.27.0 has no custom endpoint key; an empty label draws one. */
+inline trystero::app make_app_with(std::string_view label, trystero::app::executor_type ex,
+                                   backend::factory& factory, trystero::app_config config) {
+    if (label.empty()) {
+        return {std::move(ex), factory, std::move(config)};
+    }
+    return trystero::detail::app_access::make(std::move(ex), factory, std::move(config),
+                                              endpoint_scalar(label));
+}
+
+/** An app of the tests: a `trystero::app` whose endpoint key is named by its setup's label. */
 class app : public trystero::app {
 public:
-    /** Makes the app of `setup` over `factory`; an empty self id is drawn, as an app draws it. */
+    /** Makes the app of `setup` over `factory`; an empty label draws a key, as an app draws it. */
     app(trystero::app::executor_type ex, backend::factory& factory, app_setup setup)
         : trystero::app(make(std::move(ex), factory, std::move(setup))) {}
 
 private:
     static trystero::app make(trystero::app::executor_type ex, backend::factory& factory,
                               app_setup setup) {
-        const std::pmr::string self_id = std::move(setup.self_id);
-        trystero::app_config config = std::move(static_cast<trystero::app_config&>(setup));
-        if (self_id.empty()) {
-            return {std::move(ex), factory, std::move(config)};
-        }
-        return trystero::detail::app_access::make(std::move(ex), factory, std::move(config),
-                                                  self_id);
+        const std::pmr::string label = std::move(setup.label);
+        return make_app_with(label, std::move(ex), factory,
+                             std::move(static_cast<trystero::app_config&>(setup)));
     }
 };
 

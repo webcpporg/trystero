@@ -11,6 +11,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <memory_resource>
 #include <type_traits>
 
 namespace webcpp::trystero::detail {
@@ -46,6 +47,39 @@ void wipe_object(T& wiped_object) noexcept {
     static_assert(std::is_trivially_copyable_v<T>, "only a plain state is wiped");
     wipe(&wiped_object, sizeof wiped_object);
 }
+
+/**
+ * A memory resource that wipes each block before it gives it back to its upstream: what a parse of
+ * a secret allocates, its text, its document and its decoded bytes, is wiped when it is freed, at
+ * the latest when the parse's objects end.
+ *
+ * Tip: declared before the objects that allocate in it, it ends after them.
+ */
+class wiping_resource final : public std::pmr::memory_resource {
+public:
+    /**
+     * A resource over `upstream`.
+     *
+     * @param upstream The resource every block comes from, which outlives this one.
+     */
+    explicit wiping_resource(std::pmr::memory_resource* upstream) noexcept : upstream_(upstream) {}
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        return upstream_->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        wipe(p, bytes);
+        upstream_->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+
+    std::pmr::memory_resource* upstream_;
+};
 
 }  // namespace webcpp::trystero::detail
 

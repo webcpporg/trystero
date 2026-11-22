@@ -10,7 +10,11 @@
 // fixture is read with webcpp::document; section(name) gives a case the named section of it.
 
 #include <webcpp/trystero/detail/wipe.hpp>
+#include <webcpp/trystero/error.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
+#include <webcpp/trystero/protocol/ecdsa.hpp>
+#include <webcpp/trystero/protocol/identity.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
@@ -20,6 +24,7 @@
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
+#include <webcpp/crypto/curves/p256.hpp>
 #include <webcpp/document/document.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/parse.hpp>
@@ -46,6 +51,7 @@
 
 namespace wd = webcpp::document;
 namespace tp = webcpp::trystero::protocol;
+namespace trystero = webcpp::trystero;
 
 namespace {
 
@@ -840,6 +846,290 @@ void handshake_frames_match() {
     BOOST_TEST_EQ(matched, 1U);
 }
 
+// The P-256 identity of 0.27.0 (Phase 2): keys, compact keys, the user key's text, the user-proof
+// and low S, against the sections 0.27.0's recorder wrote.
+
+namespace p256 = webcpp::crypto::curves::p256;
+
+/** The key pair of a fixture's base64url scalar. */
+std::optional<p256::keypair> keypair_of(const fixture_value& d) {
+    const auto scalar = tp::from_base64url(str(d));
+    if (!BOOST_TEST(scalar.has_value()) || !BOOST_TEST_EQ(scalar->size(), 32U)) {
+        return std::nullopt;
+    }
+    auto key = p256::keypair::make(*scalar);
+    if (!BOOST_TEST(key.has_value())) {
+        return std::nullopt;
+    }
+    return std::move(*key);
+}
+
+/** The entry of `p256_keys` labelled `label`. */
+fixture_value p256_key_entry(std::string_view label) {
+    for (const auto entry : section("p256_keys")) {
+        if (str(entry["label"]) == label) {
+            return entry;
+        }
+    }
+    BOOST_ERROR("p256_keys has no such label");
+    return section("p256_keys")[0];
+}
+
+/** The public key of a compact text, which must be one. */
+std::optional<p256::public_key> public_key_of(std::string_view compact) {
+    const auto point = tp::parse_compact_public_key(compact);
+    if (!BOOST_TEST(point.has_value())) {
+        return std::nullopt;
+    }
+    const auto key = p256::public_key::make(*point);
+    if (!BOOST_TEST(key.has_value())) {
+        return std::nullopt;
+    }
+    return *key;
+}
+
+/** The bytes of a text, as a span. */
+std::span<const std::uint8_t> bytes_view(std::string_view text) {
+    return {reinterpret_cast<const std::uint8_t*>(text.data()), text.size()};
+}
+
+void p256_keys_derive_their_ids() {
+    std::size_t keys = 0;
+    for (const auto entry : section("p256_keys")) {
+        const auto key = keypair_of(entry["d"]);
+        if (!key) {
+            continue;
+        }
+        const auto point = key->public_key();
+        if (!BOOST_TEST(point.has_value())) {
+            continue;
+        }
+        const auto uncompressed = point->uncompressed();
+        BOOST_TEST(std::ranges::equal(uncompressed, bytes_of(entry["uncompressed"])));
+        const auto compact = tp::compact_public_key(uncompressed);
+        BOOST_TEST_EQ(compact, str(entry["compact"]));
+        BOOST_TEST_EQ(tp::derive_peer_id(compact), str(entry["peer_id"]));
+        BOOST_TEST_EQ(tp::derive_user_id(compact), str(entry["user_id"]));
+        ++keys;
+    }
+    BOOST_TEST_EQ(keys, 5U);
+}
+
+void compact_keys_are_read_as_0_27_0_reads_them() {
+    std::size_t cases = 0;
+    for (const auto entry : section("compact_keys")) {
+        const auto point = tp::parse_compact_public_key(str(entry["text"]));
+        BOOST_TEST_EQ(point.has_value(), entry["text_valid"].value_or(false));
+        const bool record = point && p256::public_key::make(*point).has_value();
+        BOOST_TEST_EQ(record, entry["record"].value_or(false));
+        ++cases;
+    }
+    BOOST_TEST_EQ(cases, 6U);
+}
+
+void user_identity_text_matches() {
+    const auto entry = section("user_identity");
+    const auto imported = trystero::import_user_identity(str(entry["text"]));
+    if (!BOOST_TEST(imported.has_value())) {
+        return;
+    }
+    BOOST_TEST_EQ(trystero::export_user_identity(*imported), str(entry["text"]));
+    BOOST_TEST_EQ(imported->user_id(), str(entry["user_id"]));
+    BOOST_TEST_EQ(imported->public_key(), str(p256_key_entry(str(entry["label"]))["compact"]));
+    // The JSON form is the same key, and exports as the text.
+    const auto from_json = trystero::import_user_identity(str(entry["json"]));
+    if (BOOST_TEST(from_json.has_value())) {
+        BOOST_TEST_EQ(from_json->user_id(), str(entry["user_id"]));
+        BOOST_TEST_EQ(trystero::export_user_identity(*from_json), str(entry["text"]));
+    }
+    // The material is the JWK's.
+    const auto material = tp::parse_user_key(str(entry["text"]));
+    if (BOOST_TEST(material.has_value())) {
+        BOOST_TEST_EQ(tp::to_base64url(material->d.bytes()), str(entry["jwk"]["d"]));
+        BOOST_TEST_EQ(
+            std::string(tp::compact_public_key(material->point)),
+            std::string(str(entry["jwk"]["x"])) + "." + std::string(str(entry["jwk"]["y"])));
+    }
+}
+
+void user_identity_imports_match() {
+    std::size_t cases = 0;
+    for (const auto entry : section("user_identity_imports")) {
+        const auto imported = trystero::import_user_identity(str(entry["text"]));
+        const bool accepted = entry["accepted"].value_or(false);
+        if (!BOOST_TEST_EQ(imported.has_value(), accepted)) {
+            BOOST_LIGHTWEIGHT_TEST_OSTREAM << "  case: " << str(entry["case"]) << "\n";
+            continue;
+        }
+        if (accepted) {
+            BOOST_TEST_EQ(imported->user_id(), str(entry["user_id"]));
+        } else {
+            BOOST_TEST(imported.error() == trystero::error::invalid_user_identity);
+        }
+        ++cases;
+    }
+    BOOST_TEST_EQ(cases, 12U);
+}
+
+// What 0.27.0's tryParsePrivateJwk reads beyond the fixture: String.prototype.trim's white space,
+// the kty and crv it ignores when falsy, the byte order mark TextDecoder drops.
+void user_key_text_is_read_as_0_27_0_reads_it() {
+    const auto entry = section("user_identity");
+    const std::string text(str(entry["text"]));
+    const std::string json(str(entry["json"]));
+    const std::string user_id(str(entry["user_id"]));
+    const auto accepts = [&](std::string_view candidate) {
+        const auto imported = trystero::import_user_identity(candidate);
+        return imported.has_value() && imported->user_id() == user_id;
+    };
+    // U+00A0, U+FEFF, U+2028, U+3000, tab and vertical tab around the text.
+    BOOST_TEST(accepts("\xc2\xa0\xef\xbb\xbf" + text + "\xe2\x80\xa8\xe3\x80\x80\t\v"));
+    BOOST_TEST(accepts("\xe2\x80\x8a" + json + "\xe2\x81\x9f"));
+    // U+200B is no white space of trim's.
+    BOOST_TEST(!accepts("\xe2\x80\x8b" + text));
+    const std::string members = json.substr(1);  // "d":...}
+    BOOST_TEST(accepts(R"({"kty":"","crv":null,)" + members));
+    BOOST_TEST(accepts(R"({"kty":0,"crv":false,)" + members));
+    BOOST_TEST(!accepts(R"({"kty":1,)" + members));
+    BOOST_TEST(!accepts(R"({"kty":"OKP",)" + members));
+    BOOST_TEST(!accepts(R"({"crv":["P-256"],)" + members));
+    // A member written twice keeps its last value, as JSON.parse keeps it.
+    BOOST_TEST(accepts(R"({"d":"AAAA",)" + members));
+    BOOST_TEST(!accepts(R"({"d":1,"x":2,"y":3})"));
+    BOOST_TEST(!accepts("[" + json + "]"));
+    // The prefixed text of the JSON with a byte order mark, which TextDecoder drops.
+    const std::string bom_json = "\xef\xbb\xbf" + json;
+    BOOST_TEST(accepts(std::string(tp::user_key_prefix) +
+                       std::string(tp::to_base64url(bytes_view(bom_json)))));
+    BOOST_TEST(!accepts(std::string(tp::user_key_prefix)));
+    BOOST_TEST(!accepts("   "));
+}
+
+void user_proof_matches() {
+    const auto entry = section("user_proof");
+    const auto payload = tp::user_proof_payload(
+        str(entry["app"]), str(entry["room"]), str(entry["peer_id"]), str(entry["peer_compact"]),
+        integer(entry["seq"]), std::pmr::get_default_resource());
+    BOOST_TEST_EQ(payload, str(entry["payload"]));
+    BOOST_TEST_EQ(tp::to_hex(tp::sha256(payload)), str(entry["digest"]));
+    const auto user_key = public_key_of(str(entry["user_compact"]));
+    const auto proof = tp::from_base64url(str(entry["proof"]));
+    if (!user_key || !BOOST_TEST(proof.has_value())) {
+        return;
+    }
+    BOOST_TEST_EQ(tp::verify_p256(*proof, bytes_view(payload), *user_key),
+                  entry["verifies"].value_or(false));
+    const auto other_seq = tp::user_proof_payload(
+        str(entry["app"]), str(entry["room"]), str(entry["peer_id"]), str(entry["peer_compact"]),
+        integer(entry["seq"]) + 1, std::pmr::get_default_resource());
+    BOOST_TEST_EQ(tp::verify_p256(*proof, bytes_view(other_seq), *user_key),
+                  entry["other_seq_verifies"].value_or(true));
+    // The port's own proof, by user-a's key, is low S and verifies.
+    const auto user_a = p256_key_entry("user-a");
+    BOOST_TEST_EQ(str(user_a["user_id"]), str(entry["user_id"]));
+    const auto key = keypair_of(user_a["d"]);
+    if (!key) {
+        return;
+    }
+    const auto signed_payload = tp::sign_p256(*key, bytes_view(payload));
+    if (BOOST_TEST(signed_payload.has_value())) {
+        BOOST_TEST(tp::is_low_s(*signed_payload));
+        BOOST_TEST(tp::verify_p256(*signed_payload, bytes_view(payload), *user_key));
+        BOOST_TEST(!tp::verify_p256(*signed_payload, bytes_view(other_seq), *user_key));
+    }
+}
+
+void low_s_matches() {
+    const auto entry = section("user_proof");
+    const auto payload = tp::user_proof_payload(
+        str(entry["app"]), str(entry["room"]), str(entry["peer_id"]), str(entry["peer_compact"]),
+        integer(entry["seq"]), std::pmr::get_default_resource());
+    const auto user_key = public_key_of(str(entry["user_compact"]));
+    if (!user_key) {
+        return;
+    }
+    std::size_t cases = 0;
+    std::size_t in_range = 0;
+    for (const auto c : section("low_s")) {
+        const auto signature = bytes_of(c["signature"]);
+        BOOST_TEST_EQ(tp::is_low_s(signature), c["is_low_s"].value_or(true));
+        BOOST_TEST_EQ(tp::verify_p256(signature, bytes_view(payload), *user_key),
+                      c["verifies"].value_or(true));
+        if (signature.size() == 64) {
+            const auto normalized =
+                p256::normalize_ecdsa(std::span<const std::uint8_t, 64>(signature.data(), 64));
+            if (normalized) {
+                BOOST_TEST(std::ranges::equal(*normalized, bytes_of(c["normalized"])));
+                ++in_range;
+            } else {
+                // r or s is 0 or not below n: 0.27.0 leaves the signature as it is.
+                BOOST_TEST(bytes_of(c["normalized"]) == signature);
+            }
+        }
+        ++cases;
+    }
+    BOOST_TEST_EQ(cases, 8U);
+    BOOST_TEST_EQ(in_range, 5U);
+    // A signature of another length is never low S, as isLowSP256Signature says.
+    BOOST_TEST(!tp::is_low_s(std::span<const std::uint8_t>{}));
+}
+
+void cpp_signatures_are_deterministic_and_low_s() {
+    const auto key = keypair_of(p256_key_entry("endpoint-a")["d"]);
+    if (!key) {
+        return;
+    }
+    const auto point = key->public_key();
+    if (!BOOST_TEST(point.has_value())) {
+        return;
+    }
+    for (const std::string_view payload : {"", "payload", "trystero:identity-self-test:v1"}) {
+        const auto first = tp::sign_p256(*key, bytes_view(payload));
+        const auto second = tp::sign_p256(*key, bytes_view(payload));
+        if (!BOOST_TEST(first.has_value()) || !BOOST_TEST(second.has_value())) {
+            continue;
+        }
+        BOOST_TEST(*first == *second);  // RFC 6979
+        BOOST_TEST(tp::is_low_s(*first));
+        BOOST_TEST(tp::verify_p256(*first, bytes_view(payload), *point));
+    }
+    // A user identity signs as its key does.
+    const auto identity = trystero::import_user_identity(str(section("user_identity")["text"]));
+    if (BOOST_TEST(identity.has_value())) {
+        const auto made = identity->sign(bytes_view("payload"));
+        const auto again = identity->sign(bytes_view("payload"));
+        BOOST_TEST(made.has_value() && again.has_value() && *made == *again);
+        if (made) {
+            BOOST_TEST(tp::verify_p256(*made, bytes_view("payload"),
+                                       *public_key_of(identity->public_key())));
+        }
+    }
+    // A created identity is fresh each time, and exports as a text that imports to it.
+    const auto a = trystero::create_user_identity();
+    const auto b = trystero::create_user_identity();
+    if (BOOST_TEST(a.has_value()) && BOOST_TEST(b.has_value())) {
+        BOOST_TEST_NE(a->user_id(), b->user_id());
+        BOOST_TEST_EQ(a->user_id().size(), tp::user_id_size);
+        const auto text = trystero::export_user_identity(*a);
+        BOOST_TEST_EQ(text.size(), 214U);
+        const auto again = trystero::import_user_identity(text);
+        BOOST_TEST(again.has_value() && again->user_id() == a->user_id());
+    }
+}
+
+void scalars_are_checked_against_the_order() {
+    std::array<std::uint8_t, 32> scalar{};
+    BOOST_TEST(!tp::is_p256_scalar(scalar));  // zero
+    scalar.back() = 1;
+    BOOST_TEST(tp::is_p256_scalar(scalar));
+    scalar = tp::p256_order;
+    BOOST_TEST(!tp::is_p256_scalar(scalar));  // n
+    scalar.back() -= 1;
+    BOOST_TEST(tp::is_p256_scalar(scalar));  // n - 1
+    scalar.fill(0xff);
+    BOOST_TEST(!tp::is_p256_scalar(scalar));
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -885,5 +1175,14 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(signal_aad_matches);
     webcpp::test::run_case(action_frames_match);
     webcpp::test::run_case(handshake_frames_match);
+    webcpp::test::run_case(p256_keys_derive_their_ids);
+    webcpp::test::run_case(compact_keys_are_read_as_0_27_0_reads_them);
+    webcpp::test::run_case(user_identity_text_matches);
+    webcpp::test::run_case(user_identity_imports_match);
+    webcpp::test::run_case(user_key_text_is_read_as_0_27_0_reads_it);
+    webcpp::test::run_case(user_proof_matches);
+    webcpp::test::run_case(low_s_matches);
+    webcpp::test::run_case(cpp_signatures_are_deterministic_and_low_s);
+    webcpp::test::run_case(scalars_are_checked_against_the_order);
     return boost::report_errors();
 }

@@ -26,6 +26,7 @@
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -516,12 +517,14 @@ int main(int argc, char* argv[]) {
     boost::asio::io_context io;
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     backend.delay_open = !args["delayOpen"].empty();
-    // The driver's self id through the app's detail seam, which the library keeps for its own
-    // tests: 0.27.0 has no option for it.
-    trystero::app app = args["self"].empty()
-                            ? trystero::app(io.get_executor(), backend, app_config_of(args))
-                            : trystero::detail::app_access::make(io.get_executor(), backend,
-                                                                 app_config_of(args), args["self"]);
+    // The driver's endpoint key, named by its label (the scalar is the label's SHA-256), through
+    // the app's detail seam, which the library keeps for its own tests: 0.27.0 has no option for
+    // it.
+    trystero::app app =
+        args["self"].empty()
+            ? trystero::app(io.get_executor(), backend, app_config_of(args))
+            : trystero::detail::app_access::make(io.get_executor(), backend, app_config_of(args),
+                                                 trystero::protocol::sha256(args["self"]));
     app.on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });

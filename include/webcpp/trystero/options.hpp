@@ -11,12 +11,14 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/identity.hpp>
 
 #include <webcpp/document/parse.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -28,7 +30,8 @@ namespace webcpp::trystero {
  * What an app is made with: the part of Trystero's `joinRoom` configuration that every room of
  * the app shares.
  *
- * It names no peer id: 0.27.0 has no custom `peerId`, and the app draws its own (`app::self_id`).
+ * It names no peer id: 0.27.0 has no custom `peerId`, and the app derives its own from the P-256
+ * endpoint key it makes (`app::self_id`).
  *
  * The app copies every part of it into `memory`. It is move-only, as its `log` is: pass it moved,
  * or build it in place with designated initializers.
@@ -64,6 +67,17 @@ struct app_config {
      * others, on every backend.
      */
     std::pmr::vector<backend::ice_server> ice_servers = {};
+    /**
+     * The user this app's rooms present, Trystero's `identity` given a user identity: one made
+     * with @ref create_user_identity or imported with @ref import_user_identity, whose resource
+     * must outlive the app, which keeps a copy; rooms report it as
+     * `identity_persistence::imported`, 0.27.0's `'custom'`.
+     *
+     * Absent, the app makes an ephemeral user identity of its own, 0.27.0's `'none'`, in `memory`,
+     * lost with the app: there is no store the port keeps a user in, as 0.27.0's `'local'` keeps
+     * it in IndexedDB (design D15). Several apps given one identity are one user's endpoints.
+     */
+    std::optional<user_identity> identity = {};
     /**
      * Where the app's and its rooms' diagnostics go: called with a category ("app", "nostr",
      * "signal", "webrtc", "room" or "action") and a sentence; empty means none, and then no text

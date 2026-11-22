@@ -100,6 +100,11 @@ enum class error {
      * action, 0.27.0's "action type cannot be redefined", which it throws.
      */
     action_redefined,
+    /**
+     * A text is not a user identity `import_user_identity` reads, 0.27.0's "invalid user identity
+     * key material; expected exported userKey or P-256 JWK", which `importUserIdentity` throws.
+     */
+    invalid_user_identity,
 };
 
 /**
@@ -169,6 +174,8 @@ private:
             case error::request_rejected: return "request rejected";
             case error::request_timed_out: return "request timed out";
             case error::action_redefined: return "action type cannot be redefined";
+            case error::invalid_user_identity:
+                return "invalid user identity key material; expected exported userKey or P-256 JWK";
         }
         return "unknown webcpp.trystero error";
     }

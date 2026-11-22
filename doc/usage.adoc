@@ -69,6 +69,11 @@ storage.
   URL, or a TURN server without a user name and credential, is dropped and
   reported to `app::on_error` with `error::invalid_configuration`.
 
+| `identity`
+| The user the app's rooms present, a `user_identity` the program made or
+  imported (0.27.0's `'custom'`); absent, the app makes an ephemeral one
+  (0.27.0's `'none'`), lost with the app (<<trystero-usage-peers>>).
+
 | `idle_timeout`
 | How long a shared connection with no rooms stays after a departure,
   123,333 ms; 0 closes it immediately. A negative value becomes 0 and is
@@ -84,8 +89,9 @@ storage.
   must be non-null (<<trystero-allocation>>).
 |===
 
-It has no `self_id`: 0.27.0 has no custom peer id, and an app draws its
-own, 20 base62 characters, which `app::self_id()` and `room::self()` give.
+It has no `self_id`: 0.27.0 has no custom peer id, and an app draws a P-256
+endpoint key, whose public key derives its id, 20 base62 characters, which
+`app::self_id()` and `room::self()` give.
 `app_config` is move-only because its log sink is a `handler`: pass it
 moved, or build it in place. Each room adds `room_options`:
 
@@ -117,7 +123,8 @@ programs move from 0.26.0 to 0.27.0:
 | Before | On the branch
 
 | `app_config::self_id`
-| Gone: the app draws its id; `app::self_id()` and `room::self()` give it.
+| Gone: the app derives its id from the endpoint key it draws;
+  `app::self_id()` and `room::self()` give it.
 
 | `room_options::handshake_timeout`
 | Gone: a peer has 10 s.
@@ -161,8 +168,15 @@ trystero's earlier versions, are gone too: a room is joined through an
 === Peers and users
 
 A peer is one endpoint in the room, a user who it is: in 0.27.0 several
-peers, the tabs of one person, may be one user. Until Phase 2 derives ids
-from keys, a peer's user id is the peer's own id, one peer per user.
+peers, the tabs of one person, may be one user. An app's peer id derives
+from the P-256 endpoint key it draws when it is made, and its user id from
+its user identity, `app_config::identity` or an ephemeral one the app makes
+(`app::self_id`, `app::user_id`). A `user_identity` is made with
+`create_user_identity`, kept as the text `export_user_identity` writes and
+read again with `import_user_identity`, 0.27.0's `trystero_uk_` text or the
+JSON of a private P-256 key; several apps given one are one user's
+endpoints. Until the handshake verifies a remote peer's user, a remote
+peer's user id is the peer's own id, one remote peer per user.
 
 `on_peer_join` adds a listener of each peer whose handshake completed, with
 its `peer_event`, and `on_peer_leave` one of each joined peer that leaves;
@@ -175,7 +189,8 @@ roles, none until roles are ported. `users()` maps each user's id to its
 active peers, in the order they became active, and its roles; this peer's
 own user is left out. `self()` is this peer at once, synchronously, since
 an app's identity exists from its construction on: its peer and user ids,
-the identity's persistence, `ephemeral`, the room's id, the id it was
+the identity's persistence, `ephemeral` for one the app made, `imported` for
+`app_config::identity`'s, the room's id, the id it was
 joined as, and its roles. The maps are a `std::pmr::map` over the room's
 resource with a transparent comparator, so a program looks a peer up by a
 `std::string_view`.
@@ -435,7 +450,8 @@ with no room nor peer.
 | `invalid_configuration` | the app dropped an unusable configuration value and continues without it
 | `already_joined` | a room of that id is already joined in the app
 | `too_many_rooms` | the app already holds 64 rooms, including farewells
-| `room_full`, `banned`, `identity_failed`, `plugin_failed`, `peer_error` | 0.27.0's room errors of the same names, which nothing reports before Phase 2 and Phase 3 bring users, identities, roles and plugins
+| `room_full`, `banned`, `plugin_failed`, `peer_error` | 0.27.0's room errors of the same names, which nothing reports before Phase 2 and Phase 3 bring users, roles and plugins
+| `identity_failed` | the app's endpoint key or its ephemeral user identity could not be made (a system without a generator): each room it joins reports it once the join has returned, then ends without reaching a relay
 | `relay_failed` | the first connection of every relay closed before any opened, reported once
 | `decrypt_failed` | an offer or an answer did not open with the room key: another password, a corrupted or forged signal, or a plaintext that is not UTF-8; reported at most once a minute per peer and stage
 | `peer_connect_failed` | the connection with a peer did not open after the exchange of descriptions; its message hints at TURN when none is configured
@@ -445,4 +461,5 @@ with no room nor peer.
 | `request_rejected` | the peer asked refused the request
 | `request_timed_out` | the request was not answered within its timeout
 | `action_redefined` | the action's name was made the other kind of action first
+| `invalid_user_identity` | `import_user_identity` was given a text that is no user key, or a key whose scalar is not its point's
 |===

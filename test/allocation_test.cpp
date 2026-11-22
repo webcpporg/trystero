@@ -18,6 +18,7 @@
 #include "cases.hpp"
 #include "require.hpp"
 #include "support/memory_backend.hpp"
+#include "support/rooms.hpp"
 
 #include <webcpp/asio/bind_allocator.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -622,6 +623,22 @@ void free_planted() {
     planted = nullptr;
 }
 
+/** The endpoint scalars of two apps, `low` of the lower peer id: the tests' apps a and z, whose
+ * order tells which offers. */
+struct endpoints {
+    std::array<std::uint8_t, 32> low;
+    std::array<std::uint8_t, 32> high;
+};
+
+/** Two endpoint scalars in the order of their peer ids, made before a counting window opens. */
+endpoints ordered_endpoints() {
+    const auto labels = trystero::test::ordered_labels(2);
+    return {
+        .low = trystero::test::endpoint_scalar(labels[0]),
+        .high = trystero::test::endpoint_scalar(labels[1]),
+    };
+}
+
 /**
  * Two rooms exchange two payloads that make builds; the second is counted, and the global counts
  * seen in its window returned. With `planting`, the receiving handler plants allocations outside
@@ -638,20 +655,21 @@ seen exchange_through_the_rooms_resources(Make make, bool planting = false) {
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
+    const auto ends = ordered_endpoints();
     auto a_app = trystero::detail::app_access::make(io.get_executor(), network,
                                                     {
                                                         .app_id = "allocation",
                                                         .relay_urls = {std::pmr::string(relay)},
                                                         .memory = &a_memory,
                                                     },
-                                                    "AAAAAAAAAAAAAAAAAAAA");
+                                                    ends.low);
     auto z_app = trystero::detail::app_access::make(io.get_executor(), network,
                                                     {
                                                         .app_id = "allocation",
                                                         .relay_urls = {std::pmr::string(relay)},
                                                         .memory = &z_memory,
                                                     },
-                                                    "zzzzzzzzzzzzzzzzzzzz");
+                                                    ends.high);
     auto a = join(a_app, "room");
     auto z = join(z_app, "room");
     std::size_t received = 0;
@@ -939,6 +957,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
     warm(io);
+    const auto ends = ordered_endpoints();
     std::size_t a_lines = 0;
     std::size_t z_lines = 0;
     std::size_t files = 0;
@@ -961,15 +980,13 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         // moved-from object behind: MSVC's debug standard library keeps, in a moved-from
         // std::pmr::string or vector, 16 bytes of its resource for the container's debug
         // proxy, which the test would count as the app's until the end of the function.
-        auto z_app = trystero::detail::app_access::make(io.get_executor(), network,
-                                                        app_config_in(z_memory, relay, z_lines),
-                                                        "zzzzzzzzzzzzzzzzzzzz");
+        auto z_app = trystero::detail::app_access::make(
+            io.get_executor(), network, app_config_in(z_memory, relay, z_lines), ends.high);
         auto z = join(z_app, "room", options_in(z_memory));
         run_for(io, 100ms);
         {
-            auto a_app = trystero::detail::app_access::make(io.get_executor(), network,
-                                                            app_config_in(a_memory, relay, a_lines),
-                                                            "AAAAAAAAAAAAAAAAAAAA");
+            auto a_app = trystero::detail::app_access::make(
+                io.get_executor(), network, app_config_in(a_memory, relay, a_lines), ends.low);
             auto a = join(a_app, "room", options_in(a_memory));
             a.on_peer_leave([&left](const trystero::peer_event&) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
@@ -1056,6 +1073,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
         // An inline payload of a size no other allocation has: its frame is at most 256 bytes
         // longer.
         constexpr std::size_t payload_size = 12'345;
+        const auto ends = ordered_endpoints();
         const trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
         const trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
         {
@@ -1066,10 +1084,10 @@ void rooms_of_one_app_allocate_through_their_resources() {
             start_counting_openssl();
             counting = true;
             {
-                auto a = trystero::detail::app_access::make(
-                    io.get_executor(), network, std::move(a_config), "AAAAAAAAAAAAAAAAAAAA");
-                auto z = trystero::detail::app_access::make(
-                    io.get_executor(), network, std::move(z_config), "zzzzzzzzzzzzzzzzzzzz");
+                auto a = trystero::detail::app_access::make(io.get_executor(), network,
+                                                            std::move(a_config), ends.low);
+                auto z = trystero::detail::app_access::make(io.get_executor(), network,
+                                                            std::move(z_config), ends.high);
                 auto a1 = join(a, "shared", options_in(a_memory));
                 auto a2 = join(a, "own", a_own);
                 auto z1 = join(z, "shared", options_in(z_memory));

@@ -16,7 +16,9 @@ own state.
 === The app's resource, the room's and the backend's
 
 * `app_config::memory`, `std::pmr::get_default_resource()` by default,
-  receives the app's state, configuration copy including its password, self id,
+  receives the app's state, configuration copy including its password, the
+  P-256 endpoint key, held in that state, and the self id it derives, the
+  ephemeral user identity the app makes when its configuration gives none,
   registry, shared
   connections, advertised tokens, kept frames, drain order and presence
   frames, and the keys its rooms derive from its password, with the cache
@@ -330,6 +332,12 @@ default resource as its default, and returns `std::pmr` types.
   `std::string`;
 * the payload types `std::string`, `bytes`, `webcpp::document::document` and
   `payload`, with `std::allocator`, the user's choice;
+* a user identity the program gives the app (`app_config::identity`): its key,
+  with its compact public key and its user id, is one allocation of the
+  resource the program made or imported it in (`create_user_identity`'s and
+  `import_user_identity`'s `memory`, the default resource unless given), shared
+  by every copy, those of several apps included; an import's own buffers are
+  in that resource too, each wiped before it is freed;
 * on Emscripten, the C library's `select()`, which Asio's reactor calls on
   every wait of an `io_context` with a timer or a socket, and which callocs
   an array on every call;
@@ -348,7 +356,10 @@ its key pair's context is the room's, and the secret, the context's seed and
 each signature's auxiliary bytes are drawn into the stack from
 webcpp::crypto's `random_device`, which allocates nothing. The room
 allocation test below covers a room's first event, which makes the key, and
-its signatures on both targets.
+its signatures on both targets. Its P-256 allocates nothing either: the app's
+endpoint key pair is part of the app's state, a drawn scalar comes from
+`random_device` into the stack, and a signature is made and checked in
+place.
 
 The test's memory relays are shared by every room of a test: they allocate
 their relays through the resource they are constructed with.

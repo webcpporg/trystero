@@ -12,7 +12,9 @@
 project /webcpp/trystero ;
 
 # Hashes are webcpp::hash's and the ciphers, MACs and keys of every room
-# webcpp::crypto's. Its secp256k1 backend, /webcpp/crypto//secp256k1-default,
+# webcpp::crypto's: the endpoint and user keys and their ECDSA signatures are
+# its P-256, /webcpp/crypto//p256-default, BearSSL on every target. Its
+# secp256k1 backend, /webcpp/crypto//secp256k1-default,
 # is webcpp's build of libsecp256k1 (v0.8.0 from the submodule
 # third_party/libs/secp256k1), with the tables the feature
 # webcpp-secp256k1-tables chooses (small on emscripten, large natively;
@@ -77,7 +79,7 @@ alias parts : :
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
   <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/webcpp/hash//hash
   <library>/webcpp/crypto//crypto <conditional>@rooms-gcm
-  <library>/webcpp/crypto//secp256k1-default ;
+  <library>/webcpp/crypto//secp256k1-default <library>/webcpp/crypto//p256-default ;
 alias trystero : : : : <library>parts
   <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
   ;

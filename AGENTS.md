@@ -505,9 +505,11 @@ holds only what is specific to trystero.
   `derive_delay` until `release_derivations`, each event posted to the
   `io_context`. `assign_user` and `test::group_users` give peers a user of
   the test's choosing through a detail seam (ruling R17), and the app's
-  known ids and handshake timeouts are detail seams too
-  (`detail::app_access::make`, `app_impl::set_handshake_timeout`). A test of
-  a whole room runs over it, on both targets, without the network.
+  fixed endpoint key is a detail seam too (`detail::app_access::make` with
+  an endpoint scalar, which `test::endpoint_scalar` makes of a label, its
+  peer id `test::peer_id_of`; `test::ordered_labels` and
+  `test::label_beside` name apps whose ids are in an order a test needs). A
+  test of a whole room runs over it, on both targets, without the network.
   Its optional fault hooks use `std::size_t` connection ids, `on_made`
   (with ICE servers) and `peer_of`, a deliver/drop/hold filter, ordered
   `release`, deferred one-end `open`, `inject` and `fail`. A held frame

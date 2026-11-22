@@ -22,6 +22,7 @@
 #include <webcpp/trystero/detail/user_table.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
@@ -177,17 +178,6 @@ struct peer_info {
 };
 
 /**
- * Where this peer's identity comes from, Trystero's `IdentityPersistence`.
- */
-enum class identity_persistence {
-    /** Made for this app and lost with it, as every identity is until identities are derived from
-     * keys. */
-    ephemeral,
-    /** Imported from a text the program kept. */
-    imported,
-};
-
-/**
  * This peer in a room, what `room::self` reports, Trystero's `SelfInfo`.
  *
  * The views are valid as long as the room.
@@ -195,9 +185,9 @@ enum class identity_persistence {
 struct self_info {
     /** This peer's id, the app's. */
     std::string_view peer_id;
-    /** This peer's user's id; until identities are derived from keys, the peer's own id. */
+    /** This peer's user's id, the app's user identity's (`app::user_id`). */
     std::string_view user_id;
-    /** Where the identity comes from. */
+    /** Where the user identity comes from: the app's configuration, or made with the app. */
     identity_persistence persistence = identity_persistence::ephemeral;
     /** The id of the room as it runs now. */
     std::string_view room_id;
@@ -1084,7 +1074,8 @@ public:
             }));
     }
 
-    /** Registers the membership with the app and asks for the keys that start discovery. */
+    /** Registers the membership with the app and asks for the keys that start discovery; or, when
+     * the app has no identity, fails the setup. */
     void register_with_app() {
         // By a weak reference: the room leaves the registry before it ends, its destructor
         // included.
@@ -1093,7 +1084,26 @@ public:
         // The registry reserves this room before the sink can reenter app::join.
         log_("room", "joining room ", room_id_, " of app ", app_->app_id(), " as ", app_->self_id(),
              " over ", app_->relay_urls().size(), " relays");
+        if (const auto failure = app_->identity_failure(); !failure.empty()) {
+            fail_setup(failure);
+            return;
+        }
         request_keys();
+    }
+
+    /**
+     * Fails the room's setup, as 0.27.0's `failSetup` fails it when its identities cannot be
+     * resolved: once the join has returned, reports `error::identity_failed` with `message`, then
+     * leaves. The strategy never starts: nothing reaches a relay.
+     */
+    void fail_setup(std::string_view message) {
+        report({}, make_error_code(error::identity_failed), message);
+        // Posted after the report, so that it runs after it: a room left first reports nothing.
+        post([weak = weak_from_this()] {
+            if (const auto self = weak.lock()) {
+                self->begin_leave();
+            }
+        });
     }
 
     /**
@@ -1151,8 +1161,8 @@ public:
     /** The relays the room uses, the app's. */
     std::span<const std::pmr::string> relay_urls() const { return app_->relay_urls(); }
 
-    /** This peer's user's id; until identities are derived from keys, the peer's own. */
-    std::string_view self_user_id() const { return app_->self_id(); }
+    /** This peer's user's id, the app's user identity's. */
+    std::string_view self_user_id() const { return app_->user_id(); }
 
     /** The id of an active peer's user, or the peer's own id for a peer not active. */
     std::string_view user_of(std::string_view peer) const {
@@ -1198,7 +1208,7 @@ public:
         return {
             .peer_id = app_->self_id(),
             .user_id = self_user_id(),
-            .persistence = identity_persistence::ephemeral,
+            .persistence = app_->persistence(),
             .room_id = room_id_,
             .base_room_id = room_id_,
             .is_admin = false,
@@ -1595,6 +1605,12 @@ public:
             return;
         }
         leave_completions_.push_back(std::move(handler));
+        begin_leave();
+    }
+
+    /** Starts the farewell, unless it has started: `\@_leave` to every peer, then the room ends
+     * after Trystero's 99 ms, completing every leave pending then. */
+    void begin_leave() {
         if (std::exchange(left_, true)) {
             return;
         }
