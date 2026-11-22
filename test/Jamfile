@@ -82,6 +82,8 @@ webcpp.run signaling : signaling_test.cpp
 webcpp.run room : room_test.cpp ;
 # The listeners of an event alone, as Trystero 0.27.0's emitter runs them.
 webcpp.run subscription : subscription_test.cpp ;
+# A room's users and their peers alone, as 0.27.0's room counts them.
+webcpp.run user_table : user_table_test.cpp ;
 # Rooms of one app that share one connection per remote peer; once as the
 # build asks, once without exceptions, on both targets; and, natively, once
 # with the standard libraries' checks, so that a kept frame that kicks during

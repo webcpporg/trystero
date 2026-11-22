@@ -431,7 +431,7 @@ struct room_pinger {
 
     void ping() {
         if (second) {
-            for (const auto& peer : second->room.peers()) {
+            for (const auto& [peer, info] : second->room.peers()) {
                 const auto id = ++next_ping;
                 record("ping-started", {{"room", "second"}, {"peer", peer}, {"id", id}});
                 second->room.async_ping(

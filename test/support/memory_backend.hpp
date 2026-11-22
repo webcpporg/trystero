@@ -723,6 +723,7 @@ public:
           memory_(memory),
           relays_(memory),
           unreachable_(memory),
+          users_(memory),
           connections_(std::allocate_shared<connection_registry>(
               std::pmr::polymorphic_allocator<>(memory))) {}
 
@@ -745,6 +746,18 @@ public:
     }
 
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
+
+    /** Makes `peer` a peer of `user` in every room that meets it from now on, so that several peers
+     * make one user, as several apps of one user identity will. */
+    void assign_user(std::string_view peer, std::string_view user) {
+        users_.insert_or_assign(std::pmr::string(peer, memory_), std::pmr::string(user, memory_));
+    }
+
+    /** The user `assign_user` gave `peer`, or the peer's own id. */
+    std::string_view user_of(std::string_view peer) override {
+        const auto it = users_.find(peer);
+        return it == users_.end() ? peer : std::string_view(it->second);
+    }
 
     std::shared_ptr<backend::peer_connection> make_peer_connection(
         std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) override {
@@ -976,6 +989,7 @@ private:
     std::pmr::memory_resource* memory_;
     std::pmr::map<std::pmr::string, memory_relay, std::less<>> relays_;
     std::pmr::set<std::pmr::string, std::less<>> unreachable_;
+    std::pmr::map<std::pmr::string, std::pmr::string, std::less<>> users_;  // by peer
     std::shared_ptr<connection_registry> connections_;
     std::size_t next_pc_ = 0;
     std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end

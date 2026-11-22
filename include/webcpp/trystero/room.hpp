@@ -20,6 +20,7 @@
 #include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/rebinding.hpp>
 #include <webcpp/trystero/detail/signaling.hpp>
+#include <webcpp/trystero/detail/user_table.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
@@ -132,8 +133,8 @@ struct message_info {
 struct peer_event {
     /** The peer's id. */
     std::string_view peer_id;
-    /** The id of the peer's user; until identities are derived from keys, each peer is a user of
-     * its own, whose id is the peer's. */
+    /** The id of the peer's user; until identities are derived from keys, the backend's
+     * `factory::user_of` names it, which is the peer's own id outside the tests. */
     std::string_view user_id;
 };
 
@@ -144,10 +145,69 @@ struct peer_event {
  * The views are valid for the duration of the listener's call.
  */
 struct user_event {
-    /** The user's id; until identities are derived from keys, the id of its one peer. */
+    /** The user's id. */
     std::string_view user_id;
-    /** The peer whose join or departure made the user join or leave. */
+    /** The peer whose join or departure made the user join or leave: its first or its last. */
     std::string_view peer_id;
+};
+
+/**
+ * A user of a room, an entry of `room::users`, Trystero's `UserInfo`.
+ */
+struct user_info {
+    /** The user's active peers, in the order they joined. */
+    std::pmr::vector<std::pmr::string> peer_ids;
+    /** The user's roles; none until roles are ported. */
+    std::pmr::vector<std::pmr::string> roles;
+};
+
+/**
+ * An active peer of a room, an entry of `room::peers`, Trystero's `PeerInfo` without its
+ * `connection`: the peer connection is the backend's, which a room does not hand out.
+ */
+struct peer_info {
+    /** The id of the peer's user. */
+    std::pmr::string user_id;
+    /** Whether the room reaches the peer over a connection of its own; always, until relayed
+     * peers are ported. */
+    bool direct = true;
+    /** How many connections away the peer is: 1 for a direct one. */
+    std::uint32_t hops = 1;
+    /** The peer's roles; none until roles are ported. */
+    std::pmr::vector<std::pmr::string> roles;
+};
+
+/**
+ * Where this peer's identity comes from, Trystero's `IdentityPersistence`.
+ */
+enum class identity_persistence {
+    /** Made for this app and lost with it, as every identity is until identities are derived from
+     * keys. */
+    ephemeral,
+    /** Imported from a text the program kept. */
+    imported,
+};
+
+/**
+ * This peer in a room, what `room::self` reports, Trystero's `SelfInfo`.
+ *
+ * The views are valid as long as the room.
+ */
+struct self_info {
+    /** This peer's id, the app's. */
+    std::string_view peer_id;
+    /** This peer's user's id; until identities are derived from keys, the peer's own id. */
+    std::string_view user_id;
+    /** Where the identity comes from. */
+    identity_persistence persistence = identity_persistence::ephemeral;
+    /** The id of the room as it runs now. */
+    std::string_view room_id;
+    /** The id the room was joined as; the same as `room_id` until rooms that scale are ported. */
+    std::string_view base_room_id;
+    /** Whether this peer administers the room; never, until roles are ported. */
+    bool is_admin = false;
+    /** This peer's roles; none until roles are ported. */
+    std::span<const std::pmr::string> roles;
 };
 
 /**
@@ -159,7 +219,7 @@ struct user_event {
 struct receive_info {
     /** The sender's id. */
     std::string_view peer_id;
-    /** The id of the sender's user; until identities are derived from keys, the sender's. */
+    /** The id of the sender's user. */
     std::string_view user_id;
     /** The size of the message's payload, in bytes. */
     std::size_t byte_length = 0;
@@ -175,7 +235,7 @@ struct receive_info {
 struct progress_info {
     /** The sender's id. */
     std::string_view peer_id;
-    /** The id of the sender's user; until identities are derived from keys, the sender's. */
+    /** The id of the sender's user. */
     std::string_view user_id;
     /** The metadata the sender passed, as JSON text, or empty when it passed none. */
     std::string_view metadata;
@@ -189,7 +249,8 @@ struct progress_info {
  * operation later, after the caller's views may be gone.
  */
 struct request_options {
-    /** The peer asked, which must be active. */
+    /** The peer asked, which must be active, or a user, whose active peer of the lowest id is
+     * asked, as 0.27.0 picks one. */
     peer_id target = {};
     /** The metadata, as JSON text, or empty for none. */
     std::pmr::string metadata = {};
@@ -206,7 +267,8 @@ struct request_options {
  * operation later, after the caller's views may be gone.
  */
 struct send_options {
-    /** The peers to send to; empty means every active peer. */
+    /** Where to send: each an active peer's id, or a user's, which stands for each of its active
+     * peers (a peer reached twice is sent to once); empty means every active peer. */
     std::pmr::vector<peer_id> targets = {};
     /** The metadata, as JSON text, or empty for none. */
     std::pmr::string metadata = {};
@@ -776,6 +838,7 @@ public:
           root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
+          users_(memory_),
           rebinds_(memory_),
           actions_(memory_),
           requests_(memory_),
@@ -1015,26 +1078,70 @@ public:
     /** The relays the room uses, the app's. */
     std::span<const std::pmr::string> relay_urls() const { return app_->relay_urls(); }
 
-    /** The ids of the peers whose handshake completed, in the room's resource. */
-    std::pmr::vector<peer_id> active_peers() const {
-        std::pmr::vector<peer_id> out(memory_);
+    /** This peer's user's id; until identities are derived from keys, the peer's own. */
+    std::string_view self_user_id() const { return app_->self_id(); }
+
+    /** The id of an active peer's user, or the peer's own id for a peer not active. */
+    std::string_view user_of(std::string_view peer) const {
+        return users_.user_of(peer).value_or(peer);
+    }
+
+    /** The room's users but this peer's own, each with its active peers, in the room's resource:
+     * 0.27.0's `getUsers` leaves its own user out. */
+    std::pmr::map<std::pmr::string, user_info> users() const {
+        std::pmr::map<std::pmr::string, user_info> out(memory_);
+        for (const auto& [user, peer_ids] : users_.users()) {
+            if (user == self_user_id()) {
+                continue;
+            }
+            out.try_emplace(std::pmr::string(user, memory_),
+                            user_info{
+                                .peer_ids = std::pmr::vector<std::pmr::string>(peer_ids, memory_),
+                                .roles = std::pmr::vector<std::pmr::string>(memory_),
+                            });
+        }
+        return out;
+    }
+
+    /** The peers whose handshake completed, each with its user, in the room's resource. */
+    std::pmr::map<std::pmr::string, peer_info> peers() const {
+        std::pmr::map<std::pmr::string, peer_info> out(memory_);
         for (const auto& [id, p] : peers_) {
             if (p.active) {
-                out.push_back(id);
+                out.try_emplace(std::pmr::string(id, memory_),
+                                peer_info{
+                                    .user_id = std::pmr::string(user_of(id), memory_),
+                                    .direct = true,
+                                    .hops = 1,
+                                    .roles = std::pmr::vector<std::pmr::string>(memory_),
+                                });
             }
         }
         return out;
+    }
+
+    /** This peer in the room. */
+    self_info self() const {
+        return {
+            .peer_id = app_->self_id(),
+            .user_id = self_user_id(),
+            .persistence = identity_persistence::ephemeral,
+            .room_id = room_id_,
+            .base_room_id = room_id_,
+            .is_admin = false,
+            .roles = {},
+        };
     }
 
     /** Adds a listener of each peer that becomes active; `replay` calls it first with each active
      * peer. */
     subscription on_peer_join(handler<void(const peer_event&)> f, listen_options options) {
         // Copies: the listener's code may end the room, and free the peers' entries.
-        const auto ids = active_peers();
+        const auto ids = peers();
         std::pmr::vector<peer_event> current(memory_);
         current.reserve(ids.size());
-        for (const auto& id : ids) {
-            current.push_back({.peer_id = id, .user_id = id});
+        for (const auto& [id, info] : ids) {
+            current.push_back({.peer_id = id, .user_id = info.user_id});
         }
         return peer_join_.add(std::move(f), options, current);
     }
@@ -1045,13 +1152,14 @@ public:
     }
 
     /** Adds a listener of each user whose first peer becomes active; `replay` calls it first with
-     * each user joined. Each peer is a user of its own until identities are derived from keys. */
+     * each user joined, and its first peer. This peer's own user is no other user. */
     subscription on_user_join(handler<void(const user_event&)> f, listen_options options) {
-        const auto ids = active_peers();
+        // Copies: the listener's code may end the room, and free the users' entries.
+        const auto joined = users();
         std::pmr::vector<user_event> current(memory_);
-        current.reserve(ids.size());
-        for (const auto& id : ids) {
-            current.push_back({.user_id = id, .peer_id = id});
+        current.reserve(joined.size());
+        for (const auto& [user, info] : joined) {
+            current.push_back({.user_id = user, .peer_id = info.peer_ids.front()});
         }
         return user_join_.add(std::move(f), options, current);
     }
@@ -1200,7 +1308,13 @@ public:
             complete(std::move(handler), make_error_code(error::room_left), incoming{});
             return;
         }
-        const auto peer = peers_.find(options.target);
+        auto peer = peers_.find(options.target);
+        if (peer == peers_.end() || !peer->second.active) {
+            // A user's peer of the lowest id, as 0.27.0's resolveRequestTarget picks it.
+            if (const auto of_user = users_.peers_of(options.target); !of_user.empty()) {
+                peer = peers_.find(*std::ranges::min_element(of_user));
+            }
+        }
         if (peer == peers_.end() || !peer->second.active) {
             complete(std::move(handler), make_error_code(error::not_connected), incoming{});
             return;
@@ -1324,16 +1438,48 @@ public:
             return;
         }
         const auto weak = weak_from_this();
-        const std::pmr::vector<std::string_view> targets(options.targets.begin(),
-                                                         options.targets.end(), memory_);
+        const bool include_pending = is_internal_to_pending(name);
+        const auto peers = resolve_targets(options.targets, include_pending);
+        const std::pmr::vector<std::string_view> targets(peers.begin(), peers.end(), memory_);
         wire_->send(name, payload.format, options.metadata, std::move(payload.ref), targets,
-                    is_internal_to_pending(name),
+                    include_pending,
                     bind<void(boost::system::error_code)>(
                         [weak, handler = std::move(handler)](boost::system::error_code ec) mutable {
                             if (const auto self = weak.lock()) {
                                 self->complete(std::move(handler), ec);
                             }
                         }));
+    }
+
+    /**
+     * The peers a send's targets name, as 0.27.0's resolveSendTarget reads them: an active peer,
+     * or a pending one when the action goes to those, is itself; a user stands for each of its
+     * active peers; another target stays, which the wire fails as not connected. Each peer once,
+     * copied: a send may end a peer while it goes through them.
+     */
+    std::pmr::vector<std::pmr::string> resolve_targets(std::span<const peer_id> targets,
+                                                       bool include_pending) const {
+        std::pmr::vector<std::pmr::string> out(memory_);
+        const auto add = [&out](std::string_view id) {
+            if (std::ranges::find(out, id) == out.end()) {
+                out.emplace_back(id);
+            }
+        };
+        for (const auto& target : targets) {
+            const auto peer = peers_.find(target);
+            if (peer != peers_.end() && (peer->second.active || include_pending)) {
+                add(target);
+                continue;
+            }
+            const auto of_user = users_.peers_of(target);
+            if (of_user.empty()) {
+                add(target);
+            }
+            for (const auto& id : of_user) {
+                add(id);
+            }
+        }
+        return out;
     }
 
     /** Sends `\@_ping` to an active peer, and completes with the time until its `\@_pong`. */
@@ -1591,9 +1737,11 @@ private:
         if (!own) {
             return admission::refused;  // a request without its envelope, which nothing answers
         }
+        // A copy: the gate may end the room, and free the users' entries.
+        const std::pmr::string user(user_of(peer), memory_);
         const receive_info info{
             .peer_id = peer,
-            .user_id = peer,
+            .user_id = user,
             .byte_length = size,
             .metadata = *own,
         };
@@ -1625,11 +1773,11 @@ private:
             return;
         }
         post([weak = weak_from_this(), slot, share, peer = std::pmr::string(peer, memory_),
-              metadata = std::move(*own)] {
+              user = std::pmr::string(user_of(peer), memory_), metadata = std::move(*own)] {
             // Held for the whole emission: a listener may release the room's last handles.
             if (const auto self = weak.lock()) {
                 slot->progress.emit(share,
-                                    {.peer_id = peer, .user_id = peer, .metadata = metadata});
+                                    {.peer_id = peer, .user_id = user, .metadata = metadata});
             }
         });
     }
@@ -2018,6 +2166,10 @@ private:
             return;
         }
         it->second.active = true;
+        // Its user joins with its first peer, as 0.27.0 counts a user's peers; this peer's own user
+        // is no other user.
+        std::pmr::string user(factory_.user_of(peer), memory_);
+        const bool first_of_user = users_.add(peer, user) && user != self_user_id();
         if (const auto history = rebinds_.find(peer); history != rebinds_.end()) {
             history->second.ends = 0;
             history->second.challenges.clear();
@@ -2030,17 +2182,19 @@ private:
         // The sink may leave the room or remove this binding before notification is posted.
         const auto current = peers_.find(peer_copy);
         if (!left_ && current != peers_.end() && current->second.link == link) {
-            // Each peer is a user of its own until identities are derived from keys: its user
-            // joins with it, after it, as 0.27.0 reports a user's first peer.
+            // A user joins after its first peer, as 0.27.0 reports it.
             // A room left before the post runs reports no join, as 0.27.0 reports none once its
             // room is leaving.
-            post([weak = weak_from_this(), peer = std::move(peer_copy)] {
+            post([weak = weak_from_this(), peer = std::move(peer_copy), user = std::move(user),
+                  first_of_user] {
                 const auto self = weak.lock();
                 if (!self || self->left_) {
                     return;
                 }
-                self->peer_join_.emit({.peer_id = peer, .user_id = peer});
-                self->user_join_.emit({.user_id = peer, .peer_id = peer});
+                self->peer_join_.emit({.peer_id = peer, .user_id = user});
+                if (first_of_user) {
+                    self->user_join_.emit({.user_id = user, .peer_id = peer});
+                }
             });
         }
     }
@@ -2266,6 +2420,10 @@ private:
         const auto node = peers_.extract(it);
         std::pmr::string peer = std::move(node.key());
         auto& state = node.mapped();
+        // Its user leaves with its last peer, as 0.27.0 counts a user's peers.
+        std::pmr::string user(user_of(peer), memory_);
+        const bool last_of_user =
+            state.active && users_.remove(peer).has_value() && user != self_user_id();
         log_("room", "peer ", peer, " gone: ", reason);
         let_go(state, kind);
         for (auto& ping : state.pings) {
@@ -2288,13 +2446,16 @@ private:
         }
         if (state.active) {
             // As a join, a leave is not reported once the room is left.
-            post([weak = weak_from_this(), peer = std::move(peer)] {
+            post([weak = weak_from_this(), peer = std::move(peer), user = std::move(user),
+                  last_of_user] {
                 const auto self = weak.lock();
                 if (!self || self->left_) {
                     return;
                 }
-                self->peer_leave_.emit({.peer_id = peer, .user_id = peer});
-                self->user_leave_.emit({.user_id = peer, .peer_id = peer});
+                self->peer_leave_.emit({.peer_id = peer, .user_id = user});
+                if (last_of_user) {
+                    self->user_leave_.emit({.user_id = user, .peer_id = peer});
+                }
             });
         }
     }
@@ -2313,6 +2474,7 @@ private:
         }
         auto peers = std::move(peers_);
         peers_.clear();
+        users_.clear();  // without leaves, as 0.27.0 reports none once its room is leaving
         for (auto& [id, state] : peers) {
             let_go(state, end_kind::room_end);
             for (auto& ping : state.pings) {
@@ -2389,6 +2551,7 @@ private:
     std::shared_ptr<signaling> signaling_;
     std::shared_ptr<nostr_strategy> strategy_;
     std::pmr::map<std::pmr::string, peer_state, std::less<>> peers_;
+    user_table users_;  // the active peers', by user
     std::pmr::map<std::pmr::string, rebind_state, std::less<>> rebinds_;
     std::pmr::map<std::pmr::string, action_slot, std::less<>> actions_;
     std::pmr::map<std::pmr::string, request_waiter, std::less<>> requests_;
@@ -2511,11 +2674,32 @@ public:
     }
 
     /**
-     * The peers whose handshake completed, Trystero's `getPeers`.
+     * This peer in the room, Trystero's `getSelf`, at once: the app's identity exists from its
+     * construction on.
      *
-     * @return Their ids, in the room's resource.
+     * @return This peer's and its user's ids, the room's ids and roles, whose views are valid as
+     * long as the room.
      */
-    [[nodiscard]] std::pmr::vector<peer_id> peers() const { return impl_->active_peers(); }
+    [[nodiscard]] self_info self() const { return impl_->self(); }
+
+    /**
+     * The users with a peer in the room, Trystero's `getUsers`: this peer's own user is left out.
+     *
+     * @return Each user by id, with its active peers in the order they joined, in the room's
+     * resource.
+     */
+    [[nodiscard]] std::pmr::map<std::pmr::string, user_info> users() const {
+        return impl_->users();
+    }
+
+    /**
+     * The peers whose handshake completed, Trystero's `getPeers` without their connections.
+     *
+     * @return Each peer by id, with its user, in the room's resource.
+     */
+    [[nodiscard]] std::pmr::map<std::pmr::string, peer_info> peers() const {
+        return impl_->peers();
+    }
 
     /**
      * Adds a listener of each peer that joins, once its handshake completes, Trystero's
@@ -2556,8 +2740,9 @@ public:
 
     /**
      * Adds a listener of each user that joins, when its first peer joins, after that peer's
-     * `on_peer_join`, Trystero's `onUserJoin`. Until identities are derived from keys, each peer is
-     * a user of its own, whose id is the peer's.
+     * `on_peer_join`, Trystero's `onUserJoin`; a peer of this peer's own user makes no user join.
+     * Until identities are derived from keys, the backend's `factory::user_of` names a peer's
+     * user, which is the peer's own id outside the tests.
      *
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
@@ -2575,7 +2760,7 @@ public:
 
     /**
      * Adds a listener of each user that leaves, when its last peer leaves, after that peer's
-     * `on_peer_leave`, Trystero's `onUserLeave`.
+     * `on_peer_leave`, Trystero's `onUserLeave`; this peer's own user never leaves.
      *
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
@@ -2844,14 +3029,16 @@ public:
     // T is the action's type, taken by value and moved into its encoding, which keeps a value
     // that owns its storage; a JSON document is written there at once, from a reference.
     /**
-     * Sends a message to `options.targets`, or every active peer, Trystero's `send`.
+     * Sends a message to `options.targets`, each a peer or a user, or to every active peer,
+     * Trystero's `send`; to a room without peers, it succeeds.
      *
      * A payload that fits one frame is sent inline; a larger one is offered, accepted by each
      * receiver, and sent in chunks. Completes with `(error_code)` once each target's local data
      * channel has taken the inline frame, or the last chunk of a transfer the receiver accepted,
      * as Trystero's `send` resolves: nothing confirms that the receiver has the message. It
      * completes with the first failure: `error::invalid_action_name`, `error::metadata_too_large`,
-     * `error::no_such_peer`, `error::transfer_rejected`, `error::transfer_timed_out`,
+     * `error::not_connected` for a target that is neither an active peer nor a user of one,
+     * `error::transfer_rejected`, `error::transfer_timed_out`,
      * `error::channel_stalled`, `error::peer_disconnected` or `error::room_left`; at once with
      * `error::action_redefined` when the name was made a request action first.
      *
@@ -3107,10 +3294,10 @@ public:
     // T is the action's type, taken by value and moved into its encoding, as `action::async_send`
     // takes it.
     /**
-     * Asks one peer, Trystero's `request`.
+     * Asks one peer, or one peer of a user, Trystero's `request`.
      *
      * Completes with `(error_code, R)`: the answer, as Trystero's promise resolves with it; or
-     * `error::not_connected` when the target is not an active peer,
+     * `error::not_connected` when the target is neither an active peer nor a user of one,
      * `error::request_rejected` when the peer refused the request (its listener's error, no
      * listener, or a refused transfer), `error::request_timed_out` after `options.timeout`,
      * `error::transfer_rejected` for an answer of another format than `R`'s,

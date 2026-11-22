@@ -286,7 +286,7 @@ public:
             for (const auto peer : chosen) {
                 auto l = cb_.find_link(peer, include_pending);
                 if (!l) {
-                    state->complete(make_error_code(error::no_such_peer));
+                    state->complete(make_error_code(error::not_connected));
                     continue;
                 }
                 send_when_drained(
@@ -305,7 +305,7 @@ public:
         for (const auto peer : chosen) {
             auto l = cb_.find_link(peer, include_pending);
             if (!l) {
-                state->complete(make_error_code(error::no_such_peer));
+                state->complete(make_error_code(error::not_connected));
                 continue;
             }
             send_bulk(peer, *l, name, format, metadata, payload, state);

@@ -128,8 +128,9 @@ void two_peers_join_and_exchange_every_payload_format() {
     BOOST_TEST_EQ(joined_a.at(0), "zzzzzzzzzzzzzzzzzzzz");
     BOOST_TEST_EQ(joined_z.at(0), "AAAAAAAAAAAAAAAAAAAA");
     const auto peers = a.peers();
-    const std::vector<trystero::peer_id> only_z{"zzzzzzzzzzzzzzzzzzzz"};
-    BOOST_TEST_ALL_EQ(peers.begin(), peers.end(), only_z.begin(), only_z.end());
+    webcpp::test::require(BOOST_TEST_EQ(peers.size(), 1U));
+    BOOST_TEST_EQ(peers.begin()->first, "zzzzzzzzzzzzzzzzzzzz");
+    BOOST_TEST_EQ(peers.begin()->second.user_id, "zzzzzzzzzzzzzzzzzzzz");
 
     std::vector<boost::system::error_code> sent;
     chat_a.async_send("hello", trystero::send_options{.targets = {}, .metadata = R"({"n":1})"},
@@ -2265,21 +2266,21 @@ void a_late_end_of_another_connection_keeps_the_peer() {
     std::size_t b_leaves = 0;
     b.on_peer_join([&](const trystero::peer_event&) { ++b_joins; });
     b.on_peer_leave([&](const trystero::peer_event&) { ++b_leaves; });
-    webcpp::test::require(BOOST_TEST(
-        run_until(f, [&] { return a.room->active_peers().size() == 1 && b_joins == 1; })));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.room->peers().size() == 1 && b_joins == 1; })));
     const auto first = a.app->find(b_id);
     webcpp::test::require(BOOST_TEST(first != nullptr));
     f.net.fail(pcs.front());
-    webcpp::test::require(BOOST_TEST(
-        run_until(f, [&] { return a.room->active_peers().size() == 1 && b_joins == 2; }, 30s)));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.room->peers().size() == 1 && b_joins == 2; }, 30s)));
     const auto second = a.app->find(b_id);
     webcpp::test::require(BOOST_TEST(second != nullptr && second != first));
     a.room->connection_ended(first, b_id, "a late end of the first connection");
     advance(f, 5000ms);
-    BOOST_TEST_EQ(a.room->active_peers().size(), 1U);
+    BOOST_TEST_EQ(a.room->peers().size(), 1U);
     BOOST_TEST_EQ(b_leaves, 1U);
     second->end("test");
-    BOOST_TEST(a.room->active_peers().empty());
+    BOOST_TEST(a.room->peers().empty());
     a.room->abandon();
 }
 
@@ -2299,14 +2300,13 @@ void a_withdrawn_presence_is_a_departure() {
     };
     trystero::app b_app(f.io.get_executor(), f.net, app_config(b_id));
     const auto b = join(b_app, "withdraw");
-    webcpp::test::require(
-        BOOST_TEST(run_until(f, [&] { return a.room->active_peers().size() == 1; })));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.room->peers().size() == 1; })));
     const auto c = a.app->find(b_id);
     webcpp::test::require(BOOST_TEST(c != nullptr));
     f.net.inject(pcs.front(), trystero::protocol::presence_frame(
                                   trystero::protocol::room_token(app_id, "withdraw"), false));
     BOOST_TEST(run_until(f, [&] { return leaves == 1; }));
-    BOOST_TEST(a.room->active_peers().empty());
+    BOOST_TEST(a.room->peers().empty());
     BOOST_TEST(c->live());
     BOOST_TEST(a.app->find(b_id) == c);
     a.room->abandon();
@@ -2352,7 +2352,7 @@ void a_room_left_with_no_idle_time_sends_its_presence() {
     trystero::app b_app(f.io.get_executor(), f.net, app_config("zzzzzzzzzzzzzzzzzzzz"));
     const auto b = join(b_app, "no-idle");
     webcpp::test::require(BOOST_TEST(
-        run_until(f, [&] { return a.room->active_peers().size() == 1 && b.peers().size() == 1; })));
+        run_until(f, [&] { return a.room->peers().size() == 1 && b.peers().size() == 1; })));
     const auto absent = trystero::protocol::presence_frame(
         trystero::protocol::room_token(app_id, "no-idle"), false);
     std::size_t seen = 0;
@@ -2782,6 +2782,224 @@ void leaves_are_reported_peer_then_user() {
     const std::vector<std::string> expected{"peer leavesBBBBBBBBBBBBBB",
                                             "user leavesBBBBBBBBBBBBBB"};
     BOOST_TEST_ALL_EQ(order.begin(), order.end(), expected.begin(), expected.end());
+}
+
+// Two peers of one user, which the memory backend groups, and a peer of a user of its own.
+struct one_user_two_peers {
+    static constexpr std::string_view user = "user-of-b1-and-b2";
+
+    explicit one_user_two_peers(fixture& f)
+        : a_app(f.io.get_executor(), f.net, app_config("usersAAAAAAAAAAAAAAA")),
+          b1_app(f.io.get_executor(), f.net, app_config("usersBBBBBBBBBBBBBB1")),
+          b2_app(f.io.get_executor(), f.net, app_config("usersBBBBBBBBBBBBBB2")),
+          a(join(a_app, "users")) {
+        f.net.assign_user(b1_app.self_id(), user);
+        f.net.assign_user(b2_app.self_id(), user);
+        a.on_peer_join([this](const trystero::peer_event& e) {
+            events.push_back("peer join " + std::string(e.peer_id) + " " + std::string(e.user_id));
+        });
+        a.on_user_join([this](const trystero::user_event& e) {
+            events.push_back("user join " + std::string(e.user_id));
+        });
+        a.on_peer_leave([this](const trystero::peer_event& e) {
+            events.push_back("peer leave " + std::string(e.peer_id) + " " + std::string(e.user_id));
+        });
+        a.on_user_leave([this](const trystero::user_event& e) {
+            events.push_back("user leave " + std::string(e.user_id) + " " + std::string(e.peer_id));
+        });
+        b1.emplace(join(b1_app, "users"));
+        webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
+        b2.emplace(join(b2_app, "users"));
+        webcpp::test::require(BOOST_TEST(run_until(f.io, [&] {
+            return a.peers().size() == 2 && b1->peers().size() == 2 && b2->peers().size() == 2;
+        })));
+    }
+
+    trystero::app a_app;
+    trystero::app b1_app;
+    trystero::app b2_app;
+    trystero::room a;
+    std::optional<trystero::room> b1;
+    std::optional<trystero::room> b2;
+    std::vector<std::string> events;
+};
+
+// A user id as a send's target reaches each of its peers; `users()` and `peers()` list them, and
+// the user joined once, after its first peer.
+void send_to_a_user_reaches_each_of_its_peers() {
+    fixture f;
+    one_user_two_peers t(f);
+    const std::string b1_id(t.b1_app.self_id());
+    const std::string b2_id(t.b2_app.self_id());
+    const std::string user(one_user_two_peers::user);
+    const std::vector<std::string> joins{"peer join " + b1_id + " " + user, "user join " + user,
+                                         "peer join " + b2_id + " " + user};
+    BOOST_TEST_ALL_EQ(t.events.begin(), t.events.end(), joins.begin(), joins.end());
+
+    const auto users = t.a.users();
+    webcpp::test::require(BOOST_TEST_EQ(users.size(), 1U));
+    const auto it = users.find(trystero::peer_id(user));
+    webcpp::test::require(BOOST_TEST(it != users.end()));
+    const std::vector<std::string_view> both{b1_id, b2_id};
+    BOOST_TEST_ALL_EQ(it->second.peer_ids.begin(), it->second.peer_ids.end(), both.begin(),
+                      both.end());
+    BOOST_TEST(it->second.roles.empty());
+    const auto peers = t.a.peers();
+    webcpp::test::require(BOOST_TEST_EQ(peers.size(), 2U));
+    for (const auto& id : both) {
+        const auto peer = peers.find(trystero::peer_id(id));
+        webcpp::test::require(BOOST_TEST(peer != peers.end()));
+        BOOST_TEST_EQ(peer->second.user_id, std::string_view(user));
+        BOOST_TEST(peer->second.direct);
+        BOOST_TEST_EQ(peer->second.hops, 1U);
+        BOOST_TEST(peer->second.roles.empty());
+    }
+
+    auto note = t.a.make_action<std::string>("note");
+    std::vector<std::string> heard;
+    t.b1->make_action<std::string>("note").on_message(
+        [&](std::string text, const trystero::message_info&) { heard.push_back("b1 " + text); });
+    t.b2->make_action<std::string>("note").on_message(
+        [&](std::string text, const trystero::message_info&) { heard.push_back("b2 " + text); });
+    std::optional<boost::system::error_code> sent;
+    note.async_send("to the user",
+                    trystero::send_options{.targets = {trystero::peer_id(user)}, .metadata = {}},
+                    [&](boost::system::error_code ec) { sent = ec; });
+    BOOST_TEST(run_until(f.io, [&] { return sent.has_value() && heard.size() == 2; }));
+    BOOST_TEST(sent && !*sent);
+    std::ranges::sort(heard);
+    const std::vector<std::string> expected{"b1 to the user", "b2 to the user"};
+    BOOST_TEST_ALL_EQ(heard.begin(), heard.end(), expected.begin(), expected.end());
+
+    // A user and one of its peers together reach each peer once.
+    heard.clear();
+    sent.reset();
+    note.async_send(
+        "once each",
+        trystero::send_options{.targets = {trystero::peer_id(b2_id), trystero::peer_id(user),
+                                           trystero::peer_id(b1_id)},
+                               .metadata = {}},
+        [&](boost::system::error_code ec) { sent = ec; });
+    BOOST_TEST(run_until(f.io, [&] { return sent.has_value() && heard.size() == 2; }));
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(heard.size(), 2U);
+    BOOST_TEST(sent && !*sent);
+
+    // A request to the user asks one of its peers, the first by id, as 0.27.0 picks it.
+    auto ask = t.a.make_request_action<std::string>("ask");
+    for (auto* b : {&*t.b1, &*t.b2}) {
+        const auto answered = b->make_request_action<std::string>("ask").on_request(
+            [b](std::string, const trystero::message_info&) { return std::string(b->self_id()); });
+        webcpp::test::require(BOOST_TEST(answered.has_value()));
+    }
+    std::optional<std::string> answer;
+    ask.async_request("who", trystero::request_options{.target = trystero::peer_id(user)},
+                      [&](boost::system::error_code ec, std::string who) {
+                          BOOST_TEST(!ec);
+                          answer = std::move(who);
+                      });
+    BOOST_TEST(run_until(f.io, [&] { return answer.has_value(); }));
+    BOOST_TEST_EQ(answer.value_or(""), std::min(b1_id, b2_id));
+}
+
+// The scenario of the specification: of two peers of one user, the first leaves and its user
+// stays; the second leaves and its user leaves after it.
+void a_user_leaves_with_its_last_peer() {
+    fixture f;
+    one_user_two_peers t(f);
+    const std::string b1_id(t.b1_app.self_id());
+    const std::string b2_id(t.b2_app.self_id());
+    const std::string user(one_user_two_peers::user);
+    t.events.clear();
+    t.b1.reset();
+    BOOST_TEST(run_until(f.io, [&] { return t.a.peers().size() == 1; }));
+    run_until(f.io, [] { return false; }, 100ms);
+    const std::vector<std::string> first{"peer leave " + b1_id + " " + user};
+    BOOST_TEST_ALL_EQ(t.events.begin(), t.events.end(), first.begin(), first.end());
+    BOOST_TEST_EQ(t.a.users().size(), 1U);
+    t.b2.reset();
+    BOOST_TEST(run_until(f.io, [&] { return t.events.size() == 3; }));
+    const std::vector<std::string> all{"peer leave " + b1_id + " " + user,
+                                       "peer leave " + b2_id + " " + user,
+                                       "user leave " + user + " " + b2_id};
+    BOOST_TEST_ALL_EQ(t.events.begin(), t.events.end(), all.begin(), all.end());
+    BOOST_TEST(t.a.users().empty());
+    BOOST_TEST(t.a.peers().empty());
+}
+
+// A peer of this room's own user is a peer and no other user, as 0.27.0 leaves its own user out
+// of `getUsers` and of `onUserJoin`.
+void a_peer_of_its_own_user_is_no_other_user() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("ownUserAAAAAAAAAAAAA"));
+    auto a = join(a_app, "own");
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("ownUserBBBBBBBBBBBBB"));
+    f.net.assign_user(b_app.self_id(), a_app.self_id());
+    std::size_t user_events = 0;
+    a.on_user_join([&](const trystero::user_event&) { ++user_events; });
+    a.on_user_leave([&](const trystero::user_event&) { ++user_events; });
+    std::optional<trystero::room> b(join(b_app, "own"));
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
+    BOOST_TEST_EQ(a.peers().begin()->second.user_id, a_app.self_id());
+    BOOST_TEST(a.users().empty());
+    std::size_t replayed = 0;
+    a.on_user_join([&](const trystero::user_event&) { ++replayed; },
+                   {.once = false, .replay = true});
+    BOOST_TEST_EQ(replayed, 0U);
+    b.reset();
+    BOOST_TEST(run_until(f.io, [&] { return a.peers().empty(); }));
+    run_until(f.io, [] { return false; }, 100ms);
+    BOOST_TEST_EQ(user_events, 0U);
+}
+
+// A send to a target that is neither an active peer nor a user of one completes with
+// `not_connected`, alone or in a list; a broadcast to a room without peers succeeds.
+void send_to_an_absent_target_fails() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("absentAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "absent");
+    auto note = a.make_action<std::string>("note");
+    std::vector<boost::system::error_code> sent;
+    const auto record = [&](boost::system::error_code ec) { sent.push_back(ec); };
+    note.async_send("anyone", record);
+    note.async_send("nobody", trystero::send_options{.targets = {"nobody"}, .metadata = {}},
+                    record);
+    BOOST_TEST(run_until(f.io, [&] { return sent.size() == 2; }));
+    if (sent.size() == 2) {
+        BOOST_TEST(!sent[0]);
+        BOOST_TEST(sent[1] == trystero::error::not_connected);
+    }
+
+    trystero::app b_app(f.io.get_executor(), f.net, app_config("absentBBBBBBBBBBBBBB"));
+    auto b = join(b_app, "absent");
+    std::size_t heard = 0;
+    b.make_action<std::string>("note").on_message(
+        [&](std::string, const trystero::message_info&) { ++heard; });
+    webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
+    sent.clear();
+    note.async_send("both",
+                    trystero::send_options{
+                        .targets = {trystero::peer_id(b_app.self_id()), "nobody"}, .metadata = {}},
+                    record);
+    BOOST_TEST(run_until(f.io, [&] { return sent.size() == 1 && heard == 1; }));
+    if (!sent.empty()) {
+        BOOST_TEST(sent[0] == trystero::error::not_connected);
+    }
+}
+
+// `self()` names this peer, its user, the room and the room it was joined as, synchronously.
+void self_names_the_room() {
+    fixture f;
+    trystero::app a_app(f.io.get_executor(), f.net, app_config("selfAAAAAAAAAAAAAAAA"));
+    const auto a = join(a_app, "kitchen");
+    const trystero::self_info self = a.self();
+    BOOST_TEST_EQ(self.peer_id, "selfAAAAAAAAAAAAAAAA");
+    BOOST_TEST_EQ(self.user_id, "selfAAAAAAAAAAAAAAAA");
+    BOOST_TEST(self.persistence == trystero::identity_persistence::ephemeral);
+    BOOST_TEST_EQ(self.room_id, "kitchen");
+    BOOST_TEST_EQ(self.base_room_id, "kitchen");
+    BOOST_TEST(!self.is_admin);
+    BOOST_TEST(self.roles.empty());
 }
 
 /** Refusals of a request with long reasons. */
@@ -3392,6 +3610,11 @@ int main() {
     run_case(a_join_posted_before_the_leave_is_not_reported);
     run_case(a_gate_may_end_its_room_while_waiting_messages_are_delivered);
     run_case(leaves_are_reported_peer_then_user);
+    run_case(send_to_a_user_reaches_each_of_its_peers);
+    run_case(a_user_leaves_with_its_last_peer);
+    run_case(a_peer_of_its_own_user_is_no_other_user);
+    run_case(send_to_an_absent_target_fails);
+    run_case(self_names_the_room);
     run_case(a_request_is_refused_by_a_gone_listener_or_the_gate);
     run_case(a_request_fails_when_its_peer_or_its_room_goes);
     run_case(an_action_name_keeps_its_first_kind);

@@ -307,7 +307,7 @@ void join_extra(extra_room& extra, std::string_view room_id) {
 void ping_second() {
     page& app = the_page();
     if (app.second.room) {
-        for (const auto& peer : app.second.room->peers()) {
+        for (const auto& [peer, info] : app.second.room->peers()) {
             const auto id = ++app.next_ping;
             record("ping-started", {{"room", "second"}, {"peer", peer}, {"id", id}});
             app.second.room->async_ping(

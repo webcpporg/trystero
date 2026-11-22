@@ -6,7 +6,7 @@
 
 // A difference from Trystero (doc: #trystero-differences): a send to a peer that has not joined.
 // Trystero's send warns on the console and resolves; async_send completes with
-// error::no_such_peer, since an operation that fails says so with its error code. Its twin is
+// error::not_connected, since an operation that fails says so with its error code. Its twin is
 // test/oracle/twins/diff_send_to_absent_peer.mjs. Both join over the relay whose URL is in the
 // environment, TRYSTERO_RELAY_URL, which their lanes start on 127.0.0.1.
 
