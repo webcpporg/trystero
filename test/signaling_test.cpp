@@ -1065,7 +1065,7 @@ struct signaling_pair {
                             });
                         },
                     .failed = [](const trystero::room_error&) {},
-                    .should_connect = {},
+                    .should_connect = [this, i](std::string_view) { return wanted[i]; },
                 },
                 detail::logger(), memory());
             sides[i]->set_key(key);
@@ -1099,6 +1099,8 @@ struct signaling_pair {
     std::deque<std::pair<std::size_t, std::string>> queue;
     std::function<std::string(std::string)> tamper;
     std::array<std::vector<connection>, 2> connected;
+    /** What each side's should_connect answers. */
+    std::array<bool, 2> wanted{true, true};
 };
 
 // An offerer whose connection refuses the answer it is sent (its first line names no connection)
@@ -1156,6 +1158,33 @@ void connected_carries_the_descriptions_applied() {
     BOOST_TEST_EQ(*b_pc->remote_id(), a_pc->id());
 }
 
+// An offerer whose room stops wanting its peer between its offer and the peer's answer (a full
+// room's refusal of that peer's user) ends the offer the answer is for, as 0.27.0 tears down the
+// offer an unwanted answer answers: its connection closes at once, and no connection opens. Once
+// the peer is wanted again, a new announcement negotiates normally.
+void a_refused_answer_ends_the_offer() {
+    signaling_pair p;
+    p.tamper = [&](std::string text) {
+        const read_signal_text read(text);
+        if (!read.message->answer.empty()) {
+            p.wanted[0] = false;  // the room is full by the time the answer arrives
+        }
+        return text;
+    };
+    p.announce_b();
+    BOOST_TEST(p.connected[0].empty());
+    BOOST_TEST(p.connected[1].empty());
+    // A's offer is gone; B's connection that answered it stays until its answer expires.
+    BOOST_TEST_EQ(p.net.live_connections(), 1U);
+    p.tamper = {};
+    p.wanted[0] = true;
+    require(BOOST_TEST(p.net.advance(std::chrono::milliseconds(24'000))));
+    p.deliver();
+    p.announce_b();
+    BOOST_TEST_EQ(p.connected[0].size(), 1U);
+    BOOST_TEST_EQ(p.connected[1].size(), 1U);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1188,5 +1217,6 @@ int main(int argc, char* argv[]) {
     an_eose_of_some_subscriptions_neither_syncs_nor_replays();
     the_room_key_is_made_at_the_first_event_and_dropped_on_stop();
     connected_carries_the_descriptions_applied();
+    a_refused_answer_ends_the_offer();
     return webcpp::test::exit_status(boost::report_errors());
 }

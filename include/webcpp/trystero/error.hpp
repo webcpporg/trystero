@@ -64,7 +64,7 @@ enum class error {
     already_joined,
     /**
      * The room holds as many users as its `room_options::max_users` accepts, 0.27.0's "room full":
-     * a room refused by a peer whose room is full reports it, with the peer's id.
+     * reported by the room a full peer refused, with the refusing peer's id.
      */
     room_full,
     /** The peer is banned from the room, 0.27.0's "peer banned". */

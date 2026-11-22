@@ -257,6 +257,9 @@ public:
         // A peer the room does not want is not negotiated with, as 0.27.0's signal handler asks
         // shouldConnectPeer before it acts on an announcement, an offer or an answer: an answer
         // ends the offer it answers. A candidate needs no asking, its connection having been.
+        // 0.27.0 first handles a connected or stale peer's announcement, then asks; the order
+        // matters once a connected peer can be unwanted (Phase 3, scale), and not for a refused
+        // peer, which never connected.
         const bool candidate_only =
             !message->is_announcement() && message->offer.empty() && message->answer.empty();
         if (!candidate_only && cb_.should_connect && !cb_.should_connect(message->peer_id)) {

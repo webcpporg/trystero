@@ -2176,6 +2176,10 @@ private:
                 [weak, peer = std::pmr::string(peer, memory_), mine](backend::bytes frame) {
                     // A link the room let go, which flushes its last frames before it ends,
                     // delivers nothing, as 0.27.0's destroyAfterFlush clears its peer's handlers.
+                    // The handshake manager already refuses frames of a peer it forgot; this
+                    // keeps that so for a link whose peer id is bound again by another link,
+                    // which no path reaches yet (the gate refuses a refused user's connections)
+                    // and so no test does.
                     if (const auto self = weak.lock(); self && self->is_link_of(peer, mine)) {
                         self->wire_->handle(peer, std::move(frame));
                     }
@@ -2330,7 +2334,9 @@ private:
             return;
         }
         // As 0.27.0's onActivate, the room's users are counted again: a place taken meanwhile
-        // refuses the peer.
+        // refuses the peer. Defensive until Phase 3 (scale): every place a peer's user could take
+        // is reserved from admission to here, so no public path reaches this refusal, and no test
+        // does. Keep it: virtual peers will.
         if (full_for(peer, false)) {
             refuse_full(peer);
             return;
@@ -2771,7 +2777,7 @@ private:
         reserved_.erase(peer);
         // The connection ends with the peer, as 0.27.0 destroys a peer it lets go; at its own end,
         // it has ended already.
-        if (refused) {
+        if (refused && !left_) {
             flush_then_end(state.link, reason);
         } else {
             state.link->end(reason);
