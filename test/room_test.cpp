@@ -61,6 +61,7 @@ using trystero::test::counting_resource;
 using trystero::test::document_of;
 using trystero::test::fixture;
 using trystero::test::flooder;
+using trystero::test::group_users;
 using trystero::test::join;
 using trystero::test::relay_a;
 using trystero::test::relay_b;
@@ -2795,6 +2796,9 @@ struct one_user_two_peers {
           a(join(a_app, "users")) {
         f.net.assign_user(b1_app.self_id(), user);
         f.net.assign_user(b2_app.self_id(), user);
+        for (auto* app : {&a_app, &b1_app, &b2_app}) {
+            group_users(*app, f.net);
+        }
         a.on_peer_join([this](const trystero::peer_event& e) {
             events.push_back("peer join " + std::string(e.peer_id) + " " + std::string(e.user_id));
         });
@@ -2838,7 +2842,7 @@ void send_to_a_user_reaches_each_of_its_peers() {
 
     const auto users = t.a.users();
     webcpp::test::require(BOOST_TEST_EQ(users.size(), 1U));
-    const auto it = users.find(trystero::peer_id(user));
+    const auto it = users.find(std::string_view(user));
     webcpp::test::require(BOOST_TEST(it != users.end()));
     const std::vector<std::string_view> both{b1_id, b2_id};
     BOOST_TEST_ALL_EQ(it->second.peer_ids.begin(), it->second.peer_ids.end(), both.begin(),
@@ -2847,13 +2851,23 @@ void send_to_a_user_reaches_each_of_its_peers() {
     const auto peers = t.a.peers();
     webcpp::test::require(BOOST_TEST_EQ(peers.size(), 2U));
     for (const auto& id : both) {
-        const auto peer = peers.find(trystero::peer_id(id));
+        const auto peer = peers.find(id);
         webcpp::test::require(BOOST_TEST(peer != peers.end()));
         BOOST_TEST_EQ(peer->second.user_id, std::string_view(user));
         BOOST_TEST(peer->second.direct);
         BOOST_TEST_EQ(peer->second.hops, 1U);
         BOOST_TEST(peer->second.roles.empty());
     }
+
+    // A replay reports the user once, with its first peer.
+    std::vector<std::string> replayed;
+    const auto replay = t.a.on_user_join(
+        [&](const trystero::user_event& e) {
+            replayed.push_back(std::string(e.user_id) + " " + std::string(e.peer_id));
+        },
+        {.once = false, .replay = true});
+    const std::vector<std::string> once{user + " " + b1_id};
+    BOOST_TEST_ALL_EQ(replayed.begin(), replayed.end(), once.begin(), once.end());
 
     auto note = t.a.make_action<std::string>("note");
     std::vector<std::string> heard;
@@ -2935,6 +2949,8 @@ void a_peer_of_its_own_user_is_no_other_user() {
     auto a = join(a_app, "own");
     trystero::app b_app(f.io.get_executor(), f.net, app_config("ownUserBBBBBBBBBBBBB"));
     f.net.assign_user(b_app.self_id(), a_app.self_id());
+    group_users(a_app, f.net);
+    group_users(b_app, f.net);
     std::size_t user_events = 0;
     a.on_user_join([&](const trystero::user_event&) { ++user_events; });
     a.on_user_leave([&](const trystero::user_event&) { ++user_events; });

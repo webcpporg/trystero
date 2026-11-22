@@ -9,6 +9,8 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <boost/assert.hpp>
+
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -31,7 +33,7 @@ namespace webcpp::trystero::detail {
  */
 class user_table {
 public:
-    /** The peers of each user, in the order they joined. */
+    /** The peers of each user, in the order they were added. */
     using user_map =
         std::pmr::map<std::pmr::string, std::pmr::vector<std::pmr::string>, std::less<>>;
 
@@ -75,10 +77,14 @@ public:
         if (peer == user_by_peer_.end()) {
             return std::nullopt;
         }
+        // `add` lists each peer under its user, so the two maps agree.
         const auto user = peers_by_user_.find(peer->second);
+        BOOST_ASSERT(user != peers_by_user_.end());
         user_by_peer_.erase(peer);
         auto& peers = user->second;
-        peers.erase(std::ranges::find(peers, peer_id));
+        const auto listed = std::ranges::find(peers, peer_id);
+        BOOST_ASSERT(listed != peers.end());
+        peers.erase(listed);
         if (!peers.empty()) {
             return std::nullopt;
         }
@@ -86,8 +92,8 @@ public:
         return std::move(node.key());
     }
 
-    /** The peers of a user, in the order they joined; none for a user not in the table. The span is
-     * valid until the table changes. */
+    /** The peers of a user, in the order they were added; none for a user not in the table. The
+     * span is valid until the table changes. */
     [[nodiscard]] std::span<const std::pmr::string> peers_of(std::string_view user_id) const {
         const auto user = peers_by_user_.find(user_id);
         if (user == peers_by_user_.end()) {
@@ -106,7 +112,7 @@ public:
         return peer->second;
     }
 
-    /** Every user, by id, with its peers in the order they joined. */
+    /** Every user, by id, with its peers in the order they were added. */
     [[nodiscard]] const user_map& users() const { return peers_by_user_; }
 
     /** Removes every peer and every user, reporting none. */

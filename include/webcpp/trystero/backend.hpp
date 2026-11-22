@@ -368,18 +368,6 @@ public:
      * @return The current time.
      */
     virtual std::chrono::steady_clock::time_point steady_now() = 0;  // lint-world: a type only
-
-    /**
-     * The user a remote peer belongs to, which a room reads once the peer joins it.
-     *
-     * Until identities are derived from keys, each peer is a user of its own, whose id is the
-     * peer's, as this default answers; a test's backend may answer another id, so that several
-     * peers make one user.
-     *
-     * @param peer_id The peer's id.
-     * @return The user's id, which the room copies during the call.
-     */
-    virtual std::string_view user_of(std::string_view peer_id) { return peer_id; }
 };
 
 }  // namespace webcpp::trystero::backend

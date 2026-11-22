@@ -34,6 +34,18 @@
 
 namespace webcpp::trystero {
 
+class app;
+
+namespace detail {
+
+/** Reaches the state an `app` handle shares with its rooms, for what the handle does not offer. */
+struct app_access {
+    /** The state of `a`, which must hold one. */
+    [[nodiscard]] static app_impl& impl(const app& a);
+};
+
+}  // namespace detail
+
 /**
  * This program in one app: one peer id, and one connection per remote peer, shared by the rooms it
  * joins, as a Trystero JS page shares them.
@@ -211,8 +223,15 @@ private:
                                                       std::move(ex), factory, std::move(config));
     }
 
+    friend struct detail::app_access;
+
     std::shared_ptr<detail::app_impl> impl_;
 };
+
+inline detail::app_impl& detail::app_access::impl(const app& a) {
+    BOOST_ASSERT(a.impl_);
+    return *a.impl_;
+}
 
 }  // namespace webcpp::trystero
 

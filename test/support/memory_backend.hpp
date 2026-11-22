@@ -747,14 +747,15 @@ public:
 
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
 
-    /** Makes `peer` a peer of `user` in every room that meets it from now on, so that several peers
-     * make one user, as several apps of one user identity will. */
+    /** Makes `peer` a peer of `user` in every room of an app that `group_users` (rooms.hpp) gave
+     * this network, so that several peers make one user, as several apps of one user identity
+     * will. */
     void assign_user(std::string_view peer, std::string_view user) {
         users_.insert_or_assign(std::pmr::string(peer, memory_), std::pmr::string(user, memory_));
     }
 
     /** The user `assign_user` gave `peer`, or the peer's own id. */
-    std::string_view user_of(std::string_view peer) override {
+    [[nodiscard]] std::string_view user_of(std::string_view peer) const {
         const auto it = users_.find(peer);
         return it == users_.end() ? peer : std::string_view(it->second);
     }

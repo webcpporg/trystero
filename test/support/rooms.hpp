@@ -89,6 +89,14 @@ inline trystero::room join(trystero::app& a, std::string_view room_id,
     return std::move(*r);
 }
 
+/** Names the user of each remote peer of `a`'s rooms as `net.assign_user` gave it, through the
+ * app's state, since a room reads a peer's user from no backend: until identities are derived from
+ * keys, each peer is a user of its own. */
+inline void group_users(trystero::app& a, const memory_network& net) {
+    trystero::detail::app_access::impl(a).resolve_users_with(
+        [&net](std::string_view peer) { return net.user_of(peer); });
+}
+
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
 inline bool run_until(webcpp::asio::io_context& io, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = 10s) {

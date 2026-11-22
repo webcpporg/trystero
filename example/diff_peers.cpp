@@ -62,7 +62,7 @@ int main() {
     // tag::example[]
     room.on_peer_join([&](const trystero::peer_event& joined) {
         const auto peers = room.peers();
-        const auto entry = peers.find(trystero::peer_id(joined.peer_id));
+        const auto entry = peers.find(joined.peer_id);
         std::cout << "peers: " << peers.size() << '\n'
                   << "the joined peer's entry: "
                   << (entry != peers.end() && entry->second.user_id == joined.user_id

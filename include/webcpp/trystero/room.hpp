@@ -56,6 +56,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <map>
 #include <memory>
@@ -133,8 +134,7 @@ struct message_info {
 struct peer_event {
     /** The peer's id. */
     std::string_view peer_id;
-    /** The id of the peer's user; until identities are derived from keys, the backend's
-     * `factory::user_of` names it, which is the peer's own id outside the tests. */
+    /** The id of the peer's user; until identities are derived from keys, the peer's own id. */
     std::string_view user_id;
 };
 
@@ -155,7 +155,7 @@ struct user_event {
  * A user of a room, an entry of `room::users`, Trystero's `UserInfo`.
  */
 struct user_info {
-    /** The user's active peers, in the order they joined. */
+    /** The user's active peers, in the order they became active. */
     std::pmr::vector<std::pmr::string> peer_ids;
     /** The user's roles; none until roles are ported. */
     std::pmr::vector<std::pmr::string> roles;
@@ -1088,8 +1088,8 @@ public:
 
     /** The room's users but this peer's own, each with its active peers, in the room's resource:
      * 0.27.0's `getUsers` leaves its own user out. */
-    std::pmr::map<std::pmr::string, user_info> users() const {
-        std::pmr::map<std::pmr::string, user_info> out(memory_);
+    std::pmr::map<std::pmr::string, user_info, std::less<>> users() const {
+        std::pmr::map<std::pmr::string, user_info, std::less<>> out(memory_);
         for (const auto& [user, peer_ids] : users_.users()) {
             if (user == self_user_id()) {
                 continue;
@@ -1104,8 +1104,8 @@ public:
     }
 
     /** The peers whose handshake completed, each with its user, in the room's resource. */
-    std::pmr::map<std::pmr::string, peer_info> peers() const {
-        std::pmr::map<std::pmr::string, peer_info> out(memory_);
+    std::pmr::map<std::pmr::string, peer_info, std::less<>> peers() const {
+        std::pmr::map<std::pmr::string, peer_info, std::less<>> out(memory_);
         for (const auto& [id, p] : peers_) {
             if (p.active) {
                 out.try_emplace(std::pmr::string(id, memory_),
@@ -1454,8 +1454,10 @@ public:
     /**
      * The peers a send's targets name, as 0.27.0's resolveSendTarget reads them: an active peer,
      * or a pending one when the action goes to those, is itself; a user stands for each of its
-     * active peers; another target stays, which the wire fails as not connected. Each peer once,
-     * copied: a send may end a peer while it goes through them.
+     * active peers, even for an action that goes to pending ones, where 0.27.0 adds its pending
+     * peers too (only the room's own actions go to pending peers, and they name peers); another
+     * target stays, which the wire fails as not connected. Each peer once, copied: a send may end
+     * a peer while it goes through them.
      */
     std::pmr::vector<std::pmr::string> resolve_targets(std::span<const peer_id> targets,
                                                        bool include_pending) const {
@@ -2168,7 +2170,7 @@ private:
         it->second.active = true;
         // Its user joins with its first peer, as 0.27.0 counts a user's peers; this peer's own user
         // is no other user.
-        std::pmr::string user(factory_.user_of(peer), memory_);
+        std::pmr::string user(app_->user_of(peer), memory_);
         const bool first_of_user = users_.add(peer, user) && user != self_user_id();
         if (const auto history = rebinds_.find(peer); history != rebinds_.end()) {
             history->second.ends = 0;
@@ -2685,10 +2687,10 @@ public:
     /**
      * The users with a peer in the room, Trystero's `getUsers`: this peer's own user is left out.
      *
-     * @return Each user by id, with its active peers in the order they joined, in the room's
-     * resource.
+     * @return Each user by id, with its active peers in the order they became active, in the
+     * room's resource.
      */
-    [[nodiscard]] std::pmr::map<std::pmr::string, user_info> users() const {
+    [[nodiscard]] std::pmr::map<std::pmr::string, user_info, std::less<>> users() const {
         return impl_->users();
     }
 
@@ -2697,7 +2699,7 @@ public:
      *
      * @return Each peer by id, with its user, in the room's resource.
      */
-    [[nodiscard]] std::pmr::map<std::pmr::string, peer_info> peers() const {
+    [[nodiscard]] std::pmr::map<std::pmr::string, peer_info, std::less<>> peers() const {
         return impl_->peers();
     }
 
@@ -2741,8 +2743,7 @@ public:
     /**
      * Adds a listener of each user that joins, when its first peer joins, after that peer's
      * `on_peer_join`, Trystero's `onUserJoin`; a peer of this peer's own user makes no user join.
-     * Until identities are derived from keys, the backend's `factory::user_of` names a peer's
-     * user, which is the peer's own id outside the tests.
+     * Until identities are derived from keys, a peer's user is the peer's own id.
      *
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.
