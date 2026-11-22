@@ -900,6 +900,9 @@ public:
         for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
         }
+        if (on_random) {
+            on_random(out);
+        }
     }
 
     /** A wall clock that moves with steady_now(), from 2025-10-05T21:33:20Z at its origin, in whole
@@ -934,6 +937,9 @@ public:
     std::size_t peak_connections = 0;
     /** How many random bytes were drawn. */
     std::size_t random_bytes = 0;
+    /** Called with every draw of random bytes once it is made: a test checks that a value came
+     * from the backend's randomness. */
+    std::function<void(std::span<const std::uint8_t>)> on_random;
     /** How many derivations of a password's master were asked for. */
     std::size_t derivations = 0;
     /** How many of the next derivations to fail, with `error::backend_failure`. */

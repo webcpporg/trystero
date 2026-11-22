@@ -44,7 +44,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <memory_resource>
 #include <optional>
@@ -1003,6 +1005,136 @@ void the_room_key_is_made_at_the_first_event_and_dropped_on_stop() {
     BOOST_TEST(h.strategy->current_signer() == nullptr);
 }
 
+/** Two signalings of one room over the memory network, A ("a-peer", whose id is lower, so it
+ * offers) and B; each publishes on the other's self topic, through a queue `deliver` empties,
+ * `tamper` first rewriting what goes to A. */
+struct signaling_pair {
+    static constexpr std::array<std::string_view, 2> ids{"a-peer", "b-peer"};
+    static constexpr std::string_view app_id = "pair-app";
+    static constexpr std::string_view room_id = "pair-room";
+
+    /** A negotiation that ended connected: its connection and the descriptions it was given. */
+    struct connection {
+        std::shared_ptr<backend::peer_connection> pc;
+        std::shared_ptr<backend::data_channel> channel;
+        std::string local_sdp;
+        std::string remote_sdp;
+    };
+
+    signaling_pair() {
+        net.virtual_clock = true;
+        for (std::size_t i = 0; i < 2; ++i) {
+            sides[i] = std::make_shared<detail::signaling>(
+                net, app_id, room_id, ids[i], std::span<const backend::ice_server>(),
+                detail::signaling::callbacks{
+                    .publish =
+                        [this, i](std::size_t, std::string_view topic, std::string_view content) {
+                            const std::size_t to = 1 - i;
+                            BOOST_TEST_EQ(topic, tp::peer_topic(app_id, room_id, ids[to]));
+                            queue.emplace_back(to, std::string(content));
+                        },
+                    .connected =
+                        [this, i](std::string_view, std::shared_ptr<backend::peer_connection> pc,
+                                  std::shared_ptr<backend::data_channel> channel,
+                                  std::string_view local_sdp, std::string_view remote_sdp) {
+                            connected[i].push_back({
+                                .pc = std::move(pc),
+                                .channel = std::move(channel),
+                                .local_sdp = std::string(local_sdp),
+                                .remote_sdp = std::string(remote_sdp),
+                            });
+                        },
+                    .failed = [](const trystero::room_error&) {},
+                },
+                detail::logger(), memory());
+            sides[i]->set_key(key);
+        }
+    }
+
+    /** Delivers what was published, and what that publishes, until nothing is left. */
+    void deliver() {
+        require(BOOST_TEST(net.poll_ready()));
+        while (!queue.empty()) {
+            auto [to, text] = std::move(queue.front());
+            queue.pop_front();
+            if (to == 0 && tamper) {
+                text = tamper(text);
+            }
+            sides[to]->handle(0, text);
+            require(BOOST_TEST(net.poll_ready()));
+        }
+    }
+
+    /** A hears B's announcement, and they negotiate. */
+    void announce_b() {
+        sides[0]->handle(0, tp::write_signal({.peer_id = ids[1]}, {}, memory()));
+        deliver();
+    }
+
+    asio::io_context io;
+    memory_network net{io};
+    webcpp::crypto::secret<32> key = tp::room_aes_key_without_password(app_id, room_id);
+    std::array<std::shared_ptr<detail::signaling>, 2> sides;
+    std::deque<std::pair<std::size_t, std::string>> queue;
+    std::function<std::string(std::string)> tamper;
+    std::array<std::vector<connection>, 2> connected;
+};
+
+// An offerer whose connection refuses the answer it is sent (its first line names no connection)
+// starts over with a new offer once its peer's answer has expired; when that negotiation opens,
+// each side is given the descriptions of the connection that opened: the one it set itself and
+// the one it applied, its peer's, never the answer it refused.
+void connected_carries_the_descriptions_applied() {
+    signaling_pair p;
+    std::string refused;
+    p.tamper = [&](std::string text) {
+        const read_signal_text read(text);
+        const auto& m = *read.message;
+        if (m.answer.empty() || !refused.empty()) {
+            return text;
+        }
+        const auto aad = tp::signal_aad("answer", signaling_pair::ids[1], m.offer_id);
+        const auto sdp = tp::open(p.key, m.answer, std::string_view(aad));
+        require(BOOST_TEST(sdp.has_value()));
+        refused = replaced(*sdp, "mem:", "nil:");
+        const std::array<std::uint8_t, tp::gcm_iv_size> iv{9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 1, 2};
+        const auto sealed = tp::seal(p.key, iv, refused, std::string_view(aad));
+        require(BOOST_TEST(sealed.has_value()));
+        return replaced(text, m.answer, *sealed);
+    };
+    std::vector<std::size_t> made;
+    p.net.on_made = [&](std::size_t pc, std::span<const backend::ice_server>) {
+        made.push_back(pc);
+    };
+    p.announce_b();
+    require(BOOST_TEST(!refused.empty()));
+    BOOST_TEST(p.connected[0].empty() && p.connected[1].empty());
+    require(BOOST_TEST_EQ(made.size(), 2U));  // A's first offer, B's answer to it
+    require(BOOST_TEST(p.net.advance(std::chrono::milliseconds(24'000))));
+    p.deliver();
+    p.announce_b();
+    require(BOOST_TEST_EQ(p.connected[0].size(), 1U));
+    require(BOOST_TEST_EQ(p.connected[1].size(), 1U));
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& c = p.connected[i].front();
+        const auto pc = std::dynamic_pointer_cast<trystero::test::memory_peer_connection>(c.pc);
+        require(BOOST_TEST(pc != nullptr && pc->remote_id().has_value()));
+        BOOST_TEST_EQ(c.local_sdp,
+                      std::string_view(trystero::test::memory_description(pc->id(), memory())));
+        BOOST_TEST_EQ(c.remote_sdp, std::string_view(trystero::test::memory_description(
+                                        *pc->remote_id(), memory())));
+        BOOST_TEST_NE(c.remote_sdp, refused);
+        // The connection that opened is a new one, not one of the first negotiation's.
+        BOOST_TEST(std::ranges::find(made.begin(), made.begin() + 2, pc->id()) == made.begin() + 2);
+    }
+    const auto a_pc =
+        std::dynamic_pointer_cast<trystero::test::memory_peer_connection>(p.connected[0][0].pc);
+    const auto b_pc =
+        std::dynamic_pointer_cast<trystero::test::memory_peer_connection>(p.connected[1][0].pc);
+    BOOST_TEST_EQ(*a_pc->remote_id(), b_pc->id());
+    BOOST_TEST_EQ(*b_pc->remote_id(), a_pc->id());
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1033,5 +1165,6 @@ int main(int argc, char* argv[]) {
     a_relay_that_reopens_cooling_down_waits_for_the_cooldown();
     an_eose_of_some_subscriptions_neither_syncs_nor_replays();
     the_room_key_is_made_at_the_first_event_and_dropped_on_stop();
+    connected_carries_the_descriptions_applied();
     return webcpp::test::exit_status(boost::report_errors());
 }

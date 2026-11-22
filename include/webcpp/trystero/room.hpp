@@ -2145,6 +2145,12 @@ private:
             done(handshake_manager::disconnected_reason);
             return;
         }
+        // An app without its identity has no keys to prove: its rooms fail setup before any
+        // handshake, and a run that starts anyway fails closed.
+        if (!app_->identity_failure().empty()) {
+            done(protocol::handshake_reason::identity);
+            return;
+        }
         // 0.27.0's crypto.randomUUID(), fresh for every run.
         std::array<std::uint8_t, 16> nonce{};
         factory_.random(nonce);
@@ -2187,9 +2193,13 @@ private:
      */
     void step_identity(std::string_view peer, const std::shared_ptr<identity_run>& run,
                        identity_handshake::outcome out) {
+        // Only an identity kept in the peer's state ends the run verified; a run whose peer went
+        // ends as disconnected, never as verified.
+        bool kept = false;
         if (out.done) {
             if (auto* const state = running(peer, run)) {
                 state->identity = std::move(*out.done);
+                kept = true;
             }
         }
         if (!out.send.empty()) {
@@ -2200,7 +2210,8 @@ private:
             return;
         }
         if (out.done) {
-            finish_identity(*run, {});
+            finish_identity(*run,
+                            kept ? std::string_view() : handshake_manager::disconnected_reason);
             return;
         }
         // The send may have let the peer go.
@@ -2229,6 +2240,12 @@ private:
     void activate(std::string_view peer) {
         const auto it = peers_.find(peer);
         if (it == peers_.end() || it->second.active) {
+            return;
+        }
+        // A peer joins only under the identity its handshake verified: users come from verified
+        // ids alone.
+        BOOST_ASSERT(it->second.identity);
+        if (!it->second.identity) {
             return;
         }
         it->second.active = true;

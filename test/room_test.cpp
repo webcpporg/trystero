@@ -4302,11 +4302,54 @@ std::string replaced(std::string text, std::string_view from, std::string_view t
     return text.replace(at, from.size(), to);
 }
 
+/** The inline frame of `text` on the user action `chat`, as a room sends it. */
+std::vector<std::uint8_t> chat_frame(std::string_view text) {
+    const auto frame = trystero::protocol::encode_inline(
+        "chat", trystero::protocol::payload_format::text, "",
+        std::span(reinterpret_cast<const std::uint8_t*>(text.data()), text.size()));
+    return {frame.begin(), frame.end()};
+}
+
+/** Whether `frame` is a user action's: a proposal whose name is not one of the room's own. */
+bool user_frame(std::span<const std::uint8_t> frame) {
+    const auto name = action_name(frame);
+    return !name.empty() && !name.starts_with("@_");
+}
+
+/**
+ * Checks that two rooms whose handshake is under way hold each other as pending only: neither
+ * lists a peer or a user, and a user action's frames pass neither way. Each room sends on `chat`
+ * to all and the send completes; `inject` delivers a `chat` frame at each of the pair's ends,
+ * `ends`, as if the other had sent it. The case's filter counts the user frames it sees in
+ * `user_frames`, and the `chat` listeners count what reaches them in `delivered`.
+ */
+void check_pending_pair(fixture& f, trystero::room& a, trystero::room& b,
+                        std::array<std::size_t, 2> ends, const std::size_t& user_frames,
+                        const std::size_t& delivered) {
+    BOOST_TEST(a.peers().empty());
+    BOOST_TEST(b.peers().empty());
+    BOOST_TEST(a.users().empty());
+    BOOST_TEST(b.users().empty());
+    std::size_t sent = 0;
+    a.make_action<std::string>("chat").async_send("from a",
+                                                  [&](boost::system::error_code) { ++sent; });
+    b.make_action<std::string>("chat").async_send("from b",
+                                                  [&](boost::system::error_code) { ++sent; });
+    for (const auto end : ends) {
+        f.net.inject(end, chat_frame("injected"));
+    }
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return sent == 2; })));
+    trystero::test::advance(f, 100ms);
+    BOOST_TEST_EQ(user_frames, 0U);
+    BOOST_TEST_EQ(delivered, 0U);
+}
+
 // Two peers run 0.27.0's identity handshake, and each joins the other's room under the user it
 // proved, the other app's `user_id()`. A, whose id is lower, sends steps 1 and 3, B step 2; each
 // step claims the fingerprints of the description its sender wrote, which its receiver applied
 // (design D20), and its sender's ids and keys. Each run draws its nonces afresh from the backend's
-// randomness: a second meeting's are new, and none is the UUID of zero bytes.
+// randomness, each the UUID of a 16-byte draw of it: a second meeting's are new, and none is the
+// UUID of zero bytes.
 void peers_verify_each_other_and_join_with_their_user_ids() {
     namespace tp = trystero::protocol;
     counting_resource a_memory;  // first: A's connection ends are made in it, which names them
@@ -4393,6 +4436,15 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
     }
 
     // B meets A again: the second run's nonces are new.
+    std::set<std::string> drawn_uuids;  // the UUID of every 16-byte draw of the backend's
+    f.net.on_random = [&](std::span<const std::uint8_t> drawn) {
+        if (drawn.size() == 16) {
+            std::array<std::uint8_t, 16> bytes{};
+            std::ranges::copy(drawn, bytes.begin());
+            const auto uuid = tp::uuid_v4(bytes);
+            drawn_uuids.emplace(uuid.data(), uuid.size());
+        }
+    };
     const auto nonce_of = [](const std::string& json) {
         const auto read = tp::read_handshake_step(json, step_number(json), {}, {},
                                                   std::pmr::get_default_resource());
@@ -4402,6 +4454,7 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.peers().empty(); })));
     b.emplace(join(b_app, "verify"));
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a_joins.size() == 2; })));
+    f.net.on_random = {};
     std::vector<std::string> nonces;
     for (const auto& step : steps) {
         if (step_number(step.json) != 3) {
@@ -4409,6 +4462,11 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
         }
     }
     webcpp::test::require(BOOST_TEST_EQ(nonces.size(), 4U));
+    // The second meeting's nonces, steps 1 and 2 of its run, are each the UUID of a draw of the
+    // backend's randomness made during that meeting.
+    for (std::size_t i = 2; i < nonces.size(); ++i) {
+        BOOST_TEST(drawn_uuids.contains(nonces[i]));
+    }
     const auto zero = tp::uuid_v4({});
     for (const auto& nonce : nonces) {
         BOOST_TEST_EQ(nonce.size(), tp::uuid_text_size);
@@ -4421,9 +4479,12 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
 
 /**
  * A, whose id is lower, initiates; its step 1 to B is dropped, and `forge` of it is injected at
- * B's end in its place. B reports handshake_failed once, with `reason` and A's id, and tells A to
- * leave; A reports nothing, and neither side reports a join. Once A's room is gone, B reports
- * nothing more: the failed run's timer went with it.
+ * B's end in its place. Until then each holds the other as pending only: no peer, no user, no
+ * user frame either way. B reports handshake_failed once, with `reason` and A's id, and kicks A
+ * as 0.27.0's `kickPeer` does: one `@_leave` to A (dropped on its way), and B's end of the
+ * connection closed by B. A reports
+ * nothing, and neither side reports a join. Once A's room is gone, B reports nothing more: the
+ * failed run's timer went with it.
  */
 void a_forged_step_1_fails_with(
     const std::function<std::string(const std::string& genuine, const trystero::test::app& a,
@@ -4432,7 +4493,16 @@ void a_forged_step_1_fails_with(
     counting_resource a_memory;
     fixture f{true};
     std::optional<std::pair<std::size_t, std::string>> dropped;  // B's end, and the step
+    std::size_t user_frames = 0;
+    // B's farewells to A, counted and dropped: B's end of the connection must close because B
+    // ends it, not because A ends its own on the farewell.
+    std::size_t b_leaves = 0;
     f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
+        user_frames += user_frame(frame) ? 1 : 0;
+        if (!end_in(f, from, &a_memory) && action_name(frame) == "@_leave") {
+            ++b_leaves;
+            return trystero::test::memory_network::verdict::drop;
+        }
         const auto json = handshake_step(frame);
         if (end_in(f, from, &a_memory) && step_number(json) == 1) {
             if (!dropped) {
@@ -4456,10 +4526,24 @@ void a_forged_step_1_fails_with(
     std::size_t joins = 0;
     a->on_peer_join([&](const trystero::peer_event&) { ++joins; });
     b.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    std::size_t delivered = 0;
+    a->make_action<std::string>("chat").on_message(
+        [&](std::string, const trystero::message_info&) { ++delivered; });
+    b.make_action<std::string>("chat").on_message(
+        [&](std::string, const trystero::message_info&) { ++delivered; });
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return dropped.has_value(); })));
-    f.net.inject(dropped->first, step_frame(forge(dropped->second, a_app, b_app)));
+    const std::size_t b_end = dropped->first;
+    check_pending_pair(f, *a, b, {b_end, f.net.peer_of(b_end)}, user_frames, delivered);
+    BOOST_TEST_EQ(b_leaves, 0U);
+    f.net.inject(b_end, step_frame(forge(dropped->second, a_app, b_app)));
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !b_reports.empty(); })));
     trystero::test::advance(f, 1000ms);
+    // Kicked: one farewell to A, and B's end of the connection closed.
+    BOOST_TEST_EQ(b_leaves, 1U);
+    const auto b_connection = f.net.find(b_end);
+    BOOST_TEST(!b_connection || !b_connection->channel() || !b_connection->channel()->is_open());
+    BOOST_TEST_EQ(user_frames, 0U);
+    BOOST_TEST_EQ(delivered, 0U);
     if (BOOST_TEST_EQ(b_reports.size(), 1U)) {
         const auto& e = b_reports.front();
         BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "handshake-failed");
@@ -4505,16 +4589,25 @@ void another_fingerprint_fails_the_handshake() {
         trystero::protocol::handshake_reason::dtls_mismatch);
 }
 
-// B leaves while the step 2 it sent is held on its way to A, its handshake waiting for step 3: B
-// reports nothing after the leave, through its farewell and past the handshake's 10 s, and once
-// its room is gone nothing runs on it when the held step is released toward A. No one joins.
-void leaving_during_a_handshake_reports_nothing() {
+/**
+ * B leaves while step `held_step` of the handshake is held on its way: step 2, which B sent, so
+ * that neither side has verified the other, or step 3, which A sent, so that A, the initiator, has
+ * verified B and B has not verified A. Either way, while it is held, each holds the other as
+ * pending only: no peer, no user, no user frame either way. B reports nothing after the leave,
+ * through its farewell and past the handshake's 10 s, and once its room is gone nothing runs on it
+ * when the held step is released. No one joins.
+ */
+void a_handshake_left_at_step(int held_step) {
     counting_resource b_memory;
     fixture f{true};
     bool holding = true;
-    std::optional<std::size_t> held_at;  // A's end
+    std::optional<std::size_t> held_at;  // the receiving end
+    std::size_t user_frames = 0;
     f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
-        if (holding && end_in(f, from, &b_memory) && step_number(handshake_step(frame)) == 2) {
+        user_frames += user_frame(frame) ? 1 : 0;
+        const bool from_b = end_in(f, from, &b_memory);
+        if (holding && from_b == (held_step == 2) &&
+            step_number(handshake_step(frame)) == held_step) {
             held_at = to;
             return trystero::test::memory_network::verdict::hold;
         }
@@ -4530,10 +4623,16 @@ void leaving_during_a_handshake_reports_nothing() {
     std::size_t joins = 0;
     a.on_peer_join([&](const trystero::peer_event&) { ++joins; });
     b->on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    std::size_t delivered = 0;
+    a.make_action<std::string>("chat").on_message(
+        [&](std::string, const trystero::message_info&) { ++delivered; });
+    b->make_action<std::string>("chat").on_message(
+        [&](std::string, const trystero::message_info&) { ++delivered; });
     bool left = false;
     std::size_t b_after_leave = 0;
     b->on_error([&](const trystero::room_error&) { b_after_leave += left ? 1 : 0; });
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
+    check_pending_pair(f, a, *b, {*held_at, f.net.peer_of(*held_at)}, user_frames, delivered);
     std::optional<boost::system::error_code> leave;
     left = true;
     b->async_leave([&](boost::system::error_code ec) { leave = ec; });
@@ -4545,7 +4644,18 @@ void leaving_during_a_handshake_reports_nothing() {
     trystero::test::advance(f, 15'000ms);
     BOOST_TEST_EQ(b_after_leave, 0U);
     BOOST_TEST_EQ(joins, 0U);
+    BOOST_TEST_EQ(delivered, 0U);
     BOOST_TEST(a.peers().empty());
+}
+
+// B leaves while the step 2 it sent is held on its way to A, its handshake waiting for step 3.
+void leaving_during_a_handshake_reports_nothing() {
+    a_handshake_left_at_step(2);
+}
+
+// B leaves while A's step 3 is held on its way to B: A has verified B, B has not verified A.
+void leaving_after_one_side_verified_reports_nothing() {
+    a_handshake_left_at_step(3);
 }
 
 // The names of the codes are 0.27.0's RoomErrorCode, and every other code has none.
@@ -4739,6 +4849,7 @@ int main(int argc, char* argv[]) {
     run_case(a_forged_step_fails_the_handshake);
     run_case(another_fingerprint_fails_the_handshake);
     run_case(leaving_during_a_handshake_reports_nothing);
+    run_case(leaving_after_one_side_verified_reports_nothing);
     run_case(password_room_keys_complete_after_the_join_returns);
     run_case(rooms_of_one_password_derive_once_per_room);
     run_case(a_failed_derivation_is_retried);

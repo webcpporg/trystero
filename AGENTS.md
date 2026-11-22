@@ -506,17 +506,19 @@ holds only what is specific to trystero.
   or held by `derive_delay` until `release_derivations`, each event posted to
   the `io_context`. A peer's user is the one its handshake verified: a test
   that needs one user with two peers makes two apps that import one
-  `user_identity`. The app's fixed endpoint key is a detail seam (`detail::app_access::make` with
-  an endpoint scalar, which `test::endpoint_scalar` makes of a label, its
-  peer id `test::peer_id_of`; `test::ordered_labels` and
+  `user_identity`. The app's fixed endpoint key is a detail seam
+  (`detail::app_access::make` with an endpoint scalar, which
+  `test::endpoint_scalar` makes of a label, its peer id
+  `test::peer_id_of`; `test::ordered_labels` and
   `test::label_beside` name apps whose ids are in an order a test needs). A
   test of a whole room runs over it, on both targets, without the network.
   Its optional fault hooks use `std::size_t` connection ids, `on_made`
   (with ICE servers) and `peer_of`, a deliver/drop/hold filter, ordered
-  `release`, deferred one-end `open`, `inject` and `fail`. A held frame
-  holds every later frame from its sending end behind it. Buffered channels
-  drain up to `drain_per_post` bytes per post, delivering only complete
-  frames and reporting exact unsent bytes through `buffered`. Set
+  `release`, deferred one-end `open`, `inject` and `fail`; `on_random`
+  sees every draw of random bytes. A held frame holds every later frame
+  from its sending end behind it. Buffered channels drain up to
+  `drain_per_post` bytes per post, delivering only complete frames and
+  reporting exact unsent bytes through `buffered`. Set
   `virtual_clock` before making timers: `advance`, `step` and `poll_ready` run due
   timers and ready work deterministically, in due-time and registration
   order. The virtual clock is a `std::chrono::steady_clock::time_point`
