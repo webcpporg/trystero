@@ -1719,7 +1719,8 @@ private:
         explicit peer_state(std::pmr::polymorphic_allocator<> a) : pings(a) {}
 
         std::shared_ptr<peer_link> link;
-        bool active = false;  // its handshake completed
+        bool active =
+            false;  // its handshake completed: the manager's `phase::active`, until 2.4b/2.5a
         std::pmr::deque<pending_ping> pings;
     };
 

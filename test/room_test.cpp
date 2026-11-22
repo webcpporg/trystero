@@ -280,17 +280,21 @@ struct wire_bench {
     bool clear_dropped = false;
     std::vector<trystero::detail::incoming> delivered;
     std::vector<std::string> dropped;
+    /** The reasons the wire gave for refusing a message. */
+    std::vector<std::string> refused;
     std::shared_ptr<trystero::detail::action_wire> wire;
     // The virtual clock starts with the network's first timer: one made here, so that the clock
     // the wire reads moves with advance() before the wire makes a timer of its own.
     std::shared_ptr<trystero::backend::timer> clock_start;
 
-    wire_bench() {
+    /** @param max_receive_bytes The wire's bound, the room's default unless a case lowers it. */
+    explicit wire_bench(
+        std::size_t max_receive_bytes = trystero::room_options{}.max_receive_bytes) {
         using trystero::detail::action_wire;
         auto* const memory = std::pmr::get_default_resource();
         clock_start = f.net.make_timer(memory);
         wire = std::make_shared<action_wire>(
-            f.net, trystero::room_options{}.max_receive_bytes,
+            f.net, max_receive_bytes,
             action_wire::callbacks{
                 .find_link = [this](std::string_view, bool) -> std::optional<action_wire::link> {
                     return action_wire::link{
@@ -311,6 +315,8 @@ struct wire_bench {
                                              make_error_code(trystero::error::peer_disconnected));
                         }
                     },
+                .rejected = [this](std::string_view, std::string_view, std::string_view,
+                                   std::string_view reason) { refused.emplace_back(reason); },
             },
             memory);
     }
@@ -486,6 +492,26 @@ void frames_of_an_action_not_made_are_dropped_or_rejected() {
     }
     BOOST_TEST_EQ(offered.sent().size(), 1U);
     BOOST_TEST(offered.dropped.empty());
+}
+
+// An inline frame whose payload is above `max_receive_bytes` is dropped, reported as "payload
+// exceeds receiver size limit", as 0.27.0's payloadLimit applies to it; one at the bound is
+// delivered. Nothing is sent back for an inline frame, and the peer is kept.
+void an_inline_frame_above_the_receive_bound_is_dropped() {
+    namespace tp = trystero::protocol;
+    wire_bench b(8);
+    b.receive("A", tp::encode_inline("file", tp::payload_format::binary, "",
+                                     trystero::bytes(9, std::uint8_t{1})));
+    BOOST_TEST(b.delivered.empty());
+    if (BOOST_TEST_EQ(b.refused.size(), 1U)) {
+        BOOST_TEST_EQ(b.refused.front(), "payload exceeds receiver size limit");
+    }
+    b.receive("A", tp::encode_inline("file", tp::payload_format::binary, "",
+                                     trystero::bytes(8, std::uint8_t{2})));
+    BOOST_TEST_EQ(b.delivered.size(), 1U);
+    BOOST_TEST_EQ(b.refused.size(), 1U);
+    BOOST_TEST(b.channel->sent.empty());
+    BOOST_TEST(b.dropped.empty());
 }
 
 // A control frame goes out only while the channel buffers at most 1 MiB, as 0.27.0's
@@ -2853,7 +2879,9 @@ struct one_user_two_peers {
         webcpp::test::require(BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; })));
         b2.emplace(join(b2_app, "users"));
         webcpp::test::require(BOOST_TEST(run_until(f.io, [&] {
-            return a.peers().size() == 2 && b1->peers().size() == 2 && b2->peers().size() == 2;
+            // A's join events are posted, so they can trail its peers: wait for all three.
+            return a.peers().size() == 2 && b1->peers().size() == 2 && b2->peers().size() == 2 &&
+                   events.size() == 3;
         })));
     }
 
@@ -3654,18 +3682,15 @@ std::vector<std::uint8_t> recorded_ready_frame() {
     return out;
 }
 
-// A handshake whose ready frames never arrive fails after 0.27.0's 10 s: the side whose timer
-// expires reports handshake_failed with 0.27.0's reason and the peer's id, and lets the peer go;
-// neither side ever reports a join. A's end of the connection opens a second before B's, so that
-// A's handshake starts, and expires, first.
+// A handshake that never completes fails after 0.27.0's 10 s: A's end of the connection opens and
+// B's never does, so that only A runs a handshake, its frames waiting at B's end; A reports
+// handshake_failed with 0.27.0's reason and B's id when its timer expires, and lets B go. B starts
+// no handshake and has no timer, so which side expires first is not a question. Neither reports a
+// join. All of it on the virtual clock.
 void a_handshake_that_never_completes_fails_after_10_s() {
     counting_resource a_memory;  // first: A's connection ends are made in it, which names them
     fixture f{true};
     f.net.defer_opens = true;
-    f.net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
-        return action_name(frame) == "@_hsready" ? trystero::test::memory_network::verdict::drop
-                                                 : trystero::test::memory_network::verdict::deliver;
-    };
     const std::string a_id = "hsAAAAAAAAAAAAAAAAAA";
     const std::string b_id = "hsBBBBBBBBBBBBBBBBBB";
     auto a_config = app_config(a_id);
@@ -3676,6 +3701,8 @@ void a_handshake_that_never_completes_fails_after_10_s() {
     auto b = join(b_app, "slow");
     std::vector<reported_error> a_reports;
     a.on_error(record_errors(f, a_reports, trystero::error::handshake_failed));
+    std::vector<reported_error> b_reports;
+    b.on_error(record_errors(f, b_reports, trystero::error::handshake_failed));
     std::size_t joins = 0;
     a.on_peer_join([&](const trystero::peer_event&) { ++joins; });
     b.on_peer_join([&](const trystero::peer_event&) { ++joins; });
@@ -3689,10 +3716,8 @@ void a_handshake_that_never_completes_fails_after_10_s() {
         }
         return a_pc.has_value();
     })));
-    f.net.open(*a_pc);
-    trystero::test::advance(f, 1000ms);
-    f.net.open(f.net.peer_of(*a_pc));
-    trystero::test::advance(f, 8'500ms);
+    f.net.open(*a_pc);  // B's end stays closed
+    trystero::test::advance(f, 9'500ms);
     BOOST_TEST(a_reports.empty());  // 9.5 s after A's handshake started
     trystero::test::advance(f, 1000ms);
     if (BOOST_TEST_EQ(a_reports.size(), 1U)) {
@@ -3703,6 +3728,8 @@ void a_handshake_that_never_completes_fails_after_10_s() {
         BOOST_TEST_EQ(e.room_id, "slow");
     }
     trystero::test::advance(f, 5000ms);
+    BOOST_TEST_EQ(a_reports.size(), 1U);
+    BOOST_TEST(b_reports.empty());
     BOOST_TEST_EQ(joins, 0U);
     BOOST_TEST(a.peers().empty());
     BOOST_TEST(b.peers().empty());
@@ -3734,10 +3761,13 @@ void ready_frames_carry_an_empty_text() {
 }
 
 // A room sends its ready frame before the peer joins, so that what a listener of on_peer_join
-// sends follows it on the wire, as 0.27.0's manager enqueues the frame before onActivate.
+// sends follows it on the wire, as 0.27.0's manager enqueues the frame before onActivate. B's end
+// of the connection opens first, so that B's ready frame is already at A's end when A's handshake
+// starts: A then sends its ready frame and activates the peer in one call, where the order matters.
 void sends_inside_on_peer_join_follow_the_ready_frame() {
     counting_resource a_memory;
-    fixture f;
+    fixture f{true};
+    f.net.defer_opens = true;
     std::vector<std::string> from_a;
     f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
         if (end_in(f, from, &a_memory)) {
@@ -3760,7 +3790,20 @@ void sends_inside_on_peer_join_follow_the_ready_frame() {
     auto greeted = b.make_action<std::string>("greet");
     greeted.on_message(
         [&](const std::string& text, const trystero::message_info&) { heard.push_back(text); });
-    BOOST_TEST(run_until(f.io, [&] { return heard.size() == 1; }));
+    std::optional<std::size_t> a_pc;
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] {
+        for (std::size_t id = 0; id < f.net.made_connections && !a_pc; ++id) {
+            if (end_in(f, id, &a_memory) && f.net.peer_of(id) != id) {
+                a_pc = id;
+            }
+        }
+        return a_pc.has_value();
+    })));
+    f.net.open(f.net.peer_of(*a_pc));
+    trystero::test::advance(f, 100ms);  // B's handshake runs, its ready frame waits for A's end
+    BOOST_TEST(from_a.empty());
+    f.net.open(*a_pc);
+    BOOST_TEST(run_until(f, [&] { return heard.size() == 1; }));
     const auto ready = std::ranges::find(from_a, "@_hsready");
     const auto hello = std::ranges::find(from_a, "greet");
     BOOST_TEST(ready != from_a.end());
@@ -3991,6 +4034,7 @@ int main() {
     run_case(a_wide_transfer_arrives_in_wide_chunks_in_any_order);
     run_case(the_wire_keeps_0_27_0s_bounds);
     run_case(frames_of_an_action_not_made_are_dropped_or_rejected);
+    run_case(an_inline_frame_above_the_receive_bound_is_dropped);
     run_case(a_control_frame_into_a_full_channel_drops_the_peer);
     run_case(ping_measures_a_round_trip);
     run_case(two_passwords_never_meet);
