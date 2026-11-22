@@ -27,7 +27,6 @@
 
 #include <boost/system/error_code.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -57,12 +56,17 @@ using allocator_type = std::pmr::polymorphic_allocator<std::byte>;
  * It reads every message as it comes, with `async_receive`, on the executor. A text message, as a
  * peer can send, or a binary one larger than any frame (`protocol::max_bulk_frame_bytes`, a wide
  * chunk's bound), closes the channel: neither can be a frame, and 0.27.0's `failData` (`peer.ts`)
- * ends the peer for either. Frames received while no message handler is installed wait in the
- * room's resource, in order, up to `max_pending_frames` for `pending_frames_ttl` from the first;
- * exceeding either closes the channel. That wait covers only the gap between the channel's opening
- * and the room's link taking over its events (`detail::peer_link`), which applies 0.27.0's own
- * bounds on the frames its room has not bound yet. Installing a receiver posts their delivery, so
- * that `set_handlers` never calls it inline. In the browser, a message larger than webcpp::webrtc's
+ * ends the peer for either.
+ *
+ * Frames received while no message handler is installed wait in the room's resource, in order:
+ * the open event and a first message reach the executor in either order, and the room's link
+ * (`detail::peer_link`) installs its handler from the open event, so that only that gap is
+ * covered. The frames wait under the bounds the link puts on a peer's frames before its room binds
+ * it, 0.27.0's (`peer.ts`): at most `max_pending_frames`, each at most `max_pending_frame_bytes`;
+ * one more, or a longer one, closes the channel, as the link would end on it. They have no time
+ * bound of their own: the link's 10 s starts as it takes them, and a channel no link takes is one
+ * the signaling closes, which discards them. Installing a receiver posts their delivery, so that
+ * `set_handlers` never calls it inline. In the browser, a message larger than webcpp::webrtc's
  * `options::max_message_size`, or past its receive budget, closes the channel too.
  *
  * Tip: a received frame is read once, by webcpp::webrtc, into a vector of the room's resource,
@@ -80,11 +84,15 @@ public:
     /** webcpp::webrtc's data channel it holds. */
     using channel_type = ::webcpp::webrtc::basic_data_channel<executor_type, allocator_type>;
 
-    /** The most frames kept while no message handler is installed: more close the channel. */
-    static constexpr std::size_t max_pending_frames = 64;
+    /** The most frames kept while no message handler is installed, 0.27.0's
+     * `maxQueuedDataFrames`, as the room's link keeps before its room binds it: one more closes
+     * the channel. */
+    static constexpr std::size_t max_pending_frames = protocol::max_queued_data_frames;
 
-    /** How long after the first kept frame the channel closes, if no handler took them. */
-    static constexpr std::chrono::milliseconds pending_frames_ttl{10'000};
+    /** The longest frame kept while no message handler is installed, 0.27.0's
+     * `maxRoomFrameBytes`, as the room's link keeps before its room binds it: a longer one closes
+     * the channel. */
+    static constexpr std::size_t max_pending_frame_bytes = protocol::max_room_frame_bytes;
 
     /**
      * Takes over a channel of webcpp::webrtc: its threshold, and its events.
@@ -92,19 +100,18 @@ public:
      * @param runtime The runtime of the channel's connection, which the channel keeps alive.
      * @param channel The channel, made or accepted by a connection of the same executor and
      * allocator.
-     * @param factory The backend, which makes the timer of the pending frames, in `memory`.
      * @param memory The room's resource, the channel's: the wrapper, its handlers and its frames
      * are allocated in it.
      * @return The channel.
      */
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<data_channel> make(std::shared_ptr<::webcpp::webrtc::runtime> runtime,
-                                              channel_type channel, backend::factory& factory,
+                                              channel_type channel,
                                               std::pmr::memory_resource* memory) {
         // NOLINTEND(performance-unnecessary-value-param)
-        auto self = std::allocate_shared<data_channel>(
-            std::pmr::polymorphic_allocator<>(memory), private_tag{}, std::move(runtime),
-            std::move(channel), factory.make_timer(memory), memory);
+        auto self = std::allocate_shared<data_channel>(std::pmr::polymorphic_allocator<>(memory),
+                                                       private_tag{}, std::move(runtime),
+                                                       std::move(channel), memory);
         self->start();
         return self;
     }
@@ -114,16 +121,13 @@ public:
      *
      * @param runtime The runtime of the channel's connection.
      * @param channel The channel.
-     * @param timer The timer of the pending frames.
      * @param memory The resource its handlers and its frames are allocated in.
      */
     data_channel(private_tag /*tag*/, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
-                 channel_type channel, std::shared_ptr<backend::timer> timer,
-                 std::pmr::memory_resource* memory)
+                 channel_type channel, std::pmr::memory_resource* memory)
         : runtime_(std::move(runtime)),
           memory_(memory),
           pending_(memory),
-          pending_timer_(std::move(timer)),
           frame_(memory),
           channel_(std::move(channel)) {}
 
@@ -305,31 +309,19 @@ private:
                 return;
             }
         }
-        const auto h = h_;
-        if ((!h || !h->message || !pending_.empty()) && pending_.size() >= max_pending_frames) {
-            close();
-            return;
-        }
-        if (h && h->message && pending_.empty()) {
+        if (const auto h = h_; h && h->message && pending_.empty()) {
             h->message(std::move(frame));
             return;
         }
-        if (pending_.empty()) {
-            pending_timer_->start(pending_frames_ttl,
-                                  {std::allocator_arg, allocator(), [weak = weak_from_this()] {
-                                       if (const auto self = weak.lock();
-                                           self && !self->pending_.empty()) {
-                                           self->close();
-                                       }
-                                   }});
+        // No receiver yet, or frames ahead of this one: the bounds of the link's unbound frames.
+        if (frame.size() > max_pending_frame_bytes || pending_.size() >= max_pending_frames) {
+            close();
+            return;
         }
         pending_.push_back(std::move(frame));
     }
 
-    void clear_pending() {
-        pending_.clear();
-        pending_timer_->cancel();
-    }
+    void clear_pending() { pending_.clear(); }
 
     void flush_pending() {
         while (!pending_.empty()) {
@@ -387,7 +379,6 @@ private:
     std::pmr::memory_resource* memory_;
     std::shared_ptr<handlers> h_;
     std::pmr::deque<backend::bytes> pending_;
-    std::shared_ptr<backend::timer> pending_timer_;
     backend::bytes frame_;
     std::optional<buffer_type> buffer_;
     bool flush_posted_ = false;

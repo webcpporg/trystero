@@ -44,6 +44,7 @@
 #include <charconv>
 #include <chrono>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -52,6 +53,7 @@
 #include <map>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -292,6 +294,10 @@ public:
 
     [[nodiscard]] bool has_remote_description() const override {
         return pc_->has_remote_description();
+    }
+
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override {
+        return pc_->max_message_size();
     }
 
     void close() override { pc_->close(); }

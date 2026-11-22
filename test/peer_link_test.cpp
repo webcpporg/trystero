@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -330,6 +331,20 @@ void drain_waiters_complete_in_order_and_fail_at_the_end() {
     BOOST_TEST_EQ(turns.back(), "!late");
 }
 
+// A transfer's chunks may fill 64 KiB, 0.27.0's maxBulkFrameBytes getter, when the connection's
+// SCTP takes messages of 64 KiB at least, and 16 KiB otherwise or when it does not say.
+void the_bulk_frame_bound_follows_the_connections_message_size() {
+    link_pair p;
+    namespace tp = trystero::protocol;
+    BOOST_TEST_EQ(p.link->max_bulk_frame_bytes(), tp::max_bulk_frame_bytes);
+    p.net.max_message_size = tp::max_bulk_frame_bytes;
+    BOOST_TEST_EQ(p.link->max_bulk_frame_bytes(), tp::max_bulk_frame_bytes);
+    p.net.max_message_size = tp::max_bulk_frame_bytes - 1;
+    BOOST_TEST_EQ(p.link->max_bulk_frame_bytes(), tp::max_action_frame_bytes);
+    p.net.max_message_size = std::nullopt;
+    BOOST_TEST_EQ(p.link->max_bulk_frame_bytes(), tp::max_action_frame_bytes);
+}
+
 }  // namespace
 
 int main() {
@@ -343,6 +358,7 @@ int main() {
     run_case(a_disconnected_state_ends_after_its_grace);
     run_case(the_transport_ends_the_link_once);
     run_case(drain_waiters_complete_in_order_and_fail_at_the_end);
+    run_case(the_bulk_frame_bound_follows_the_connections_message_size);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }

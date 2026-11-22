@@ -314,11 +314,11 @@ frames the recorder captured from it show: an inline frame carries the
 payload whole; a larger payload is an offer, accepted or refused by the
 receiver, then chunks of at most 16,370 bytes, in order, or, when the offer
 carries the wide flag, 64, of at most 65,522 bytes, 64 KiB with their
-header. 0.27.0 sends wide chunks to a peer whose SCTP takes messages of
-64 KiB; the branch receives them, and offers every transfer narrow, as
-0.27.0 does over a transport that reports no larger size, since its
-envelope would not let a wide chunk fit such a message: wide sending waits
-for Phase 2, which removes the envelope. Integers and
+header. As 0.27.0, a room offers a transfer wide when its peer's connection
+takes SCTP messages of 64 KiB at least, the backend's
+`peer_connection::max_message_size` (`sctp.maxMessageSize`), read as the
+offer is sent, and narrow otherwise or when the connection says no size;
+it receives either. Integers and
 float64 values are big-endian, as JavaScript's `DataView` writes them. An
 offer's size is a float64 that must be a whole number from 1 to 2^53^ - 1,
 JavaScript's `Number.MAX_SAFE_INTEGER` (`protocol::max_offer_size`), as

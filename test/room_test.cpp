@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
@@ -38,6 +39,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -253,6 +255,124 @@ void large_payloads_travel_in_chunks_both_ways() {
     BOOST_TEST_EQ(meta_b, R"({"name":"big.bin"})");
 }
 
+/** The vectors recorded from 0.27.0's code (fixtures/expected/trystero-0.27.0.json), which main
+ * loads from the path it is given before it runs a case. */
+std::optional<webcpp::document::document>& vectors() {
+    static std::optional<webcpp::document::document> document;
+    return document;
+}
+
+/** `frame` in lowercase hexadecimal, as the vectors write a frame. */
+std::string hex_of(std::span<const std::uint8_t> frame) {
+    static constexpr std::string_view digits = "0123456789abcdef";
+    std::string out;
+    out.reserve(frame.size() * 2);
+    for (const auto b : frame) {
+        out += digits[b >> 4U];
+        out += digits[b & 15U];
+    }
+    return out;
+}
+
+/**
+ * Sends, from A to B over `f`'s network, the 200 KiB binary message of the vectors' transfer case
+ * `name` of `action_frames` ("file", `{"name":"big.bin"}`), and checks every frame of its transfer
+ * against the case's, in order: who sent it, its size, and its bytes where the case recorded them
+ * whole (the offer, "accepted") or its header where it recorded only that (a chunk). The payload
+ * arrives whole.
+ */
+void a_transfer_sends_the_frames_of(fixture& f, std::string_view name) {
+    namespace tp = trystero::protocol;
+    webcpp::test::require(BOOST_TEST(vectors().has_value()));
+    webcpp::document::basic_const_value<> recorded;
+    for (const auto entry : vectors()->root()["action_frames"]) {
+        if (entry["case"].value_or(std::string_view()) == name) {
+            recorded = entry;
+        }
+    }
+    webcpp::test::require(BOOST_TEST(recorded["frames"].is_array()));
+    // The frames of a transfer: its offer, its answer and its chunks, with the connection that
+    // sent each.
+    std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> frames;
+    f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        if (const auto decoded = tp::decode_action(frame).frame) {
+            const auto* p = std::get_if<tp::proposal>(&*decoded);
+            if (p == nullptr || p->kind == tp::frame_kind::offer) {
+                frames.emplace_back(from, std::vector<std::uint8_t>(frame.begin(), frame.end()));
+            }
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("AAAAAAAAAAAAAAAAAAAA"));
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("BBBBBBBBBBBBBBBBBBBB"));
+    auto a = join(a_app, "wide");
+    auto b = join(b_app, "wide");
+    trystero::bytes got;
+    b.make_action<trystero::bytes>("file").on_message(
+        [&](trystero::bytes v, const trystero::message_info&) { got = std::move(v); });
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    trystero::bytes payload(
+        static_cast<std::size_t>(recorded["payload_size"].value_or(std::int64_t{0})));
+    for (std::size_t i = 0; i < payload.size(); ++i) {
+        payload[i] = static_cast<std::uint8_t>(i * 31);
+    }
+    std::optional<boost::system::error_code> sent;
+    a.make_action<trystero::bytes>("file").async_send(
+        payload,
+        trystero::send_options{
+            .targets = {},
+            .metadata = std::pmr::string(recorded["metadata"].value_or(std::string_view())),
+        },
+        [&](boost::system::error_code ec) { sent = ec; });
+    BOOST_TEST(run_until(f.io, [&] { return sent.has_value() && !got.empty(); }));
+    BOOST_TEST(sent.has_value() && !*sent);
+    BOOST_TEST_ALL_EQ(got.begin(), got.end(), payload.begin(), payload.end());
+
+    std::size_t i = 0;
+    for (const auto expected : recorded["frames"]) {
+        if (!BOOST_TEST_LT(i, frames.size())) {
+            break;
+        }
+        const auto& [from, frame] = frames[i];
+        const bool from_a = from == frames.front().first;
+        BOOST_TEST_EQ(from_a ? "A" : "B", expected["from"].value_or(std::string_view()));
+        BOOST_TEST_EQ(static_cast<std::int64_t>(frame.size()),
+                      expected["size"].value_or(std::int64_t{-1}));
+        const auto hex = hex_of(frame);
+        if (expected["hex"].is_string()) {
+            BOOST_TEST_EQ(hex, expected["hex"].value_or(std::string_view()));
+        } else {
+            const auto head = expected["head"].value_or(std::string_view());
+            BOOST_TEST(!head.empty());
+            BOOST_TEST_EQ(std::string_view(hex).substr(0, head.size()), head);
+        }
+        ++i;
+    }
+    BOOST_TEST_EQ(frames.size(), i);
+}
+
+// 0.27.0 sends a transfer's chunks wide to a peer whose connection's SCTP takes 64 KiB messages
+// (`peer-transport.ts`'s `maxBulkFrameBytes`), as the memory network's does by default, Chrome's
+// 256 KiB: the offer carries the flag 64 and each chunk fills a 64 KiB message.
+void a_wide_link_sends_wide_chunks() {
+    fixture f;
+    a_transfer_sends_the_frames_of(f, "bulk_wide");
+}
+
+// To a peer whose connection takes smaller messages, or does not say, 0.27.0 sends its chunks
+// narrow, each a 16 KiB frame.
+void a_narrow_link_sends_narrow_chunks() {
+    for (const auto size :
+         {std::optional<std::size_t>(std::size_t{16} * 1024),
+          std::optional<std::size_t>(trystero::protocol::max_bulk_frame_bytes - 1),
+          std::optional<std::size_t>()}) {
+        fixture f;
+        f.net.max_message_size = size;
+        a_transfer_sends_the_frames_of(f, "bulk");
+    }
+}
+
 // The action wire of a room alone, fed a peer's frames as a data channel hands them over: what it
 // sends back, what it delivers, and the peers it drops.
 struct wire_bench {
@@ -269,6 +389,11 @@ struct wire_bench {
         [[nodiscard]] std::size_t buffered_amount() const override { return buffered; }
 
         void wait_drained(trystero::handler<void(bool)> done) override { done(true); }
+
+        /** Narrow, as a transport that says no SCTP size: the bench's transfers are its cases'. */
+        [[nodiscard]] std::size_t max_bulk_frame_bytes() const override {
+            return trystero::protocol::max_action_frame_bytes;
+        }
     };
 
     fixture f{true};
@@ -2668,12 +2793,13 @@ void a_receive_gate_decides_and_progress_is_reported() {
     // The inline frame went into the channel; the transfer was rejected.
     BOOST_TEST(!sent.at(0));
     BOOST_TEST(sent.at(1) == trystero::error::transfer_rejected);
-    send.async_send(trystero::bytes(100'000, 3),
+    // Four wide chunks, as the memory network's connections take 64 KiB messages.
+    send.async_send(trystero::bytes(200'000, 3),
                     [&](boost::system::error_code ec) { sent.push_back(ec); });
     BOOST_TEST(run_until(
         f.io, [&] { return got.size() == 1 && !shares.empty() && shares.back() == 1.0; }));
-    BOOST_TEST_EQ(got.at(0), 100'000U);
-    const std::vector<std::size_t> sizes{10, 100'000, 100'000};
+    BOOST_TEST_EQ(got.at(0), 200'000U);
+    const std::vector<std::size_t> sizes{10, 100'000, 200'000};
     BOOST_TEST_ALL_EQ(asked.begin(), asked.end(), sizes.begin(), sizes.end());
     BOOST_TEST_GT(shares.size(), 2U);
     BOOST_TEST(std::ranges::is_sorted(shares));
@@ -4018,7 +4144,22 @@ void the_errors_have_their_values() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (!BOOST_TEST_EQ(argc, 2)) {
+        BOOST_LIGHTWEIGHT_TEST_OSTREAM
+            << "usage: room_test <fixtures/expected/trystero-0.27.0.json>\n";
+        return webcpp::test::exit_status(boost::report_errors());
+    }
+    {
+        const std::ifstream file(argv[1]);
+        std::stringstream text;
+        text << file.rdbuf();
+        auto loaded = webcpp::document::parse(text.str());
+        if (!BOOST_TEST(loaded.has_value())) {
+            return webcpp::test::exit_status(boost::report_errors());
+        }
+        vectors().emplace(std::move(*loaded));
+    }
     // Some forty cases of two or three apps each: under Asyncify a debug build takes 54 s of the
     // processor, more than a third of node's default bound of 120 s, and 74 to 168 s on a loaded
     // machine, past it (measured on 2026-11-15 with 18 cores at load averages of 50 to 230; under
@@ -4032,6 +4173,8 @@ int main() {
     run_case(two_peers_join_and_exchange_every_payload_format);
     run_case(large_payloads_travel_in_chunks_both_ways);
     run_case(a_wide_transfer_arrives_in_wide_chunks_in_any_order);
+    run_case(a_wide_link_sends_wide_chunks);
+    run_case(a_narrow_link_sends_narrow_chunks);
     run_case(the_wire_keeps_0_27_0s_bounds);
     run_case(frames_of_an_action_not_made_are_dropped_or_rejected);
     run_case(an_inline_frame_above_the_receive_bound_is_dropped);

@@ -80,7 +80,9 @@ webcpp.run crypto_layer_release : crypto_layer_test.cpp
 # Trystero's, and the bounds of the texts they read.
 webcpp.run signaling : signaling_test.cpp
   : <testing.input-file>fixtures/expected/expected.json ;
-webcpp.run room : room_test.cpp ;
+# Whole rooms, whose transfers are checked frame by frame against those 0.27.0
+# sent (action_frames).
+webcpp.run room : room_test.cpp : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
 # The listeners of an event alone, as Trystero 0.27.0's emitter runs them.
 webcpp.run subscription : subscription_test.cpp ;
 # A room's users and their peers alone, as 0.27.0's room counts them.
@@ -181,7 +183,9 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # into main); in debug, now the deepest build, 2,344, 2,068 and 2,020.
 # tag::asyncify-release[]
 webcpp.run room_asyncify_release : room_test.cpp
-  : <webcpp-suspend>asyncify <variant>release : emscripten ;
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json <webcpp-suspend>asyncify
+    <variant>release
+  : emscripten ;
 webcpp.run app_impl_asyncify_release : app_impl_test.cpp
   : <webcpp-suspend>asyncify <variant>release : emscripten ;
 webcpp.run allocation_asyncify_release : allocation_test.cpp

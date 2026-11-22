@@ -9,7 +9,8 @@
 // throws, as for a server it cannot use or with as many connections as the browser allows), the
 // backend makes none and says so with a null connection, which the room reports, rather than
 // letting the exception through; a connection whose `createDataChannel` throws, as a closed one's
-// does, opens no channel.
+// does, opens no channel. A connection's largest SCTP message is unknown until a remote description
+// is applied, then what it says (max_message_size_is_known_once_connected).
 //
 // The page holds at most `runtime_options::max_peer_connections` of them, 256 by default, the cap
 // of the backend's webcpp::webrtc runtime, counted by webcpp::webrtc's census of the page from
@@ -42,6 +43,9 @@
 #include <cstddef>
 #include <memory>
 #include <memory_resource>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace asio = webcpp::asio;
@@ -95,6 +99,43 @@ void look_for_release(state& s) {
     s.io.stop();
 }
 
+/** Runs the io_context until `done` holds, at most 10 s, while the page settles its promises. */
+template <class Done>
+bool pump(state& s, Done done) {
+    for (int i = 0; i < 1000 && !done(); ++i) {
+        s.io.restart();
+        s.io.run_for(10ms);  // lint-run: the page's promises settle from node's event loop
+    }
+    s.io.restart();
+    return done();
+}
+
+/** Applies a remote offer of `sdp` to `pc`, and says whether the page applied it. */
+bool apply(state& s, trystero::backend::peer_connection& pc, std::string_view sdp) {
+    std::optional<boost::system::error_code> result;
+    pc.set_remote_description("offer", sdp, [&](boost::system::error_code ec) { result = ec; });
+    return BOOST_TEST(pump(s, [&] { return result.has_value(); })) && !*result;
+}
+
+// The page's `sctp.maxMessageSize` comes with a remote description whose data channel section the
+// connection applied: until then the backend says nothing, then the size the description says,
+// as the page reads it, within webcpp::webrtc's 256 KiB; a description the page refuses changes
+// nothing.
+void max_message_size_is_known_once_connected(state& s, trystero::backend::peer_connection& pc) {
+    BOOST_TEST(!pc.max_message_size().has_value());
+    const std::string head =
+        "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n"
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n";
+    if (apply(s, pc, head + "a=max-message-size:16384\r\n")) {
+        BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(16384));
+    }
+    if (apply(s, pc, head + "a=max-message-size:262144\r\n")) {
+        BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(262144));
+    }
+    BOOST_TEST(!apply(s, pc, "refused"));
+    BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(262144));
+}
+
 }  // namespace
 
 int main() {
@@ -113,7 +154,8 @@ int main() {
     BOOST_TEST(s.backend.make_peer_connection({}, memory) == nullptr);
     BOOST_TEST_EQ(held(), 0);
 
-    // One that is made, whose createDataChannel throws, as a closed connection's does.
+    // One that is made, whose createDataChannel throws, as a closed connection's does, and which
+    // applies a remote description it can read, as a page's does.
     EM_ASM({
         globalThis.RTCPeerConnection = class {
             constructor() {
@@ -123,6 +165,13 @@ int main() {
                 this.remoteDescription = null;
             }
             createDataChannel() { throw new DOMException('closed', 'InvalidStateError'); }
+            setRemoteDescription(description) {
+                if (!description.sdp.startsWith('v=0')) {
+                    return Promise.reject(new DOMException('unreadable', 'OperationError'));
+                }
+                this.remoteDescription = description;
+                return Promise.resolve();
+            }
             close() {}
         };
     });
@@ -130,6 +179,7 @@ int main() {
         const auto pc = s.backend.make_peer_connection({}, memory);
         if (BOOST_TEST(pc != nullptr)) {
             BOOST_TEST(pc->create_data_channel("data") == nullptr);
+            max_message_size_is_known_once_connected(s, *pc);
             pc->close();
         }
     }

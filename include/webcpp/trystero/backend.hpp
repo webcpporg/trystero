@@ -14,9 +14,11 @@
 #include <boost/system/error_code.hpp>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -276,6 +278,16 @@ public:
      * @return Whether the connection has a `remoteDescription`.
      */
     [[nodiscard]] virtual bool has_remote_description() const = 0;
+
+    /**
+     * The largest message the connection's SCTP transport takes, its `sctp.maxMessageSize`, which
+     * decides whether a transfer's chunks go wide (`detail::channel_link::max_bulk_frame_bytes`).
+     *
+     * @return The size in bytes once the connection has an SCTP transport, which a remote
+     * description with a data channel's section gives it; nothing before, or when the platform
+     * says no finite size.
+     */
+    [[nodiscard]] virtual std::optional<std::size_t> max_message_size() const = 0;
 
     /** Closes the connection and its channels. */
     virtual void close() = 0;

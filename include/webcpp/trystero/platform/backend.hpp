@@ -376,12 +376,12 @@ public:
         if (!constructions_.take(steady_now())) {
             return nullptr;
         }
-        auto made = webrtc::peer_connection::make(runtime_, ex_, servers, config_.bind_address,
-                                                  *this, memory);
+        auto made =
+            webrtc::peer_connection::make(runtime_, ex_, servers, config_.bind_address, memory);
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
         if (!made && made.error() == ::webcpp::webrtc::error::syntax_error) {
             made = webrtc::peer_connection::make(runtime_, ex_, parsed(servers, memory),
-                                                 config_.bind_address, *this, memory);
+                                                 config_.bind_address, memory);
         }
 #endif
         return made ? *made : nullptr;

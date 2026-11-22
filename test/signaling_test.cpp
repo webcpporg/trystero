@@ -137,6 +137,11 @@ public:
 
     [[nodiscard]] bool has_remote_description() const override { return !remote_sdp.empty(); }
 
+    /** No SCTP transport: the signaling never asks. */
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override {
+        return std::nullopt;
+    }
+
     void close() override {}
 
     /** The description the signaling applied: the offer it opened. */

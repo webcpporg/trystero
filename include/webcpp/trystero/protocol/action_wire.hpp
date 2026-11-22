@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +104,19 @@ enum class chunk_width : std::uint8_t {
 inline constexpr std::size_t max_action_frame_bytes = std::size_t{16} * 1024;
 /** The largest chunk frame of a wide transfer, Trystero's `maxBulkFrameBytes`: 64 KiB. */
 inline constexpr std::size_t max_bulk_frame_bytes = std::size_t{64} * 1024;
+/** The longest header an overlay puts around an action frame, Trystero's
+ * `maxOverlayHeaderBytes`. */
+inline constexpr std::size_t max_overlay_header_bytes = 1024;
+/** The longest message a peer's channel takes before its room binds it, an action frame and its
+ * overlay's header, Trystero's `maxRoomFrameBytes`: 17 KiB. */
+inline constexpr std::size_t max_room_frame_bytes =
+    max_action_frame_bytes + max_overlay_header_bytes;
+/** The most messages a peer's channel keeps before its room binds it, Trystero's
+ * `maxQueuedDataFrames`. */
+inline constexpr std::size_t max_queued_data_frames = 64;
+/** How long after its first kept message a peer's channel waits for its room, Trystero's
+ * `pendingDataTimeoutMs`. */
+inline constexpr std::chrono::milliseconds pending_data_timeout{10'000};
 /** The size of an inline frame's header, Trystero's `inlineHeaderSize`. */
 inline constexpr std::size_t inline_header_size = 36;
 /** The size of an offer's header, Trystero's `offerHeaderSize`. */

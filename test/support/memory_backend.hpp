@@ -647,6 +647,10 @@ public:
 
     bool has_remote_description() const override { return remote_id_.has_value(); }
 
+    /** The network's `max_message_size` once a remote description is applied, as a browser's
+     * `sctp` appears with it; nothing before. */
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override;
+
     void close() override {
         if (closed_) {
             return;
@@ -924,6 +928,11 @@ public:
     /** How many derivations wait to be released. */
     [[nodiscard]] std::size_t held_derivations() const { return held_derivations_.size(); }
 
+    /** What every connection's `max_message_size()` says once it has a remote description:
+     * Chrome's 256 KiB by default, which takes wide chunks; a test sets less, or nothing, for a
+     * transport that takes only narrow ones. */
+    std::optional<std::size_t> max_message_size = std::size_t{256} * 1024;
+
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
     std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
@@ -1040,6 +1049,10 @@ inline memory_peer_connection::~memory_peer_connection() {
     if (const auto registry = registry_.lock()) {
         registry->erase(id_);
     }
+}
+
+inline std::optional<std::size_t> memory_peer_connection::max_message_size() const {
+    return remote_id_ ? net_.max_message_size : std::nullopt;
 }
 
 inline void memory_peer_connection::try_connect() {

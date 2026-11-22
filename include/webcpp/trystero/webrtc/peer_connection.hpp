@@ -30,6 +30,8 @@
 #include <boost/system/error_code.hpp>
 #include <boost/system/result.hpp>
 
+#include <algorithm>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -38,6 +40,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -79,6 +82,54 @@ inline webcpp::document::result<std::pmr::string> candidate_json(
     }
     json += '}';
     return json;
+}
+
+/** What SCTP takes when a description says no `max-message-size`, RFC 8841's default. */
+inline constexpr std::size_t default_sctp_max_message_size = 65'536;
+
+/**
+ * The largest message an SCTP transport negotiated with `sdp`, a remote description, lets this
+ * end send, as the W3C's "update the data max message size" and libdatachannel's
+ * `remoteMaxMessageSize` compute it: the `a=max-message-size` of the description's data channel
+ * section (`m=application`, RFC 8841), @ref default_sctp_max_message_size when it says none or
+ * says it unreadably, any size when it says 0, and never more than `local`.
+ *
+ * @param sdp The remote description's SDP.
+ * @param local The largest message this end sends.
+ * @return The size, or nothing when `sdp` has no data channel section, so no SCTP transport.
+ */
+inline std::optional<std::size_t> sctp_max_message_size(std::string_view sdp, std::size_t local) {
+    constexpr std::string_view attribute = "a=max-message-size:";
+    bool application = false;
+    bool seen = false;
+    std::uint64_t remote = default_sctp_max_message_size;
+    while (!sdp.empty()) {
+        const auto end = sdp.find('\n');
+        auto line = sdp.substr(0, end);
+        sdp = end == std::string_view::npos ? std::string_view() : sdp.substr(end + 1);
+        if (line.ends_with('\r')) {
+            line.remove_suffix(1);
+        }
+        if (line.starts_with("m=")) {
+            // The first data channel section is the transport's; a later one is bundled into it.
+            if (seen) {
+                break;
+            }
+            application = line.starts_with("m=application ");
+            seen = application;
+        } else if (application && line.starts_with(attribute)) {
+            const auto value = line.substr(attribute.size());
+            std::uint64_t size = 0;
+            const auto [at, ec] = std::from_chars(value.data(), value.data() + value.size(), size);
+            if (ec == std::errc{} && at == value.data() + value.size()) {
+                remote = size;
+            }
+        }
+    }
+    if (!seen) {
+        return std::nullopt;
+    }
+    return remote == 0 ? local : static_cast<std::size_t>(std::min<std::uint64_t>(remote, local));
 }
 
 }  // namespace detail
@@ -146,8 +197,6 @@ public:
      * @param ex The executor every handler of the connection runs on.
      * @param servers The STUN and TURN servers it gathers through, read during the call.
      * @param bind_address The local address it binds to, natively; empty for every interface.
-     * @param factory The backend, which makes its channels' timers, and which outlives every
-     * operation of the connection.
      * @param memory The room's resource: the connection, its channels, its handlers and its texts
      * are allocated in it.
      * @return The connection, or webcpp::webrtc's error: `too_many_peer_connections` past the
@@ -158,7 +207,7 @@ public:
     [[nodiscard]] static boost::system::result<std::shared_ptr<peer_connection>> make(
         std::shared_ptr<::webcpp::webrtc::runtime> runtime, const executor_type& ex,
         std::span<const backend::ice_server> servers, std::string_view bind_address,
-        backend::factory& factory, std::pmr::memory_resource* memory) {
+        std::pmr::memory_resource* memory) {
         // NOLINTEND(performance-unnecessary-value-param)
         auto made = make_connection(*runtime, ex, servers, bind_address, memory);
         if (!made) {
@@ -166,7 +215,7 @@ public:
         }
         auto self = std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
                                                           private_tag{}, std::move(runtime),
-                                                          std::move(*made), factory, memory);
+                                                          std::move(*made), memory);
         self->start();
         return self;
     }
@@ -220,13 +269,11 @@ public:
      *
      * @param runtime The runtime that counts the connection.
      * @param pc webcpp::webrtc's connection.
-     * @param factory The backend, which makes its channels' timers.
      * @param memory The resource its handlers and its texts are allocated in.
      */
     peer_connection(private_tag /*tag*/, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
-                    connection_type pc, backend::factory& factory,
-                    std::pmr::memory_resource* memory)
-        : runtime_(std::move(runtime)), factory_(factory), memory_(memory), pc_(std::move(pc)) {}
+                    connection_type pc, std::pmr::memory_resource* memory)
+        : runtime_(std::move(runtime)), memory_(memory), pc_(std::move(pc)) {}
 
     /** Not copyable: its operations reach it by its address. */
     peer_connection(const peer_connection&) = delete;
@@ -261,7 +308,7 @@ public:
         if (!made) {
             return nullptr;
         }
-        return data_channel::make(runtime_, std::move(*made), factory_, memory_);
+        return data_channel::make(runtime_, std::move(*made), memory_);
     }
 
     /**
@@ -299,9 +346,16 @@ public:
             });
             return;
         }
+        // Read now, while the text is the caller's; it holds once the platform applied it.
+        const auto size =
+            detail::sctp_max_message_size(sdp, ::webcpp::webrtc::options{}.max_message_size);
         pc_.async_set_remote_description(
             {.type = *kind, .sdp = sdp},
-            bound([done = std::move(done)](boost::system::error_code ec) mutable {
+            bound([weak = weak_from_this(), size,
+                   done = std::move(done)](boost::system::error_code ec) mutable {
+                if (const auto self = weak.lock(); self && !ec) {
+                    self->max_message_size_ = size;
+                }
                 done(ec ? make_error_code(error::backend_failure) : backend::error_code{});
             }));
     }
@@ -355,6 +409,20 @@ public:
      */
     [[nodiscard]] bool has_remote_description() const override {
         return pc_.has_remote_description();
+    }
+
+    /**
+     * The largest message the connection's SCTP transport takes, as `sctp.maxMessageSize` says it:
+     * read from the remote description last applied, whose `a=max-message-size` both libdatachannel
+     * and a browser read, bounded by webcpp::webrtc's `options::max_message_size`, the most a
+     * channel here sends (`detail::sctp_max_message_size`). webcpp::webrtc does not report the
+     * transport's own value.
+     *
+     * @return The size once a remote description with a data channel section is applied;
+     * nothing before.
+     */
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override {
+        return max_message_size_;
     }
 
     /** Closes the connection and its channels, as the W3C's `close()`: no state is reported. */
@@ -469,7 +537,7 @@ private:
     }
 
     void on_channel(data_channel::channel_type channel) {
-        auto wrapped = data_channel::make(runtime_, std::move(channel), factory_, memory_);
+        auto wrapped = data_channel::make(runtime_, std::move(channel), memory_);
         if (const auto h = h_; h && h->data_channel) {
             h->data_channel(std::move(wrapped));
         }
@@ -505,11 +573,11 @@ private:
 
     // The runtime outlives the connection, which goes first.
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
-    backend::factory& factory_;
     std::pmr::memory_resource* memory_;
     std::shared_ptr<handlers> h_;
     state state_ = state::new_;
     ice_state ice_state_ = ice_state::new_;
+    std::optional<std::size_t> max_message_size_;
     connection_type pc_;
 };
 

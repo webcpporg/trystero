@@ -125,6 +125,10 @@ public:
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
      * it closes first. */
     virtual void wait_drained(handler<void(bool)> done) = 0;
+    /** The largest frame a transfer's chunk may fill, 0.27.0's `maxBulkFrameBytes` getter
+     * (`peer-transport.ts`): `protocol::max_bulk_frame_bytes` when the connection's SCTP takes
+     * messages of that size, else `protocol::max_action_frame_bytes`. */
+    [[nodiscard]] virtual std::size_t max_bulk_frame_bytes() const = 0;
 
 protected:
     channel_link() = default;
@@ -143,7 +147,7 @@ protected:
  * | inline                   | when header, metadata and payload fit 16 KiB                       |
  * | larger payloads          | offer, wait for "accepted" (120 s), then chunks in order, each     |
  * |                          | sent only while the channel buffers at most 64 KiB (10 s at most   |
- * |                          | per wait); never wide (see below)                                  |
+ * |                          | per wait); wide when the link takes 64 KiB frames (see below)      |
  * | receiving                | one transfer per peer at a time, accepted only for an action with  |
  * |                          | a listener, at most `max_receive_bytes` reserved across peers;     |
  * |                          | 1024 pending transfers, 64 per peer; chunks wide or not, as the    |
@@ -164,9 +168,10 @@ protected:
  * |                          | is dropped                                                         |
  * | protocol violations      | the peer is dropped                                                |
  *
- * Trystero sends wide chunks to a peer whose connection's SCTP takes 64 KiB messages. The backend
- * does not report that size: the wire offers every transfer without the flag, as Trystero does to
- * a transport that reports no `maxBulkFrameBytes`, and receives wide transfers as Trystero does.
+ * As 0.27.0's `sendBulk`, a transfer is offered wide, its offer flagged and each chunk but the last
+ * filling a 64 KiB frame, when its link's `channel_link::max_bulk_frame_bytes` is
+ * `protocol::max_bulk_frame_bytes` as the offer is sent, and narrow, in 16 KiB frames, otherwise;
+ * transfers are received wide or narrow, as their offer says.
  *
  * Frames of an action the room has not made are not kept, as Trystero keeps none: a page that makes
  * an action after it joined misses what came before. An action listens while it has a message
@@ -193,6 +198,13 @@ public:
         [[nodiscard]] std::size_t buffered_amount() const {
             const auto t = target.lock();
             return t ? t->buffered_amount() : std::size_t{0};
+        }
+
+        /** The largest frame a chunk may fill; `protocol::max_action_frame_bytes` when the
+         * channel is gone. */
+        [[nodiscard]] std::size_t max_bulk_frame_bytes() const {
+            const auto t = target.lock();
+            return t ? t->max_bulk_frame_bytes() : protocol::max_action_frame_bytes;
         }
 
         /** Calls `done(true)` once the channel drained, `done(false)` if it is gone or closes. */
@@ -523,9 +535,12 @@ private:
                    protocol::payload_format format, std::string_view metadata,
                    const payload_ref& payload, const std::shared_ptr<fan_out>& state) {
         const std::uint32_t id = next_id_++;
+        // 0.27.0 reads the transport's size once per transfer, as it offers it.
+        const bool wide = l.max_bulk_frame_bytes() >= protocol::max_bulk_frame_bytes;
+        const std::size_t chunk = wide ? protocol::wide_chunk_size : protocol::chunk_size;
         auto offer = begin_frame(protocol::offer_header_size + metadata.size());
         protocol::append_offer(offer, name, format, metadata, id, payload.data.size(),
-                               protocol::chunk_width::narrow);
+                               wide ? protocol::chunk_width::wide : protocol::chunk_width::narrow);
         std::pmr::string peer(peer_view, memory_);  // the transfer's handlers outlive this call
         auto& transfers = outgoing_[peer];
         const auto transfer = std::allocate_shared<outgoing_transfer>(allocator());
@@ -566,15 +581,15 @@ private:
         transfer->timer->start(transfer_timeout, bind<void()>([finish] {
                                    (*finish)(make_error_code(error::transfer_timed_out));
                                }));
-        transfer->accepted =
-            bind<void()>([weak, l, id, payload, finish, transfer_weak = std::weak_ptr(transfer)] {
+        transfer->accepted = bind<void()>(
+            [weak, l, id, chunk, payload, finish, transfer_weak = std::weak_ptr(transfer)] {
                 const auto self = weak.lock();
                 const auto t = transfer_weak.lock();
                 if (!self || !t) {
                     return;
                 }
                 t->timer->cancel();
-                self->send_chunks(l, id, payload, 0, finish);
+                self->send_chunks(l, id, chunk, payload, 0, finish);
             });
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(offer)),
@@ -585,31 +600,33 @@ private:
             }));
     }
 
-    void send_chunks(const link& l, std::uint32_t id, const payload_ref& payload,
+    /** Sends the chunks of transfer `id` from `offset` on, each of `chunk` payload bytes but the
+     * last, one per drain. */
+    void send_chunks(const link& l, std::uint32_t id, std::size_t chunk, const payload_ref& payload,
                      std::size_t offset, const std::shared_ptr<done_handler>& finish) {
         if (offset >= payload.data.size()) {
             (*finish)({});
             return;
         }
-        const auto length = std::min(protocol::chunk_size, payload.data.size() - offset);
+        const auto length = std::min(chunk, payload.data.size() - offset);
         auto frame = begin_frame(protocol::chunk_header_size + length);
         protocol::append_chunk(frame, id, offset, payload.data.subspan(offset, length));
         const auto weak = weak_from_this();
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(frame)),
-            bind<void(boost::system::error_code)>(
-                [weak, l, id, payload, offset, length, finish](boost::system::error_code ec) {
-                    if (ec) {
-                        (*finish)(ec);
-                        return;
-                    }
-                    const auto self = weak.lock();
-                    if (!self) {
-                        (*finish)(make_error_code(error::room_left));
-                        return;
-                    }
-                    self->send_chunks(l, id, payload, offset + length, finish);
-                }));
+            bind<void(boost::system::error_code)>([weak, l, id, chunk, payload, offset, length,
+                                                   finish](boost::system::error_code ec) {
+                if (ec) {
+                    (*finish)(ec);
+                    return;
+                }
+                const auto self = weak.lock();
+                if (!self) {
+                    (*finish)(make_error_code(error::room_left));
+                    return;
+                }
+                self->send_chunks(l, id, chunk, payload, offset + length, finish);
+            }));
     }
 
     /** Sends a control frame, as Trystero's `sendControlFrame`: a channel that buffers more than

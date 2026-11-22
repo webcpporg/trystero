@@ -12,6 +12,7 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/action_wire.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/protocol/action_wire.hpp>
 
 #include <boost/assert.hpp>
 
@@ -64,15 +65,16 @@ public:
     };
 
     /** The most frames kept before `bind`, 0.27.0's `maxQueuedDataFrames`. */
-    static constexpr std::size_t max_pending_frames = 64;
+    static constexpr std::size_t max_pending_frames = protocol::max_queued_data_frames;
     /** How long after the first kept frame the link waits for `bind`, 0.27.0's
      * `pendingDataTimeoutMs`. */
-    static constexpr std::chrono::milliseconds pending_frames_timeout{10'000};
+    static constexpr std::chrono::milliseconds pending_frames_timeout =
+        protocol::pending_data_timeout;
     /** The longest frame kept before `bind`, 0.27.0's `maxRoomFrameBytes`: an action frame and
      * its overlay's header. */
-    static constexpr std::size_t max_unbound_frame_bytes = std::size_t{16} * 1024 + 1024;
+    static constexpr std::size_t max_unbound_frame_bytes = protocol::max_room_frame_bytes;
     /** The longest frame after `bind`, 0.27.0's `maxBulkFrameBytes`. */
-    static constexpr std::size_t max_bound_frame_bytes = std::size_t{64} * 1024;
+    static constexpr std::size_t max_bound_frame_bytes = protocol::max_bulk_frame_bytes;
     /** How long a `disconnected` connection has to come back, 0.27.0's grace. */
     static constexpr std::chrono::milliseconds disconnected_grace{5'000};
 
@@ -209,6 +211,15 @@ public:
     /** The bytes the channel buffers; 0 once the link ended. */
     [[nodiscard]] std::size_t buffered_amount() const override {
         return ended_ ? 0 : dc_->buffered_amount();
+    }
+
+    /** `protocol::max_bulk_frame_bytes` when the connection's `max_message_size` is at least that,
+     * else `protocol::max_action_frame_bytes`, as 0.27.0's getter reads `sctp.maxMessageSize` at
+     * each transfer. */
+    [[nodiscard]] std::size_t max_bulk_frame_bytes() const override {
+        const auto size = pc_->max_message_size();
+        return size && *size >= protocol::max_bulk_frame_bytes ? protocol::max_bulk_frame_bytes
+                                                               : protocol::max_action_frame_bytes;
     }
 
     /** Calls `done(true)` once the channel buffers at most `data_channel::low_threshold`, at once

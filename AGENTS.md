@@ -282,12 +282,16 @@ holds only what is specific to trystero.
   is passed to webcpp::webrtc on both targets; a page leaves it empty, since
   webcpp::webrtc refuses to bind there.
 - **Channel handoff.** Valid frames received before a message handler is
-  installed wait in an app-resource FIFO, at most 64 frames for 10 s from the
-  first, on both targets now. Overflow or expiry closes the channel; close
-  clears the queue. The timer is the factory's (`make_timer` with the app's
-  resource), whose waits a restart or a cancel invalidates. Installing a
-  receiver posts a resource-allocated flush, never an inline call. Each frame
-  checks the current handler and open channel, and a message already read
+  installed (the open event and a first message reach the executor in either
+  order) wait in a room-resource FIFO under `peer_link`'s unbound bounds,
+  0.27.0's `maxQueuedDataFrames` and `maxRoomFrameBytes` (64 frames of at
+  most 17 KiB, `protocol::max_queued_data_frames` and
+  `protocol::max_room_frame_bytes`), on both targets. One more, or a longer
+  one, closes the channel; close clears the queue. No timer: the link's 10 s
+  start as it takes the frames, and the signaling closes a channel no link
+  takes. Installing a receiver posts a resource-allocated flush, never an
+  inline call. Each frame checks the current handler and open channel, and
+  a message already read
   ahead of the flush drains older frames when a receiver exists. A transport
   closed during adoption, before binding, forgets its negotiation and
   restarts announcements. `platform_peer_connection` tests real queued events
@@ -295,6 +299,16 @@ holds only what is specific to trystero.
   limits and resource release (`webrtc::data_channel::pending_frames`);
   `shared` tests closure during adoption, and interop controls native open
   delivery while a JS peer sends both rooms' presence first.
+- **Wide chunks.** `backend::peer_connection::max_message_size` is
+  `sctp.maxMessageSize` once a remote description is applied; the platform
+  backend reads the remote SDP's `a=max-message-size` (RFC 8841, 64 KiB when
+  absent, 0 for any size) within webcpp::webrtc's 256 KiB, as libdatachannel
+  and the W3C compute it, since webcpp::webrtc does not report the
+  transport's value. `peer_link::max_bulk_frame_bytes` is 64 KiB at 64 KiB or
+  more, else 16 KiB, and the action wire offers wide on 64 KiB; the memory
+  network says 256 KiB unless a test sets `memory_network::max_message_size`.
+  `room_test` checks the frames against the vectors' `bulk` and `bulk_wide`
+  cases.
 - **A room frame advertises its room.** A frame of a local room's token that
   a connection keeps records the token as the remote's advertisement, as its
   presence does (64 tokens at most; a frame never ends the connection for a
