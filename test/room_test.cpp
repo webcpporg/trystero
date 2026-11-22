@@ -373,6 +373,33 @@ void a_narrow_link_sends_narrow_chunks() {
     }
 }
 
+// A channel that refuses a chunk its connection announced it takes (the memory network says 256 KiB
+// and its channels send at most a narrow frame) closes, as the platform's channel closes on a
+// refused send: the transfer ends with the peer (peer_disconnected), rather than waiting on a chunk
+// that was never sent until it times out (transfer_timed_out).
+void a_refused_chunk_ends_the_transfer_with_the_peer() {
+    fixture f;
+    f.net.send_limit = trystero::protocol::max_action_frame_bytes;
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("AAAAAAAAAAAAAAAAAAAA"));
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("BBBBBBBBBBBBBBBBBBBB"));
+    auto a = join(a_app, "refused");
+    auto b = join(b_app, "refused");
+    bool got = false;
+    b.make_action<trystero::bytes>("file").on_message(
+        [&](const trystero::bytes&, const trystero::message_info&) { got = true; });
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    std::optional<boost::system::error_code> sent;
+    a.make_action<trystero::bytes>("file").async_send(
+        trystero::bytes(std::size_t{200} * 1024, 7), {},
+        [&](boost::system::error_code ec) { sent = ec; });
+    BOOST_TEST(run_until(f.io, [&] { return sent.has_value() && b.peers().empty(); }));
+    BOOST_TEST(sent == std::optional<boost::system::error_code>(
+                           make_error_code(trystero::error::peer_disconnected)));
+    BOOST_TEST(a.peers().empty());
+    BOOST_TEST(!got);
+}
+
 // The action wire of a room alone, fed a peer's frames as a data channel hands them over: what it
 // sends back, what it delivers, and the peers it drops.
 struct wire_bench {
@@ -4174,6 +4201,7 @@ int main(int argc, char* argv[]) {
     run_case(large_payloads_travel_in_chunks_both_ways);
     run_case(a_wide_transfer_arrives_in_wide_chunks_in_any_order);
     run_case(a_wide_link_sends_wide_chunks);
+    run_case(a_refused_chunk_ends_the_transfer_with_the_peer);
     run_case(a_narrow_link_sends_narrow_chunks);
     run_case(the_wire_keeps_0_27_0s_bounds);
     run_case(frames_of_an_action_not_made_are_dropped_or_rejected);

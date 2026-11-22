@@ -1145,6 +1145,10 @@ private:
 
     void on_channel_open(std::string_view peer_view,
                          const std::shared_ptr<backend::peer_connection>& pc) {
+        // A channel whose side ended never gets here: close_side cleared its handlers, closed its
+        // connection, and with it the channel, and let go of it; an entry dropped without a reset
+        // holds no connection. The returns below only guard a backend that still delivers an open
+        // event the reset raced with, for a channel that is closed by then.
         const auto peer = copy(peer_view);
         auto* n = find(peer);
         if (n == nullptr || n->connected) {

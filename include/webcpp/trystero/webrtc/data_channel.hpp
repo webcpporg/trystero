@@ -174,8 +174,11 @@ public:
     }
 
     /**
-     * Sends a binary message when the channel is open; one the channel refuses, as one that would
-     * pass webcpp::webrtc's bound on what it buffers, is dropped.
+     * Sends a binary message when the channel is open. One the channel refuses, larger than the
+     * connection's `max_message_size()` or past webcpp::webrtc's bound on what it buffers, closes
+     * the channel, which the handler `close` reports: a frame is never dropped while the channel
+     * goes on, so that a transfer cannot wait on a chunk that was never sent, as a browser's
+     * `send` throws and its channel goes on no further.
      *
      * @param frame The message, read during the call.
      */
@@ -183,9 +186,8 @@ public:
         if (!is_open()) {
             return;
         }
-        // A channel closed in between refuses the frame, and its close event reports it; a frame
-        // refused leaves nothing to drain.
         if (channel_.send(webcpp::asio::buffer(frame.data(), frame.size()))) {
+            close();
             return;
         }
         watch_drain();

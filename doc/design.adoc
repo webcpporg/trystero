@@ -251,6 +251,10 @@ in them, over webcpp::webrtc:
   16 MiB of unread messages, the channel closes. A binary payload moves when
   its message buffer and the room use the same resource, and is copied once
   otherwise; chunked transfers assemble their buffer in the room's resource.
+  A frame the channel refuses to send, larger than the connection's
+  `max_message_size` (webcpp::webrtc's, the transport's limit) or past what
+  it buffers, closes the channel: a transfer then ends with the peer rather
+  than wait on a chunk that was never sent.
 * The frames no room has read. The open event and a first message reach
   the executor in either order, and the room's link installs its handler
   from the open event: valid binary frames that arrive before it wait in a
@@ -259,7 +263,14 @@ in them, over webcpp::webrtc:
   17 KiB each. One more, or a longer one, closes the channel; closing or
   destroying it discards the pending frames. The queue has no time bound of
   its own: the link's 10 seconds start as it takes the frames, and a channel
-  no link takes is one the signaling closes. Installing a receiver posts
+  no link takes is one the signaling closes. The signaling holds each channel
+  on a side of a negotiation, the offer's or the answer's, and every way a
+  side ends (its expiry, its connection's failure, the peer's leaving, the
+  other side's channel opening first, the room's close) clears the
+  channel's handlers, closes its connection, which closes the channel, and
+  lets go of it; an entry it drops otherwise holds no connection. A channel
+  waits, with at most 64 x 17 KiB (about 1.1 MiB) of frames, for at most its
+  side's lifetime. Installing a receiver posts
   delivery on the executor with the room's
   allocator. It never calls the receiver inline, and delivery checks the
   current handler and channel before each frame, so a handler may replace

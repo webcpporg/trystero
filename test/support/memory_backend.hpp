@@ -933,6 +933,11 @@ public:
      * transport that takes only narrow ones. */
     std::optional<std::size_t> max_message_size = std::size_t{256} * 1024;
 
+    /** The longest frame a channel sends, when set: a longer one is refused and closes the
+     * sending channel, as the platform's channel closes on a send its transport refuses. A test
+     * sets it below `max_message_size` for a transport that refuses what it announced. */
+    std::optional<std::size_t> send_limit;
+
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
     std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
@@ -1116,6 +1121,10 @@ inline void memory_data_channel::bind_to(memory_network& net, std::size_t pc) {
 inline void memory_data_channel::send(std::span<const std::uint8_t> frame) {
     const auto remote = remote_.lock();
     if (!open_ || !remote || registry_.expired()) {
+        return;
+    }
+    if (net_->send_limit && frame.size() > *net_->send_limit) {
+        close();
         return;
     }
     bytes_sent += frame.size();

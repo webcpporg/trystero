@@ -493,10 +493,12 @@ void a_pending_frame_past_the_room_frame_bound_closes_the_channel() {
     BOOST_TEST_EQ(p.kept(), 0U);
 }
 
-// The SCTP transport's largest message is unknown until a remote description gives the connection
-// one, then the remote's `a=max-message-size`, libdatachannel's 256 KiB, within what this end
-// sends, webcpp::webrtc's 256 KiB: a peer that takes wide chunks.
-void max_message_size_is_known_once_connected() {
+// The connection's largest message is webcpp::webrtc's max_message_size(): nothing before a
+// remote description, then 256 KiB on both ends (libdatachannel's announcement and webcpp::webrtc's
+// bound), a peer that takes wide chunks. It is what the channel sends: a wide chunk arrives whole,
+// a message of exactly that size is taken, and one byte more is refused, which closes the channel
+// and reports the close, so that a transfer never waits on a chunk that was not sent.
+void max_message_size_is_what_the_channel_sends() {
     pair p;
     BOOST_TEST(!p.offerer->max_message_size().has_value());
     BOOST_TEST(!p.answerer->max_message_size().has_value());
@@ -505,38 +507,26 @@ void max_message_size_is_known_once_connected() {
     const std::optional<std::size_t> expected = std::size_t{256} * 1024;
     BOOST_TEST(p.offerer->max_message_size() == expected);
     BOOST_TEST(p.answerer->max_message_size() == expected);
-}
 
-// What the remote description says, as the W3C and libdatachannel read it: RFC 8841's 64 KiB
-// when it says nothing, any size when it says 0, never more than this end sends, and nothing
-// without a data channel section.
-void max_message_size_is_read_from_the_remote_description() {
-    using trystero::webrtc::detail::sctp_max_message_size;
-    constexpr std::size_t local = std::size_t{256} * 1024;
-    const std::string_view head = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n";
-    const auto with = [&](std::string_view section) {
-        return std::string(head) + std::string(section);
-    };
-    const std::string app =
-        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\n";
-    BOOST_TEST(sctp_max_message_size(with(app + "a=max-message-size:262144\r\n"), local) ==
-               std::optional<std::size_t>(local));
-    BOOST_TEST(sctp_max_message_size(with(app + "a=max-message-size:16384\r\n"), local) ==
-               std::optional<std::size_t>(16384));
-    BOOST_TEST(sctp_max_message_size(with(app + "a=max-message-size:1073741823\n"), local) ==
-               std::optional<std::size_t>(local));
-    BOOST_TEST(sctp_max_message_size(with(app + "a=max-message-size:0\r\n"), local) ==
-               std::optional<std::size_t>(local));
-    BOOST_TEST(sctp_max_message_size(with(app), local) == std::optional<std::size_t>(65536));
-    BOOST_TEST(sctp_max_message_size(with(app + "a=max-message-size:12x\r\n"), local) ==
-               std::optional<std::size_t>(65536));
-    // Another section's attribute is not the transport's.
-    BOOST_TEST(sctp_max_message_size(with("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"
-                                          "a=max-message-size:16384\r\n" +
-                                          app),
-                                     local) == std::optional<std::size_t>(65536));
-    BOOST_TEST(!sctp_max_message_size(with("m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"), local));
-    BOOST_TEST(!sctp_max_message_size("", local));
+    p.offer_end->send(backend::bytes(protocol::max_bulk_frame_bytes, 3));
+    require(BOOST_TEST(run_until(p.io, [&] { return p.at_answerer.size() == 1; })));
+    BOOST_TEST_EQ(p.at_answerer.front().size(), protocol::max_bulk_frame_bytes);
+
+    std::size_t offer_closes = 0;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = {},
+        .close = [&] { ++offer_closes; },
+        .buffered_amount_low = {},
+    });
+    // Taken: the channel stays open (the offerer then closes it, since no frame is that long).
+    p.answer_end->send(backend::bytes(*expected, 4));
+    BOOST_TEST(p.answer_end->is_open());
+    // Refused: the channel closes at once, and both ends report it.
+    p.offer_end->send(backend::bytes(*expected + 1, 5));
+    BOOST_TEST(!p.offer_end->is_open());
+    require(BOOST_TEST(run_until(p.io, [&] { return offer_closes == 1 && p.answer_closes == 1; })));
+    BOOST_TEST_EQ(p.at_answerer.size(), 1U);
 }
 
 void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
@@ -969,8 +959,7 @@ int main() {
     a_full_pending_queue_drains_in_order_and_uses_replacement_handlers();
     a_pending_queue_overflow_closes_the_channel();
     a_pending_frame_past_the_room_frame_bound_closes_the_channel();
-    max_message_size_is_known_once_connected();
-    max_message_size_is_read_from_the_remote_description();
+    max_message_size_is_what_the_channel_sends();
     a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
     a_candidate_past_its_bound_fails();

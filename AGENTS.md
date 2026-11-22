@@ -300,11 +300,13 @@ holds only what is specific to trystero.
   `shared` tests closure during adoption, and interop controls native open
   delivery while a JS peer sends both rooms' presence first.
 - **Wide chunks.** `backend::peer_connection::max_message_size` is
-  `sctp.maxMessageSize` once a remote description is applied; the platform
-  backend reads the remote SDP's `a=max-message-size` (RFC 8841, 64 KiB when
-  absent, 0 for any size) within webcpp::webrtc's 256 KiB, as libdatachannel
-  and the W3C compute it, since webcpp::webrtc does not report the
-  transport's value. `peer_link::max_bulk_frame_bytes` is 64 KiB at 64 KiB or
+  `sctp.maxMessageSize`; the platform backend reads webcpp::webrtc's
+  `peer_connection::max_message_size()` (natively libdatachannel's
+  `rtcGetRemoteMaxMessageSize` once a remote description is applied, in a
+  page the browser's `sctp.maxMessageSize`, both within 256 KiB), the limit
+  its channels' sends check. A send the platform channel refuses closes the
+  channel, so that a transfer ends with the peer rather than wait on a chunk
+  never sent; the memory network's `send_limit` refuses likewise. `peer_link::max_bulk_frame_bytes` is 64 KiB at 64 KiB or
   more, else 16 KiB, and the action wire offers wide on 64 KiB; the memory
   network says 256 KiB unless a test sets `memory_network::max_message_size`.
   `room_test` checks the frames against the vectors' `bulk` and `bulk_wide`

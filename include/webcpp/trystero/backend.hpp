@@ -173,7 +173,10 @@ public:
     [[nodiscard]] virtual bool is_open() const = 0;
 
     /**
-     * Sends a binary message; one sent while the channel is not open is dropped.
+     * Sends a binary message; one sent while the channel is not open is dropped, and one the
+     * platform refuses while it is open (larger than the connection's `max_message_size`, or past
+     * what the channel buffers) closes the channel, which the handler `close` reports, so that a
+     * frame is never lost while the channel goes on.
      *
      * @param frame The message, read during the call.
      */
@@ -283,9 +286,8 @@ public:
      * The largest message the connection's SCTP transport takes, its `sctp.maxMessageSize`, which
      * decides whether a transfer's chunks go wide (`detail::channel_link::max_bulk_frame_bytes`).
      *
-     * @return The size in bytes once the connection has an SCTP transport, which a remote
-     * description with a data channel's section gives it; nothing before, or when the platform
-     * says no finite size.
+     * @return The size in bytes once the peer's limit is known (natively once a remote description
+     * is applied, in a page once the connection has an SCTP transport); nothing before.
      */
     [[nodiscard]] virtual std::optional<std::size_t> max_message_size() const = 0;
 
