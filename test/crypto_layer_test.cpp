@@ -9,11 +9,14 @@
 // The fixture's path is the test's one argument, as webcpp.run passes its input file. The
 // fixture is read with webcpp::document; section(name) gives a case the named section of it.
 
+#include <webcpp/trystero/detail/identity_cache.hpp>
+#include <webcpp/trystero/detail/identity_handshake.hpp>
 #include <webcpp/trystero/detail/wipe.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/ecdsa.hpp>
+#include <webcpp/trystero/protocol/handshake.hpp>
 #include <webcpp/trystero/protocol/identity.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
@@ -39,6 +42,8 @@
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 #include <span>
@@ -1237,6 +1242,511 @@ void scalars_are_checked_against_the_order() {
     BOOST_TEST(!tp::is_p256_scalar(scalar));
 }
 
+// The identity handshake: its messages, transcript and each side's run, against 0.27.0's record.
+
+/** The fingerprints of a description, in the default resource. */
+std::pmr::vector<std::pmr::string> dtls_of(std::string_view sdp) {
+    return tp::dtls_fingerprints(sdp, std::pmr::get_default_resource());
+}
+
+/** The texts of a fixture's array of strings. */
+std::pmr::vector<std::pmr::string> strings_of(const fixture_value& array) {
+    std::pmr::vector<std::pmr::string> out;
+    for (const auto item : array) {
+        out.emplace_back(str(item));
+    }
+    return out;
+}
+
+/** A recorded step's members, as the test reads them from its JSON (not through the reader). */
+tp::handshake_claims claims_of(std::string_view json) {
+    tp::handshake_claims claims;
+    const auto parsed = wd::parse(json);
+    if (!BOOST_TEST(parsed.has_value())) {
+        return claims;
+    }
+    const fixture_value root = parsed->root();
+    claims.step = static_cast<int>(root[tp::handshake_step_key].value_or(std::int64_t{0}));
+    claims.nonce = str(root["n"]);
+    claims.dtls = strings_of(root["dtls"]);
+    claims.user_id = str(root["uid"]);
+    claims.endpoint_key = str(root["pk"]);
+    claims.user_key = str(root["uk"]);
+    claims.endpoint_signature = str(root["ps"]);
+    claims.user_signature = str(root["us"]);
+    return claims;
+}
+
+/** The recorded message of a case with `step`, or an empty text. */
+std::string_view message_of(const fixture_value& c, int step) {
+    for (const auto m : c["messages"]) {
+        if (m["step"].value_or(std::int64_t{0}) == step) {
+            return str(m["json"]);
+        }
+    }
+    return {};
+}
+
+/** The 16 random bytes `uuid_v4` turns into a recorded nonce. */
+std::array<std::uint8_t, 16> nonce_random_of(std::string_view uuid) {
+    std::string hex;
+    std::ranges::copy_if(uuid, std::back_inserter(hex), [](char ch) { return ch != '-'; });
+    const auto decoded = tp::from_hex(hex);
+    std::array<std::uint8_t, 16> out{};
+    if (BOOST_TEST(decoded.has_value() && decoded->size() == 16)) {
+        std::ranges::copy(*decoded, out.begin());
+    }
+    return out;
+}
+
+/** The scalar of a fixture key's `d`. */
+tp::bytes scalar_of(std::string_view label) {
+    const auto scalar = tp::from_base64url(str(p256_key_entry(label)["d"]));
+    BOOST_TEST(scalar.has_value());
+    return scalar.value_or(tp::bytes());
+}
+
+/** One side of a recorded handshake as the C++ side runs it: its keys, cache and machine. */
+struct handshake_side {
+    trystero::detail::endpoint_identity endpoint;
+    trystero::user_identity user;
+    trystero::detail::identity_cache cache{std::pmr::get_default_resource()};
+    std::pmr::vector<std::pmr::string> local_dtls;
+    std::pmr::vector<std::pmr::string> remote_dtls;
+    std::optional<trystero::detail::identity_handshake> machine{};
+};
+
+/** The endpoint identity of a fixture key. */
+trystero::detail::endpoint_identity endpoint_of(std::string_view label) {
+    auto made = trystero::detail::make_endpoint_identity(scalar_of(label),
+                                                         std::pmr::get_default_resource());
+    BOOST_TEST(made.has_value());
+    return std::move(made.value());
+}
+
+/** The user identity of a fixture key. */
+trystero::user_identity user_of(std::string_view label) {
+    auto made = trystero::detail::user_identity_access::make(scalar_of(label),
+                                                             std::pmr::get_default_resource());
+    BOOST_TEST(made.has_value());
+    return made.value();
+}
+
+/** Makes the C++ side of `role` ("initiator" or "responder") of a recorded case. */
+std::unique_ptr<handshake_side> side_of(const fixture_value& c, std::string_view role) {
+    const bool initiator = role == "initiator";
+    const auto self = c[role];
+    const auto remote = c[initiator ? "responder" : "initiator"];
+    auto side = std::unique_ptr<handshake_side>(new handshake_side{
+        .endpoint = endpoint_of(str(self["endpoint"])),
+        .user = user_of(str(self["user"])),
+        .local_dtls = dtls_of(str(self["sdp_local"])),
+        .remote_dtls = dtls_of(str(self["sdp_remote"])),
+    });
+    BOOST_TEST_EQ(side->endpoint.peer_id, str(self["peer_id"]));
+    BOOST_TEST_EQ(side->user.user_id(), str(self["user_id"]));
+    side->machine.emplace(
+        trystero::detail::local_identity{
+            .endpoint = side->endpoint.key,
+            .peer_id = side->endpoint.peer_id,
+            .endpoint_key = side->endpoint.compact,
+            .user = side->user,
+        },
+        side->cache, str(c["app"]), str(c["room"]), str(remote["peer_id"]), initiator,
+        side->local_dtls, side->remote_dtls, nonce_random_of(str(c["nonces"][initiator ? 0 : 1])),
+        std::pmr::get_default_resource());
+    return side;
+}
+
+/** The recorded case named `name`. */
+fixture_value handshake_case(std::string_view name) {
+    for (const auto c : section("handshake")) {
+        if (str(c["case"]) == name) {
+            return c;
+        }
+    }
+    BOOST_ERROR("handshake has no such case");
+    return section("handshake")[0];
+}
+
+/** Whether `signature` (base64url) is `compact`'s, of `payload`, through an identity cache. */
+bool verifies(std::string_view compact, std::string_view signature, std::string_view payload) {
+    trystero::detail::identity_cache cache(std::pmr::get_default_resource());
+    const auto bytes = tp::from_base64url(signature);
+    return bytes && cache.verify(compact, *bytes, bytes_view(payload));
+}
+
+void dtls_fingerprints_match() {
+    std::size_t sent = 0;
+    for (const auto c : section("handshake")) {
+        for (const auto m : c["messages"]) {
+            const auto step = m["step"].value_or(std::int64_t{0});
+            if (step == 3) {
+                continue;
+            }
+            const auto role = str(m["from"]) == "A" ? "initiator" : "responder";
+            BOOST_TEST(dtls_of(str(c[role]["sdp_local"])) == claims_of(str(m["json"])).dtls);
+            ++sent;
+        }
+    }
+    BOOST_TEST_EQ(sent, 11U);
+    // The rule itself: lines that start "a=fingerprint:" (a line starts after \n, \r, U+2028 or
+    // U+2029), the value to the line's \r or \n, trimmed, lowercased, deduplicated, in UTF-16
+    // order.
+    using list = std::pmr::vector<std::pmr::string>;
+    BOOST_TEST(dtls_of("") == list{});
+    BOOST_TEST(dtls_of("a=fingerprint:") == list{});
+    BOOST_TEST(dtls_of("a=fingerprint:   \r\n") == list{});
+    BOOST_TEST(dtls_of(" a=fingerprint:x\r\nb a=fingerprint:y") == list{});
+    BOOST_TEST(dtls_of("a=fingerprint:B\na=fingerprint: b \r\ra=fingerprint:A") ==
+               (list{"a", "b"}));
+    BOOST_TEST(dtls_of("v=0\xe2\x80\xa8"
+                       "a=fingerprint:x\xe2\x80\xa9"
+                       "a=fingerprint:y\r\n") == (list{"x\xe2\x80\xa9"
+                                                       "a=fingerprint:y"}));
+    BOOST_TEST(dtls_of("x\xe2\x80\xa8"
+                       "a=fingerprint:z") == (list{"z"}));
+    // U+FF01 is after U+1F600 in UTF-16 (0xff01 > 0xd83d), before it in UTF-8.
+    BOOST_TEST(dtls_of("a=fingerprint:\xef\xbc\x81\na=fingerprint:\xf0\x9f\x98\x80") ==
+               (list{"\xf0\x9f\x98\x80", "\xef\xbc\x81"}));
+    // JavaScript's trim removes U+00A0 and U+3000 too.
+    BOOST_TEST(dtls_of("a=fingerprint:\xc2\xa0Sha-256 AB\xe3\x80\x80") == (list{"sha-256 ab"}));
+}
+
+void handshake_steps_match() {
+    const auto c = handshake_case("verified");
+    std::size_t steps = 0;
+    for (const auto m : c["messages"]) {
+        const auto json = str(m["json"]);
+        BOOST_TEST_EQ(tp::write_handshake_step(claims_of(json), std::pmr::get_default_resource()),
+                      json);
+        ++steps;
+    }
+    BOOST_TEST_EQ(steps, 3U);
+    // The frames' payloads are these steps.
+    BOOST_TEST_EQ(str(section("handshake_frames")[0]["payload_json"]), message_of(c, 1));
+    // Each step reads back as it was written, under the descriptions the recipient applied.
+    const auto a_dtls = dtls_of(str(c["initiator"]["sdp_local"]));
+    const auto b_dtls = dtls_of(str(c["responder"]["sdp_local"]));
+    for (int step = 1; step <= 3; ++step) {
+        const auto json = message_of(c, step);
+        const bool from_b = step == 2;
+        const auto read =
+            tp::read_handshake_step(json, step, from_b ? b_dtls : a_dtls, from_b ? a_dtls : b_dtls,
+                                    std::pmr::get_default_resource());
+        if (BOOST_TEST(read.claims.has_value())) {
+            BOOST_TEST(read.failure.empty());
+            BOOST_TEST_EQ(tp::write_handshake_step(*read.claims, std::pmr::get_default_resource()),
+                          json);
+        }
+    }
+}
+
+void handshake_steps_are_read_as_0_27_0_reads_them() {
+    const auto c = handshake_case("verified");
+    const auto a_dtls = dtls_of(str(c["initiator"]["sdp_local"]));
+    const auto b_dtls = dtls_of(str(c["responder"]["sdp_local"]));
+    auto* memory = std::pmr::get_default_resource();
+    const auto read = [&](std::string_view json, int step) {
+        return tp::read_handshake_step(json, step, step == 2 ? b_dtls : a_dtls,
+                                       step == 2 ? a_dtls : b_dtls, memory);
+    };
+    // A step 1 with one member replaced.
+    const auto step1 = [&](std::string_view member, std::string_view value) {
+        auto claims = claims_of(message_of(c, 1));
+        std::pmr::string json = tp::write_handshake_step(claims, memory);
+        const std::string key = "\"" + std::string(member) + "\":";
+        const auto at = json.find(key);
+        BOOST_TEST(at != std::string::npos);
+        auto end = at + key.size();
+        int depth = 0;
+        bool quoted = false;
+        for (; end < json.size(); ++end) {
+            const char ch = json[end];
+            if (quoted) {
+                quoted = ch != '"';
+                continue;
+            }
+            if (ch == '"') {
+                quoted = true;
+            } else if (ch == '[') {
+                ++depth;
+            } else if (ch == ']') {
+                --depth;
+            } else if ((ch == ',' || ch == '}') && depth == 0) {
+                break;
+            }
+        }
+        json.replace(at + key.size(), end - at - key.size(), value);
+        return json;
+    };
+    const auto identity = tp::handshake_reason::identity;
+    const auto mismatch = tp::handshake_reason::dtls_mismatch;
+    BOOST_TEST(read(message_of(c, 1), 1).claims.has_value());
+    for (const std::string_view json : {"", "null", "1", "\"x\"", "[]", "{", "{}"}) {
+        BOOST_TEST_EQ(read(json, 1).failure, identity);
+    }
+    BOOST_TEST_EQ(read(message_of(c, 1), 2).failure, identity);  // another step
+    BOOST_TEST_EQ(read(step1("__trystero_id", "\"1\""), 1).failure, identity);
+    BOOST_TEST(read(step1("__trystero_id", "1.0"), 1).claims.has_value());
+    BOOST_TEST(read(step1("__trystero_id", "1e0"), 1).claims.has_value());
+    BOOST_TEST_EQ(read(step1("n", "123456789012345"), 1).failure, identity);
+    BOOST_TEST_EQ(read(step1("n", "\"012345678901234\""), 1).failure, identity);
+    BOOST_TEST(read(step1("n", "\"0123456789012345\""), 1).claims.has_value());
+    BOOST_TEST_EQ(read(step1("uid", "\"\""), 1).failure, identity);
+    BOOST_TEST_EQ(read(step1("uid", "7"), 1).failure, identity);
+    BOOST_TEST(read(step1("pk", "\"\""), 1).claims.has_value());  // the key checks are the cache's
+    BOOST_TEST_EQ(read(step1("uk", "null"), 1).failure, identity);
+    BOOST_TEST_EQ(read(step1("dtls", "\"x\""), 1).failure, identity);
+    // The DTLS rule: what the description gives, or a list when this side has one.
+    std::string dtls_with_extras = "[1,null,{\"a\":[]},";
+    for (std::size_t i = 0; i < a_dtls.size(); ++i) {
+        dtls_with_extras += (i == 0 ? "\"" : ",true,\"") + std::string(a_dtls[i]) + "\"";
+    }
+    dtls_with_extras += ",false]";
+    const auto extras = read(step1("dtls", dtls_with_extras), 1);
+    if (BOOST_TEST(extras.claims.has_value())) {
+        BOOST_TEST(extras.claims->dtls == a_dtls);  // the non-strings dropped
+    }
+    BOOST_TEST_EQ(read(step1("dtls", "[]"), 1).failure, mismatch);
+    BOOST_TEST_EQ(read(step1("dtls", "[\"sha-256 00\"]"), 1).failure, mismatch);
+    // Lists are compared as 0.27.0 compares them, joined with commas.
+    const std::string joined =
+        "[\"" + std::string(a_dtls[0]) + "," + std::string(a_dtls[1]) + "\"]";
+    BOOST_TEST(read(step1("dtls", joined), 1).claims.has_value());
+    // Without a description, the claimed list is taken; without a local list, an empty one too.
+    BOOST_TEST(tp::read_handshake_step(step1("dtls", "[\"sha-256 00\"]"), 1, {}, b_dtls, memory)
+                   .claims.has_value());
+    BOOST_TEST_EQ(tp::read_handshake_step(step1("dtls", "[]"), 1, {}, b_dtls, memory).failure,
+                  mismatch);
+    BOOST_TEST(tp::read_handshake_step(step1("dtls", "[]"), 1, {}, {}, memory).claims.has_value());
+    // Step 2 needs both signatures as strings; step 3 is its signatures alone.
+    auto step2 = claims_of(message_of(c, 2));
+    BOOST_TEST(read(message_of(c, 2), 2).claims.has_value());
+    step2.step = 1;  // written without its signatures
+    auto unsigned_step2 = tp::write_handshake_step(step2, memory);
+    unsigned_step2.replace(unsigned_step2.find(":1,"), 3, ":2,");
+    BOOST_TEST_EQ(read(unsigned_step2, 2).failure, identity);
+    BOOST_TEST_EQ(read("{\"__trystero_id\":3,\"ps\":\"a\"}", 3).failure, identity);
+    BOOST_TEST_EQ(read("{\"__trystero_id\":2,\"ps\":\"a\",\"us\":\"b\"}", 3).failure, identity);
+    const auto step3 = read("{\"__trystero_id\":3,\"ps\":\"a\",\"us\":\"\"}", 3);
+    if (BOOST_TEST(step3.claims.has_value())) {
+        BOOST_TEST_EQ(step3.claims->endpoint_signature, std::string_view("a"));
+        BOOST_TEST(step3.claims->user_signature.empty());
+    }
+}
+
+void handshake_transcript_matches() {
+    for (const auto c : section("handshake")) {
+        if (!c["transcript"].is_string()) {
+            continue;
+        }
+        const auto transcript = tp::handshake_transcript(
+            str(c["app"]), str(c["room"]), str(c["initiator"]["peer_id"]),
+            str(c["responder"]["peer_id"]), str(c["nonces"][0]), str(c["nonces"][1]),
+            dtls_of(str(c["initiator"]["sdp_local"])), dtls_of(str(c["responder"]["sdp_local"])),
+            str(c["initiator"]["user_id"]), str(c["responder"]["user_id"]),
+            std::pmr::get_default_resource());
+        BOOST_TEST_EQ(transcript, str(c["transcript"]));
+        BOOST_TEST_EQ(tp::to_hex(tp::sha256(transcript)), str(c["transcript_digest"]));
+    }
+}
+
+void js_handshake_signatures_verify() {
+    const auto c = handshake_case("verified");
+    const auto transcript = str(c["transcript"]);
+    const auto step2 = claims_of(message_of(c, 2));
+    const auto step3 = claims_of(message_of(c, 3));
+    const auto compact = [](std::string_view label) {
+        return str(p256_key_entry(label)["compact"]);
+    };
+    BOOST_TEST_EQ(verifies(compact("endpoint-b"), step2.endpoint_signature, transcript),
+                  c["transcript_verified"]["step2_endpoint"].value_or(false));
+    BOOST_TEST_EQ(verifies(compact("user-b"), step2.user_signature, transcript),
+                  c["transcript_verified"]["step2_user"].value_or(false));
+    BOOST_TEST(verifies(compact("endpoint-a"), step3.endpoint_signature, transcript));
+    BOOST_TEST(verifies(compact("user-a"), step3.user_signature, transcript));
+    // Of another key, or of another transcript, they do not.
+    BOOST_TEST(!verifies(compact("endpoint-a"), step2.endpoint_signature, transcript));
+    BOOST_TEST(!verifies(compact("user-b"), step3.user_signature, transcript));
+    BOOST_TEST(
+        !verifies(compact("endpoint-b"), step2.endpoint_signature, std::string(transcript) + " "));
+}
+
+void cpp_responder_meets_the_js_initiator() {
+    const auto c = handshake_case("verified");
+    const auto b = side_of(c, "responder");
+    const auto started = b->machine->start();
+    BOOST_TEST(started.send.empty());
+    BOOST_TEST(!started.done.has_value());
+    BOOST_TEST(started.failure.empty());
+    const auto stepped = b->machine->receive(message_of(c, 1));
+    BOOST_TEST(stepped.failure.empty());
+    BOOST_TEST(!stepped.done.has_value());
+    // Step 2 is the recorded one but for its signatures, RFC 6979's where WebCrypto's are random.
+    const auto sent = claims_of(stepped.send);
+    auto expected = claims_of(message_of(c, 2));
+    expected.endpoint_signature = sent.endpoint_signature;
+    expected.user_signature = sent.user_signature;
+    BOOST_TEST_EQ(stepped.send,
+                  tp::write_handshake_step(expected, std::pmr::get_default_resource()));
+    BOOST_TEST(verifies(b->endpoint.compact, sent.endpoint_signature, str(c["transcript"])));
+    BOOST_TEST(verifies(b->user.public_key(), sent.user_signature, str(c["transcript"])));
+    const auto finished = b->machine->receive(message_of(c, 3));
+    BOOST_TEST(finished.failure.empty());
+    BOOST_TEST(finished.send.empty());
+    if (BOOST_TEST(finished.done.has_value())) {
+        BOOST_TEST_EQ(finished.done->user_id, str(c["verified"]["B"]["user_id"]));
+        BOOST_TEST_EQ(finished.done->endpoint_key, str(p256_key_entry("endpoint-a")["compact"]));
+        BOOST_TEST_EQ(finished.done->user_key, str(p256_key_entry("user-a")["compact"]));
+    }
+    // A finished run takes nothing more.
+    const auto after = b->machine->receive(message_of(c, 3));
+    BOOST_TEST(after.send.empty() && !after.done && after.failure.empty());
+}
+
+void cpp_initiator_meets_the_js_responder() {
+    const auto c = handshake_case("verified");
+    const auto a = side_of(c, "initiator");
+    // Before its start, a run takes nothing.
+    const auto early = a->machine->receive(message_of(c, 2));
+    BOOST_TEST(early.send.empty() && !early.done && early.failure.empty());
+    const auto started = a->machine->start();
+    BOOST_TEST_EQ(started.send, message_of(c, 1));
+    BOOST_TEST(!started.done.has_value());
+    BOOST_TEST(started.failure.empty());
+    const auto finished = a->machine->receive(message_of(c, 2));
+    BOOST_TEST(finished.failure.empty());
+    if (BOOST_TEST(finished.done.has_value())) {
+        BOOST_TEST_EQ(finished.done->user_id, str(c["verified"]["A"]["user_id"]));
+        BOOST_TEST_EQ(finished.done->endpoint_key, str(p256_key_entry("endpoint-b")["compact"]));
+        BOOST_TEST_EQ(finished.done->user_key, str(p256_key_entry("user-b")["compact"]));
+    }
+    const auto step3 = claims_of(finished.send);
+    BOOST_TEST_EQ(step3.step, 3);
+    BOOST_TEST_EQ(finished.send, tp::write_handshake_step(step3, std::pmr::get_default_resource()));
+    BOOST_TEST(verifies(a->endpoint.compact, step3.endpoint_signature, str(c["transcript"])));
+    BOOST_TEST(verifies(a->user.public_key(), step3.user_signature, str(c["transcript"])));
+}
+
+void handshake_failures_match() {
+    std::size_t failing = 0;
+    std::size_t waiting = 0;
+    std::size_t verified = 0;
+    for (const auto c : section("handshake")) {
+        if (str(c["case"]) == "verified") {
+            continue;
+        }
+        for (const std::string_view role : {"initiator", "responder"}) {
+            const auto error = c[std::string(role) + "_error"];
+            const auto side = side_of(c, role);
+            const std::string_view own = role == "initiator" ? "A" : "B";
+            std::vector<trystero::detail::identity_handshake::outcome> outcomes;
+            outcomes.push_back(side->machine->start());
+            for (const auto m : c["messages"]) {
+                if (!outcomes.back().failure.empty()) {
+                    break;
+                }
+                if (str(m["from"]) != own) {
+                    outcomes.push_back(side->machine->receive(str(m["json"])));
+                }
+            }
+            const auto failed =
+                std::ranges::find_if(outcomes, [](const auto& o) { return !o.failure.empty(); });
+            const auto done =
+                std::ranges::find_if(outcomes, [](const auto& o) { return o.done.has_value(); });
+            if (error.is_null()) {
+                // The side 0.27.0 verified verifies too.
+                BOOST_TEST(failed == outcomes.end());
+                if (BOOST_TEST(done != outcomes.end())) {
+                    BOOST_TEST_EQ(done->done->user_id, str(c["verified"][own]["user_id"]));
+                }
+                ++verified;
+            } else if (str(error) == "waits") {
+                BOOST_TEST(failed == outcomes.end());
+                BOOST_TEST(done == outcomes.end());
+                ++waiting;
+            } else {
+                std::string_view expected = str(error);
+                BOOST_TEST(expected.starts_with("Trystero: "));
+                expected.remove_prefix(std::string_view("Trystero: ").size());
+                if (BOOST_TEST(failed != outcomes.end())) {
+                    BOOST_TEST_EQ(failed->failure, expected);
+                }
+                BOOST_TEST(done == outcomes.end());
+                ++failing;
+            }
+        }
+    }
+    BOOST_TEST_EQ(failing, 7U);
+    BOOST_TEST_EQ(waiting, 6U);
+    BOOST_TEST_EQ(verified, 1U);
+}
+
+void uuid_nonces_have_16_units_or_more() {
+    const auto c = handshake_case("verified");
+    const auto a_dtls = dtls_of(str(c["initiator"]["sdp_local"]));
+    const auto b_dtls = dtls_of(str(c["responder"]["sdp_local"]));
+    auto* memory = std::pmr::get_default_resource();
+    auto claims = claims_of(message_of(c, 1));
+    const auto accepted = [&](std::string_view nonce) {
+        claims.nonce = nonce;
+        return tp::read_handshake_step(tp::write_handshake_step(claims, memory), 1, a_dtls, b_dtls,
+                                       memory)
+            .claims.has_value();
+    };
+    for (const std::uint8_t fill : {0x00, 0x5a, 0xff}) {
+        std::array<std::uint8_t, 16> random{};
+        random.fill(fill);
+        const auto uuid = tp::uuid_v4(random);
+        BOOST_TEST_GE(uuid.size(), tp::min_nonce_units);
+        BOOST_TEST(accepted(std::string_view(uuid.data(), uuid.size())));
+    }
+    // Counted in UTF-16 code units, as `n.length`: 15 accented letters are 30 bytes but 15 units;
+    // 8 emoji are 16 units.
+    std::string accented;
+    std::string emoji;
+    for (int i = 0; i < 15; ++i) {
+        accented += "\xc3\xa9";
+    }
+    for (int i = 0; i < 8; ++i) {
+        emoji += "\xf0\x9f\x98\x80";
+    }
+    BOOST_TEST(!accepted(accented));
+    BOOST_TEST(accepted(accented + "x"));
+    BOOST_TEST(accepted(emoji));
+    BOOST_TEST(!accepted(std::string(15, 'x')));
+    BOOST_TEST(accepted(std::string(16, 'x')));
+}
+
+/** A failed start: the run reports `dtls_missing` when a description has no fingerprint. */
+void a_run_without_fingerprints_fails_at_its_start() {
+    const auto c = handshake_case("verified");
+    for (const std::string_view role : {"initiator", "responder"}) {
+        for (const bool local : {true, false}) {
+            auto side = side_of(c, role);
+            (local ? side->local_dtls : side->remote_dtls).clear();
+            side->machine.emplace(
+                trystero::detail::local_identity{
+                    .endpoint = side->endpoint.key,
+                    .peer_id = side->endpoint.peer_id,
+                    .endpoint_key = side->endpoint.compact,
+                    .user = side->user,
+                },
+                side->cache, str(c["app"]), str(c["room"]),
+                str(c[role == "initiator" ? "responder" : "initiator"]["peer_id"]),
+                role == "initiator", side->local_dtls, side->remote_dtls,
+                std::array<std::uint8_t, 16>{}, std::pmr::get_default_resource());
+            const auto started = side->machine->start();
+            BOOST_TEST_EQ(started.failure, tp::handshake_reason::dtls_missing);
+            BOOST_TEST(started.send.empty());
+            // A failed run takes nothing more.
+            const auto after = side->machine->receive(message_of(c, role == "initiator" ? 2 : 1));
+            BOOST_TEST(after.send.empty() && !after.done && after.failure.empty());
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -1292,5 +1802,15 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(low_s_matches);
     webcpp::test::run_case(cpp_signatures_are_deterministic_and_low_s);
     webcpp::test::run_case(scalars_are_checked_against_the_order);
+    webcpp::test::run_case(dtls_fingerprints_match);
+    webcpp::test::run_case(handshake_steps_match);
+    webcpp::test::run_case(handshake_steps_are_read_as_0_27_0_reads_them);
+    webcpp::test::run_case(handshake_transcript_matches);
+    webcpp::test::run_case(js_handshake_signatures_verify);
+    webcpp::test::run_case(cpp_responder_meets_the_js_initiator);
+    webcpp::test::run_case(cpp_initiator_meets_the_js_responder);
+    webcpp::test::run_case(handshake_failures_match);
+    webcpp::test::run_case(uuid_nonces_have_16_units_or_more);
+    webcpp::test::run_case(a_run_without_fingerprints_fails_at_its_start);
     return boost::report_errors();
 }

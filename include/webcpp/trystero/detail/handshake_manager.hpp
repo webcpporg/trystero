@@ -12,6 +12,7 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
+#include <webcpp/trystero/protocol/handshake.hpp>
 
 #include <boost/system/error_code.hpp>
 
@@ -94,12 +95,13 @@ public:
     static constexpr std::size_t max_buffered_messages = 16;
     /** The reason the steps get with a message they wait for when the peer is cleared, 0.27.0's
      * `handshakeDisconnectErr`, whose code is `error::peer_disconnected`. */
-    static constexpr std::string_view disconnected_reason = "peer disconnected during handshake";
+    static constexpr std::string_view disconnected_reason =
+        protocol::handshake_reason::disconnected;
     /** The reason of a handshake whose timer expired, 0.27.0's message without its prefix. */
-    static constexpr std::string_view timed_out_reason = "handshake timed out after 10000ms";
+    static constexpr std::string_view timed_out_reason = protocol::handshake_reason::timed_out;
     /** The reason of a 17th buffered message, 0.27.0's message without its prefix. */
     static constexpr std::string_view too_many_messages_reason =
-        "too many pending handshake messages";
+        protocol::handshake_reason::too_many_messages;
 
     /** Where a peer's handshake is, 0.27.0's `HandshakePeerEntry` phases. */
     enum class phase {
