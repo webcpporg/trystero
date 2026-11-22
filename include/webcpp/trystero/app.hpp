@@ -264,13 +264,20 @@ public:
      * the relays and announces this peer on the room's topic.
      *
      * @param room_id The room's id, Trystero's `roomId`, read during the call.
-     * @param options The receive bounds and the resource of the room.
-     * @return The room, or `error::already_joined` while a room of that id is joined in the app,
-     * as 0.27.0 refuses a second join.
+     * @param options The receive bounds, the bound on users and the resource of the room.
+     * @return The room; `error::invalid_max_users` when `options.max_users` is 0 or above
+     * `room_options::max_users_limit`, as 0.27.0's `joinRoom` throws, before it looks for the
+     * room; or `error::already_joined` while a room of that id is joined in the app, as 0.27.0
+     * refuses a second join.
      */
     [[nodiscard]] boost::system::result<room> join(std::string_view room_id,
                                                    room_options options = {}) {
         BOOST_ASSERT(impl_);
+        if (options.max_users &&
+            (*options.max_users == 0 ||
+             static_cast<std::uint64_t>(*options.max_users) > room_options::max_users_limit)) {
+            return error::invalid_max_users;
+        }
         if (const auto existing = impl_->find_room(room_id)) {
             if (!existing->leaving()) {
                 return error::already_joined;

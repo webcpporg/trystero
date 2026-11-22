@@ -60,10 +60,12 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -770,6 +772,28 @@ inline std::optional<response_envelope> read_response(std::string_view metadata,
     };
 }
 
+/** The payload of the ready frame by which a full room refuses a peer, 0.27.0's
+ * `{ok: false, err: roomFullMsg}`. */
+inline constexpr std::string_view room_full_ready = R"({"ok":false,"err":"room full"})";
+
+/** Whether a ready frame's payload is a full room's refusal: a JSON object whose `ok` is false and
+ * whose `err` is "room full", as 0.27.0's room reads `data.ok === false` and `data.err`. */
+inline bool refuses_full(protocol::payload_format format, std::string_view payload,
+                         const decoding& to) {
+    if (format != protocol::payload_format::json) {
+        return false;
+    }
+    const auto v = webcpp::document::parse(payload, json_payload_limits(payload, to),
+                                           std::pmr::polymorphic_allocator<std::byte>(to.memory));
+    if (!v.has_value() || !v->root().is_object()) {
+        return false;
+    }
+    const auto ok = v->root()["ok"];
+    const auto err = v->root()["err"];
+    return ok.is_boolean() && !ok.value_or(true) && err.is_string() &&
+           protocol::json::text_of(err) == "room full";
+}
+
 /**
  * A user's completion handler, type-erased, and whether its associated executor is the room's,
  * which only its concrete type tells cheaply: a type-erased executor is compared through objects
@@ -809,7 +833,8 @@ struct completion {
  * | Internal action   | Meaning                                                           |
  * | \@_hsdata         | a step of the identity handshake, a JSON text of at most 64 KiB   |
  * | \@_hsready        | the sender's side of the handshake passed, at most 128 KiB: an    |
- * |                   | empty text                                                        |
+ * |                   | empty text; or a full room refuses the receiver,                  |
+ * |                   | `{"ok":false,"err":"room full"}`                                  |
  * | \@_ping, \@_pong  | round-trip measurement                                            |
  * | \@_leave          | the sender leaves the room                                        |
  * | \@_response       | the answer to a request, `{"r":<id>}` or `{"r":<id>,"e":<reason>}`  |
@@ -835,6 +860,7 @@ public:
           options_{
               .max_receive_bytes = options.max_receive_bytes,
               .max_json_document_bytes = options.max_json_document_bytes,
+              .max_users = options.max_users,
               .memory = memory_,
           },
           room_id_(room_id, memory_),
@@ -842,6 +868,10 @@ public:
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
           peers_(memory_),
           users_(memory_),
+          reserved_(memory_),
+          refused_order_(memory_),
+          refused_(memory_),
+          flushing_(memory_),
           actions_(memory_),
           requests_(memory_),
           peer_join_(allocator()),
@@ -893,12 +923,13 @@ public:
 
     /**
      * Makes the handshake manager, whose callbacks reach the room while it lives: 0.27.0's
-     * `createHandshakeManager` as `room.ts` sets it up, its steps the identity handshake, without
-     * deferring the responder's ready frame before `max_users` (Task 2.5a).
+     * `createHandshakeManager` as `room.ts` sets it up, its steps the identity handshake, the
+     * responder's ready frame deferred in a room with `max_users`, whose admissions check the
+     * room's users.
      */
     void make_handshakes(const std::weak_ptr<room_impl>& weak) {
         handshakes_ = std::allocate_shared<handshake_manager>(
-            allocator(), app_->self_id(), false,
+            allocator(), app_->self_id(), options_.max_users.has_value(),
             handshake_callbacks{
                 .run_steps = bind<void(std::string_view, bool, handler<void(std::string_view)>)>(
                     [weak](std::string_view peer, bool initiator,
@@ -917,12 +948,24 @@ public:
                                                 ready_json);
                         }
                     }),
-                .local_passed = bind<bool(std::string_view)>([](std::string_view) { return true; }),
-                .admit = bind<bool(std::string_view)>([weak](std::string_view peer) {
-                    // As 0.27.0's acquireAdmissionSlot: the peer is still the room's, and the room
-                    // is not leaving.
+                .local_passed = bind<bool(std::string_view)>([weak](std::string_view peer) {
+                    // As 0.27.0's onLocalHandshakePassed: a full room refuses a new user.
                     const auto self = weak.lock();
-                    return self && !self->left_ && self->peers_.contains(peer);
+                    if (!self) {
+                        return false;
+                    }
+                    if (self->full_for(peer, false)) {
+                        self->refuse_full(peer);
+                        return false;
+                    }
+                    return true;
+                }),
+                .admit = bind<bool(std::string_view)>([weak](std::string_view peer) {
+                    // As 0.27.0's acquireAdmissionSlot: the peer is still the room's, the room is
+                    // not leaving, and it has a place for the peer's user.
+                    const auto self = weak.lock();
+                    return self && !self->left_ && self->peers_.contains(peer) &&
+                           self->try_admit(peer);
                 }),
                 .activate = bind<void(std::string_view)>([weak](std::string_view peer) {
                     if (const auto self = weak.lock()) {
@@ -939,6 +982,7 @@ public:
                         // and goes. Copies: the kick frees the views' storage.
                         const std::pmr::string peer(peer_view, self->memory_);
                         const std::pmr::string reason(reason_view, self->memory_);
+                        self->reserved_.erase(peer);
                         self->report(peer, make_error_code(error::handshake_failed), reason);
                         self->kick(peer, reason);
                     }),
@@ -1043,6 +1087,10 @@ public:
                     if (const auto self = weak.lock()) {
                         self->report(e);
                     }
+                }),
+                .should_connect = bind<bool(std::string_view)>([weak](std::string_view peer) {
+                    const auto self = weak.lock();
+                    return self && self->can_connect(peer);
                 }),
             },
             log_, memory_);
@@ -1300,6 +1348,12 @@ public:
             peer_link::make(peer, std::move(pc), std::move(channel), factory_, memory_);
         if (left_) {
             link->end("the room is left");
+            return;
+        }
+        // A peer a full room refused is not taken back while it stays full, as 0.27.0's onPeer
+        // destroys a peer canConnectPeer refuses.
+        if (!can_connect(peer)) {
+            link->end("room full");
             return;
         }
         if (const auto it = peers_.find(peer); it != peers_.end()) {
@@ -1786,8 +1840,25 @@ private:
         std::shared_ptr<identity_run> run;
         std::optional<identity_handshake::verified> identity;
         bool active = false;  // its handshake completed: the manager's `phase::active`
+        /** A full room's refusal arrived before the peer was verified, 0.27.0's deferredReady. */
+        bool refusal_before_verified = false;
         std::pmr::deque<pending_ping> pings;
     };
+
+    /** A link the room let go, until its last frames had their time to leave. */
+    struct flushing_link {
+        std::shared_ptr<peer_link> link;
+        std::pmr::string reason;
+        std::shared_ptr<backend::timer> grace;
+        std::shared_ptr<backend::timer> cap;
+    };
+
+    /** The most peers whose users a full room remembers, 0.27.0's `rejectedFullPeerUsers`. */
+    static constexpr std::size_t max_refused_peers = 256;
+    /** How long a let-go link waits at least before it ends, 0.27.0's destroyAfterFlush grace. */
+    static constexpr std::chrono::milliseconds flush_grace{40};
+    /** How long a let-go link waits at most before it ends, 0.27.0's destroyAfterFlush cap. */
+    static constexpr std::chrono::milliseconds flush_cap{150};
 
     struct action_slot {
         explicit action_slot(std::pmr::polymorphic_allocator<> a)
@@ -2102,8 +2173,10 @@ private:
         const peer_link* const mine = link.get();
         link->bind({
             .frame = bind<void(backend::bytes)>(
-                [weak, peer = std::pmr::string(peer, memory_)](backend::bytes frame) {
-                    if (const auto self = weak.lock()) {
+                [weak, peer = std::pmr::string(peer, memory_), mine](backend::bytes frame) {
+                    // A link the room let go, which flushes its last frames before it ends,
+                    // delivers nothing, as 0.27.0's destroyAfterFlush clears its peer's handlers.
+                    if (const auto self = weak.lock(); self && self->is_link_of(peer, mine)) {
                         self->wire_->handle(peer, std::move(frame));
                     }
                 }),
@@ -2196,14 +2269,22 @@ private:
         // Only an identity kept in the peer's state ends the run verified; a run whose peer went
         // ends as disconnected, never as verified.
         bool kept = false;
+        bool refused = false;
         if (out.done) {
             if (auto* const state = running(peer, run)) {
                 state->identity = std::move(*out.done);
                 kept = true;
+                refused = std::exchange(state->refusal_before_verified, false);
             }
         }
         if (!out.send.empty()) {
             send_internal("@_hsdata", peer, protocol::payload_format::json, out.send);
+        }
+        // A refusal that arrived before the peer was verified is delivered now, 0.27.0's
+        // deferredReady, from the microtask that runs while the steps await their last send: the
+        // steps then end on a peer that is gone.
+        if (refused) {
+            refused_by_full(peer);
         }
         if (!out.failure.empty()) {
             finish_identity(*run, out.failure);
@@ -2248,6 +2329,13 @@ private:
         if (!it->second.identity) {
             return;
         }
+        // As 0.27.0's onActivate, the room's users are counted again: a place taken meanwhile
+        // refuses the peer.
+        if (full_for(peer, false)) {
+            refuse_full(peer);
+            return;
+        }
+        reserved_.erase(it->first);
         it->second.active = true;
         it->second.run.reset();
         // Its user, the one its handshake verified, joins with its first peer, as 0.27.0 counts a
@@ -2283,7 +2371,8 @@ private:
         // A leaving room handles no handshake message, as 0.27.0's room checks isLeavingOrLeft.
         if (name == "@_hsready") {
             if (it_peer != peers_.end() && !left_) {
-                handshakes_->receive_ready(it_peer->first);
+                on_ready(it_peer->first, it_peer->second,
+                         refuses_full(m.format, as_text(m.payload()), decoding()));
             }
         } else if (name == "@_hsdata") {
             if (it_peer != peers_.end() && !left_) {
@@ -2445,7 +2534,224 @@ private:
         remove_peer(it->first, reason);
     }
 
-    void remove_peer(std::string_view peer_view, std::string_view reason) {
+    /**
+     * A peer's ready frame, 0.27.0's `handshakeReadyAction.onMessage`: kept until the peer is
+     * verified, as its `deferredReady`, then a full room's refusal ends a pending peer, and
+     * another ready frame goes to the handshake manager.
+     */
+    void on_ready(std::string_view peer, peer_state& state, bool refusal) {
+        if (!state.identity) {
+            // The last frame received wins, as 0.27.0 keeps one deferredReady; a plain one is the
+            // manager's remote readiness, which it keeps itself.
+            state.refusal_before_verified = refusal;
+            if (!refusal) {
+                handshakes_->receive_ready(peer);
+            }
+            return;
+        }
+        if (refusal) {
+            refused_by_full(peer);
+            return;
+        }
+        handshakes_->receive_ready(peer);
+    }
+
+    /** A pending peer whose room is full refused this one, 0.27.0's `processHandshakeReady` on
+     * `room full`: `error::room_full` with the peer's id, and the peer goes, unannounced. */
+    void refused_by_full(std::string_view peer_view) {
+        const auto it = peers_.find(peer_view);
+        if (it == peers_.end() || it->second.active || !handshakes_->phase_of(peer_view)) {
+            return;
+        }
+        const std::pmr::string peer(it->first, memory_);
+        handshakes_->clear(peer);
+        report(peer, make_error_code(error::room_full), "room full");
+        remove_peer(peer, "room full", true);
+    }
+
+    /** Whether `link` is still the one of `peer`. */
+    bool is_link_of(std::string_view peer, const peer_link* link) const {
+        const auto it = peers_.find(peer);
+        return it != peers_.end() && it->second.link.get() == link;
+    }
+
+    /** The user a peer is known as, 0.27.0's `userId` of its entry: the one its handshake
+     * verified, else the one this room refused while full (made the most recently used); empty
+     * when neither. */
+    std::optional<std::string_view> known_user(std::string_view peer) {
+        if (const auto it = peers_.find(peer); it != peers_.end() && it->second.identity) {
+            return std::string_view(it->second.identity->user_id);
+        }
+        const auto it = refused_.find(peer);
+        if (it == refused_.end()) {
+            return std::nullopt;
+        }
+        refused_order_.splice(refused_order_.begin(), refused_order_, it->second);
+        return std::string_view(it->second->second);
+    }
+
+    /** Remembers the user a full room refused a peer as, 0.27.0's `rejectedFullPeerUsers`: the
+     * most recently used first, the least recently used forgotten past
+     * @ref max_refused_peers. */
+    void remember_refused(std::string_view peer, std::string_view user) {
+        if (const auto it = refused_.find(peer); it != refused_.end()) {
+            refused_order_.splice(refused_order_.begin(), refused_order_, it->second);
+            it->second->second = user;
+            return;
+        }
+        if (refused_order_.size() >= max_refused_peers) {
+            refused_.erase(refused_order_.back().first);
+            refused_order_.pop_back();
+        }
+        refused_order_.emplace_front(std::pmr::string(peer, memory_),
+                                     std::pmr::string(user, memory_));
+        refused_.emplace(refused_order_.front().first, refused_order_.begin());
+    }
+
+    /**
+     * Whether the room is full for a peer that is not active, 0.27.0's `isFullForPeer`: its users,
+     * this peer's own, the active peers' and, with `include_reserved`, those of the admissions
+     * under way but the peer's own, reach `max_users`, and the peer's user (or its id, when it has
+     * none known) is not among them. Never for a room without `max_users`, nor an active peer.
+     */
+    bool full_for(std::string_view peer, bool include_reserved) {
+        if (!options_.max_users) {
+            return false;
+        }
+        if (const auto it = peers_.find(peer); it != peers_.end() && it->second.active) {
+            return false;
+        }
+        std::pmr::set<std::string_view> users(memory_);
+        users.insert(self_user_id());
+        for (const auto& [user, peer_ids] : users_.users()) {
+            users.insert(user);
+        }
+        if (include_reserved) {
+            for (const auto& [reserving, user] : reserved_) {
+                if (reserving != peer) {
+                    users.insert(user);
+                }
+            }
+        }
+        const auto candidate = known_user(peer).value_or(peer);
+        return !users.contains(candidate) && users.size() >= *options_.max_users;
+    }
+
+    /** Whether the room connects to a peer, 0.27.0's `canConnectPeer` without bans (Phase 3): not
+     * when its user is known and the room is full for it. */
+    bool can_connect(std::string_view peer) {
+        return !(known_user(peer).has_value() && full_for(peer, true));
+    }
+
+    /** Admits a peer whose steps passed, 0.27.0's `tryAdmitPeer`: in a room with `max_users`, a
+     * peer not active takes a place for its user (`reserved_`) until it joins or goes, or is
+     * refused when the room is full for it. */
+    bool try_admit(std::string_view peer) {
+        if (!options_.max_users) {
+            return true;
+        }
+        const auto it = peers_.find(peer);
+        if (it == peers_.end() || it->second.active) {
+            return true;
+        }
+        if (full_for(peer, true)) {
+            refuse_full(peer);
+            return false;
+        }
+        reserved_.insert_or_assign(std::pmr::string(it->first, memory_),
+                                   std::pmr::string(user_of(peer), memory_));
+        return true;
+    }
+
+    /**
+     * Refuses a peer because the room is full, 0.27.0's `rejectPeer` with `room full`: its user
+     * remembered, its handshake cleared, the ready frame of the refusal sent, then the peer goes,
+     * unannounced, its connection ended once the frame had its time to leave.
+     */
+    void refuse_full(std::string_view peer_view) {
+        const auto it = peers_.find(peer_view);
+        if (it == peers_.end()) {
+            return;
+        }
+        const std::pmr::string peer(it->first, memory_);
+        if (it->second.identity) {
+            remember_refused(peer, it->second.identity->user_id);
+        }
+        log_("room", "room full: refusing ", peer);
+        handshakes_->clear(peer);
+        reserved_.erase(peer);
+        send_internal("@_hsready", peer, protocol::payload_format::json, room_full_ready);
+        remove_peer(peer, "room full", true);
+    }
+
+    /**
+     * Ends a link the room let go once its last frames had their time to leave, 0.27.0's
+     * `destroyAfterFlush`: 40 ms at least, then once the channel has drained, 150 ms at most. A
+     * link already closed ends at once.
+     */
+    void flush_then_end(const std::shared_ptr<peer_link>& link, std::string_view reason) {
+        if (!link->live()) {
+            link->end(reason);
+            return;
+        }
+        const peer_link* const key = link.get();
+        auto& f = flushing_
+                      .try_emplace(key,
+                                   flushing_link{
+                                       .link = link,
+                                       .reason = std::pmr::string(reason, memory_),
+                                       .grace = factory_.make_timer(memory_),
+                                       .cap = factory_.make_timer(memory_),
+                                   })
+                      .first->second;
+        const auto weak = weak_from_this();
+        f.grace->start(flush_grace, bind<void()>([weak, key] {
+                           const auto self = weak.lock();
+                           if (!self) {
+                               return;
+                           }
+                           if (const auto at = self->flushing_.find(key);
+                               at != self->flushing_.end()) {
+                               at->second.link->wait_drained(self->bind_flushed(weak, key));
+                           }
+                       }));
+        f.cap->start(flush_cap, bind<void()>([weak, key] {
+                         if (const auto self = weak.lock()) {
+                             self->end_flushed(key);
+                         }
+                     }));
+    }
+
+    /** The handler that ends a flushing link once its channel drained. */
+    handler<void(bool)> bind_flushed(const std::weak_ptr<room_impl>& weak, const peer_link* key) {
+        return bind<void(bool)>([weak, key](bool) {
+            if (const auto self = weak.lock()) {
+                self->end_flushed(key);
+            }
+        });
+    }
+
+    /** Ends a flushing link, once. */
+    void end_flushed(const peer_link* key) {
+        const auto it = flushing_.find(key);
+        if (it == flushing_.end()) {
+            return;
+        }
+        auto node = flushing_.extract(it);
+        node.mapped().grace->cancel();
+        node.mapped().cap->cancel();
+        node.mapped().link->end(node.mapped().reason);
+    }
+
+    /**
+     * Lets a peer go: its user leaves with its last peer, its handshake, its pings, its transfers
+     * and its requests end, and its negotiation is forgotten.
+     *
+     * @param refused Whether a full room refused it, or this side was refused by one: its
+     * connection then ends once the refusal had its time to leave, and the room does not announce
+     * itself again for it, as 0.27.0's exitPeer with `roomFullErr`.
+     */
+    void remove_peer(std::string_view peer_view, std::string_view reason, bool refused = false) {
         const auto it = peers_.find(peer_view);
         if (it == peers_.end()) {
             return;
@@ -2462,9 +2768,14 @@ private:
             state.active && users_.remove(peer).has_value() && user != self_user_id();
         log_("room", "peer ", peer, " gone: ", reason);
         handshakes_->clear(peer);
+        reserved_.erase(peer);
         // The connection ends with the peer, as 0.27.0 destroys a peer it lets go; at its own end,
         // it has ended already.
-        state.link->end(reason);
+        if (refused) {
+            flush_then_end(state.link, reason);
+        } else {
+            state.link->end(reason);
+        }
         for (auto& ping : state.pings) {
             complete(std::move(ping.handler), make_error_code(error::peer_disconnected),
                      std::chrono::milliseconds{});
@@ -2477,7 +2788,9 @@ private:
         // The peer's next announcement or offer negotiates a new connection, as 0.27.0's
         // reannounceAfterDisconnect has the room met again.
         signaling_->forget(peer);
-        strategy_->restart_announcements();
+        if (!refused) {
+            strategy_->restart_announcements();
+        }
         if (state.active) {
             // As a join, a leave is not reported once the room is left.
             post([weak = weak_from_this(), peer = std::move(peer), user = std::move(user),
@@ -2501,6 +2814,12 @@ private:
         auto peers = std::move(peers_);
         peers_.clear();
         users_.clear();  // without leaves, as 0.27.0 reports none once its room is leaving
+        reserved_.clear();
+        for (auto& [key, flushing] : std::exchange(flushing_, decltype(flushing_)(memory_))) {
+            flushing.grace->cancel();
+            flushing.cap->cancel();
+            flushing.link->end("the room is left");
+        }
         for (auto& [id, state] : peers) {
             handshakes_->clear(id);
             state.link->end("the room is left");
@@ -2573,6 +2892,17 @@ private:
     std::shared_ptr<nostr_strategy> strategy_;
     std::pmr::map<std::pmr::string, peer_state, std::less<>> peers_;
     user_table users_;  // the active peers', by user
+    // The users of the admissions under way, by peer, 0.27.0's reservedAdmissionUsers.
+    std::pmr::map<std::pmr::string, std::pmr::string, std::less<>> reserved_;
+    // The users of the peers refused while full, the most recently used first, and by peer, each
+    // key a view of its entry's peer in the list, which owns it.
+    std::pmr::list<std::pair<std::pmr::string, std::pmr::string>> refused_order_;
+    std::pmr::map<std::string_view,
+                  std::pmr::list<std::pair<std::pmr::string, std::pmr::string>>::iterator,
+                  std::less<>>
+        refused_;
+    // The links let go, flushing, by identity.
+    std::pmr::map<const peer_link*, flushing_link> flushing_;
     std::pmr::map<std::pmr::string, action_slot, std::less<>> actions_;
     std::pmr::map<std::pmr::string, request_waiter, std::less<>> requests_;
     listeners<void(const peer_event&)> peer_join_;

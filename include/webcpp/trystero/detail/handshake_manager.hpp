@@ -49,7 +49,7 @@ struct handshake_callbacks {
      * text, else a JSON text. */
     handler<void(std::string_view peer, std::string_view ready_json)> send_ready;
     /** The steps passed on this side, 0.27.0's `onLocalHandshakePassed`: false when the room
-     * refused the peer (Task 2.5a: banned, full). */
+     * refused the peer, a full room a new user (a ban needs roles, Phase 3). */
     handler<bool(std::string_view peer)> local_passed;
     /** Admits the peer, 0.27.0's `acquireAdmissionSlot`: false when the room no longer wants it. */
     handler<bool(std::string_view peer)> admit;
@@ -128,8 +128,8 @@ public:
      *
      * @param self_id This peer's id, copied: the lower id initiates.
      * @param defer_responder_ready Whether the responder waits for the initiator's ready frame
-     * before it admits and sends its own, 0.27.0's `deferResponderReady` (a room with
-     * `max_users`, Task 2.5a).
+     * before it admits and sends its own, 0.27.0's `deferResponderReady`: a room with
+     * `max_users`.
      * @param cb What the manager asks of its room.
      * @param factory The backend, for the timers; it outlives the manager.
      * @param memory The room's resource, which outlives the manager.

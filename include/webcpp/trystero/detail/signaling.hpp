@@ -117,6 +117,9 @@ private:
  * | candidate    | adds it to the connection its offer id names, or keeps it until that           |
  * |              | connection has a remote description                                            |
  *
+ * A peer the room does not want (`callbacks::should_connect`: one a full room refused) gets none of
+ * this: its announcements, offers and answers are ignored, an answer ending the offer it answers.
+ *
  * An offer, an answer and every candidate travel sealed under the room's AES key, with the AAD of
  * their type, their sender and their offer id (protocol/seal.hpp), sealed and opened at once, in
  * the call, as 0.27.0's `encrypt` and `decrypt` do them in WebCrypto. A negotiation ends when the
@@ -199,6 +202,13 @@ public:
          * set, and its app's.
          */
         handler<void(const room_error&)> failed;
+        /**
+         * Whether the room wants a connection to a peer, 0.27.0's `shouldConnectPeer`, which its
+         * room answers with `canConnectPeer`: false for a peer whose user a full room refused
+         * while it stays full. Asked before an announcement, an offer or an answer of that peer is
+         * acted on; empty, every peer is wanted. The view is valid for the call.
+         */
+        handler<bool(std::string_view peer)> should_connect;
     };
 
     /** Every allocation goes through `memory`, the room's, the parsed signals' documents and the
@@ -242,6 +252,19 @@ public:
         const auto message =
             document.has_value() ? protocol::read_signal(document->root()) : std::nullopt;
         if (!message || message->peer_id == self_id_) {
+            return;
+        }
+        // A peer the room does not want is not negotiated with, as 0.27.0's signal handler asks
+        // shouldConnectPeer before it acts on an announcement, an offer or an answer: an answer
+        // ends the offer it answers. A candidate needs no asking, its connection having been.
+        const bool candidate_only =
+            !message->is_announcement() && message->offer.empty() && message->answer.empty();
+        if (!candidate_only && cb_.should_connect && !cb_.should_connect(message->peer_id)) {
+            if (const auto known = peers_.find(message->peer_id);
+                known != peers_.end() && !message->answer.empty() && !known->second.connected) {
+                reset_offer(known->second);
+                drop_if_done(message->peer_id);
+            }
             return;
         }
         auto it = peers_.find(message->peer_id);

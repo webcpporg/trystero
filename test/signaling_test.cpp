@@ -248,6 +248,8 @@ struct answerer {
     answering_network net;
     std::vector<published_signal> published;
     std::vector<boost::system::error_code> failures;
+    /** What the signaling's should_connect answers. */
+    bool wanted = true;
     std::shared_ptr<detail::signaling> signaling;
 
     explicit answerer(const fixture_value& oracle)
@@ -266,6 +268,7 @@ struct answerer {
                     },
                 .connected = {},
                 .failed = [this](const trystero::room_error& e) { failures.push_back(e.code); },
+                .should_connect = [this](std::string_view) { return wanted; },
             },
             detail::logger(), memory());
         signaling->set_key(room_key(oracle));
@@ -370,6 +373,23 @@ void a_signal_past_its_bound_is_dropped(const fixture_value& oracle) {
         BOOST_TEST(a.published.empty());
         BOOST_TEST(a.failures.empty());
     }
+}
+
+// The offer of a peer its room does not want, as 0.27.0's signal handler asks shouldConnectPeer
+// (a full room's refused user), is ignored: no connection, no answer, no report. The same offer
+// once the peer is wanted is answered.
+void an_unwanted_peers_offer_is_ignored(const fixture_value& oracle) {
+    const auto offer = resealed_offer(oracle, str(oracle["cases"][0]["offer"]));
+    answerer a(oracle);
+    a.wanted = false;
+    a.receive(offer);
+    BOOST_TEST(a.net.connections.empty());
+    BOOST_TEST(a.published.empty());
+    BOOST_TEST(a.failures.empty());
+    a.wanted = true;
+    a.receive(offer);
+    BOOST_TEST_EQ(a.net.connections.size(), 1U);
+    BOOST_TEST_EQ(a.published.size(), 2U);
 }
 
 /** A relay's connection that keeps what the strategy sends it. */
@@ -1045,6 +1065,7 @@ struct signaling_pair {
                             });
                         },
                     .failed = [](const trystero::room_error&) {},
+                    .should_connect = {},
                 },
                 detail::logger(), memory());
             sides[i]->set_key(key);
@@ -1150,6 +1171,7 @@ int main(int argc, char* argv[]) {
     const auto oracle = fixture->root()["answerer"];
     an_answerers_signals_are_trysteros(oracle);
     a_signal_past_its_bound_is_dropped(oracle);
+    an_unwanted_peers_offer_is_ignored(oracle);
     a_relay_text_past_its_bound_is_dropped();
     a_relay_text_past_its_depth_is_dropped();
     subscriptions_hold_250_topics_and_distinct_kinds();

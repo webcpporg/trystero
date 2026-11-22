@@ -62,7 +62,10 @@ enum class error {
     invalid_configuration,
     /** The app already holds a room of that id; a room is joined once per app. */
     already_joined,
-    /** The room holds as many peers as it accepts, 0.27.0's "room full". */
+    /**
+     * The room holds as many users as its `room_options::max_users` accepts, 0.27.0's "room full":
+     * a room refused by a peer whose room is full reports it, with the peer's id.
+     */
     room_full,
     /** The peer is banned from the room, 0.27.0's "peer banned". */
     banned,
@@ -105,6 +108,11 @@ enum class error {
      * key material; expected exported userKey or P-256 JWK", which `importUserIdentity` throws.
      */
     invalid_user_identity,
+    /**
+     * A room's `room_options::max_users` is 0 or above 2^53 - 1, 0.27.0's "maxUsers must be a
+     * positive safe integer", which `joinRoom` throws: `app::join` refuses it.
+     */
+    invalid_max_users,
 };
 
 /**
@@ -176,6 +184,7 @@ private:
             case error::action_redefined: return "action type cannot be redefined";
             case error::invalid_user_identity:
                 return "invalid user identity key material; expected exported userKey or P-256 JWK";
+            case error::invalid_max_users: return "maxUsers must be a positive safe integer";
         }
         return "unknown webcpp.trystero error";
     }

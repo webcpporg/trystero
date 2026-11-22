@@ -112,6 +112,9 @@ struct app_config {
  * default, to finish the handshake.
  */
 struct room_options {
+    /** The largest `max_users` a room takes, JavaScript's `Number.MAX_SAFE_INTEGER`, 2^53 - 1. */
+    static constexpr std::uint64_t max_users_limit = (std::uint64_t{1} << 53U) - 1;
+
     /**
      * The most bytes the room reserves at once for the transfers it receives, across peers,
      * Trystero's `maxReceiveBytes`.
@@ -128,6 +131,18 @@ struct room_options {
      * @see "JSON texts", in the guide.
      */
     std::uint64_t max_json_document_bytes = webcpp::document::parse_options().max_document_bytes;
+    /**
+     * The most users the room holds, its own user included, Trystero's `maxUsers`; empty means no
+     * bound. `app::join` refuses 0 and a value above @ref max_users_limit with
+     * `error::invalid_max_users`, as 0.27.0's `joinRoom` throws on a value that is not a positive
+     * safe integer.
+     *
+     * The room counts users, not peers, by the user ids their handshakes verified: another peer of
+     * a user already in the room is admitted when it is full. A peer of a new user is refused once
+     * its handshake has passed, with a ready frame saying "room full", which its room reports as
+     * `error::room_full`; the room then does not connect to that peer again while it stays full.
+     */
+    std::optional<std::size_t> max_users = {};
     /**
      * The resource every allocation of the room goes through: its state, negotiations, peer
      * connections and data channels, the frames sent and received on them, relays, actions,

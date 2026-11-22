@@ -4658,6 +4658,295 @@ void leaving_after_one_side_verified_reports_nothing() {
     a_handshake_left_at_step(3);
 }
 
+/** A room's options with `max_users` set to `n`. */
+trystero::room_options at_most(std::size_t n) {
+    trystero::room_options options;
+    options.max_users = n;
+    return options;
+}
+
+/** The payload of an inline `@_hsready` frame, as text; empty for another frame. */
+std::optional<std::string> ready_payload(std::span<const std::uint8_t> frame) {
+    const auto decoded = trystero::protocol::decode_action(frame);
+    const auto* p =
+        decoded.frame ? std::get_if<trystero::protocol::proposal>(&*decoded.frame) : nullptr;
+    if (p == nullptr || p->kind != trystero::protocol::frame_kind::inline_payload ||
+        p->name != "@_hsready") {
+        return std::nullopt;
+    }
+    return std::string(reinterpret_cast<const char*>(p->payload.data()), p->payload.size());
+}
+
+/** An app's setup of `label` whose connections are made with an ICE server of its own, `url`, so
+ * that the memory network's `on_made` tells them apart. */
+trystero::test::app_setup app_config_tagged(std::string_view label, std::string_view url) {
+    auto config = app_config(label);
+    config.ice_servers.push_back({
+        .urls = {std::pmr::string(url)},
+        .username = std::pmr::string(),
+        .credential = std::pmr::string(),
+    });
+    return config;
+}
+
+/** Records every report of a room, whatever its code. */
+auto record_all_errors(fixture& f, std::vector<reported_error>& to) {
+    return [&f, &to](const trystero::room_error& e) {
+        to.push_back({
+            .code = e.code,
+            .message = std::string(e.message),
+            .app_id = std::string(e.app_id),
+            .room_id = std::string(e.room_id),
+            .peer_id = std::string(e.peer_id),
+            .stage = e.stage,
+            .turn_configured = e.turn_configured,
+            .at = f.net.steady_now(),
+        });
+    };
+}
+
+/** Checks that every report of `reports` is 0.27.0's `room-full` of room `room_id`, one from each
+ * of `peers`. */
+void check_room_full_reports(const std::vector<reported_error>& reports, std::string_view room_id,
+                             std::set<std::string> peers) {
+    std::set<std::string> from;
+    for (const auto& e : reports) {
+        BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "room-full");
+        BOOST_TEST_EQ(e.message, "room full");
+        BOOST_TEST_EQ(e.room_id, room_id);
+        from.insert(e.peer_id);
+    }
+    BOOST_TEST_EQ(reports.size(), peers.size());
+    BOOST_TEST(from == peers);
+}
+
+// A room of at most 2 users that holds 2 refuses a third user once its handshake passed: the
+// newcomer reports room_full from each of the two, with 0.27.0's message and the refusing peer's
+// id, and leaves; the two report nothing, and never report it joining. The newcomer is unbounded,
+// so that the refusals are the two rooms' alone.
+void a_full_room_refuses_a_new_user() {
+    fixture f{true};
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("fullAAAAAAAAAAAAAAAA"));
+    auto a = join(a_app, "full", at_most(2));
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("fullBBBBBBBBBBBBBBBB"));
+    auto b = join(b_app, "full", at_most(2));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    std::vector<reported_error> ab_reports;
+    a.on_error(record_all_errors(f, ab_reports));
+    b.on_error(record_all_errors(f, ab_reports));
+    trystero::test::app c_app(f.io.get_executor(), f.net, app_config("fullCCCCCCCCCCCCCCCC"));
+    const std::string c_id(c_app.self_id());
+    std::size_t c_joins = 0;
+    const auto count_c = [&](const trystero::peer_event& e) { c_joins += e.peer_id == c_id; };
+    a.on_peer_join(count_c);
+    b.on_peer_join(count_c);
+    auto c = join(c_app, "full");
+    std::vector<reported_error> c_reports;
+    c.on_error(record_all_errors(f, c_reports));
+    BOOST_TEST(run_until(f, [&] { return c_reports.size() == 2; }));
+    trystero::test::advance(f, 30'000ms);  // announcements come and go: nothing more
+    check_room_full_reports(c_reports, "full",
+                            {std::string(a_app.self_id()), std::string(b_app.self_id())});
+    BOOST_TEST(ab_reports.empty());
+    BOOST_TEST_EQ(c_joins, 0U);
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+    BOOST_TEST_EQ(b.peers().size(), 1U);
+    BOOST_TEST(c.peers().empty());
+}
+
+// The room counts users, not peers: a second peer of a user already in a full room of at most 2
+// users, an app importing that user's identity, is admitted by every room, its own included,
+// whose own user is that user.
+void another_peer_of_a_present_user_is_admitted() {
+    fixture f{true};
+    const auto identity = make_user_identity();
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config("presentAAAAAAAAAAAAA"));
+    auto a = join(a_app, "present", at_most(2));
+    trystero::test::app b1_app(f.io.get_executor(), f.net,
+                               app_config_of("presentBBBBBBBBBBBB1", identity));
+    auto b1 = join(b1_app, "present", at_most(2));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b1.peers().size() == 1; })));
+    std::vector<reported_error> reports;
+    a.on_error(record_all_errors(f, reports));
+    b1.on_error(record_all_errors(f, reports));
+    trystero::test::app b2_app(f.io.get_executor(), f.net,
+                               app_config_of("presentBBBBBBBBBBBB2", identity));
+    auto b2 = join(b2_app, "present", at_most(2));
+    b2.on_error(record_all_errors(f, reports));
+    BOOST_TEST(run_until(f, [&] {
+        return a.peers().size() == 2 && b1.peers().size() == 2 && b2.peers().size() == 2;
+    }));
+    BOOST_TEST_EQ(a.users().size(), 1U);
+    BOOST_TEST(a.users().contains(identity.user_id()));
+    BOOST_TEST(reports.empty());
+}
+
+// Two newcomers, B and C, whose handshakes with A, a room of at most 2 users alone in it, pass
+// while neither has joined: A admits B first and waits for its ready frame, which the network
+// holds; C's handshake then passes, and the place B holds is taken, as 0.27.0's
+// reservedAdmissionUsers counts it: C is refused at admission, its only ready frame from A the
+// refusal, and B joins once its ready frame arrives. A, the lowest id, initiates both handshakes;
+// B and C are unbounded.
+void concurrent_admissions_respect_the_limit() {
+    counting_resource a_memory;  // first: the apps' connection ends are made in them
+    counting_resource b_memory;
+    counting_resource c_memory;
+    fixture f{true};
+    const auto labels = ordered_labels(3, "race");
+    bool holding = true;
+    std::optional<std::size_t> held_at;  // A's end of its connection to B
+    std::vector<std::string> to_c;       // the ready payloads A sends C
+    f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
+        const auto ready = ready_payload(frame);
+        if (ready && end_in(f, from, &a_memory) && end_in(f, to, &c_memory)) {
+            to_c.push_back(*ready);
+        }
+        if (ready && holding && end_in(f, from, &b_memory) && end_in(f, to, &a_memory)) {
+            holding = false;
+            held_at = to;
+            return trystero::test::memory_network::verdict::hold;
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config(labels[0]);
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "race", at_most(2));
+    auto b_config = app_config(labels[1]);
+    b_config.memory = &b_memory;
+    trystero::test::app b_app(f.io.get_executor(), f.net, std::move(b_config));
+    auto b = join(b_app, "race");
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
+    BOOST_TEST(a.peers().empty());  // B is admitted, not joined
+    auto c_config = app_config(labels[2]);
+    c_config.memory = &c_memory;
+    trystero::test::app c_app(f.io.get_executor(), f.net, std::move(c_config));
+    auto c = join(c_app, "race");
+    std::vector<reported_error> c_reports;
+    c.on_error(record_errors(f, c_reports, trystero::error::room_full));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return !c_reports.empty(); })));
+    check_room_full_reports(c_reports, "race", {std::string(a_app.self_id())});
+    f.net.release(*held_at);
+    BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1; }));
+    trystero::test::advance(f, 1000ms);
+    if (BOOST_TEST_EQ(a.peers().size(), 1U)) {
+        BOOST_TEST_EQ(a.peers().begin()->first, b_app.self_id());
+    }
+    const std::vector<std::string> refusal{R"({"ok":false,"err":"room full"})"};
+    BOOST_TEST_ALL_EQ(to_c.begin(), to_c.end(), refusal.begin(), refusal.end());
+    BOOST_TEST_EQ(c_reports.size(), 1U);
+}
+
+// A room that refused a user does not connect to it again while it stays full, as 0.27.0's
+// canConnectPeer gates its signaling: a minute of the newcomer's announcements and offers, which
+// it goes on making with connections of its own, makes no connection in either full room. Once one
+// of them leaves, the other has a place, and the newcomer joins it.
+void a_refused_user_is_not_dialed_again() {
+    fixture f{true};
+    std::map<std::string, std::size_t> made;  // connections made, by the ICE server of their app
+    f.net.on_made = [&](std::size_t, std::span<const trystero::backend::ice_server> servers) {
+        if (!servers.empty() && !servers.front().urls.empty()) {
+            ++made[std::string(servers.front().urls.front())];
+        }
+    };
+    trystero::test::app a_app(f.io.get_executor(), f.net,
+                              app_config_tagged("dialAAAAAAAAAAAAAAAA", "stun:a.test:3478"));
+    auto a = join(a_app, "dial", at_most(2));
+    trystero::test::app b_app(f.io.get_executor(), f.net,
+                              app_config_tagged("dialBBBBBBBBBBBBBBBB", "stun:b.test:3478"));
+    std::optional<trystero::room> b(join(b_app, "dial", at_most(2)));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b->peers().size() == 1; })));
+    trystero::test::app c_app(f.io.get_executor(), f.net, app_config("dialCCCCCCCCCCCCCCCC"));
+    auto c = join(c_app, "dial");
+    std::vector<reported_error> c_reports;
+    c.on_error(record_errors(f, c_reports, trystero::error::room_full));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return c_reports.size() == 2; })));
+    const auto a_made = made["stun:a.test:3478"];
+    const auto b_made = made["stun:b.test:3478"];
+    const auto c_made = made["stun:stun.l.google.com:19302"];  // the newcomer's, the default ones
+    trystero::test::advance(f, 60'000ms);
+    BOOST_TEST_EQ(made["stun:a.test:3478"], a_made);
+    BOOST_TEST_EQ(made["stun:b.test:3478"], b_made);
+    BOOST_TEST_GT(made["stun:stun.l.google.com:19302"], c_made);  // it went on trying
+    BOOST_TEST_EQ(c_reports.size(), 2U);
+    BOOST_TEST(c.peers().empty());
+    b.reset();
+    BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && c.peers().size() == 1; }, 60s));
+    if (BOOST_TEST_EQ(a.peers().size(), 1U)) {
+        BOOST_TEST_EQ(a.peers().begin()->first, c_app.self_id());
+    }
+}
+
+// A full room's refusal that reaches a peer before it verified the refusing peer waits for the
+// verification, as 0.27.0 keeps it as the entry's deferredReady: A, the initiator, gets the
+// refusal while B's step 2 is held, reports nothing, and reports room_full with B's id once step 2
+// arrives and verifies B, before either joins.
+void a_refusal_waits_for_the_peers_verification() {
+    counting_resource b_memory;
+    fixture f{true};
+    bool holding = true;
+    std::optional<std::size_t> held_at;  // A's end
+    f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
+        if (holding && end_in(f, from, &b_memory) && step_number(handshake_step(frame)) == 2) {
+            holding = false;
+            held_at = to;
+            return trystero::test::memory_network::verdict::hold;
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    const auto labels = ordered_labels(2, "deferred");
+    trystero::test::app a_app(f.io.get_executor(), f.net, app_config(labels[0]));
+    auto a = join(a_app, "deferred");
+    auto b_config = app_config(labels[1]);
+    b_config.memory = &b_memory;
+    trystero::test::app b_app(f.io.get_executor(), f.net, std::move(b_config));
+    auto b = join(b_app, "deferred");
+    std::vector<reported_error> a_reports;
+    a.on_error(record_all_errors(f, a_reports));
+    std::size_t joins = 0;
+    a.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    b.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
+    const std::string_view refusal = R"({"ok":false,"err":"room full"})";
+    const auto frame = trystero::protocol::encode_inline(
+        "@_hsready", trystero::protocol::payload_format::json, "",
+        std::span(reinterpret_cast<const std::uint8_t*>(refusal.data()), refusal.size()));
+    f.net.inject(*held_at, frame);
+    trystero::test::advance(f, 100ms);
+    BOOST_TEST(a_reports.empty());
+    f.net.release(*held_at);
+    BOOST_TEST(run_until(f, [&] { return !a_reports.empty(); }));
+    check_room_full_reports(a_reports, "deferred", {std::string(b_app.self_id())});
+    BOOST_TEST_EQ(joins, 0U);
+    BOOST_TEST(a.peers().empty());
+    // A is not full itself: B's next announcement, once its connection ended, meets it again.
+}
+
+// `max_users` is 0.27.0's positive safe integer: 0 and 2^53 are refused with invalid_max_users,
+// before the app looks for a room of that id, and 1 and 2^53 - 1 are taken.
+void max_users_zero_is_refused() {
+    fixture f{true};
+    trystero::test::app app(f.io.get_executor(), f.net, app_config("maxUsersAAAAAAAAAAAA"));
+    const auto zero = app.join("bounded", at_most(0));
+    BOOST_TEST(zero.has_error() && zero.error() == trystero::error::invalid_max_users);
+    BOOST_TEST_EQ(make_error_code(trystero::error::invalid_max_users).message(),
+                  "maxUsers must be a positive safe integer");
+    const auto one = app.join("bounded", at_most(1));
+    BOOST_TEST(one.has_value());
+    const auto again = app.join("bounded", at_most(0));
+    BOOST_TEST(again.has_error() && again.error() == trystero::error::invalid_max_users);
+    if constexpr (sizeof(std::size_t) > 4) {
+        constexpr auto limit = trystero::room_options::max_users_limit;
+        const auto above = app.join("above", at_most(static_cast<std::size_t>(limit + 1)));
+        BOOST_TEST(above.has_error() && above.error() == trystero::error::invalid_max_users);
+        const auto at = app.join("at", at_most(static_cast<std::size_t>(limit)));
+        BOOST_TEST(at.has_value());
+    }
+}
+
 // The names of the codes are 0.27.0's RoomErrorCode, and every other code has none.
 void error_names_match_trystero() {
     using trystero::error;
@@ -4677,7 +4966,7 @@ void error_names_match_trystero() {
     for (const auto& [e, name] : named) {
         BOOST_TEST_EQ(trystero::room_error_code_name(e), name);
     }
-    for (int value = 1; value <= static_cast<int>(error::invalid_user_identity); ++value) {
+    for (int value = 1; value <= static_cast<int>(error::invalid_max_users); ++value) {
         const auto e = static_cast<error>(value);
         if (std::ranges::none_of(named, [&](const auto& n) { return n.first == e; })) {
             BOOST_TEST(trystero::room_error_code_name(e).empty());
@@ -4799,6 +5088,7 @@ void the_errors_have_their_values() {
     BOOST_TEST_EQ(static_cast<int>(trystero::error::invalid_user_identity), 27);
     BOOST_TEST_EQ(make_error_code(trystero::error::invalid_user_identity).message(),
                   "invalid user identity key material; expected exported userKey or P-256 JWK");
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::invalid_max_users), 28);
 }
 
 }  // namespace
@@ -4850,6 +5140,12 @@ int main(int argc, char* argv[]) {
     run_case(another_fingerprint_fails_the_handshake);
     run_case(leaving_during_a_handshake_reports_nothing);
     run_case(leaving_after_one_side_verified_reports_nothing);
+    run_case(a_full_room_refuses_a_new_user);
+    run_case(another_peer_of_a_present_user_is_admitted);
+    run_case(concurrent_admissions_respect_the_limit);
+    run_case(a_refused_user_is_not_dialed_again);
+    run_case(a_refusal_waits_for_the_peers_verification);
+    run_case(max_users_zero_is_refused);
     run_case(password_room_keys_complete_after_the_join_returns);
     run_case(rooms_of_one_password_derive_once_per_room);
     run_case(a_failed_derivation_is_retried);

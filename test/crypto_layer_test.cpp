@@ -825,20 +825,23 @@ void action_frames_match() {
 
 // The handshake's frames 0.27.0 writes (handshake_frames), each the inline frame of its action, as
 // the port's encoder writes it for a room: the ready frame, `@_hsready` with the empty text of
-// 0.27.0's `payload || ''`, and a step of the identity handshake, `@_hsdata` with its JSON. The
-// refusals' frames come with the task that sends them (2.5a).
+// 0.27.0's `payload || ''`; a step of the identity handshake, `@_hsdata` with its JSON; and the
+// refusal of a full room, `@_hsready` with its JSON. The ban's frame comes with the task that
+// sends it (2.5b).
 void handshake_frames_match() {
     std::size_t matched = 0;
     for (const auto entry : section("handshake_frames")) {
         const auto name = str(entry["case"]);
-        if (name != "ready" && name != "step 1") {
+        if (name != "ready" && name != "step 1" && name != "room full") {
             continue;
         }
         const bool ready = name == "ready";
-        BOOST_TEST_EQ(str(entry["action"]), ready ? "@_hsready" : "@_hsdata");
+        BOOST_TEST_EQ(str(entry["action"]), name == "step 1" ? "@_hsdata" : "@_hsready");
         const auto payload = str(entry["payload_json"]);
         if (ready) {
             BOOST_TEST_EQ(payload, R"("")");
+        } else if (name == "room full") {
+            BOOST_TEST_EQ(payload, R"({"ok":false,"err":"room full"})");
         } else {
             BOOST_TEST(payload.starts_with(R"({"__trystero_id":1,)"));
         }
@@ -851,18 +854,19 @@ void handshake_frames_match() {
             continue;
         }
         BOOST_TEST_EQ(str(frames[0]["from"]), "A");
-        // The room sends a step as a JSON payload, the ready frame's empty text as a text.
+        // The room sends a step and a refusal as a JSON payload, the ready frame's empty text as
+        // a text.
         const auto encoded =
             ready
                 ? tp::encode_inline("@_hsready", tp::payload_format::text, "", {})
-                : tp::encode_inline("@_hsdata", tp::payload_format::json, "",
+                : tp::encode_inline(str(entry["action"]), tp::payload_format::json, "",
                                     std::span(reinterpret_cast<const std::uint8_t*>(payload.data()),
                                               payload.size()));
         BOOST_TEST_EQ(encoded.size(), integer(frames[0]["size"]));
         BOOST_TEST(is_recorded(encoded, frames[0]));
         ++matched;
     }
-    BOOST_TEST_EQ(matched, 2U);
+    BOOST_TEST_EQ(matched, 3U);
 }
 
 // The P-256 identity of 0.27.0 (Phase 2): keys, compact keys, the user key's text, the user-proof
