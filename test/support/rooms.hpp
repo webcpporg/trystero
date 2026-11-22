@@ -181,9 +181,14 @@ inline void group_users(const trystero::app& a, const memory_network& net) {
         [&net](std::string_view peer) { return net.user_of(peer); });
 }
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. What must not happen within a time is waited for on
+ * the virtual clock. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
 inline bool run_until(webcpp::asio::io_context& io, const std::function<bool()>& done,
-                      std::chrono::milliseconds limit = 10s) {
+                      std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(20ms);  // lint-run: the memory relays and the rooms' timers post to it
@@ -207,13 +212,13 @@ struct fixture {
 };
 
 /** Runs until `done` holds, for at most `limit`: of the virtual clock when the fixture has one,
- * moving it from timer to timer, else of the wall clock. On the virtual clock it fires at most
- * `max_steps` timers, and fails the case by name past them: a timer re-armed without delay would
- * otherwise hold the clock still forever. */
+ * moving it from timer to timer, else of the wall clock, where it is at least `hang_guard`. On the
+ * virtual clock it fires at most `max_steps` timers, and fails the case by name past them: a timer
+ * re-armed without delay would otherwise hold the clock still forever. */
 inline bool run_until(fixture& f, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = std::chrono::seconds(10)) {
     if (!f.net.virtual_clock) {
-        return run_until(f.io, done, limit);
+        return run_until(f.io, done, std::max(limit, hang_guard));
     }
     const auto end = f.net.steady_now() + limit;
     for (std::size_t steps = 0; !done(); ++steps) {

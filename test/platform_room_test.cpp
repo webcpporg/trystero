@@ -9,7 +9,7 @@
 // timers. Only the relays are the memory ones of support/memory_backend.hpp, and the backend binds
 // every connection to 127.0.0.1, so the loopback is the only network needed. A room with a
 // password announces once its PBKDF2 of 600,000 iterations completed, seconds in a debug build on
-// a loaded machine: its waits are bounds of `derivation_bound`, never what the case measures.
+// a loaded machine: its waits are hang guards of `derivation_bound`, never what the case measures.
 
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -103,7 +103,7 @@ trystero::room join(trystero::app& a, std::string_view room_id,
 }
 
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 15s) {
+               std::chrono::milliseconds limit = derivation_bound) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: libdatachannel's threads post the connections' events to it
