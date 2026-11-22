@@ -42,6 +42,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "cases.hpp"
@@ -541,7 +542,9 @@ void ping_measures_a_round_trip() {
     BOOST_TEST(*missing == trystero::error::no_such_peer);
 }
 
-void the_same_password_joins_and_another_does_not() {
+// Peers of another password never meet: 0.27.0 keeps them out by the sealing of their signals
+// alone, with no password challenge on the connection, which is never made.
+void two_passwords_never_meet() {
     fixture f{true};
     trystero::test::app a_app(f.io.get_executor(), f.net,
                               app_config("FFFFFFFFFFFFFFFFFFFF", "s3cret"));
@@ -3621,6 +3624,215 @@ void peer_connect_failed_says_whether_turn_was_configured() {
     }
 }
 
+/** The name of an action frame's action, or empty for a chunk, a control frame or no frame. */
+std::string action_name(std::span<const std::uint8_t> frame) {
+    const auto decoded = trystero::protocol::decode_action(frame);
+    const auto* p =
+        decoded.frame ? std::get_if<trystero::protocol::proposal>(&*decoded.frame) : nullptr;
+    return p != nullptr ? std::string(p->name) : std::string();
+}
+
+/** Whether the memory network's connection `pc` has its channel in `memory`: in a case that gives
+ * one app a resource of its own, whether `pc` is that app's end. */
+bool end_in(fixture& f, std::size_t pc, const std::pmr::memory_resource* memory) {
+    const auto connection = f.net.find(pc);
+    const auto channel = connection ? connection->channel() : nullptr;
+    return channel && channel->memory() == memory;
+}
+
+/** The ready frame of the fixture's `handshake_frames` entry `ready`, which 0.27.0 writes:
+ * `@_hsready` with an empty text (crypto_layer's `handshake_frames_match` reads it from the
+ * fixture). */
+std::vector<std::uint8_t> recorded_ready_frame() {
+    constexpr std::string_view hex =
+        "0300405f6873726561647900000000000000000000000000000000000000000000000000";
+    std::vector<std::uint8_t> out;
+    for (std::size_t i = 0; i < hex.size(); i += 2) {
+        out.push_back(
+            static_cast<std::uint8_t>(std::stoi(std::string(hex.substr(i, 2)), nullptr, 16)));
+    }
+    return out;
+}
+
+// A handshake whose ready frames never arrive fails after 0.27.0's 10 s: the side whose timer
+// expires reports handshake_failed with 0.27.0's reason and the peer's id, and lets the peer go;
+// neither side ever reports a join. A's end of the connection opens a second before B's, so that
+// A's handshake starts, and expires, first.
+void a_handshake_that_never_completes_fails_after_10_s() {
+    counting_resource a_memory;  // first: A's connection ends are made in it, which names them
+    fixture f{true};
+    f.net.defer_opens = true;
+    f.net.filter = [](std::size_t, std::size_t, std::span<const std::uint8_t> frame) {
+        return action_name(frame) == "@_hsready" ? trystero::test::memory_network::verdict::drop
+                                                 : trystero::test::memory_network::verdict::deliver;
+    };
+    const std::string a_id = "hsAAAAAAAAAAAAAAAAAA";
+    const std::string b_id = "hsBBBBBBBBBBBBBBBBBB";
+    auto a_config = app_config(a_id);
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "slow");
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config(b_id));
+    auto b = join(b_app, "slow");
+    std::vector<reported_error> a_reports;
+    a.on_error(record_errors(f, a_reports, trystero::error::handshake_failed));
+    std::size_t joins = 0;
+    a.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    b.on_peer_join([&](const trystero::peer_event&) { ++joins; });
+    // The first pair negotiated, both ends made and neither open.
+    std::optional<std::size_t> a_pc;
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] {
+        for (std::size_t id = 0; id < f.net.made_connections && !a_pc; ++id) {
+            if (end_in(f, id, &a_memory) && f.net.peer_of(id) != id) {
+                a_pc = id;
+            }
+        }
+        return a_pc.has_value();
+    })));
+    f.net.open(*a_pc);
+    trystero::test::advance(f, 1000ms);
+    f.net.open(f.net.peer_of(*a_pc));
+    trystero::test::advance(f, 8'500ms);
+    BOOST_TEST(a_reports.empty());  // 9.5 s after A's handshake started
+    trystero::test::advance(f, 1000ms);
+    if (BOOST_TEST_EQ(a_reports.size(), 1U)) {
+        const auto& e = a_reports.front();
+        BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "handshake-failed");
+        BOOST_TEST_EQ(e.message, "handshake timed out after 10000ms");
+        BOOST_TEST_EQ(e.peer_id, b_id);
+        BOOST_TEST_EQ(e.room_id, "slow");
+    }
+    trystero::test::advance(f, 5000ms);
+    BOOST_TEST_EQ(joins, 0U);
+    BOOST_TEST(a.peers().empty());
+    BOOST_TEST(b.peers().empty());
+}
+
+// The ready frame a room sends is 0.27.0's, byte for byte: `@_hsready` with an empty text, as
+// 0.27.0's handshake manager sends `payload || ''`.
+void ready_frames_carry_an_empty_text() {
+    counting_resource a_memory;
+    fixture f;
+    std::vector<std::vector<std::uint8_t>> from_a;
+    f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        if (end_in(f, from, &a_memory) && action_name(frame) == "@_hsready") {
+            from_a.emplace_back(frame.begin(), frame.end());
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config("readyAAAAAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "ready");
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("readyBBBBBBBBBBBBBBB"));
+    auto b = join(b_app, "ready");
+    BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; }));
+    const auto expected = recorded_ready_frame();
+    if (BOOST_TEST_EQ(from_a.size(), 1U)) {
+        BOOST_TEST_ALL_EQ(from_a[0].begin(), from_a[0].end(), expected.begin(), expected.end());
+    }
+}
+
+// A room sends its ready frame before the peer joins, so that what a listener of on_peer_join
+// sends follows it on the wire, as 0.27.0's manager enqueues the frame before onActivate.
+void sends_inside_on_peer_join_follow_the_ready_frame() {
+    counting_resource a_memory;
+    fixture f;
+    std::vector<std::string> from_a;
+    f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        if (end_in(f, from, &a_memory)) {
+            from_a.push_back(action_name(frame));
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config("joinAAAAAAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "greet");
+    auto greet = a.make_action<std::string>("greet");
+    a.on_peer_join([&](const trystero::peer_event& e) {
+        greet.async_send("hello", trystero::send_options{.targets = {trystero::peer_id(e.peer_id)}},
+                         [](boost::system::error_code ec) { BOOST_TEST(!ec); });
+    });
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("joinBBBBBBBBBBBBBBBB"));
+    auto b = join(b_app, "greet");
+    std::vector<std::string> heard;
+    auto greeted = b.make_action<std::string>("greet");
+    greeted.on_message(
+        [&](const std::string& text, const trystero::message_info&) { heard.push_back(text); });
+    BOOST_TEST(run_until(f.io, [&] { return heard.size() == 1; }));
+    const auto ready = std::ranges::find(from_a, "@_hsready");
+    const auto hello = std::ranges::find(from_a, "greet");
+    BOOST_TEST(ready != from_a.end());
+    BOOST_TEST(hello != from_a.end());
+    BOOST_TEST(ready < hello);
+}
+
+// A handshake message is at most 64 KiB and a ready frame's payload 128 KiB, 0.27.0's
+// maxPayloadBytes of `@_hsdata` and `@_hsready`: an offer of one byte more is rejected as "payload
+// exceeds receiver size limit", one at the bound accepted.
+void handshake_messages_keep_0_27_0s_bounds() {
+    namespace tp = trystero::protocol;
+    counting_resource a_memory;
+    fixture f;
+
+    struct answer {
+        tp::frame_kind kind;
+        std::string reason;
+    };
+
+    std::map<std::uint32_t, answer> from_a;  // A's answers, by transfer id
+    f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        if (end_in(f, from, &a_memory)) {
+            const auto decoded = tp::decode_action(frame);
+            if (const auto* m =
+                    decoded.frame ? std::get_if<tp::control_message>(&*decoded.frame) : nullptr) {
+                from_a.insert_or_assign(m->id, answer{m->kind, std::string(m->reason)});
+            }
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config("boundAAAAAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "bound");
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("boundBBBBBBBBBBBBBBB"));
+    auto b = join(b_app, "bound");
+    webcpp::test::require(BOOST_TEST(
+        run_until(f.io, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    std::optional<std::size_t> a_pc;
+    for (std::size_t id = 0; id < f.net.made_connections && !a_pc; ++id) {
+        const auto connection = f.net.find(id);
+        if (end_in(f, id, &a_memory) && connection->channel()->is_open()) {
+            a_pc = id;
+        }
+    }
+    webcpp::test::require(BOOST_TEST(a_pc.has_value()));
+    const std::size_t hsdata = std::size_t{64} * 1024;
+    const std::size_t hsready = std::size_t{128} * 1024;
+    f.net.inject(*a_pc, tp::encode_offer("@_hsdata", tp::payload_format::json, "", 1, hsdata + 1));
+    f.net.inject(*a_pc, tp::encode_offer("@_hsdata", tp::payload_format::json, "", 2, hsdata));
+    f.net.inject(*a_pc,
+                 tp::encode_offer("@_hsready", tp::payload_format::json, "", 3, hsready + 1));
+    BOOST_TEST(run_until(f.io, [&] { return from_a.size() == 3; }));
+    // A peer's transfers are received one at a time: the second goes, then the fourth is taken.
+    f.net.inject(*a_pc, tp::encode_cancelled(2));
+    f.net.inject(*a_pc, tp::encode_offer("@_hsready", tp::payload_format::json, "", 4, hsready));
+    BOOST_TEST(run_until(f.io, [&] { return from_a.size() == 4; }));
+    for (const std::uint32_t refused : {1U, 3U}) {
+        if (BOOST_TEST(from_a.contains(refused))) {
+            BOOST_TEST(from_a.at(refused).kind == tp::frame_kind::rejected);
+            BOOST_TEST_EQ(from_a.at(refused).reason, "payload exceeds receiver size limit");
+        }
+    }
+    for (const std::uint32_t taken : {2U, 4U}) {
+        if (BOOST_TEST(from_a.contains(taken))) {
+            BOOST_TEST(from_a.at(taken).kind == tp::frame_kind::accepted);
+        }
+    }
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+}
+
 // The names of the codes are 0.27.0's RoomErrorCode, and every other code has none.
 void error_names_match_trystero() {
     using trystero::error;
@@ -3738,22 +3950,25 @@ void a_message_posted_before_the_room_ended_is_dropped() {
 }
 
 void the_errors_have_their_values() {
-    BOOST_TEST_EQ(static_cast<int>(trystero::error::already_joined), 14);
+    // wrong_password and handshake_timed_out went with 0.26.0's password handshake: a handshake's
+    // failures are handshake_failed, as 0.27.0 reports them.
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::handshake_failed), 9);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::already_joined), 12);
     BOOST_TEST_EQ(make_error_code(trystero::error::already_joined).message(),
                   "the app has already joined a room of that id");
     BOOST_TEST_EQ(make_error_code(trystero::error::invalid_configuration).message(),
                   "the configuration is unusable");
     // After already_joined, in 0.27.0's order of room errors, with its messages: too_many_rooms,
     // which went with the shared connection, no longer comes between.
-    BOOST_TEST_EQ(static_cast<int>(trystero::error::room_full), 15);
-    BOOST_TEST_EQ(static_cast<int>(trystero::error::request_timed_out), 27);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::room_full), 13);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::request_timed_out), 25);
     BOOST_TEST_EQ(make_error_code(trystero::error::room_full).message(), "room full");
     BOOST_TEST_EQ(make_error_code(trystero::error::banned).message(), "peer banned");
     BOOST_TEST_EQ(make_error_code(trystero::error::decrypt_failed).message(),
                   "failed to decrypt offer or answer (incorrect password or corrupted signal)");
     BOOST_TEST_EQ(make_error_code(trystero::error::action_aborted).message(), "operation aborted");
     // Appended after them: 0.27.0 throws it.
-    BOOST_TEST_EQ(static_cast<int>(trystero::error::action_redefined), 28);
+    BOOST_TEST_EQ(static_cast<int>(trystero::error::action_redefined), 26);
     BOOST_TEST_EQ(make_error_code(trystero::error::action_redefined).message(),
                   "action type cannot be redefined");
 }
@@ -3778,7 +3993,11 @@ int main() {
     run_case(frames_of_an_action_not_made_are_dropped_or_rejected);
     run_case(a_control_frame_into_a_full_channel_drops_the_peer);
     run_case(ping_measures_a_round_trip);
-    run_case(the_same_password_joins_and_another_does_not);
+    run_case(two_passwords_never_meet);
+    run_case(a_handshake_that_never_completes_fails_after_10_s);
+    run_case(ready_frames_carry_an_empty_text);
+    run_case(sends_inside_on_peer_join_follow_the_ready_frame);
+    run_case(handshake_messages_keep_0_27_0s_bounds);
     run_case(password_room_keys_complete_after_the_join_returns);
     run_case(rooms_of_one_password_derive_once_per_room);
     run_case(a_failed_derivation_is_retried);

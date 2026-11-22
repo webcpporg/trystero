@@ -31,7 +31,6 @@
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <functional>
 #include <map>
@@ -230,21 +229,6 @@ public:
         return connectivity_;
     }
 
-    /** How long a peer has to finish the handshake by default: 10 s, 0.27.0's
-     * `defaultHandshakeTimeoutMs`, which no option changes. */
-    static constexpr std::chrono::milliseconds default_handshake_timeout{10'000};
-
-    /** How long a peer of a room joined from now on has to finish the handshake. */
-    [[nodiscard]] std::chrono::milliseconds handshake_timeout() const { return handshake_timeout_; }
-
-    /** Gives every room joined from now on `timeout` to finish each handshake, in place of
-     * @ref default_handshake_timeout, until it is set again: the library's own tests make one
-     * side of a handshake patient with it.
-     *
-     * Tip: the value is the app's, not a join's: a caller that wants it for one join sets the
-     * default back after it, as `test::join_patient` does. */
-    void set_handshake_timeout(std::chrono::milliseconds timeout) { handshake_timeout_ = timeout; }
-
     /** The validated ICE servers used for every negotiation. */
     [[nodiscard]] std::span<const backend::ice_server> ice_servers() const { return ice_servers_; }
 
@@ -392,7 +376,6 @@ private:
     std::size_t delivered_reports_ = 0;  // the setup reports handed to a handler, in their order
     std::pmr::map<std::pmr::string, entry, std::less<>> rooms_;
     std::size_t users_ = 0;
-    std::chrono::milliseconds handshake_timeout_ = default_handshake_timeout;
     relay_connectivity connectivity_ = relay_connectivity::automatic;
     bool relays_offline_ = false;
     user_resolver user_resolver_;

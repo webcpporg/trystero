@@ -150,6 +150,9 @@ protected:
  * |                          | offer says, in any order, each once                                |
  * | an action not made       | an inline frame is dropped, an offer rejected at once as an        |
  * |                          | "unregistered action"                                              |
+ * | a payload past its bound | `max_receive_bytes`, or the action's own `max_payload` when lower: |
+ * |                          | an inline frame is dropped, an offer rejected, as "payload exceeds |
+ * |                          | receiver size limit"                                               |
  * | frames before a listener | of an action made: kept, 32 per action and peer (a newer one drops |
  * |                          | the oldest), for 10 s, until the action gets one                   |
  * | the receive gate         | asked of an inline frame and of an offer as it arrives, and of a   |
@@ -234,6 +237,9 @@ public:
         handler<void(std::string_view peer, std::string_view name, std::string_view metadata,
                      double share)>
             progress = nullptr;
+        /** The longest payload of an action, 0.27.0's `maxPayloadBytes`, below the room's
+         * `max_receive_bytes`; empty, every action has the room's. */
+        handler<std::size_t(std::string_view name)> max_payload = nullptr;
     };
 
     /** Every allocation goes through `memory`. */
@@ -365,6 +371,8 @@ private:
     static constexpr auto drain_timeout = std::chrono::milliseconds(10'000);
     /** Trystero's `pendingDataTimeoutMs`: how long a message waits for its action's receiver. */
     static constexpr auto pending_data_timeout = std::chrono::milliseconds(10'000);
+    /** Trystero's `sizeLimitMsg`: why a payload past its action's bound is refused. */
+    static constexpr std::string_view size_limit_reason = "payload exceeds receiver size limit";
 
     /** Completes a send once every target finished, with the first error. */
     struct fan_out {
@@ -442,6 +450,13 @@ private:
     admission gate(std::string_view peer, std::string_view name, std::size_t size,
                    std::string_view metadata) {
         return cb_.admit ? cb_.admit(peer, name, size, metadata) : admission::open;
+    }
+
+    /** The longest payload of an action, 0.27.0's `payloadLimit`: the room's bound, or the
+     * action's own when it is lower. */
+    std::size_t payload_limit(std::string_view name) {
+        return cb_.max_payload ? std::min(max_receive_bytes_, cb_.max_payload(name))
+                               : max_receive_bytes_;
     }
 
     /** Tells the room a message of an action it has was refused. */
@@ -652,6 +667,10 @@ private:
         if (!cb_.has_action(p.name)) {
             return;  // as Trystero drops a frame of an unregistered action
         }
+        if (p.payload.size() > payload_limit(p.name)) {
+            refused(peer, p.name, p.metadata, size_limit_reason);
+            return;
+        }
         const auto verdict = gate(peer, p.name, p.payload.size(), p.metadata);
         if (verdict == admission::refused) {
             refused(peer, p.name, p.metadata, "payload rejected by receiver");
@@ -715,8 +734,8 @@ private:
             reject("unregistered action", false);
             return;
         }
-        if (p.size > max_receive_bytes_) {
-            reject("payload exceeds receiver size limit");
+        if (p.size > payload_limit(p.name)) {
+            reject(size_limit_reason);
             return;
         }
         if (const auto it = incoming_.find(peer);
@@ -741,7 +760,7 @@ private:
         b.name = p.name;
         b.format = p.format;
         b.metadata = p.metadata;
-        b.size = static_cast<std::size_t>(p.size);  // within max_receive_bytes_, checked above
+        b.size = static_cast<std::size_t>(p.size);  // within payload_limit, checked above
         b.chunk = p.wide ? protocol::wide_chunk_size : protocol::chunk_size;
         b.timer = factory_.make_timer(memory_);
         arm(peer, p.id, b);

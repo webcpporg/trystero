@@ -101,24 +101,6 @@ private:
     }
 };
 
-/** Gives the rooms `a` joins from now on `timeout` to finish each handshake, in place of 0.27.0's
- * 10 s, through the app's detail seam: a test makes one side of a handshake patient. */
-inline void set_handshake_timeout(const trystero::app& a, std::chrono::milliseconds timeout) {
-    trystero::detail::app_access::impl(a).set_handshake_timeout(timeout);
-}
-
-/** Joins `room_id` with `timeout` for each handshake of the room, which must succeed: a failure
- * ends the test; the app's later rooms have 10 s again. */
-inline trystero::room join_patient(trystero::app& a, std::string_view room_id,
-                                   std::chrono::milliseconds timeout,
-                                   trystero::room_options options = {}) {
-    set_handshake_timeout(a, timeout);
-    auto r = a.join(room_id, options);
-    set_handshake_timeout(a, trystero::detail::app_impl::default_handshake_timeout);
-    webcpp::test::require(BOOST_TEST(r.has_value()));
-    return std::move(*r);
-}
-
 /** The owned document of a JSON text, as an action of JSON sends it; a text that does not parse
  * ends the test. */
 inline webcpp::document::document document_of(std::string_view text) {

@@ -772,9 +772,6 @@ void reading_a_text_allocates_through_its_resource() {
     const std::pmr::string ok(
         R"(["OK","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",true,""])",
         &memory);
-    const std::pmr::string handshake(
-        R"({"__trystero_pw":"response","h":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})",
-        &memory);
     const std::pmr::string candidate(
         R"({"candidate":"candidate:1 1 UDP 2122317823 192.168.1.10 54321 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":"abcd"})",
         &memory);
@@ -786,11 +783,10 @@ void reading_a_text_allocates_through_its_resource() {
     };
 
     constexpr std::size_t relay_bound = tp::nostr::max_parsed_relay_text_bytes;
-    const std::array<text, 5> texts{
+    const std::array<text, 4> texts{
         text{.what = "relay event", .json = relayed, .bound = relay_bound},
         text{.what = "relay OK", .json = ok, .bound = relay_bound},
         text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
-        text{.what = "handshake", .json = handshake, .bound = tp::max_handshake_bytes},
         text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
     };
     for (const text& t : texts) {

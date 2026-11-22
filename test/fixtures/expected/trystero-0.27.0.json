@@ -46,6 +46,16 @@
    "name": "user-proof",
    "version": 3,
    "tag": "trystero:user-proof:v3"
+  },
+  {
+   "name": "id-hs",
+   "version": 2,
+   "tag": "trystero:id-hs:v2"
+  },
+  {
+   "name": "identity-self-test",
+   "version": 1,
+   "tag": "trystero:identity-self-test:v1"
   }
  ],
  "hash_topic": [
@@ -1412,5 +1422,659 @@
     "payload_text": "null"
    }
   }
- ]
+ ],
+ "signatures": {
+  "a high-S endpoint signature:a:endpoint": "qUfkdmwIYOsSSUqR54nbxlm4TVfh8eng8edl1sypdIo7BrdKk3GQZfy9Cot4URLwdG6IPX9Oi0hPYP3dyS1scA",
+  "a high-S endpoint signature:a:user": "M7glmr-vE4YbYZ2sK7GHKof2daOTPBbGv_tJB-7JUcpeFigIoebjU5ttShwNyzY2JgZhPwhH_knIPnkA4GgvnQ",
+  "a high-S endpoint signature:b:endpoint": "r3L3zOoMemI-F7b06SrooCiQxh9RJnfdPC3Nh7fXUul43HjYcm0rwYwGZCP8jpMlCeyfzj2874xkPTRabCyR6A",
+  "a high-S endpoint signature:b:user": "_I0E-_dTqVt3HjkAE4nm4Wq_Bhls3fjpg-slG-G74AZB3VDaCPFv9fzDpRjt5KKrErVyQo8mfzzgyuTZKy6suw",
+  "a user signature of another key:b:endpoint": "CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg",
+  "a user signature of another key:b:user": "5mWZZscqEKToj1Y2ykbCy2VCP4GFxCKfrtOXRq6hkD8paEPiUwT8RE4IcZmQUfXVdx3R5_w8qDDVlieHzzt4VQ",
+  "an endpoint key of another peer id:b:endpoint": "tzg9WR33ggX2DqIPk2uS-bAvw5j9upFklbElHURcMMBV-5E6gVnTCLLIzt6Z9-WtxeHW5nsOl3g7BpWAJRA7ZA",
+  "an endpoint key of another peer id:b:user": "PAd0ECqTGhpEPxDDCL9ysveQj-5MlpQV_DBn02VQ0wEfLZ97DwPwk0elfp5hZgZXqykfrDTz9xam_j7tpyENuw",
+  "user_proof": "yKjEX7A1gfPylw5b0nVJqwA0Oz8gxERTU47YIPgtaIQxt0Ry8fY0CZYjpSwrd3dR3Q_4HrgdVCWNG5sPUDO7TQ",
+  "verified:a:endpoint": "saWD2e3IzdwI1XLYaJNydv0RHMBBbNIszXFYyx3alJUO2fog_yBKkpd19aC-TzVr7uIPSlhVW-KabBAeflypJw",
+  "verified:a:user": "kCivJlKg135n4UPn5zVLVFMPFzcKvcgrt0sdfamwNhwdhpuw_09dBGvqPz-L9BXwhRG0aVyi73WF4ihyN6QYkQ",
+  "verified:b:endpoint": "xoj5UqGMR8duyQzQBdES01oYfZTskbPsMJ2NRidRBNg9tKFneusIazxZZQk9fwL1vQk1E2-nl4coiRIfGFQ8CQ",
+  "verified:b:user": "IqTv3MG9H2buDNJN7YeTdja-LjAVwF_2BZL8adRyS3orYNMxn6xTh8cPm1BipNUx7HmATAKjEwhS9rVvHITV0A"
+ },
+ "p256_keys": [
+  {
+   "label": "endpoint-a",
+   "d": "uYTVzeHv6cts2IzXz7UkD2Q9bBcmHKZpPFZ1eNcoUdk",
+   "uncompressed": "049208dd7b3b924dc1707732cf2068f38a43e43754486db546641189291fec37076e18016d13fd4a05f94a4d70b1ccbf6b92c7024b7a3d3e2f6af5f5bd21e4fd77",
+   "compact": "kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc",
+   "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+   "user_id": "ynY5geuP51wDNIjKq1xkDh"
+  },
+  {
+   "label": "user-a",
+   "d": "tZPnmQ9fFvgPg4d4vNFgEq98uEmgMtL3J4aEB9wYXus",
+   "uncompressed": "048ef6630e180f22011d6300ce42c09bd3c10492006728f34b2726a90a5364e3e9417b714bdd2e6abb84bb90989ebfab80385264d0f21e3fc34238d62467263e9b",
+   "compact": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "peer_id": "1uTF5q1EXmKMmm1jRF82",
+   "user_id": "8Qc8kjJP0X70oY14zVW6rM"
+  },
+  {
+   "label": "endpoint-b",
+   "d": "VZc6ctCgUCX-BEpJSZK32uUTs81zGlZj1PdqgxO-50Q",
+   "uncompressed": "04d97653a7ae3e3c5c106c035b8ecb9bcc8e53cbb40b0370984b7d5f04857a00f0ecdf620983aa9cd814834443dd17b4ffbe18514e67f7d907fb916f5d2579bc18",
+   "compact": "2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg",
+   "peer_id": "izta8zhsZH7HVcLteLNl",
+   "user_id": "dOStHaQPEAKBivzjmTuiML"
+  },
+  {
+   "label": "user-b",
+   "d": "pbbWpBUNjtwncadIiWH_ELxOVWyS8jYKa8xdUk0PWjs",
+   "uncompressed": "0459ac6fd68e871bf153021478db213068d63b8bf62fa07e4e10ff9194834756448d8fce88850eb4f01e7599152dd2d7ca5bf0dced2f5d13e2fce9e9119b29cc2c",
+   "compact": "Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw",
+   "peer_id": "qhFA33xYMserGVDmcM8S",
+   "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+  },
+  {
+   "label": "user-export",
+   "d": "5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw",
+   "uncompressed": "046959c6d6054b15792dbed030b0b52820f640ed1962bb4bf3182f414c4def8f209094952e94ded7652938a98e0af0407d2043ae1ae2415c109e141c83444db82d",
+   "compact": "aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA.kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0",
+   "peer_id": "WYwjb2NLbczwLb6k5chL",
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  }
+ ],
+ "compact_keys": [
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": true,
+   "record": true
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPp",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPpsA",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k_QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-=.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+   "text_valid": true,
+   "record": false
+  }
+ ],
+ "user_identity": {
+  "label": "user-export",
+  "jwk": {
+   "d": "5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw",
+   "x": "aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA",
+   "y": "kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0"
+  },
+  "user_id": "Gawjnehj72iKv8sp1tHMwI",
+  "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+  "json": "{\"d\":\"5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw\",\"x\":\"aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA\",\"y\":\"kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0\"}"
+ },
+ "user_identity_imports": [
+  {
+   "case": "the exported text",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "the text with spaces around it",
+   "text": "  trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ\n",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "the JSON text",
+   "text": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"d\":\"5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw\",\"x\":\"aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA\",\"y\":\"kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0\"}",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "another prefix",
+   "text": "trystero_pk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "the payload padded",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ=",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d of another key",
+   "text": "trystero_uk_eyJkIjoidFpQbm1ROWZGdmdQZzRkNHZORmdFcTk4dUVtZ010TDNKNGFFQjl3WVh1cyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d zero",
+   "text": "trystero_uk_eyJkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d the group order",
+   "text": "trystero_uk_eyJkIjoiX19fX193QUFBQURfX19fX19fX19fN3ptLXEybkY1NkU4N25Ld3Z4akpWRSIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d of 31 bytes",
+   "text": "trystero_uk_eyJkIjoiU0d0NEt0QTVtV1kwd2lFa21Va0JVZVRqSFc0Z3VEemxUeDdWTkpNcXZBIiwieCI6ImFWbkcxZ1ZMRlhrdHZ0QXdzTFVvSVBaQTdSbGl1MHZ6R0M5QlRFM3ZqeUEiLCJ5Ijoia0pTVkxwVGUxMlVwT0ttT0N2QkFmU0JEcmhyaVFWd1FuaFFjZzBSTnVDMCJ9",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "crv P-384",
+   "text": "trystero_uk_eyJjcnYiOiJQLTM4NCIsImQiOiI1a2hyZUNyUU9abG1OTUloSkpsSkFWSGs0eDF1SUxnODVVOGUxVFNUS3J3IiwieCI6ImFWbkcxZ1ZMRlhrdHZ0QXdzTFVvSVBaQTdSbGl1MHZ6R0M5QlRFM3ZqeUEiLCJ5Ijoia0pTVkxwVGUxMlVwT0ttT0N2QkFmU0JEcmhyaVFWd1FuaFFjZzBSTnVDMCJ9",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "no y",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIn0",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "empty",
+   "text": "",
+   "accepted": false,
+   "user_id": null
+  }
+ ],
+ "user_proof": {
+  "app": "example.com/app",
+  "room": "lobby",
+  "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+  "peer_compact": "kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc",
+  "seq": 7,
+  "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+  "user_compact": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+  "payload": "[\"trystero:user-proof:v3\",\"example.com/app\",\"lobby\",\"m7oEQitmWEQ4WW5aqhKp\",\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",7]",
+  "digest": "6891b6751ffa4d90b10e41cc7daf42e6c1a129e31ae2a2870448a40a331b521a",
+  "proof": "yKjEX7A1gfPylw5b0nVJqwA0Oz8gxERTU47YIPgtaIQxt0Ry8fY0CZYjpSwrd3dR3Q_4HrgdVCWNG5sPUDO7TQ",
+  "verifies": true,
+  "other_seq_verifies": false
+ },
+ "low_s": [
+  {
+   "case": "signed",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": true,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": true
+  },
+  {
+   "case": "its high form",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d6884ce48bb8c0e09cbf769dc5ad3d48888addfd7028eeefa4a5f669e2fb3ac2f6a04",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  },
+  {
+   "case": "s = (n - 1) / 2",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "is_low_s": true,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "verifies": false
+  },
+  {
+   "case": "s = (n + 1) / 2",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a9",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "verifies": false
+  },
+  {
+   "case": "s = n - 1",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d6884ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000001",
+   "verifies": false
+  },
+  {
+   "case": "s = 0",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000000",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000000",
+   "verifies": false
+  },
+  {
+   "case": "r = 0",
+   "signature": "000000000000000000000000000000000000000000000000000000000000000031b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": false,
+   "normalized": "000000000000000000000000000000000000000000000000000000000000000031b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  },
+  {
+   "case": "r = n",
+   "signature": "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255131b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": false,
+   "normalized": "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255131b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  }
+ ],
+ "handshake": [
+  {
+   "case": "verified",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"xoj5UqGMR8duyQzQBdES01oYfZTskbPsMJ2NRidRBNg9tKFneusIazxZZQk9fwL1vQk1E2-nl4coiRIfGFQ8CQ\",\"us\":\"IqTv3MG9H2buDNJN7YeTdja-LjAVwF_2BZL8adRyS3orYNMxn6xTh8cPm1BipNUx7HmATAKjEwhS9rVvHITV0A\"}"
+    },
+    {
+     "from": "A",
+     "step": 3,
+     "json": "{\"__trystero_id\":3,\"ps\":\"saWD2e3IzdwI1XLYaJNydv0RHMBBbNIszXFYyx3alJUO2fog_yBKkpd19aC-TzVr7uIPSlhVW-KabBAeflypJw\",\"us\":\"kCivJlKg135n4UPn5zVLVFMPFzcKvcgrt0sdfamwNhwdhpuw_09dBGvqPz-L9BXwhRG0aVyi73WF4ihyN6QYkQ\"}"
+    }
+   ],
+   "initiator_error": null,
+   "responder_error": null,
+   "verified": {
+    "A": {
+     "peer_id": "izta8zhsZH7HVcLteLNl",
+     "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+    },
+    "B": {
+     "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+     "user_id": "8Qc8kjJP0X70oY14zVW6rM"
+    }
+   },
+   "transcript": "[\"trystero:id-hs:v2\",\"example.com/app\",\"lobby\",\"m7oEQitmWEQ4WW5aqhKp\",\"izta8zhsZH7HVcLteLNl\",\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"c0ffee00-1234-4abc-8def-0123456789ab\",[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"8Qc8kjJP0X70oY14zVW6rM\",\"8oysJYYlxgfcFBn7jJOcpc\"]",
+   "transcript_digest": "db7fc1e8a4ad703cefe61f11f03886b3b616172c20a5c2a216a2462a4c24edd5",
+   "transcript_verified": {
+    "step2_endpoint": true,
+    "step2_user": true
+   }
+  },
+  {
+   "case": "another remote fingerprint",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2B:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: DTLS fingerprint mismatch",
+   "verified": {}
+  },
+  {
+   "case": "a user id of another key",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {}
+  },
+  {
+   "case": "an endpoint key of another peer id",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"tzg9WR33ggX2DqIPk2uS-bAvw5j9upFklbElHURcMMBV-5E6gVnTCLLIzt6Z9-WtxeHW5nsOl3g7BpWAJRA7ZA\",\"us\":\"PAd0ECqTGhpEPxDDCL9ysveQj-5MlpQV_DBn02VQ0wEfLZ97DwPwk0elfp5hZgZXqykfrDTz9xam_j7tpyENuw\"}"
+    }
+   ],
+   "initiator_error": "Trystero: peer identity verification failed",
+   "responder_error": "waits",
+   "verified": {}
+  },
+  {
+   "case": "a short nonce",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"0123456789abcde\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {}
+  },
+  {
+   "case": "a user signature of another key",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg\",\"us\":\"CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg\"}"
+    }
+   ],
+   "initiator_error": "Trystero: peer identity verification failed",
+   "responder_error": "waits",
+   "verified": {}
+  },
+  {
+   "case": "a high-S endpoint signature",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"r3L3zOoMemI-F7b06SrooCiQxh9RJnfdPC3Nh7fXUul43HjYcm0rwYwGZCP8jpMlCeyfzj2874xkPTRabCyR6A\",\"us\":\"_I0E-_dTqVt3HjkAE4nm4Wq_Bhls3fjpg-slG-G74AZB3VDaCPFv9fzDpRjt5KKrErVyQo8mfzzgyuTZKy6suw\"}"
+    },
+    {
+     "from": "A",
+     "step": 3,
+     "json": "{\"__trystero_id\":3,\"ps\":\"qUfkdmwIYOsSSUqR54nbxlm4TVfh8eng8edl1sypdIrE-Ui0bI5vmwNC9XSHru0PSHhycCfJEzykWMzlMzW44Q\",\"us\":\"M7glmr-vE4YbYZ2sK7GHKof2daOTPBbGv_tJB-7JUcpeFigIoebjU5ttShwNyzY2JgZhPwhH_knIPnkA4GgvnQ\"}"
+    }
+   ],
+   "initiator_error": null,
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {
+    "A": {
+     "peer_id": "izta8zhsZH7HVcLteLNl",
+     "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+    }
+   }
+  },
+  {
+   "case": "no fingerprint in the remote description",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [],
+   "initiator_error": "Trystero: DTLS fingerprint missing",
+   "responder_error": "waits",
+   "verified": {}
+  }
+ ],
+ "handshake_frames": [
+  {
+   "case": "step 1",
+   "action": "@_hsdata",
+   "payload_json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 502,
+     "hex": "0310405f68736461746100000000000000000000000000000000000000000000000000007b225f5f747279737465726f5f6964223a312c226e223a2235613166306332652d386233642d346536662d396137302d623163326433653466353036222c2264746c73223a5b227368612d312031313a32323a33333a34343a35353a36363a37373a38383a39393a61613a62623a63633a64643a65653a66663a30303a31313a32323a33333a3434222c227368612d3235362034663a32613a39633a31313a30303a37623a65653a33313a35383a61613a30643a36633a39333a31323a34373a62663a63383a32313a35653a37303a36363a64343a33613a39313a30623a63663a32383a37653a35353a31393a61333a6630225d2c22756964223a22385163386b6a4a50305837306f5931347a565736724d222c22706b223a226b676a64657a755354634677647a4c5049476a7a696b506b4e315249626256475a42474a4b525f734e77632e626867426252503953675835536b31777363795f61354c48416b743650543476617658317653486b5f5863222c22756b223a226a765a6a44686750496745645977444f51734362303845456b67426e4b504e4c4a796170436c4e6b342d6b2e515874785339307561727545753543596e722d72674468535a4e4479486a5f44516a6a574a47636d507073227d"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "ready",
+   "action": "@_hsready",
+   "payload_json": "\"\"",
+   "frames": [
+    {
+     "from": "A",
+     "size": 36,
+     "hex": "0300405f6873726561647900000000000000000000000000000000000000000000000000"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "room full",
+   "action": "@_hsready",
+   "payload_json": "{\"ok\":false,\"err\":\"room full\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "hex": "0310405f68737265616479000000000000000000000000000000000000000000000000007b226f6b223a66616c73652c22657272223a22726f6f6d2066756c6c227d"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "banned",
+   "action": "@_hsready",
+   "payload_json": "{\"ok\":false,\"err\":\"peer banned\",\"reason\":\"spam\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 84,
+     "hex": "0310405f68737265616479000000000000000000000000000000000000000000000000007b226f6b223a66616c73652c22657272223a22706565722062616e6e6564222c22726561736f6e223a227370616d227d"
+    }
+   ],
+   "delivered": true
+  }
+ ],
+ "ping_frames": {
+  "action": "@_ping",
+  "request_id": "0b1c2d3e-4f50-4617-8899-aabbccddeeff",
+  "response": "",
+  "frames": [
+   {
+    "from": "A",
+    "size": 80,
+    "hex": "0300405f70696e670000000000000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d"
+   },
+   {
+    "from": "B",
+    "size": 80,
+    "hex": "0300405f726573706f6e736500000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d"
+   }
+  ]
+ },
+ "identity_limits": {
+  "pub_key_records": 4096,
+  "signature_cache_entries": 8192,
+  "signature_cache_bytes": 2097152,
+  "signature_cache_payload_bytes": 4096,
+  "handshake_timeout_ms": 10000,
+  "buffered_handshake_messages": 16,
+  "handshake_nonce_min_chars": 16,
+  "hsdata_max_payload_bytes": 65536,
+  "hsready_max_payload_bytes": 131072
+ }
 }

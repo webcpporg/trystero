@@ -811,6 +811,35 @@ void action_frames_match() {
     BOOST_TEST_EQ(section("action_frames").size(), 10U);
 }
 
+// The handshake's frames 0.27.0 writes (handshake_frames), each the inline frame of its action:
+// the ready frame, `@_hsready` with the empty text of 0.27.0's `payload || ''`, as the port's
+// encoder writes it for a room. The identity steps' and the refusals' frames come with the tasks
+// that send them (2.4b, 2.5a).
+void handshake_frames_match() {
+    std::size_t matched = 0;
+    for (const auto entry : section("handshake_frames")) {
+        if (str(entry["case"]) != "ready") {
+            continue;
+        }
+        BOOST_TEST_EQ(str(entry["action"]), "@_hsready");
+        BOOST_TEST_EQ(str(entry["payload_json"]), R"("")");
+        BOOST_TEST(entry["delivered"].value_or(false) == true);
+        std::vector<fixture_value> frames;
+        for (const auto frame : entry["frames"]) {
+            frames.push_back(frame);
+        }
+        if (!BOOST_TEST_EQ(frames.size(), 1U)) {
+            continue;
+        }
+        BOOST_TEST_EQ(str(frames[0]["from"]), "A");
+        const auto encoded = tp::encode_inline("@_hsready", tp::payload_format::text, "", {});
+        BOOST_TEST_EQ(encoded.size(), integer(frames[0]["size"]));
+        BOOST_TEST(is_recorded(encoded, frames[0]));
+        ++matched;
+    }
+    BOOST_TEST_EQ(matched, 1U);
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -855,5 +884,6 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(wipe_zeroes_what_it_is_given);
     webcpp::test::run_case(signal_aad_matches);
     webcpp::test::run_case(action_frames_match);
+    webcpp::test::run_case(handshake_frames_match);
     return boost::report_errors();
 }

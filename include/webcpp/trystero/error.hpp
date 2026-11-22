@@ -45,21 +45,12 @@ enum class error {
     /** The data channel stopped draining while a transfer waited for it. */
     channel_stalled,
     /**
-     * A connected peer answered the room's password handshake under another password,
-     * or sent a handshake message the protocol does not expect, Trystero's "incorrect password for
-     * overlapping room".
+     * A connected peer's handshake failed, 0.27.0's `handshake-failed` room error, which
+     * `room_error_code_name` names: the report's message is 0.27.0's reason, as "handshake timed
+     * out after 10000ms", and the peer is told to leave.
      *
-     * A signal under another password is `decrypt_failed`.
-     */
-    wrong_password,
-    /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
-    handshake_timed_out,
-    /**
-     * A peer's handshake failed, 0.27.0's `handshake-failed` room error, which
-     * `room_error_code_name` names.
-     *
-     * Nothing reports it before Phase 2's handshake: the provisional password handshake reports its
-     * failures as `wrong_password` and `handshake_timed_out`, which name what failed.
+     * A signal under another password is `decrypt_failed`: 0.27.0 keeps another password out by
+     * the sealing of its signals alone.
      */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
@@ -158,8 +149,6 @@ private:
             case error::transfer_rejected: return "the receiver rejected the transfer";
             case error::transfer_timed_out: return "the action transfer timed out";
             case error::channel_stalled: return "the data channel stopped draining";
-            case error::wrong_password: return "the peer uses another room password";
-            case error::handshake_timed_out: return "the handshake timed out";
             case error::handshake_failed: return "handshake failed";
             case error::backend_failure: return "the WebRTC backend refused an operation";
             case error::invalid_configuration: return "the configuration is unusable";

@@ -22,7 +22,6 @@
 // | --room3         | a third room of the same app, optional                             |
 // | --room2Delay    | the ms before joining room2, optional (0)                          |
 // | --room3Delay    | the ms before joining room3, optional (0)                          |
-// | --handshake     | every room's handshake timeout in ms, optional (10,000)            |
 // | --delayOpen     | defer native open delivery while transport messages arrive, optional |
 // | --ping2         | any value: ping each peer of room2 every second, optional          |
 #include <webcpp/trystero/app.hpp>
@@ -511,14 +510,12 @@ int main(int argc, char* argv[]) {
     boost::asio::io_context io;
     counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     backend.delay_open = !args["delayOpen"].empty();
-    // The driver's self id and its rooms' handshake timeout through the app's detail seams, which
-    // the library keeps for its own tests: 0.27.0 has no option for either.
+    // The driver's self id through the app's detail seam, which the library keeps for its own
+    // tests: 0.27.0 has no option for it.
     trystero::app app = args["self"].empty()
                             ? trystero::app(io.get_executor(), backend, app_config_of(args))
                             : trystero::detail::app_access::make(io.get_executor(), backend,
                                                                  app_config_of(args), args["self"]);
-    trystero::detail::app_access::impl(app).set_handshake_timeout(
-        millis(args["handshake"], std::chrono::milliseconds(10'000)));
     app.on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });

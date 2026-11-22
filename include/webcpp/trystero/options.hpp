@@ -40,8 +40,9 @@ struct app_config {
      * The password shared by every room of this app, Trystero's `password`.
      *
      * The app copies it into its resource and keeps it unchanged. Different passwords require
-     * separate apps with distinct peer ids. Empty means a passwordless domain. Signals are still
-     * sealed with the app and room ids, and the room handshake then has no password challenge.
+     * separate apps with distinct peer ids. Empty means a passwordless domain, whose signals are
+     * still sealed with the app and room ids. A peer of another password never connects: the
+     * sealing of the signals alone keeps it out, as in 0.27.0, which has no password challenge.
      */
     std::pmr::string password = {};
     /**

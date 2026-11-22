@@ -19,7 +19,6 @@
 // | room3           | a third room of the same app, optional                             |
 // | room2Delay      | the ms before joining room2, optional (0)                          |
 // | room3Delay      | the ms before joining room3, optional (0)                          |
-// | handshake       | every room's handshake timeout in ms, optional (10,000)            |
 // | ping2           | any value: ping each peer of room2 every second, optional          |
 // | program         | the program's JavaScript, which cpp.html loads; not read here      |
 #include <webcpp/trystero.hpp>
@@ -320,15 +319,13 @@ void ping_second() {
 
 void start() {
     page& app = the_page();
-    // The page's self id and its rooms' handshake timeout through the app's detail seams, which
-    // the library keeps for its own tests: 0.27.0 has no option for either.
+    // The page's self id through the app's detail seam, which the library keeps for its own
+    // tests: 0.27.0 has no option for it.
     const std::string self = param("self");
     app.app = std::make_unique<trystero::app>(
         self.empty() ? trystero::app(app.io.get_executor(), app.backend, config_of_page())
                      : trystero::detail::app_access::make(app.io.get_executor(), app.backend,
                                                           config_of_page(), self));
-    trystero::detail::app_access::impl(*app.app).set_handshake_timeout(
-        millis(param("handshake"), std::chrono::milliseconds(10'000)));
     app.app->on_error([](const trystero::room_error& e) {
         record("error", {{"peer", e.peer_id}, {"error", e.code.message()}, {"what", e.message}});
     });

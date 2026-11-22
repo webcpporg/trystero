@@ -12,12 +12,12 @@
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/action_wire.hpp>
 #include <webcpp/trystero/detail/app_impl.hpp>
+#include <webcpp/trystero/detail/handshake_manager.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
 #include <webcpp/trystero/detail/peer_link.hpp>
 #include <webcpp/trystero/detail/post.hpp>
-#include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/signaling.hpp>
 #include <webcpp/trystero/detail/user_table.hpp>
 #include <webcpp/trystero/error.hpp>
@@ -56,6 +56,7 @@
 #include <deque>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <memory>
 #include <memory_resource>
@@ -814,8 +815,10 @@ struct completion {
  * configuration, the self id, the relays, the rooms' keys) is the app's.
  *
  * | Internal action   | Meaning                                                           |
- * | \@_hsdata         | a handshake message: the password challenge and its response      |
- * | \@_hsready        | the sender's side of the handshake passed                         |
+ * | \@_hsdata         | a message of the handshake's steps, at most 64 KiB; none are sent |
+ * |                   | before the identity handshake (Task 2.4b)                         |
+ * | \@_hsready        | the sender's side of the handshake passed, at most 128 KiB: an    |
+ * |                   | empty text                                                        |
  * | \@_ping, \@_pong  | round-trip measurement                                            |
  * | \@_leave          | the sender leaves the room                                        |
  * | \@_response       | the answer to a request, `{"r":<id>}` or `{"r":<id>,"e":<reason>}`  |
@@ -843,7 +846,6 @@ public:
               .max_json_document_bytes = options.max_json_document_bytes,
               .memory = memory_,
           },
-          handshake_timeout_(app_->handshake_timeout()),
           room_id_(room_id, memory_),
           root_topic_(protocol::root_topic(app_->app_id(), room_id_, memory_)),
           self_topic_(protocol::peer_topic(app_->app_id(), room_id_, app_->self_id(), memory_)),
@@ -887,6 +889,7 @@ public:
      * app, and asks for the room's keys, the strategy starting once they exist. */
     void start() {
         const auto weak = weak_from_this();
+        make_handshakes(weak);
         make_wire(weak);
         make_signaling(weak);
         make_strategy(weak);
@@ -895,6 +898,57 @@ public:
             strategy_->hold();
         }
         register_with_app();
+    }
+
+    /**
+     * Makes the handshake manager, whose callbacks reach the room while it lives: 0.27.0's
+     * `createHandshakeManager` as `room.ts` sets it up, without steps before the identity handshake
+     * (Task 2.4b), and without deferring the responder's ready frame before `max_users` (Task
+     * 2.5a).
+     */
+    void make_handshakes(const std::weak_ptr<room_impl>& weak) {
+        handshakes_ = std::allocate_shared<handshake_manager>(
+            allocator(), app_->self_id(), false,
+            handshake_callbacks{
+                .run_steps = bind<void(std::string_view, bool, handler<void(std::string_view)>)>(
+                    [](std::string_view, bool, handler<void(std::string_view)> done) { done({}); }),
+                .send_ready = bind<void(std::string_view, std::string_view)>(
+                    [weak](std::string_view peer, std::string_view ready_json) {
+                        if (const auto self = weak.lock()) {
+                            // 0.27.0's empty ready payload is a text; its other payloads, JSON.
+                            self->send_internal("@_hsready", peer,
+                                                ready_json.empty() ? protocol::payload_format::text
+                                                                   : protocol::payload_format::json,
+                                                ready_json);
+                        }
+                    }),
+                .local_passed = bind<bool(std::string_view)>([](std::string_view) { return true; }),
+                .admit = bind<bool(std::string_view)>([weak](std::string_view peer) {
+                    // As 0.27.0's acquireAdmissionSlot: the peer is still the room's, and the room
+                    // is not leaving.
+                    const auto self = weak.lock();
+                    return self && !self->left_ && self->peers_.contains(peer);
+                }),
+                .activate = bind<void(std::string_view)>([weak](std::string_view peer) {
+                    if (const auto self = weak.lock()) {
+                        self->activate(peer);
+                    }
+                }),
+                .failed = bind<void(std::string_view, std::string_view)>(
+                    [weak](std::string_view peer_view, std::string_view reason_view) {
+                        const auto self = weak.lock();
+                        if (!self) {
+                            return;
+                        }
+                        // 0.27.0's onHandshakeError, then its onFailure: the peer is told to leave
+                        // and goes. Copies: the kick frees the views' storage.
+                        const std::pmr::string peer(peer_view, self->memory_);
+                        const std::pmr::string reason(reason_view, self->memory_);
+                        self->report(peer, make_error_code(error::handshake_failed), reason);
+                        self->kick(peer, reason);
+                    }),
+            },
+            factory_, memory_);
     }
 
     /** Makes the action wire, whose callbacks reach the room while it lives. */
@@ -961,6 +1015,7 @@ public:
                                 self->post_progress(peer, name, metadata, share);
                             }
                         }),
+                .max_payload = bind<std::size_t(std::string_view)>(&room_impl::max_payload),
             },
             memory_);
     }
@@ -1661,15 +1716,10 @@ private:
     };
 
     struct peer_state {
-        explicit peer_state(std::pmr::polymorphic_allocator<> a) : challenge(a), pings(a) {}
+        explicit peer_state(std::pmr::polymorphic_allocator<> a) : pings(a) {}
 
         std::shared_ptr<peer_link> link;
-        bool active = false;
-        bool local_passed = false;
-        bool remote_ready = false;
-        bool challenge_sent = false;
-        std::pmr::string challenge;  // the initiator's, while it waits for the response
-        std::shared_ptr<backend::timer> handshake_timer;
+        bool active = false;  // its handshake completed
         std::pmr::deque<pending_ping> pings;
     };
 
@@ -1723,6 +1773,23 @@ private:
 
     static bool is_internal_to_pending(std::string_view name) {
         return name == "@_leave" || name == "@_hsdata" || name == "@_hsready";
+    }
+
+    /** The longest handshake message, 0.27.0's `maxPayloadBytes` of `@_hsdata`. */
+    static constexpr std::size_t max_handshake_data_bytes = std::size_t{64} * 1024;
+    /** The longest ready frame's payload, 0.27.0's `maxPayloadBytes` of `@_hsready`. */
+    static constexpr std::size_t max_handshake_ready_bytes = std::size_t{128} * 1024;
+
+    /** The longest payload of an action, 0.27.0's `maxPayloadBytes`: the handshake's own; every
+     * other action has the room's `max_receive_bytes`. */
+    static std::size_t max_payload(std::string_view name) {
+        if (name == "@_hsdata") {
+            return max_handshake_data_bytes;
+        }
+        if (name == "@_hsready") {
+            return max_handshake_ready_bytes;
+        }
+        return std::numeric_limits<std::size_t>::max();
     }
 
     /** Whether the room has the action: it was made, or it is internal. */
@@ -1841,9 +1908,10 @@ private:
         });
     }
 
+    /** 0.27.0's `canReceiveFromPeer`: a peer's messages are received once its handshake
+     * completed, the handshake's own and `@_leave` while it is pending. */
     bool may_receive(std::string_view peer, std::string_view name) const {
-        const auto it = peers_.find(peer);
-        return it != peers_.end() && (it->second.active || is_internal_to_pending(name));
+        return handshakes_->can_receive(peer, is_internal_to_pending(name));
     }
 
     std::pmr::vector<std::string_view> peer_views(bool include_pending) const {
@@ -1941,8 +2009,9 @@ private:
     }
 
     /** Binds this room to `link` for `peer`, in the order the specification sets: the negotiation
-     * marked connected, the peer's state and handshake timer, the frames the link kept, then the
-     * handshake's first message, as Trystero adds a peer before it flushes.
+     * marked connected, the peer's state and its handshake added, the frames the link kept, then
+     * the handshake started, as 0.27.0's room adds a peer to its handshake manager, sets the
+     * peer's handlers, which flush what it kept, then starts the handshake.
      *
      * Tip: the peer's id is copied first, since every step may run code that removes the peer's
      * entry (a kick); the entry is never held by reference across such a step, and each step
@@ -1956,21 +2025,8 @@ private:
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
         signaling_->bound(peer);
-        {
-            auto& state = peers_.try_emplace(peer, allocator()).first->second;
-            state.link = link;
-            state.handshake_timer = factory_.make_timer(memory_);
-            state.handshake_timer->start(
-                handshake_timeout_, bind<void()>([weak, peer = std::pmr::string(peer, memory_)] {
-                    const auto self = weak.lock();
-                    if (!self) {
-                        return;
-                    }
-                    self->report(peer, make_error_code(error::handshake_timed_out),
-                                 "handshake timed out");
-                    self->kick(peer, "handshake timed out");
-                }));
-        }
+        peers_.try_emplace(peer, allocator()).first->second.link = link;
+        handshakes_->add(peer);
         // The link's identity, never dereferenced: a link made later at its address is never the
         // one whose end this names, since the link calls its `ended` alive.
         const peer_link* const mine = link.get();
@@ -1990,7 +2046,7 @@ private:
         });
         if (const auto it = peers_.find(peer);
             it != peers_.end() && it->second.link.get() == mine) {
-            start_handshake(it->first, it->second);
+            handshakes_->start(peer);
         }
     }
 
@@ -2005,89 +2061,11 @@ private:
         remove_peer(peer, reason);
     }
 
-    void start_handshake(std::string_view peer, peer_state& state) {
-        if (app_->password().empty()) {
-            pass_local(peer);
-            return;
-        }
-        if (app_->self_id() < peer) {
-            state.challenge = detail::random_id(factory_, 36, memory_);  // Trystero's genId(36)
-            std::pmr::string text(R"({"__trystero_pw":"challenge","c":)", memory_);
-            protocol::json::detail::append_utf8(text,
-                                                state.challenge);  // drawn from base62_alphabet
-            text += '}';
-            send_internal("@_hsdata", peer, protocol::payload_format::json, text);
-            state.challenge_sent = true;
-        }
-    }
-
-    void on_handshake_data(std::string_view peer, std::string_view data) {
+    /** Both sides of a peer's handshake are ready, 0.27.0's `onActivate`: the peer joins, and its
+     * user with its first peer. */
+    void activate(std::string_view peer) {
         const auto it = peers_.find(peer);
-        if (it == peers_.end() || it->second.active || it->second.local_passed) {
-            return;
-        }
-        // A message past its bound fails the handshake as one of the wrong shape does.
-        const auto value = webcpp::document::parse(
-            data, protocol::json::protocol_limits(protocol::max_handshake_bytes),
-            std::pmr::polymorphic_allocator<std::byte>(memory_));
-        const protocol::json::const_value o = value.has_value() && value->root().is_object()
-                                                  ? value->root()
-                                                  : protocol::json::const_value();
-        const auto field = [&o](std::string_view key) { return protocol::json::text_of(o[key]); };
-        if (app_->self_id() < peer) {
-            // The link carries one handshake: the response answers its one challenge.
-            const bool proves = it->second.challenge_sent && field("__trystero_pw") == "response" &&
-                                field("h") == handshake_proof(it->second.challenge);
-            if (proves) {
-                pass_local(peer);
-                return;
-            }
-            fail_handshake(peer);
-            return;
-        }
-        if (field("__trystero_pw") != "challenge" || !o["c"].is_string()) {
-            fail_handshake(peer);
-            return;
-        }
-        std::pmr::string text(R"({"__trystero_pw":"response","h":)", memory_);
-        protocol::json::detail::append_utf8(text, handshake_proof(field("c")));
-        text += '}';
-        send_internal("@_hsdata", peer, protocol::payload_format::json, text);
-        pass_local(peer);
-    }
-
-    /**
-     * The proof of the provisional password handshake, 0.26.0's `hashChallenge`: the
-     * hexadecimal SHA-256 of "<challenge>:<password>:<app>:<room>". Provisional: 0.27.0 has no
-     * such handshake, and Phase 2's dual-signature handshake (Task 2.4) replaces it.
-     */
-    std::pmr::string handshake_proof(std::string_view challenge) const {
-        const auto digest = protocol::sha256_of(
-            {challenge, ":", app_->password(), ":", app_->app_id(), ":", room_id_});
-        return protocol::to_hex(digest, memory_);
-    }
-
-    void fail_handshake(std::string_view peer_view) {
-        const std::pmr::string peer(peer_view, memory_);
-        report(peer, make_error_code(error::wrong_password),
-               "incorrect password for overlapping room");
-        kick(peer, "handshake failed");
-    }
-
-    void pass_local(std::string_view peer) {
-        const auto it = peers_.find(peer);
-        if (it == peers_.end()) {
-            return;
-        }
-        it->second.local_passed = true;
-        send_internal("@_hsready", it->first);
-        maybe_activate(it->first);
-    }
-
-    void maybe_activate(std::string_view peer) {
-        const auto it = peers_.find(peer);
-        if (it == peers_.end() || it->second.active || !it->second.local_passed ||
-            !it->second.remote_ready) {
+        if (it == peers_.end() || it->second.active) {
             return;
         }
         it->second.active = true;
@@ -2095,7 +2073,6 @@ private:
         // is no other user.
         std::pmr::string user(app_->user_of(peer), memory_);
         const bool first_of_user = users_.add(peer, user) && user != self_user_id();
-        it->second.handshake_timer.reset();
         std::pmr::string peer_copy(it->first, memory_);
         const auto link = it->second.link;
         log_("room", "peer joined: ", peer_copy);
@@ -2122,14 +2099,14 @@ private:
     void on_incoming(incoming&& m) {
         const auto name = m.name();
         const auto it_peer = peers_.find(m.peer);
+        // A leaving room handles no handshake message, as 0.27.0's room checks isLeavingOrLeft.
         if (name == "@_hsready") {
-            if (it_peer != peers_.end() && !it_peer->second.active) {
-                it_peer->second.remote_ready = true;
-                maybe_activate(it_peer->first);
+            if (it_peer != peers_.end() && !left_) {
+                handshakes_->receive_ready(it_peer->first);
             }
         } else if (name == "@_hsdata") {
-            if (it_peer != peers_.end()) {
-                on_handshake_data(it_peer->first, as_text(m.payload()));
+            if (it_peer != peers_.end() && !left_) {
+                handshakes_->receive_data(it_peer->first, as_text(m.payload()));
             }
         } else if (name == "@_ping") {
             if (it_peer != peers_.end()) {
@@ -2301,6 +2278,7 @@ private:
         const bool last_of_user =
             state.active && users_.remove(peer).has_value() && user != self_user_id();
         log_("room", "peer ", peer, " gone: ", reason);
+        handshakes_->clear(peer);
         // The connection ends with the peer, as 0.27.0 destroys a peer it lets go; at its own end,
         // it has ended already.
         state.link->end(reason);
@@ -2341,6 +2319,7 @@ private:
         peers_.clear();
         users_.clear();  // without leaves, as 0.27.0 reports none once its room is leaving
         for (auto& [id, state] : peers) {
+            handshakes_->clear(id);
             state.link->end("the room is left");
             for (auto& ping : state.pings) {
                 complete(std::move(ping.handler), make_error_code(error::room_left),
@@ -2402,11 +2381,10 @@ private:
     backend::factory& factory_;
     logger log_;
     room_options options_;
-    // How long a peer has to finish the handshake: the app's, 10 s.
-    std::chrono::milliseconds handshake_timeout_;
     std::pmr::string room_id_;
     std::pmr::string root_topic_;
     std::pmr::string self_topic_;
+    std::shared_ptr<handshake_manager> handshakes_;
     std::shared_ptr<action_wire> wire_;
     std::shared_ptr<signaling> signaling_;
     std::shared_ptr<nostr_strategy> strategy_;
@@ -2441,11 +2419,12 @@ class request_action;
  * leaves at once. Its peers meet over the relays, connect over WebRTC, each room with a connection
  * of its own to each peer, as 0.27.0's rooms do, and exchange the messages of the actions it makes,
  * written bare on the connection. On the branch `port/trystero-0.27` it is not interoperable with
- * Trystero 0.27.0 before Phase 2: it keeps 0.26.0's password handshake, and has no ECDSA P-256.
+ * Trystero 0.27.0 before Phase 2: its handshake has 0.27.0's frame and timer, but not yet the
+ * identity handshake's signed steps, and it has no ECDSA P-256.
  *
  * Every room uses its app's immutable password, under which the signals that make its connections
- * are sealed. The provisional password handshake verifies only at the lower id; different
- * passwords require separate apps with distinct peer ids.
+ * are sealed: as in 0.27.0, the sealing alone keeps peers of another password out, which never
+ * connect; different passwords require separate apps.
  *
  * Tip: every handler the room calls, and every completion, runs on its app's executor. The views a
  * handler receives are valid for the duration of the call. Every allocation of the room goes
@@ -2647,8 +2626,9 @@ public:
      * |                       | of descriptions; once per offer or answer                  |
      * | `relay_failed`        | the first connection of every relay failed before any      |
      * |                       | opened; once                                               |
-     * | `wrong_password`      | a connected peer failed the room's password handshake      |
-     * | `handshake_timed_out` | a connected peer did not finish it in time                 |
+     * | `handshake_failed`    | a connected peer's handshake failed, with 0.27.0's reason  |
+     * |                       | as its message, as "handshake timed out after 10000ms";    |
+     * |                       | the peer is told to leave, and goes                        |
      * | `backend_failure`     | the backend made no connection for a peer, or the room's   |
      * |                       | keys could not be derived                                  |
      *

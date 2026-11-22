@@ -96,6 +96,15 @@ webcpp.run peer_link : peer_link_test.cpp ;
 webcpp.run peer_link_hardened : peer_link_test.cpp
   : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
   : native ;
+# A room's handshakes alone, 0.27.0's handshake manager: its phases, its 10 s
+# on the virtual clock, its 16 buffered messages and its ready frames.
+webcpp.run handshake_manager : handshake_manager_test.cpp ;
+# Natively once more with the standard libraries' checks, so that a callback
+# that clears its peer while the manager calls it fails at once when the
+# manager touches what it removed.
+webcpp.run handshake_manager_hardened : handshake_manager_test.cpp
+  : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
+  : native ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
 # The timer over webcpp::asio's steady_timer, which the platform backend

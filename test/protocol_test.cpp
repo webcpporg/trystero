@@ -752,7 +752,6 @@ static_assert(tp::max_sealed_description_bytes + tp::max_peer_id_bytes + tp::max
 static_assert(tp::nostr::max_parsed_relay_text_bytes == tp::max_parsed_signal_bytes + 2048);
 static_assert(tp::nostr::max_parsed_relay_text_bytes == 68608);
 static_assert(tp::nostr::max_parsed_relay_text_bytes < tp::max_relay_message_bytes);
-static_assert(tp::max_handshake_bytes == 1024);
 // A parse reads at most its bound of text, into an image of at most twice that and 64 KiB more.
 static_assert(tp::json::protocol_limits(1000).max_bytes == 1000);
 static_assert(tp::json::protocol_limits(1000).max_document_bytes == 2000 + 65536);
@@ -772,7 +771,7 @@ static_assert(tp::json::payload_limits(0, 1000).max_document_bytes == 1000);
 // Each text a room parses is read up to its bound, to the byte, and one byte more is refused
 // before anything of it is read: no buffer is made, and a text that is not JSON at all is refused
 // for its length, not its syntax. The relay's bound reads an event that carries the longest
-// signal, which the signal's bound reads in turn, and the handshake's reads Trystero's message.
+// signal, which the signal's bound reads in turn.
 void parse_bounds() {
     const auto refused_unread = [](std::string_view text, std::size_t max_bytes) {
         counting_resource memory;
@@ -829,17 +828,6 @@ void parse_bounds() {
         }
     }
     BOOST_TEST(refused_unread(event_text + " ", tp::nostr::max_parsed_relay_text_bytes));
-
-    // Trystero's handshake message: `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`.
-    const std::string proof(64, 'f');
-    const auto handshake =
-        padded(R"({"__trystero_pw":"response","h":")" + std::string(proof) + "\"}",
-               tp::max_handshake_bytes);
-    {
-        const auto document = parse_text(handshake, tp::max_handshake_bytes).value();
-        BOOST_TEST_EQ(tp::json::text_of(document.root()["h"]), proof);
-    }
-    BOOST_TEST(refused_unread(handshake + " ", tp::max_handshake_bytes));
 }
 
 /** `["EVENT","sub",<event>]` whose event holds `members` more after its tags and content. */

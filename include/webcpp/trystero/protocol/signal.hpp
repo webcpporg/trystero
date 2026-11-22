@@ -67,15 +67,6 @@ static_assert(max_sealed_description_bytes + max_peer_id_bytes + max_offer_id_by
               "the longest signal the bounds of its fields admit is read");
 
 /**
- * The longest message of the password handshake a room reads, in bytes: a longer one fails the
- * handshake, as a message of the wrong shape does.
- *
- * Trystero's are at most 99 bytes, `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`;
- * the bound is ten times that.
- */
-inline constexpr std::size_t max_handshake_bytes = 1024;
-
-/**
  * A message on a signaling topic, the JSON object Trystero's signal handler reads, as views.
  *
  * With none of offer, answer and candidate it is an announcement: the sender is in the room. Offer,
