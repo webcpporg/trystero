@@ -54,7 +54,6 @@ using namespace std::chrono_literals;
 
 namespace {
 
-using trystero::test::advance;
 using trystero::test::app_config;
 using trystero::test::app_id;
 using trystero::test::counting_resource;
@@ -387,7 +386,7 @@ void the_wire_keeps_0_27_0s_bounds() {
                 BOOST_TEST_EQ(b.delivered[i].payload()[0], i + 1);
             }
         }
-        advance(b.f, 10'001ms);
+        trystero::test::advance(b.f, 10'001ms);
         b.listeners.insert("other");
         b.wire->listener_added();
         BOOST_TEST_EQ(b.delivered.size(), tp::max_pre_listener_messages);
@@ -937,7 +936,7 @@ void a_flood_of_announcements_is_bounded() {
         constexpr std::size_t batch = 1000;
         for (std::size_t sent = 0; sent < count; sent += batch) {
             if (sent > 0) {
-                advance(f, minute);
+                trystero::test::advance(f, minute);
             }
             const std::size_t now = std::min(batch, count - sent);
             const auto before = f.net.relay(relay_a).events_seen;
@@ -1645,7 +1644,7 @@ void a_replayed_offer_is_refused() {
     while (joined.size() < 2 && f.net.steady_now() < end) {
         watcher.publish(a_topic, {.peer_id = b_id, .offer_id = recorded_id, .offer = recorded},
                         std::to_string(replays++));
-        advance(f, 500ms);
+        trystero::test::advance(f, 500ms);
     }
     BOOST_TEST_EQ(joined.size(), 2U);
     BOOST_TEST_GE(replays, 1U);
@@ -1851,10 +1850,10 @@ void counter_announcements_are_paced() {
     };
     announced(flood, "0low");
     BOOST_TEST_EQ(asked, 1U);
-    advance(f, 5332ms);
+    trystero::test::advance(f, 5332ms);
     announced(1, "0early");
     BOOST_TEST_EQ(asked, 1U);
-    advance(f, 1ms);
+    trystero::test::advance(f, 1ms);
     announced(1, "0due");
     BOOST_TEST_EQ(asked, 2U);
 }
@@ -2194,12 +2193,12 @@ void a_frame_of_an_unknown_token_is_dropped() {
     a.on_peer_leave([&](const trystero::peer_event&) { ++leaves; });
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1; })));
     const std::vector<std::uint8_t> action(4'000, 2);
-    advance(f, 300ms);
+    trystero::test::advance(f, 300ms);
     const auto before = memory.in_use;
     for (std::size_t i = 0; i < 1000; ++i) {
         f.net.inject(pcs.front(), trystero::protocol::room_frame("unknown-token", action));
     }
-    advance(f, 300ms);
+    trystero::test::advance(f, 300ms);
     BOOST_TEST_EQ(leaves, 0U);
     BOOST_TEST_EQ(a.peers().size(), 1U);
     BOOST_TEST_LT(memory.in_use, before + (std::size_t{64} * 1024));
@@ -2244,7 +2243,7 @@ void malformed_envelopes_end_the_connection() {
     std::vector<std::uint8_t> largest{1, 0, 1, 'x'};
     largest.resize(16'515, 0);
     f.net.inject(pcs.front(), largest);
-    advance(f, 300ms);
+    trystero::test::advance(f, 300ms);
     BOOST_TEST_EQ(leaves, 0U);
 }
 
@@ -2274,7 +2273,7 @@ void a_late_end_of_another_connection_keeps_the_peer() {
     const auto second = a.app->find(b_id);
     webcpp::test::require(BOOST_TEST(second != nullptr && second != first));
     a.room->connection_ended(first, b_id, "a late end of the first connection");
-    advance(f, 5000ms);
+    trystero::test::advance(f, 5000ms);
     BOOST_TEST_EQ(a.room->peers().size(), 1U);
     BOOST_TEST_EQ(b_leaves, 1U);
     second->end("test");
@@ -2361,7 +2360,7 @@ void a_room_left_with_no_idle_time_sends_its_presence() {
         return trystero::test::memory_network::verdict::deliver;
     };
     a.room->abandon();
-    advance(f, 1000ms);
+    trystero::test::advance(f, 1000ms);
     BOOST_TEST_EQ(seen, 1U);
 }
 
@@ -3024,7 +3023,7 @@ void offline_holds_and_online_reconnects() {
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 0}));
     auto a = join(a_app, "lobby");
     auto b = join(b_app, "lobby");
-    advance(f, 10min);
+    trystero::test::advance(f, 10min);
     BOOST_TEST_EQ(f.net.websocket_connects, 4U);  // b's two, and none of a's
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{1, 1}));
     BOOST_TEST(a.peers().empty());
@@ -3052,7 +3051,7 @@ void offline_holds_a_relay_waiting_to_reconnect() {
         f, [&] { return subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 1}; })));
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     a_app.set_relay_connectivity(trystero::relay_connectivity::offline);
-    advance(f, 10min);
+    trystero::test::advance(f, 10min);
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 0}));
 }
@@ -3074,7 +3073,7 @@ void online_reconnects_a_backoff_relay_at_once() {
     trystero::test::app a_app(f.io.get_executor(), f.net, std::move(config));
     const auto a = join(a_app, "backoff");
     // Ten minutes of failures take relay_a's bound to its most, 60 s.
-    advance(f, 10min);
+    trystero::test::advance(f, 10min);
     webcpp::test::require(BOOST_TEST(!waits.empty()));
     BOOST_TEST_EQ(waits.front(), "3333 ms");
     BOOST_TEST_EQ(waits.back(), "60000 ms");
@@ -3084,7 +3083,7 @@ void online_reconnects_a_backoff_relay_at_once() {
     BOOST_TEST_EQ(f.net.websocket_connects, connects + 1);  // relay_a alone, at once
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return waits.size() == failures + 1; })));
     BOOST_TEST_EQ(waits.back(), "3333 ms");
-    advance(f, 3333ms);
+    trystero::test::advance(f, 3333ms);
     BOOST_TEST_EQ(f.net.websocket_connects, connects + 2);
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 1}));
 }
@@ -3100,7 +3099,7 @@ void online_while_online_leaves_connected_relays_alone() {
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     a_app.set_relay_connectivity(trystero::relay_connectivity::online);
     a_app.set_relay_connectivity(trystero::relay_connectivity::online);
-    advance(f, 1min);
+    trystero::test::advance(f, 1min);
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{1, 1}));
 }
@@ -3118,10 +3117,10 @@ void automatic_is_online_natively() {
         f, [&] { return subscriptions(f) == std::pair<std::size_t, std::size_t>{1, 1}; })));
     BOOST_TEST(a_app.set_relay_connectivity(trystero::relay_connectivity::automatic) ==
                trystero::relay_connectivity::automatic);
-    advance(f, 1min);
+    trystero::test::advance(f, 1min);
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     a_app.set_relay_connectivity(trystero::relay_connectivity::offline);
-    advance(f, 1min);
+    trystero::test::advance(f, 1min);
     BOOST_TEST((subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 0}));
     BOOST_TEST(a_app.set_relay_connectivity(trystero::relay_connectivity::automatic) ==
                trystero::relay_connectivity::automatic);
@@ -3142,7 +3141,7 @@ void automatic_follows_the_pages_events() {
     f.net.page_connectivity(false);
     BOOST_TEST(run_until(
         f, [&] { return subscriptions(f) == std::pair<std::size_t, std::size_t>{0, 0}; }));
-    advance(f, 10min);
+    trystero::test::advance(f, 10min);
     BOOST_TEST_EQ(f.net.websocket_connects, 2U);
     BOOST_TEST(a_app.relay_connectivity() == trystero::relay_connectivity::automatic);
     f.net.page_connectivity(true);
@@ -3406,8 +3405,8 @@ void decrypt_failed_is_reported_once_a_minute() {
 
     // A minute but a millisecond after the report, A has sent its offer again, and B reported none
     // of them.
-    advance(f, std::chrono::duration_cast<std::chrono::milliseconds>(reported + 59'999ms -
-                                                                     f.net.steady_now()));
+    trystero::test::advance(f, std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   reported + 59'999ms - f.net.steady_now()));
     BOOST_TEST_EQ(reports.size(), 1U);
     BOOST_TEST_GE(std::ranges::count_if(offers, [&](auto t) { return t > reported; }), 1);
     BOOST_TEST(run_until(f, [&] { return reports.size() == 2; }, 3min));
@@ -3447,11 +3446,11 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     for (std::size_t i = 0; i < 2 * remembered; ++i) {
         offer(i % remembered);
         if (i % 32 == 31) {
-            advance(f, 100ms);
+            trystero::test::advance(f, 100ms);
         }
     }
     BOOST_TEST(run_until(f, [&] { return reports.size() >= remembered; }));
-    advance(f, 1s);
+    trystero::test::advance(f, 1s);
     BOOST_TEST_EQ(reports.size(), remembered);
     for (std::size_t i = 0; i < std::min(reports.size(), remembered); ++i) {
         BOOST_TEST_EQ(reports[i].peer_id, "0garbage" + std::to_string(i));
@@ -3460,7 +3459,7 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     // An id seen again within the minute becomes the most recent: offered alone now, the first is
     // not reported, and the second is the least recent.
     offer(0);
-    advance(f, 100ms);
+    trystero::test::advance(f, 100ms);
     BOOST_TEST_EQ(reports.size(), remembered);
     // One more id makes the room forget the second, which it then reports again within the minute,
     // and not the first, which the room would forget were the ids kept in the order they came.
@@ -3469,7 +3468,7 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     offer(0);
     offer(1);
     BOOST_TEST(run_until(f, [&] { return reports.size() == remembered + 2; }));
-    advance(f, 1s);
+    trystero::test::advance(f, 1s);
     BOOST_TEST_EQ(reports.size(), remembered + 2);
     if (reports.size() == remembered + 2) {
         BOOST_TEST_EQ(reports[remembered].peer_id, "0garbage" + std::to_string(remembered));
@@ -3495,7 +3494,7 @@ void relay_failed_when_every_relay_fails() {
         BOOST_TEST_EQ(reports[0].room_id, "unreachable");
         BOOST_TEST(reports[0].peer_id.empty());
         BOOST_TEST(!reports[0].stage.has_value());
-        advance(f, 3min);
+        trystero::test::advance(f, 3min);
         BOOST_TEST_EQ(reports.size(), 1U);
     }
     {
@@ -3505,7 +3504,7 @@ void relay_failed_when_every_relay_fails() {
         auto a = join(a_app, "half");
         std::size_t reports = 0;
         a.on_error([&](const trystero::room_error&) { ++reports; });
-        advance(f, 3min);
+        trystero::test::advance(f, 3min);
         BOOST_TEST_EQ(reports, 0U);
     }
 }
