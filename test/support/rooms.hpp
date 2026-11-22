@@ -14,6 +14,7 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/clock.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
@@ -24,7 +25,6 @@
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/asio/io_context.hpp>
-#include <webcpp/crypto/curves/p256.hpp>
 
 #include <webcpp/document/document.hpp>
 #include <webcpp/document/parse.hpp>
@@ -69,12 +69,10 @@ inline std::array<std::uint8_t, 32> endpoint_scalar(std::string_view label) {
 /** The peer id an app whose endpoint key is named `label` derives. */
 inline std::string peer_id_of(std::string_view label) {
     const auto scalar = endpoint_scalar(label);
-    const auto key = webcpp::crypto::curves::p256::keypair::make(scalar);
+    const auto key =
+        trystero::detail::make_endpoint_identity(scalar, std::pmr::get_default_resource());
     webcpp::test::require(BOOST_TEST(key.has_value()));
-    const auto point = key->public_key();
-    webcpp::test::require(BOOST_TEST(point.has_value()));
-    return std::string(
-        protocol::derive_peer_id(protocol::compact_public_key(point->uncompressed())));
+    return std::string(key->peer_id);
 }
 
 /** `n` labels, `prefix` and a number each, ordered by the peer ids they derive, lowest first: a

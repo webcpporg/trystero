@@ -28,7 +28,6 @@
 #include <webcpp/trystero/subscription.hpp>
 
 #include <webcpp/asio/any_io_executor.hpp>  // lint-world: names the executor only
-#include <webcpp/crypto/curves/p256.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
@@ -95,20 +94,26 @@ public:
      * here. When either cannot be made, @ref identity_failure says which, and the self id is
      * empty if the endpoint key is the one missing.
      *
-     * Tip: `endpoint_scalar`, when not empty, is the endpoint key's scalar in place of one drawn:
-     * the library's own tests fix their peers' keys, so that their ids are known; a scalar that is
-     * no valid key, zero for instance, makes the endpoint key fail.
+     * Tip: `endpoint_scalar` and `user_scalar`, when not empty, are the endpoint key's and the
+     * ephemeral user key's scalars in place of ones drawn: the library's own tests fix their
+     * peers' keys, so that their ids are known; a scalar that is no valid key, zero for instance,
+     * makes its key fail. `user_scalar` is unused when the configuration gives an identity.
+     *
+     * @param ex The executor every app and room event runs on.
+     * @param factory The backend that makes the app's and the rooms' platform objects.
+     * @param config The app's configuration, moved from.
+     * @param endpoint_scalar The endpoint key's scalar, 32 bytes; empty draws one.
+     * @param user_scalar The ephemeral user key's scalar, 32 bytes; empty draws one.
      */
     app_impl(executor_type ex, backend::factory& factory, app_config config,
-             std::span<const std::uint8_t> endpoint_scalar = {})
+             std::span<const std::uint8_t> endpoint_scalar = {},
+             std::span<const std::uint8_t> user_scalar = {})
         : memory_(config.memory),
           ex_(std::move(ex)),
           factory_(factory),
           log_(std::move(config.log), memory_),
           app_id_(config.app_id, memory_),
-          endpoint_(make_endpoint(endpoint_scalar)),
-          endpoint_key_(memory_),
-          self_id_(memory_),
+          endpoint_(make_endpoint_identity(endpoint_scalar, memory_)),
           identity_(std::move(config.identity)),
           persistence_(identity_ ? identity_persistence::imported
                                  : identity_persistence::ephemeral),
@@ -120,7 +125,7 @@ public:
           setup_reports_(memory_),
           errors_(allocator()),
           rooms_(memory_) {
-        resolve_identity();
+        resolve_identity(user_scalar);
         if (ice_servers_.empty()) {
             ice_servers_ = default_ice_servers(memory_);
         }
@@ -192,26 +197,49 @@ public:
     /** The application id shared by every room. */
     [[nodiscard]] std::string_view app_id() const { return app_id_; }
 
-    /** The local peer id shared by every room, derived from the endpoint key; empty when the
-     * endpoint key could not be made. */
-    [[nodiscard]] std::string_view self_id() const { return self_id_; }
+    /**
+     * The local peer id shared by every room, derived from the endpoint key.
+     *
+     * @return The id; empty when the endpoint key could not be made.
+     */
+    [[nodiscard]] std::string_view self_id() const {
+        return endpoint_ ? std::string_view(endpoint_->peer_id) : std::string_view();
+    }
 
-    /** The endpoint key's compact public key; empty when it could not be made. */
-    [[nodiscard]] std::string_view endpoint_key() const { return endpoint_key_; }
+    /**
+     * The endpoint key's compact public key.
+     *
+     * @return The key; empty when it could not be made.
+     */
+    [[nodiscard]] std::string_view endpoint_key() const {
+        return endpoint_ ? std::string_view(endpoint_->compact) : std::string_view();
+    }
 
-    /** The id of the user every room of the app presents; empty when the ephemeral user identity
-     * could not be made. */
+    /**
+     * The id of the user every room of the app presents.
+     *
+     * @return The id; empty when the ephemeral user identity could not be made.
+     */
     [[nodiscard]] std::string_view user_id() const {
         return identity_ ? identity_->user_id() : std::string_view();
     }
 
-    /** Where the user identity comes from: the configuration's, or made with the app. */
+    /**
+     * Where the user identity comes from.
+     *
+     * @return `imported` for the configuration's, `ephemeral` for one made with the app.
+     */
     [[nodiscard]] identity_persistence persistence() const { return persistence_; }
 
     /**
-     * Why the app has no identity, the message 0.27.0's rooms report with `identity-failed`:
-     * "endpoint identity resolution failed" when the endpoint key could not be made, "identity
-     * resolution failed" when the ephemeral user identity could not be; empty when both exist.
+     * Why the app has no identity, the message 0.27.0's rooms report with `identity-failed`.
+     *
+     * Tip: 0.27.0 reports the error's own message when it has one, WebCrypto's for instance, and
+     * these texts only as its fallbacks; the port reports the fallbacks always.
+     *
+     * @return "endpoint identity resolution failed" when the endpoint key could not be made,
+     * "identity resolution failed" when the ephemeral user identity could not be; empty when both
+     * exist.
      */
     [[nodiscard]] std::string_view identity_failure() const {
         if (!endpoint_) {
@@ -392,31 +420,15 @@ private:
         }
     }
 
-    /** The endpoint key of `scalar`, or one drawn when it is empty; nothing when the key cannot be
-     * made. */
-    static std::optional<webcpp::crypto::curves::p256::keypair> make_endpoint(
-        std::span<const std::uint8_t> scalar) {
-        using keypair = webcpp::crypto::curves::p256::keypair;
-        auto made = scalar.empty() ? keypair::generate() : keypair::make(scalar);
-        if (!made) {
-            return std::nullopt;
-        }
-        return std::move(*made);
-    }
-
-    /** Derives the self id from the endpoint key, and makes the ephemeral user identity when the
-     * configuration gave none; logs what could not be made. */
-    void resolve_identity() {
-        if (endpoint_) {
-            if (const auto point = endpoint_->public_key()) {
-                endpoint_key_ = protocol::compact_public_key(point->uncompressed(), memory_);
-                self_id_ = protocol::derive_peer_id(endpoint_key_, memory_);
-            } else {
-                endpoint_.reset();
-            }
-        }
+    /**
+     * Makes the ephemeral user identity when the configuration gave none, and logs what could not
+     * be made.
+     *
+     * @param user_scalar The ephemeral user key's scalar; empty draws one.
+     */
+    void resolve_identity(std::span<const std::uint8_t> user_scalar) {
         if (!identity_) {
-            if (auto made = create_user_identity(memory_)) {
+            if (auto made = user_identity_access::make(user_scalar, memory_)) {
                 identity_ = std::move(*made);
             }
         }
@@ -437,9 +449,7 @@ private:
     backend::factory& factory_;
     logger log_;
     std::pmr::string app_id_;
-    std::optional<webcpp::crypto::curves::p256::keypair> endpoint_;
-    std::pmr::string endpoint_key_;  // the endpoint key's compact public key
-    std::pmr::string self_id_;
+    std::optional<endpoint_identity> endpoint_;
     std::optional<user_identity> identity_;
     identity_persistence persistence_;
     std::pmr::string password_;

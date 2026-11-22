@@ -63,6 +63,7 @@ using trystero::test::app_config;
 using trystero::test::app_id;
 using trystero::test::counting_resource;
 using trystero::test::document_of;
+using trystero::test::endpoint_scalar;
 using trystero::test::fixture;
 using trystero::test::flooder;
 using trystero::test::group_users;
@@ -2613,7 +2614,7 @@ void replay_reports_current_peers() {
     const auto all = a.on_peer_join(
         [&](const trystero::peer_event& e) { replayed.emplace_back(e.peer_id, e.user_id); },
         {.once = false, .replay = true});
-    // Within the call: B, whose user, until identities come from keys, is itself.
+    // Within the call: B, whose user, until the handshake verifies remote users, is itself.
     if (BOOST_TEST_EQ(replayed.size(), 1U)) {
         BOOST_TEST_EQ(replayed[0].first, b_id);
         BOOST_TEST_EQ(replayed[0].second, b_id);
@@ -3547,6 +3548,65 @@ void an_endpoint_that_cannot_be_made_reports_identity_failed() {
     BOOST_TEST_EQ(f.net.websocket_connects, 0U);
 }
 
+// A user key that cannot be made keeps the app's peer id and leaves it without a user id; each
+// room it joins reports `identity_failed` with 0.27.0's message for the user identity, then ends
+// without a word to a relay, as 0.27.0's failSetup.
+void a_user_key_that_cannot_be_made_reports_identity_failed() {
+    fixture f;
+    const std::array<std::uint8_t, 32> zero{};
+    const auto scalar = endpoint_scalar("user-failed");
+    auto a_app = trystero::detail::app_access::make(f.io.get_executor(), f.net,
+                                                    app_config("user-failed"), scalar, zero);
+    BOOST_TEST_EQ(a_app.self_id(), peer_id_of("user-failed"));
+    BOOST_TEST(a_app.user_id().empty());
+    auto a = join(a_app, "failed");
+
+    struct reported {
+        boost::system::error_code code;
+        std::string message;
+        std::string room_id;
+        std::string peer_id;
+    };
+
+    std::vector<reported> errors;
+    a.on_error([&](const trystero::room_error& e) {
+        errors.push_back({
+            .code = e.code,
+            .message = std::string(e.message),
+            .room_id = std::string(e.room_id),
+            .peer_id = std::string(e.peer_id),
+        });
+    });
+    BOOST_TEST(errors.empty());  // posted: the join has returned before it is reported
+    const auto& impl = trystero::detail::app_access::impl(a_app);
+    BOOST_TEST(run_until(f, [&] { return impl.counted_rooms() == 0; }));
+    if (BOOST_TEST_EQ(errors.size(), 1U)) {
+        BOOST_TEST(errors[0].code == trystero::error::identity_failed);
+        BOOST_TEST_EQ(errors[0].message, "identity resolution failed");
+        BOOST_TEST_EQ(errors[0].room_id, "failed");
+        BOOST_TEST(errors[0].peer_id.empty());
+    }
+    BOOST_TEST_EQ(f.net.websocket_connects, 0U);
+
+    // A user scalar fixes the user id as the endpoint scalar fixes the peer id; a given identity
+    // takes its place.
+    const auto user_scalar = endpoint_scalar("user-fixed");
+    auto fixed = trystero::detail::app_access::make(f.io.get_executor(), f.net,
+                                                    app_config("user-fixed"), scalar, user_scalar);
+    const auto expected =
+        trystero::detail::user_identity_access::make(user_scalar, std::pmr::get_default_resource());
+    webcpp::test::require(BOOST_TEST(expected.has_value()));
+    BOOST_TEST_EQ(fixed.user_id(), expected->user_id());
+    BOOST_TEST_NE(fixed.user_id(), fixed.self_id());
+    auto config = app_config("user-given");
+    const auto given_identity = trystero::create_user_identity();
+    webcpp::test::require(BOOST_TEST(given_identity.has_value()));
+    config.identity = *given_identity;
+    auto given = trystero::detail::app_access::make(f.io.get_executor(), f.net, std::move(config),
+                                                    scalar, zero);
+    BOOST_TEST_EQ(given.user_id(), given_identity->user_id());
+}
+
 /** Refusals of a request with long reasons. */
 class reasons final : public boost::system::error_category {
 public:
@@ -4427,6 +4487,7 @@ int main(int argc, char* argv[]) {
     run_case(two_apps_of_one_imported_identity_share_a_user_id);
     run_case(self_reports_the_identity);
     run_case(an_endpoint_that_cannot_be_made_reports_identity_failed);
+    run_case(a_user_key_that_cannot_be_made_reports_identity_failed);
     run_case(a_request_is_refused_by_a_gone_listener_or_the_gate);
     run_case(a_request_fails_when_its_peer_or_its_room_goes);
     run_case(an_action_name_keeps_its_first_kind);

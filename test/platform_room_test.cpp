@@ -116,9 +116,10 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 
 void native_rooms_join_and_exchange_every_format() {
     fixture f;
-    auto a_app = make_app(f.io.get_executor(), f.backend, "AAAAAAAAAAAAAAAAAAAA", "s3cret");
+    // Labels name the keys only: whichever peer's id is the lower offers, and either works here.
+    auto a_app = make_app(f.io.get_executor(), f.backend, "exchange-a", "s3cret");
     auto a = join(a_app, "lobby");
-    auto z_app = make_app(f.io.get_executor(), f.backend, "zzzzzzzzzzzzzzzzzzzz", "s3cret");
+    auto z_app = make_app(f.io.get_executor(), f.backend, "exchange-z", "s3cret");
     auto z = join(z_app, "lobby");
     std::string text;
     std::optional<webcpp::document::document> json;
@@ -177,10 +178,12 @@ void another_password_never_joins() {
     auto a_app = make_app(f.io.get_executor(), f.backend, "BBBBBBBBBBBBBBBBBBBB", "s3cret");
     const auto a = join(a_app, "private");
     auto b_app = make_app(f.io.get_executor(), f.backend, "CCCCCCCCCCCCCCCCCCCC", "guess");
+    // The labels were chosen for the ids they derive: A's is the lower, so A offers.
+    webcpp::test::require(BOOST_TEST_LT(a_app.self_id(), b_app.self_id()));
     auto b = join(b_app, "private");
     std::vector<boost::system::error_code> errors;
     b.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
-    // A's id is the lower: once both derived their keys, A offers, and B cannot open the offer.
+    // Once both derived their keys, A offers, and B cannot open the offer.
     BOOST_TEST(run_until(f.io, [&] { return !errors.empty(); }, derivation_bound));
     BOOST_TEST(a.peers().empty());
     BOOST_TEST(b.peers().empty());

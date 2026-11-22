@@ -39,6 +39,7 @@
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
+#include <memory_resource>
 #include <optional>
 #include <span>
 #include <sstream>
@@ -971,6 +972,105 @@ void user_identity_imports_match() {
     BOOST_TEST_EQ(cases, 12U);
 }
 
+/** A resource over `new` and `delete` that, as each block is freed, counts the blocks that still
+ * hold a fixture key's scalar, as its 32 bytes or as its base64url text. */
+class secret_watch final : public std::pmr::memory_resource {
+public:
+    secret_watch() {
+        for (const auto entry : section("p256_keys")) {
+            const std::string text(str(entry["d"]));
+            const auto scalar = tp::from_base64url(text);
+            if (BOOST_TEST(scalar.has_value()) && BOOST_TEST_EQ(scalar->size(), 32U)) {
+                needles_.emplace_back(reinterpret_cast<const char*>(scalar->data()),
+                                      scalar->size());
+            }
+            needles_.push_back(text);
+        }
+    }
+
+    /** The blocks freed with a scalar in them so far. */
+    [[nodiscard]] std::size_t hits() const { return hits_; }
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        const std::string_view block(static_cast<const char*>(p), bytes);
+        if (std::ranges::any_of(needles_, [&](const std::string& needle) {
+                return block.find(needle) != std::string_view::npos;
+            })) {
+            ++hits_;
+        }
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+
+    std::vector<std::string> needles_;
+    std::size_t hits_ = 0;
+};
+
+/** Makes a resource the default one while it lives. */
+class default_resource_scope {
+public:
+    explicit default_resource_scope(std::pmr::memory_resource* r)
+        : previous_(std::pmr::set_default_resource(r)) {}
+
+    default_resource_scope(const default_resource_scope&) = delete;
+    default_resource_scope& operator=(const default_resource_scope&) = delete;
+
+    ~default_resource_scope() { std::pmr::set_default_resource(previous_); }
+
+private:
+    std::pmr::memory_resource* previous_;
+};
+
+// No buffer of trystero's that held a user key's scalar is freed with it: importing, parsing and
+// exporting a key, accepted or refused after its d is decoded, through a resource that is also the
+// default one, frees no block that holds a scalar of the fixture's keys.
+void user_key_buffers_are_wiped() {
+    // Static, so that it outlives any block allocated in it while it is the default resource.
+    static secret_watch watch;
+    // The watch sees a copy of a scalar's text freed as it is.
+    {
+        const std::pmr::string copy(str(section("user_identity")["jwk"]["d"]), &watch);
+    }
+    BOOST_TEST_EQ(watch.hits(), 1U);
+    std::vector<std::string> texts;
+    for (const auto entry : section("user_identity_imports")) {
+        texts.emplace_back(str(entry["text"]));
+    }
+    texts.emplace_back(str(section("user_identity")["json"]));
+    std::size_t accepted = 0;
+    {
+        const default_resource_scope scope(&watch);
+        for (const auto& text : texts) {
+            {
+                const auto imported = trystero::import_user_identity(text, &watch);
+                if (imported) {
+                    ++accepted;
+                    // The text is the caller's, which wipes it, as the function's doc asks.
+                    auto exported = trystero::export_user_identity(*imported, &watch);
+                    trystero::detail::wipe(exported.data(), exported.size());
+                }
+            }
+            const auto material = tp::parse_user_key(text, &watch);
+        }
+        // A created identity, exported, then ended.
+        const auto created = trystero::create_user_identity(&watch);
+        if (BOOST_TEST(created.has_value())) {
+            auto exported = trystero::export_user_identity(*created, &watch);
+            trystero::detail::wipe(exported.data(), exported.size());
+        }
+    }
+    BOOST_TEST_EQ(accepted, 4U);
+    BOOST_TEST_EQ(watch.hits(), 1U);
+}
+
 // What 0.27.0's tryParsePrivateJwk reads beyond the fixture: String.prototype.trim's white space,
 // the kty and crv it ignores when falsy, the byte order mark TextDecoder drops.
 void user_key_text_is_read_as_0_27_0_reads_it() {
@@ -1114,6 +1214,13 @@ void cpp_signatures_are_deterministic_and_low_s() {
         BOOST_TEST_EQ(text.size(), 214U);
         const auto again = trystero::import_user_identity(text);
         BOOST_TEST(again.has_value() && again->user_id() == a->user_id());
+        // A move copies: the identity moved from keeps its key.
+        auto moved = *a;
+        const auto target = std::move(moved);
+        // NOLINTBEGIN(bugprone-use-after-move): an identity's move is its copy
+        BOOST_TEST_EQ(moved.user_id(), target.user_id());
+        BOOST_TEST(moved.sign(bytes_view("payload")).has_value());
+        // NOLINTEND(bugprone-use-after-move)
     }
 }
 
@@ -1179,6 +1286,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(compact_keys_are_read_as_0_27_0_reads_them);
     webcpp::test::run_case(user_identity_text_matches);
     webcpp::test::run_case(user_identity_imports_match);
+    webcpp::test::run_case(user_key_buffers_are_wiped);
     webcpp::test::run_case(user_key_text_is_read_as_0_27_0_reads_it);
     webcpp::test::run_case(user_proof_matches);
     webcpp::test::run_case(low_s_matches);

@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -50,6 +51,74 @@ enum class identity_persistence {
 class user_identity;
 
 namespace detail {
+
+/** A P-256 key pair and its public point, as trystero's identities hold them. */
+struct p256_key {
+    /** The key pair. */
+    webcpp::crypto::curves::p256::keypair key;
+    /** Its public point, SEC 1's uncompressed form. */
+    std::array<std::uint8_t, 65> point;
+};
+
+/**
+ * The P-256 key pair of a scalar, or one drawn from the system's generator, with its point.
+ *
+ * Tip: this, `import_user_identity` and @ref protocol::sign_p256 and @ref protocol::verify_p256
+ * are trystero's only calls of webcpp::crypto's P-256 keys, so that a change of its interface is
+ * made in these two headers alone.
+ *
+ * @param scalar The secret scalar, 32 bytes big-endian; empty draws one.
+ * @return The key and its point; webcpp::crypto's error when the scalar is no valid key or the
+ * system has no generator.
+ */
+[[nodiscard]] inline boost::system::result<p256_key> make_p256_key(
+    std::span<const std::uint8_t> scalar) {
+    using keypair = webcpp::crypto::curves::p256::keypair;
+    auto key = scalar.empty() ? keypair::generate() : keypair::make(scalar);
+    if (!key) {
+        return key.error();
+    }
+    const auto public_key = key->public_key();
+    if (!public_key) {
+        return public_key.error();
+    }
+    return p256_key{.key = std::move(*key), .point = public_key->uncompressed()};
+}
+
+/** An app's endpoint key, 0.27.0's endpoint identity: its key pair, its compact public key and
+ * the peer id it derives. */
+struct endpoint_identity {
+    /** The key pair. */
+    webcpp::crypto::curves::p256::keypair key;
+    /** Its compact public key. */
+    std::pmr::string compact;
+    /** The peer id, derived from the compact key. */
+    std::pmr::string peer_id;
+};
+
+/**
+ * Makes an endpoint key, 0.27.0's `createEndpointIdentity`: of a scalar, or drawn from the
+ * system's generator.
+ *
+ * @param scalar The secret scalar, 32 bytes big-endian; empty draws one.
+ * @param memory The resource the compact key and the peer id are allocated in.
+ * @return The endpoint key; nothing when the scalar is no valid key or the system has no
+ * generator.
+ */
+[[nodiscard]] inline std::optional<endpoint_identity> make_endpoint_identity(
+    std::span<const std::uint8_t> scalar, std::pmr::memory_resource* memory) {
+    auto made = make_p256_key(scalar);
+    if (!made) {
+        return std::nullopt;
+    }
+    auto compact = protocol::compact_public_key(made->point, memory);
+    auto peer_id = protocol::derive_peer_id(compact, memory);
+    return endpoint_identity{
+        .key = std::move(made->key),
+        .compact = std::move(compact),
+        .peer_id = std::move(peer_id),
+    };
+}
 
 /** What a @ref user_identity holds: its key pair, its point and the texts derived from it. */
 struct user_key {
@@ -80,6 +149,18 @@ struct user_identity_access {
     [[nodiscard]] static user_identity make(webcpp::crypto::curves::p256::keypair key,
                                             const std::array<std::uint8_t, 65>& point,
                                             std::pmr::memory_resource* memory);
+
+    /**
+     * The identity of a scalar, or of one drawn from the system's generator, as
+     * `create_user_identity` makes it: the library's own tests fix their users' keys with it.
+     *
+     * @param scalar The secret scalar, 32 bytes big-endian; empty draws one.
+     * @param memory The resource the key is allocated in, which outlives every copy.
+     * @return The identity; webcpp::crypto's error when the scalar is no valid key or the system
+     * has no generator.
+     */
+    [[nodiscard]] static boost::system::result<user_identity> make(
+        std::span<const std::uint8_t> scalar, std::pmr::memory_resource* memory);
 };
 
 }  // namespace detail
@@ -96,6 +177,26 @@ struct user_identity_access {
  */
 class user_identity {
 public:
+    /**
+     * A copy of `other`, which shares its key.
+     *
+     * Tip: an identity has no move of its own, so that none is ever empty: a move copies.
+     *
+     * @param other The identity copied.
+     */
+    user_identity(const user_identity& other) = default;
+
+    /**
+     * Makes this a copy of `other`, sharing its key.
+     *
+     * @param other The identity copied.
+     * @return This identity.
+     */
+    user_identity& operator=(const user_identity& other) = default;
+
+    /** Releases this copy's share of the key; the last copy frees it. */
+    ~user_identity() = default;
+
     /**
      * The user's id, 0.27.0's `userId`: 22 base62 characters derived from the public key.
      *
@@ -149,6 +250,15 @@ inline user_identity detail::user_identity_access::make(webcpp::crypto::curves::
                                                         }));
 }
 
+inline boost::system::result<user_identity> detail::user_identity_access::make(
+    std::span<const std::uint8_t> scalar, std::pmr::memory_resource* memory) {
+    auto made = make_p256_key(scalar);
+    if (!made) {
+        return made.error();
+    }
+    return make(std::move(made->key), made->point, memory);
+}
+
 /**
  * Makes a new user identity, 0.27.0's `createUserIdentity`: a P-256 key pair drawn from the
  * system's generator.
@@ -158,15 +268,7 @@ inline user_identity detail::user_identity_access::make(webcpp::crypto::curves::
  */
 [[nodiscard]] inline boost::system::result<user_identity> create_user_identity(
     std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    auto key = webcpp::crypto::curves::p256::keypair::generate();
-    if (!key) {
-        return key.error();
-    }
-    const auto public_key = key->public_key();
-    if (!public_key) {
-        return public_key.error();
-    }
-    return detail::user_identity_access::make(std::move(*key), public_key->uncompressed(), memory);
+    return detail::user_identity_access::make(std::span<const std::uint8_t>(), memory);
 }
 
 /**

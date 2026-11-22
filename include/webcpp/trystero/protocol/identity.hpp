@@ -110,6 +110,9 @@ inline std::string_view js_trim(std::string_view text) noexcept {
 /**
  * Whether a JSON member that may be absent is absent or false to JavaScript's `&&`: undefined,
  * null, false, 0 or the empty string.
+ *
+ * @param v The member, undefined when absent.
+ * @return Whether JavaScript reads it as false.
  */
 inline bool js_falsy(const json::const_value& v) {
     if (v.is_undefined() || v.is_null()) {

@@ -461,5 +461,5 @@ with no room nor peer.
 | `request_rejected` | the peer asked refused the request
 | `request_timed_out` | the request was not answered within its timeout
 | `action_redefined` | the action's name was made the other kind of action first
-| `invalid_user_identity` | `import_user_identity` was given a text that is no user key, or a key whose scalar is not its point's
+| `invalid_user_identity` | `import_user_identity` was given a text that is no user key, a point that is not on the curve, or a scalar that is not its point's
 |===

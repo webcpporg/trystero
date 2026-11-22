@@ -1095,6 +1095,8 @@ public:
      * Fails the room's setup, as 0.27.0's `failSetup` fails it when its identities cannot be
      * resolved: once the join has returned, reports `error::identity_failed` with `message`, then
      * leaves. The strategy never starts: nothing reaches a relay.
+     *
+     * @param message The report's message, the app's @ref app_impl::identity_failure.
      */
     void fail_setup(std::string_view message) {
         report({}, make_error_code(error::identity_failed), message);

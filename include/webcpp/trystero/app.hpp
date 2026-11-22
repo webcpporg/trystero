@@ -43,13 +43,38 @@ struct app_access {
     /** The state of `a`, which must hold one. */
     [[nodiscard]] static app_impl& impl(const app& a);
 
-    /** An app as `app`'s constructor makes it, but whose endpoint key is made of
-     * `endpoint_scalar` in place of one drawn: the library's own tests fix their peers' keys, so
-     * that their ids are known. A scalar that is no valid key, zero for instance, makes the
-     * endpoint fail, as a system without a generator does. */
+    /**
+     * An app as `app`'s constructor makes it, but whose endpoint key is made of `endpoint_scalar`
+     * in place of one drawn: the library's own tests fix their peers' keys, so that their ids are
+     * known. A scalar that is no valid key, zero for instance, makes the endpoint fail, as a
+     * system without a generator does.
+     *
+     * @param ex The executor every app and room event runs on.
+     * @param factory The backend that makes the platform objects.
+     * @param config The app's configuration.
+     * @param endpoint_scalar The endpoint key's scalar.
+     * @return The app.
+     */
     [[nodiscard]] static app make(webcpp::asio::any_io_executor ex, backend::factory& factory,
                                   app_config config,
                                   std::span<const std::uint8_t, 32> endpoint_scalar);
+
+    /**
+     * An app as the other `make` makes it, whose ephemeral user key is also made of `user_scalar`
+     * in place of one drawn, when `config` gives no identity. A scalar that is no valid key, zero
+     * for instance, makes the user identity fail, as a system without a generator does.
+     *
+     * @param ex The executor every app and room event runs on.
+     * @param factory The backend that makes the platform objects.
+     * @param config The app's configuration.
+     * @param endpoint_scalar The endpoint key's scalar.
+     * @param user_scalar The ephemeral user key's scalar.
+     * @return The app.
+     */
+    [[nodiscard]] static app make(webcpp::asio::any_io_executor ex, backend::factory& factory,
+                                  app_config config,
+                                  std::span<const std::uint8_t, 32> endpoint_scalar,
+                                  std::span<const std::uint8_t, 32> user_scalar);
 };
 
 }  // namespace detail
@@ -266,13 +291,14 @@ private:
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     static std::shared_ptr<detail::app_impl> make(
         executor_type ex, backend::factory& factory, app_config config,
-        std::span<const std::uint8_t> endpoint_scalar = {}) {
+        std::span<const std::uint8_t> endpoint_scalar = {},
+        std::span<const std::uint8_t> user_scalar = {}) {
         // NOLINTEND(performance-unnecessary-value-param)
         std::pmr::memory_resource* const memory = config.memory;
         BOOST_ASSERT_MSG(memory != nullptr, "app_config::memory names no resource");
         return std::allocate_shared<detail::app_impl>(std::pmr::polymorphic_allocator<>(memory),
                                                       std::move(ex), factory, std::move(config),
-                                                      endpoint_scalar);
+                                                      endpoint_scalar, user_scalar);
     }
 
     friend struct detail::app_access;
@@ -291,6 +317,15 @@ inline app detail::app_access::make(webcpp::asio::any_io_executor ex, backend::f
                                     std::span<const std::uint8_t, 32> endpoint_scalar) {
     // NOLINTEND(performance-unnecessary-value-param)
     return app(app::make(std::move(ex), factory, std::move(config), endpoint_scalar));
+}
+
+// NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
+inline app detail::app_access::make(webcpp::asio::any_io_executor ex, backend::factory& factory,
+                                    app_config config,
+                                    std::span<const std::uint8_t, 32> endpoint_scalar,
+                                    std::span<const std::uint8_t, 32> user_scalar) {
+    // NOLINTEND(performance-unnecessary-value-param)
+    return app(app::make(std::move(ex), factory, std::move(config), endpoint_scalar, user_scalar));
 }
 
 }  // namespace webcpp::trystero
