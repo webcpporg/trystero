@@ -63,9 +63,9 @@ struct p256_key {
 /**
  * The P-256 key pair of a scalar, or one drawn from the system's generator, with its point.
  *
- * Tip: this, `import_user_identity` and @ref protocol::sign_p256 and @ref protocol::verify_p256
- * are trystero's only calls of webcpp::crypto's P-256 keys, so that a change of its interface is
- * made in these two headers alone.
+ * Tip: this, `import_user_identity`, @ref protocol::sign_p256, @ref protocol::verify_p256 and
+ * @ref protocol::p256_public_key are trystero's only calls of webcpp::crypto's P-256 keys, so that
+ * a change of its interface is made in these two headers alone.
  *
  * @param scalar The secret scalar, 32 bytes big-endian; empty draws one.
  * @return The key and its point; webcpp::crypto's error when the scalar is no valid key or the
@@ -294,7 +294,7 @@ inline boost::system::result<user_identity> detail::user_identity_access::make(
         return error::invalid_user_identity;
     }
     auto key = p256::keypair::make(material->d.bytes());
-    const auto point = p256::public_key::make(material->point);
+    const auto point = protocol::p256_public_key(material->point);
     if (!key || !point) {
         return error::invalid_user_identity;
     }

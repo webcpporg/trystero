@@ -160,10 +160,12 @@ inline std::pmr::string compact_public_key(
  * The point is not checked to be on the curve.
  *
  * @param compact The compact text.
+ * @param memory The resource the decoding's buffers are allocated in.
  * @return The SEC1 uncompressed point, `04 || x || y`, or nothing when the text is not compact.
  */
 inline std::optional<std::array<std::uint8_t, 65>> parse_compact_public_key(
-    std::string_view compact) {
+    std::string_view compact,
+    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     constexpr std::size_t half = 43;
     if (compact.size() != (2 * half) + 1 || compact[half] != '.') {
         return std::nullopt;
@@ -171,7 +173,7 @@ inline std::optional<std::array<std::uint8_t, 65>> parse_compact_public_key(
     std::array<std::uint8_t, 65> out{};
     out[0] = 0x04;
     for (std::size_t side = 0; side < 2; ++side) {
-        const auto read = from_base64url(compact.substr(side * (half + 1), half));
+        const auto read = from_base64url(compact.substr(side * (half + 1), half), memory);
         if (!read || read->size() != 32) {
             return std::nullopt;
         }

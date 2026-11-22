@@ -8,9 +8,10 @@
  ECDSA P-256 with SHA-256 as Trystero 0.27.0 signs and checks it: a signature is 64 bytes, r then
  s (IEEE P1363, WebCrypto's form), always written with a low S and refused with a high one.
 
- Tip: @ref sign_p256 and @ref verify_p256 are trystero's only calls of webcpp::crypto's P-256
- signing and verification; every other part of the library signs and verifies through them, so
- that a change of webcpp::crypto's signing interface is made here alone.
+ Tip: @ref sign_p256, @ref verify_p256 and @ref p256_public_key are trystero's only calls of
+ webcpp::crypto's P-256 signing, verification and public keys; every other part of the library
+ signs, verifies and reads a peer's key through them, so that a change of webcpp::crypto's
+ interface is made here alone.
 */
 #ifndef WEBCPP_TRYSTERO_PROTOCOL_ECDSA_HPP
 #define WEBCPP_TRYSTERO_PROTOCOL_ECDSA_HPP
@@ -26,8 +27,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace webcpp::trystero::protocol {
 
@@ -59,6 +62,22 @@ inline constexpr std::array<std::uint8_t, 32> p256_order{
         any |= scalar[i - 1];
     }
     return (borrow == 1U) && (any != 0U);
+}
+
+/**
+ * The public key of a point, as 0.27.0's `crypto.subtle.importKey('raw', ...)` imports it for
+ * verification: refused when the point is not on the curve.
+ *
+ * @param point The point, SEC 1's uncompressed `04 || x || y`.
+ * @return The key; nothing when the point is no P-256 public key.
+ */
+[[nodiscard]] inline std::optional<webcpp::crypto::curves::p256::public_key> p256_public_key(
+    std::span<const std::uint8_t, 65> point) {
+    auto key = webcpp::crypto::curves::p256::public_key::make(point);
+    if (!key) {
+        return std::nullopt;
+    }
+    return std::move(*key);
 }
 
 /**

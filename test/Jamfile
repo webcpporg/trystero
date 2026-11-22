@@ -109,6 +109,10 @@ webcpp.run handshake_manager_hardened : handshake_manager_test.cpp
   : native ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
+# An app's key records and verified signatures alone, against 0.27.0's
+# vectors: its bounds, its least recently used order, and a high S refused.
+webcpp.run identity_cache : identity_cache_test.cpp
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
 # The timer over webcpp::asio's steady_timer, which the platform backend
 # makes: a wait cancelled, restarted or destroyed never fires.
 webcpp.run timer : timer_test.cpp : $(part) ;

@@ -11,6 +11,7 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
+#include <webcpp/trystero/detail/identity_cache.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/post.hpp>
 #include <webcpp/trystero/detail/room_keys_cache.hpp>
@@ -70,7 +71,8 @@ protected:
 
 /**
  * The state an `app` and its rooms share: the configuration, the endpoint key and the self id it
- * derives, the user identity, the rooms by id, the rooms' keys and the relays' connectivity.
+ * derives, the user identity, the rooms by id, the rooms' keys, the key records and verified
+ * signatures of peers and users, and the relays' connectivity.
  * Nothing else is shared, as in 0.27.0, whose rooms share the identity and the relays alone: each
  * room has its own connection to each peer. Every allocation goes through `app_config::memory`,
  * except the key of a user identity the program gives, which is in the program's resource.
@@ -120,6 +122,7 @@ public:
           password_(config.password, memory_),
           room_keys_(std::allocate_shared<room_keys_cache>(allocator(), ex_, factory_, app_id_,
                                                            password_, memory_)),
+          identities_(memory_),
           relay_urls_(config.relay_urls, memory_),
           ice_servers_(copy_ice_servers(config.ice_servers, memory_)),
           setup_reports_(memory_),
@@ -256,6 +259,10 @@ public:
 
     /** The keys of the app's rooms, derived once per room id when the app has a password. */
     [[nodiscard]] room_keys_cache& room_keys() const { return *room_keys_; }
+
+    /** The key records and verified signatures of the app's peers and users, which its rooms
+     * share. */
+    [[nodiscard]] identity_cache& identities() { return identities_; }
 
     /** The relays configured once for the app. */
     [[nodiscard]] std::span<const std::pmr::string> relay_urls() const { return relay_urls_; }
@@ -454,6 +461,7 @@ private:
     identity_persistence persistence_;
     std::pmr::string password_;
     std::shared_ptr<room_keys_cache> room_keys_;
+    identity_cache identities_;
     std::pmr::vector<std::pmr::string> relay_urls_;
     std::pmr::vector<backend::ice_server> ice_servers_;
     std::pmr::vector<std::pmr::string> setup_reports_;

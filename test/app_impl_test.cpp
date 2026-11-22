@@ -25,6 +25,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <memory_resource>
@@ -327,8 +328,8 @@ void the_last_user_ends_the_page_watch() {
 }
 
 // Every allocation of the app's construction, of its registry, of a log sentence, of the
-// connectivity's fan-out to the rooms and of the last user's release goes through its resource:
-// the default resource refuses every request meanwhile.
+// connectivity's fan-out to the rooms, of its key records and verified signatures and of the last
+// user's release goes through its resource: the default resource refuses every request meanwhile.
 void every_allocation_goes_through_the_apps_resource() {
     std::pmr::unsynchronized_pool_resource pool;  // outlives the io_context
     asio::io_context io;
@@ -341,6 +342,17 @@ void every_allocation_goes_through_the_apps_resource() {
     std::size_t sentences = 0;
     config.log = [&sentences](std::string_view, std::string_view) { ++sentences; };
     const auto room = std::make_shared<fake_room>();
+    const auto signer = trystero::create_user_identity();
+    if (!BOOST_TEST(signer.has_value())) {
+        return;
+    }
+    constexpr std::string_view payload = "payload";
+    const std::span<const std::uint8_t> payload_bytes(
+        reinterpret_cast<const std::uint8_t*>(payload.data()), payload.size());
+    const auto signature = signer->sign(payload_bytes);
+    if (!BOOST_TEST(signature.has_value())) {
+        return;
+    }
     std::shared_ptr<detail::app_impl> app;
     auto* const previous = std::pmr::set_default_resource(std::pmr::null_memory_resource());
     {
@@ -350,6 +362,9 @@ void every_allocation_goes_through_the_apps_resource() {
         BOOST_TEST_EQ(app->self_id().size(), trystero::protocol::peer_id_size);
         BOOST_TEST_EQ(app->user_id().size(), trystero::protocol::user_id_size);
         BOOST_TEST_EQ(app->password(), expected_password);
+        BOOST_TEST(app->identities().verify_peer_id(app->self_id(), app->endpoint_key()));
+        BOOST_TEST(app->identities().verify(signer->public_key(), *signature, payload_bytes));
+        BOOST_TEST_EQ(app->identities().signatures(), 1U);
         app->register_room("a room id longer than the short string", room);
         app->add_user();
         app->set_connectivity(trystero::relay_connectivity::offline);
