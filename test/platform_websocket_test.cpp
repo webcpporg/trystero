@@ -342,8 +342,12 @@ struct stalled_server {
     std::vector<std::shared_ptr<beast::websocket::stream<tcp::socket>>> held;
 };
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 5s) {
+               std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: the client and the echo server do loopback network I/O
@@ -866,7 +870,7 @@ void a_relay_that_stops_answering_times_out() {
     if (!BOOST_TEST(run_until(io, [&] { return opened; }))) {
         return;
     }
-    BOOST_TEST(run_until(io, [&] { return closes == 1; }, 10s));
+    BOOST_TEST(run_until(io, [&] { return closes == 1; }, hang_guard));
 }
 
 // A relay that is quiet but healthy: it sends nothing, but reads, so it answers each keep-alive

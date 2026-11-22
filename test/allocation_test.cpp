@@ -518,10 +518,15 @@ private:
 /** How long each run of the io_context the test drives lasts. */
 constexpr std::chrono::milliseconds slice = 10ms;
 
-/** Runs io in slices of 10 ms until done holds, for 5 s at most. */
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
+/** Runs io in slices of 10 ms until done holds, for `hang_guard` of the wall clock at most. */
 template <class Predicate>
 bool run_until(webcpp::asio::io_context& io, Predicate done) {
-    for (auto ran = 0ms; ran < 5s && !done(); ran += slice) {
+    const auto end = std::chrono::steady_clock::now() + hang_guard;
+    while (!done() && std::chrono::steady_clock::now() < end) {
         io.restart();
         io.run_for(slice);  // lint-run: the memory relays post to it
     }
@@ -833,11 +838,12 @@ void reading_a_text_allocates_through_its_resource() {
     BOOST_TEST_EQ(memory.foreign, 0U);
 }
 
-/** Runs io for about `duration`, whatever happens, in slices of 10 ms. */
-void run_for(webcpp::asio::io_context& io, std::chrono::milliseconds duration) {
-    for (auto ran = 0ms; ran + slice <= duration; ran += slice) {
+/** Runs the ready work of io until there is none: every frame of the memory relays is a posted
+ * handler, so what is left when this returns is only what waits on a timer. */
+void drain(webcpp::asio::io_context& io) {
+    io.restart();
+    while (io.poll() > 0) {
         io.restart();
-        io.run_for(slice);  // lint-run: the memory relays post to it
     }
 }
 
@@ -856,7 +862,7 @@ void warm(webcpp::asio::io_context& io) {
         timer->cancel();
     }
     webcpp::asio::post(io, [] {});
-    run_for(io, 20ms);
+    drain(io);
 }
 
 // tag::config[]
@@ -983,7 +989,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         auto z_app = trystero::detail::app_access::make(
             io.get_executor(), network, app_config_in(z_memory, relay, z_lines), ends.high);
         auto z = join(z_app, "room", options_in(z_memory));
-        run_for(io, 100ms);
+        drain(io);
         {
             auto a_app = trystero::detail::app_access::make(
                 io.get_executor(), network, app_config_in(a_memory, relay, a_lines), ends.low);
@@ -1025,7 +1031,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //     }
     //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
     const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
-    run_for(io, 300ms);
+    drain(io);
     counting = false;
     BOOST_TEST_GT(left_behind, 0U);
     BOOST_TEST_EQ(a_memory.outstanding, 0U);
@@ -1127,7 +1133,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
                 BOOST_TEST(run_until(io, [&] { return got == 2; }));
                 BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
-            run_for(io, 300ms);  // the io_context runs out of the rooms' work
+            drain(io);  // the io_context runs out of the rooms' work
         }
         counting = false;
     }

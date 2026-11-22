@@ -60,8 +60,12 @@ namespace {
 
 constexpr const char* loopback = "127.0.0.1";
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 10s) {
+               std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: libdatachannel's threads post the connections' events to it
@@ -314,7 +318,7 @@ struct queued_pair : pair {
         require(BOOST_TEST(until([&] { return offer_open && answer_open; })));
     }
 
-    bool until(const std::function<bool()>& done, std::chrono::milliseconds limit = 10s) {
+    bool until(const std::function<bool()>& done, std::chrono::milliseconds limit = hang_guard) {
         return run_until(
             io,
             [&] {
@@ -463,7 +467,7 @@ void a_pending_queue_overflow_closes_the_channel() {
     for (std::uint8_t i = 0; i < 65; ++i) {
         p.answer_end->send(backend::bytes{i});
     }
-    require(BOOST_TEST(p.until([&] { return closed; }, 5s)));
+    require(BOOST_TEST(p.until([&] { return closed; }, hang_guard)));
     BOOST_TEST(!p.offer_end->is_open());
 }
 

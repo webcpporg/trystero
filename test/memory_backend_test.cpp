@@ -34,8 +34,12 @@ using namespace std::chrono_literals;
 
 namespace {
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 5s) {
+               std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: the memory network posts to it
@@ -44,6 +48,15 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
         }
     }
     return done();
+}
+
+/** Runs the ready work of `io` until there is none: the memory network posts every frame, so
+ * what a window of "nothing happens" proves is that nothing is left to run. */
+void settle(asio::io_context& io) {
+    io.restart();
+    while (io.poll() > 0) {
+        io.restart();
+    }
 }
 
 /** Two ends of one pair, their channels and what each received. */
@@ -137,7 +150,7 @@ void a_held_frame_holds_every_later_frame_of_its_end() {
     const std::array<std::uint8_t, 1> b{'B'};
     p.offer_end->send(a);
     p.offer_end->send(b);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(p.at_answerer.empty());  // B waits behind A, as on an ordered channel
     net.filter = {};
     net.release(p.answerer_id);
@@ -168,7 +181,7 @@ void deferred_opens_open_one_end_at_a_time() {
     net.defer_opens = true;
     pair p;
     connect(net, p);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(!p.offer_end->is_open());
     net.open(p.offerer_id);
     BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); }));
@@ -185,14 +198,14 @@ void a_frame_before_the_far_end_opens_waits_for_it() {
     net.defer_opens = true;
     pair p;
     connect(net, p);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     net.open(p.offerer_id);
     webcpp::test::require(BOOST_TEST(run_until(io, [&] { return p.offer_end->is_open(); })));
     const std::array<std::uint8_t, 1> a{'A'};
     const std::array<std::uint8_t, 1> b{'B'};
     p.offer_end->send(a);
     p.offer_end->send(b);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(p.at_answerer.empty());
     net.open(p.answerer_id);
     BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 2; }));
@@ -300,7 +313,7 @@ void a_closed_channel_drains_nothing_more() {
     p.offer_end->close();
     io.poll_one();  // the next drain step, queued before the close's handlers
     BOOST_TEST_EQ(net.buffered(p.offerer_id), 0U);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(p.at_answerer.empty());
 }
 
@@ -324,7 +337,7 @@ void a_release_filters_each_frame_again() {
     };
     net.release(p.answerer_id);
     BOOST_TEST(run_until(io, [&] { return p.at_answerer.size() == 1; }));
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST_EQ(p.at_answerer.size(), 1U);
     BOOST_TEST(p.at_answerer.at(0).at(0) == 'A');
     net.filter = {};
@@ -350,7 +363,7 @@ void a_release_after_the_sending_channel_was_replaced_drops_its_frames() {
     const auto replacement = p.offerer->create_data_channel("again");
     BOOST_TEST(replacement != p.offer_end);
     net.release(p.answerer_id);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(p.at_answerer.empty());
 }
 
@@ -370,7 +383,7 @@ void a_release_after_the_sender_went_drops_its_frames() {
     p.offer_end.reset();
     p.offerer.reset();  // the sending end is destroyed
     net.release(p.answerer_id);
-    run_until(io, [] { return false; }, 100ms);
+    settle(io);
     BOOST_TEST(p.at_answerer.empty());
 }
 

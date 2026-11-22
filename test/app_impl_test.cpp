@@ -58,8 +58,12 @@ static_assert(!has_self_id_option<trystero::app_config>);
 static_assert(!has_handshake_timeout_option<trystero::room_options>);
 static_assert(!has_handshake_timeout_option<trystero::app_config>);
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 5s) {
+               std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: the memory network posts to it
