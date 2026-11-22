@@ -76,7 +76,8 @@ holds only what is specific to trystero.
   WebAssembly: the guard trystero 0.1.0 had (`entropy.hpp`) is gone with
   it, and belongs to webcpp::crypto (design Open Question 1). Secrets are
   held in `webcpp::crypto::secret<N>` or wiped with trystero's own
-  `detail::wipe` (`detail/wipe.hpp`) before release: a library never calls
+  `detail::wipe` (`detail/wipe.hpp`) before release, the password's copies in
+  the app, the keys' cache and each derivation included: a library never calls
   another's `detail` (ruling R19), until webcpp::crypto publishes a wipe.
   `platform/page.hpp`, which builds only on
   emscripten (an `#error` elsewhere), holds what a page's program uses beside

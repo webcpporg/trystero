@@ -96,7 +96,10 @@ ruling), so the cache is keyed by room id. A room announces nothing before
 its key exists: `join` returns at once, and the room starts once the
 derivation completes. The keys are held in `webcpp::crypto::secret<32>`,
 and every other buffer of a secret is wiped by trystero's
-`detail::wipe` before it is released.
+`detail::wipe` before it is released: the password's three copies, the
+app's, the cache's and each derivation's, among them (test
+`the_password_is_wiped_before_it_is_freed`; the caller's
+`app_config::password` is the program's).
 
 *Dependencies (D7).* `parts` links webcpp::hash and webcpp::crypto
 (`/webcpp/crypto//crypto`, `gcm-default` and `secp256k1-default`):

@@ -35,7 +35,9 @@ struct listen_options {
     bool once = false;
     /**
      * Whether the listener is first called, within the call that adds it, with what is current: the
-     * peers or the users already joined. Only the room's join events replay; the other events
+     * peers or the users already joined.
+     *
+     * Only the room's join events replay; the other events
      * ignore it, as Trystero's do.
      */
     bool replay = false;
@@ -49,6 +51,7 @@ struct listener_state {
     bool active = true;
 };
 
+/** The listeners of one event, Trystero's event emitter, defined below. */
 template <class Signature>
 class listeners;
 
@@ -94,7 +97,9 @@ public:
 
     /**
      * Removes the listener: it does not run again, not even for an event that is being reported
-     * and has not reached it yet. Does nothing once the listener is gone.
+     * and has not reached it yet.
+     *
+     * Does nothing once the listener is gone.
      */
     void unsubscribe() noexcept {
         if (const auto state = state_.lock()) {

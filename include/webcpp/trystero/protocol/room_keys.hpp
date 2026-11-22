@@ -74,7 +74,7 @@ inline webcpp::crypto::secret<32> room_aes_key_without_password(
     webcpp::crypto::secret<32> key;
     auto digest = sha256(topic_path({domain_tag("room-aes", 3, memory), app_id, room_id}, memory));
     std::ranges::copy(digest, key.writable().begin());
-    // webcpp::crypto has no public wipe of an array yet; its detail one is the library's own.
+    // webcpp::crypto has no public wipe of an array yet: trystero's own (detail/wipe.hpp).
     webcpp::trystero::detail::wipe_object(digest);
     return key;
 }

@@ -60,10 +60,13 @@ struct room_error {
     std::string_view peer_id;
     /** For `decrypt_failed`, the kind of the signal that did not open. */
     std::optional<signal_stage> stage;
-    /** For `peer_connect_failed`, whether a TURN server was configured: an ICE server with a
-     * `turn:` or `turns:` URL among those the app kept. An ICE server the app dropped as unusable
-     * (`app::on_error` reported it), as a `turn:` URL without credentials, does not count, where
-     * 0.27.0 reads its raw configuration and counts it. */
+    /**
+     * For `peer_connect_failed`, whether a TURN server was configured: an ICE server with a
+     * `turn:` or `turns:` URL among those the app kept.
+     *
+     * An ICE server the app dropped as unusable (`app::on_error` reported it), as a `turn:` URL
+     * without credentials, does not count, where 0.27.0 reads its raw configuration and counts it.
+     */
     bool turn_configured = false;
     /** For `banned`, the reason the peer gave, when it gave one. */
     std::string_view reason;

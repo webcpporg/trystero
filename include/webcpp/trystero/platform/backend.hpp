@@ -282,7 +282,12 @@ public:
                       std::shared_ptr<::webcpp::webrtc::runtime>(), &runtime),
                   config) {}
 
-    /** Waits for the derivation its thread runs, natively, if any, then destroys the backend. */
+    /**
+     * Waits for the derivation its thread runs, natively, if any, then destroys the backend.
+     *
+     * The completion of that derivation is posted to the backend's executor, so its io_context
+     * must still exist: a program destroys the backend before its io_context.
+     */
     ~backend() override {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
         if (pool_) {

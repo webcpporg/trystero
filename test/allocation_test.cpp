@@ -25,6 +25,7 @@
 #include <webcpp/asio/steady_timer.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -871,9 +872,43 @@ trystero::room_options options_in(counting_resource& memory) {
 
 // end::config[]
 
-/** Starts OpenSSL's count over, for the case that follows. */
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+// What OpenSSL allocates for one seal and one open of a signal, measured in this process by
+// start_counting_openssl.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t openssl_allocations_per_seal_and_open = 0;
+
+/** Seals a signal and opens it, in `memory`, as a room does; true when both succeed. */
+bool seal_and_open(std::pmr::memory_resource* memory) {
+    const webcpp::crypto::secret<32> key;
+    const std::array<std::uint8_t, tp::gcm_iv_size> iv{};
+    const std::string_view aad = "offer|AAAAAAAAAAAAAAAAAAAA|ZZZZZZZZZZZZZZZZZZZZ";
+    const auto sealed = tp::seal(key, iv, "v=0", aad, memory);
+    return sealed && tp::open(key, *sealed, aad, memory);
+}
+#endif
+
+/**
+ * Starts OpenSSL's count over, for the case that follows, and natively measures what OpenSSL
+ * allocates for one seal and one open (after one of each, which warms it), so that the case's
+ * count is checked against this OpenSSL's own, whatever its cipher contexts allocate.
+ */
 void start_counting_openssl() {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
+    std::array<std::byte, 4096> buffer{};
+    std::pmr::monotonic_buffer_resource memory(buffer.data(), buffer.size(),
+                                               std::pmr::null_memory_resource());
+    BOOST_TEST(seal_and_open(&memory));
+    const auto globals = global_allocations;
+    const auto cs = c_allocations;
+    const bool was_counting = counting;
+    openssl_allocations = 0;
+    counting = true;
+    BOOST_TEST(seal_and_open(&memory));
+    counting = was_counting;
+    BOOST_TEST_EQ(global_allocations, globals);
+    BOOST_TEST_EQ(c_allocations, cs);
+    openssl_allocations_per_seal_and_open = openssl_allocations;
     openssl_allocations = 0;
 #endif
 }
@@ -881,13 +916,13 @@ void start_counting_openssl() {
 /**
  * Natively, that OpenSSL allocated since start_counting_openssl, counted apart: webcpp::crypto's
  * AES-256-GCM is OpenSSL's there, whose cipher contexts the rooms' seals and opens make, outside
- * their resources: two a seal or an open (the EVP context and its AES-GCM state, measured), as many
- * as the case makes, `expected`. On emscripten the cipher is BearSSL's, which allocates nothing,
- * and the C library's count holds that.
+ * their resources: what start_counting_openssl measured for a seal and an open, times `pairs`, how
+ * many signals the case seals, each opened once, and nothing else. On emscripten the cipher is
+ * BearSSL's, which allocates nothing, and the C library's count holds that.
  */
-void expect_openssl_allocations([[maybe_unused]] std::size_t expected) {
+void expect_openssl_allocations([[maybe_unused]] std::size_t pairs) {
 #ifndef WEBCPP_TARGET_EMSCRIPTEN
-    BOOST_TEST_EQ(openssl_allocations, expected);
+    BOOST_TEST_EQ(openssl_allocations, pairs * openssl_allocations_per_seal_and_open);
 #endif
 }
 
@@ -994,7 +1029,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     // Two rooms: each seals its offer or answer and a candidate, and opens the other's two.
-    expect_openssl_allocations(16U);
+    expect_openssl_allocations(4U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
     global_allocations = 0;
     c_allocations = 0;
@@ -1087,7 +1122,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
     // Four rooms, two pairs of the above.
-    expect_openssl_allocations(32U);
+    expect_openssl_allocations(8U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
         BOOST_TEST_EQ(m->outstanding, 0U);
         BOOST_TEST_EQ(m->foreign, 0U);

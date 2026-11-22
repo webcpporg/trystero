@@ -86,7 +86,10 @@ include::{library-root}/build.jam[tag=trystero]
 ----
 
 `/webcpp/trystero//trystero` is `parts`, which brings those dependencies,
-and, under Asyncify, the list that leaves Boost.JSON's recursive descent
+the AES-GCM of its signals being webcpp::crypto's default for the target,
+`/webcpp/crypto//gcm-default` (`rooms-gcm`; the reference alone, which reads
+the headers for Emscripten's target, gets BearSSL in its place), and, under
+Asyncify, the list that leaves Boost.JSON's recursive descent
 out of Asyncify's instrumentation (<<trystero-protocol-json>>). A program of
 a part that parses no JSON, as trystero's tests of the timer, a relay's
 URL and a page's calls are, links `parts`, or `platform-parts`

@@ -523,8 +523,22 @@ void open_refuses_what_trystero_refuses() {
         }
     }
     // A text with padding, a character outside the alphabet and another last character of the
-    // same bytes, of a sealed text that opens.
-    const auto entry = section("seal")[std::size_t{4}];
+    // same bytes, of a sealed text that opens: the seal of a non-ASCII plaintext, without a
+    // password or an AAD, under the IV 0..11.
+    std::optional<fixture_value> chosen;
+    for (const auto candidate : section("seal")) {
+        if (!chosen && str(candidate["app"]) == "example.com/app" &&
+            str(candidate["password"]).empty() &&
+            str(candidate["iv"]) == "000102030405060708090a0b" &&
+            str(candidate["plaintext"]) == "caf\xc3\xa9 \xf0\x9f\x98\x80" &&
+            candidate["aad"].is_null()) {
+            chosen = candidate;
+        }
+    }
+    if (!BOOST_TEST(chosen.has_value())) {
+        return;
+    }
+    const auto entry = *chosen;
     const auto key = key_of(entry);
     const std::string good(str(entry["sealed"]));
     BOOST_TEST(tp::open(key, good, std::nullopt).has_value());

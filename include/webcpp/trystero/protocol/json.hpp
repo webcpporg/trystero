@@ -150,7 +150,9 @@ inline bool quotable(std::string_view text) {
  * Appends `text` as the string `JSON.stringify` writes, whatever its bytes: quoted, `"` and `\\`
  * escaped, `\b`, `\f`, `\n`, `\r` and `\t` by their letters, the other controls below 0x20 as
  * lowercase `\u00XX`, and every other byte as it is (DEL and U+2028 too, as `JSON.stringify`
- * writes them). It is the library's one writer of a string that is not refused.
+ * writes them).
+ *
+ * It is the library's one writer of a string that is not refused.
  *
  * Tip: unlike @ref append_string it never refuses a text, so that a topic built of an app id or a
  * room id, which nothing checks to be UTF-8, never silently loses a part; a byte that is not UTF-8

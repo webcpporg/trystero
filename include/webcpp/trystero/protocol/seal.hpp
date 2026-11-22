@@ -105,9 +105,10 @@ inline boost::system::result<std::pmr::string> seal(
  * @param sealed The sealed text.
  * @param aad The additional authenticated data the seal used; absent for none.
  * @param memory The resource the plaintext and the working buffer are allocated in.
- * @return The plaintext, or `error::decrypt_failed` for a text that is not strict base64url (what
+ * @return The plaintext; `error::decrypt_failed` for a text that is not strict base64url (what
  * @ref from_base64url refuses), one of fewer than 28 bytes, a tag that does not match the key and
- * the AAD, or a plaintext that is not UTF-8 (design D12).
+ * the AAD, or a plaintext that is not UTF-8 (design D12); or the error of the cipher, when it
+ * cannot be made.
  */
 inline boost::system::result<std::pmr::string> open(
     const webcpp::crypto::secret<32>& key, std::string_view sealed,

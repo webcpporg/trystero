@@ -155,7 +155,9 @@ inline std::pmr::string compact_public_key(
 
 /**
  * The point of a compact public key: 87 characters, a `.` at 43, and strict base64url of 32 bytes
- * on each side. The point is not checked to be on the curve.
+ * on each side.
+ *
+ * The point is not checked to be on the curve.
  *
  * @param compact The compact text.
  * @return The SEC1 uncompressed point, `04 || x || y`, or nothing when the text is not compact.

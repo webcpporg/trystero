@@ -903,6 +903,61 @@ void a_view_into_the_stale_connection_names_its_replacement() {
     BOOST_TEST(app->find(id) == fresh);
 }
 
+/** A resource over new and delete that counts the blocks still holding `secret` when freed. */
+class secret_scanning_resource final : public std::pmr::memory_resource {
+public:
+    explicit secret_scanning_resource(std::string_view secret) : secret_(secret) {}
+
+    /** How many freed blocks held the secret's bytes. */
+    std::size_t holding = 0;
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        return std::pmr::new_delete_resource()->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override {
+        const std::string_view block(static_cast<const char*>(p), bytes);
+        if (block.find(secret_) != std::string_view::npos) {
+            ++holding;
+        }
+        std::pmr::new_delete_resource()->deallocate(p, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+
+    std::string_view secret_;
+};
+
+// No block the app frees holds its password: the app's own copy, the cache's and a derivation's
+// are wiped before they are released, as the app itself is.
+void the_password_is_wiped_before_it_is_freed() {
+    const std::string password = "a password no freed block of the app may still hold";
+    secret_scanning_resource memory(password);
+    {
+        asio::io_context io;
+        trystero::test::memory_network net(io);
+        trystero::app_config config{.memory = &memory};
+        config.app_id = "app";
+        config.password = password;
+        auto app = std::allocate_shared<detail::app_impl>(
+            std::pmr::polymorphic_allocator<>(&memory), io.get_executor(), net, std::move(config));
+        bool derived = false;
+        app->room_keys().get(
+            "room", [&derived](boost::system::error_code ec, const trystero::protocol::room_keys&) {
+                BOOST_TEST(!ec);
+                derived = true;
+            });
+        BOOST_TEST(run_until(io, [&derived] { return derived; }));
+        BOOST_TEST_EQ(app->password(), password);
+        app.reset();
+        settle(io);
+    }
+    BOOST_TEST_EQ(memory.holding, 0U);
+}
+
 // The app's destruction ends nothing and calls nothing back, and a connection that outlives it
 // routes nothing.
 void the_apps_destruction_is_quiet() {
@@ -958,6 +1013,7 @@ int main() {
     run_case(an_end_takes_only_its_own_entry);
     run_case(a_view_into_the_stale_connection_names_its_replacement);
     run_case(the_apps_destruction_is_quiet);
+    run_case(the_password_is_wiped_before_it_is_freed);
     // Under Asyncify, a main that suspended loses what it returns: the status goes first.
     return webcpp::test::exit_status(boost::report_errors());
 }

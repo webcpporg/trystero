@@ -276,7 +276,9 @@ PBKDF2 of a room's password, `factory::derive_password_master`, 600,000
 iterations, which never runs on a room's thread: natively
 `webcpp::hash::async_pbkdf2` runs it on a `webcpp::asio::thread_pool` of one
 thread, which the backend makes at the first derivation and joins when it is
-destroyed; in a page `async_pbkdf2` over `backends::webcrypto` awaits
+destroyed, the completion of the derivation it waited for then posted to the
+backend's executor: a program destroys the backend before its `io_context`;
+in a page `async_pbkdf2` over `backends::webcrypto` awaits
 `crypto.subtle` on the backend's executor. Either completes on the
 backend's executor, after the call that started it; a derivation that fails
 completes with `error::backend_failure`, its output zeroed.

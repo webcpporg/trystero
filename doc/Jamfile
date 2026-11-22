@@ -17,6 +17,8 @@ webcpp.doc trystero : trystero.adoc ;
 # webcpp::asio and webcpp::beast, their browser implementations there, so it
 # parses with no configuration of Boost.Asio's (measured: the page builds
 # without BOOST_ASIO_DISABLE_THREADS, which Boost.Beast over Boost.Asio
-# needed).
+# needed). The rooms' AES-GCM there is BearSSL, Emscripten's default, rather
+# than the native default's OpenSSL, which webcpp::crypto refuses on
+# Emscripten's target (<webcpp-trystero-reference>on, build.jam).
 webcpp.reference trystero : <library>/webcpp/trystero//platform <threading>multi
-  <library>/webcpp//emscripten-reference ;
+  <library>/webcpp//emscripten-reference <webcpp-trystero-reference>on ;

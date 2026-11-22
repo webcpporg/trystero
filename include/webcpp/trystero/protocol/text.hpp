@@ -306,6 +306,7 @@ inline std::optional<bytes> from_base64url(
  * count as in JavaScript: a character above U+FFFF is its two surrogates. A byte that does not
  * start a sequence the text completes is visited as the unit of its own value.
  *
+ * @tparam Visit A callable with a `std::uint32_t`.
  * @param utf8 The text, in UTF-8.
  * @param visit Called with each code unit, a `std::uint32_t` below 0x10000.
  */

@@ -16,6 +16,7 @@
 #include <webcpp/trystero/detail/post.hpp>
 #include <webcpp/trystero/detail/random_id.hpp>
 #include <webcpp/trystero/detail/room_keys_cache.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/options.hpp>
@@ -166,6 +167,10 @@ public:
     app_impl(const app_impl&) = delete;
     /** The app state cannot be replaced by copying. */
     app_impl& operator=(const app_impl&) = delete;
+
+    /** Wipes the app's copy of the password; it touches only its own member, so it may run while
+     * the io_context is destroyed. */
+    ~app_impl() { webcpp::trystero::detail::wipe(password_.data(), password_.size()); }
 
     /** The executor every app and room event runs on. */
     [[nodiscard]] const executor_type& get_executor() const { return ex_; }

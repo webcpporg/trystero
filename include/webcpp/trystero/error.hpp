@@ -47,14 +47,18 @@ enum class error {
     /**
      * A peer sharing a connection answered the room's password handshake under another password,
      * or sent a handshake message the protocol does not expect, Trystero's "incorrect password for
-     * overlapping room". A signal under another password is `decrypt_failed`.
+     * overlapping room".
+     *
+     * A signal under another password is `decrypt_failed`.
      */
     wrong_password,
     /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
     handshake_timed_out,
     /**
      * A peer's handshake failed, 0.27.0's `handshake-failed` room error, which
-     * `room_error_code_name` names. Nothing reports it before Phase 2's handshake: the password
+     * `room_error_code_name` names.
+     *
+     * Nothing reports it before Phase 2's handshake: the password
      * handshake of rooms sharing a connection reports its failures as `wrong_password` and
      * `handshake_timed_out`, which name what failed.
      */
@@ -82,7 +86,9 @@ enum class error {
     plugin_failed,
     /**
      * A signal could not be opened: another room password, a corrupted text, or a plaintext that
-     * is not UTF-8, 0.27.0's `decrypt-failed`. A room reports it for an offer or an answer, at most
+     * is not UTF-8, 0.27.0's `decrypt-failed`.
+     *
+     * A room reports it for an offer or an answer, at most
      * once a minute per peer and stage, with the stage in the report and its message, as
      * "failed to decrypt offer (incorrect password or corrupted signal)".
      */

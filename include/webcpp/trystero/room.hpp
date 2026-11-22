@@ -2600,12 +2600,13 @@ class request_action;
  *
  * `app::join` makes it, joined; `async_leave` leaves with Trystero's farewell, and destroying it
  * leaves at once. Its peers meet over the relays, connect over WebRTC through the connections its
- * app shares between its rooms, and exchange the messages of the actions it makes, wire compatible
- * with Trystero's JavaScript.
+ * app shares between its rooms, and exchange the messages of the actions it makes. On the branch
+ * `port/trystero-0.27` it is not interoperable with Trystero 0.27.0 before Phase 2: it keeps
+ * 0.26.0's envelope and handshake, and has no ECDSA P-256.
  *
  * Every room uses its app's immutable password. Initial sealed signaling authenticates that
  * domain before a connection is adopted. The unchanged JS room handshake verifies only at the
- * lower id; different passwords require separate apps with distinct self ids.
+ * lower id; different passwords require separate apps with distinct peer ids.
  *
  * Tip: every handler the room calls, and every completion, runs on its app's executor. The views a
  * handler receives are valid for the duration of the call. Every allocation of the room goes
@@ -2760,6 +2761,7 @@ public:
     /**
      * Adds a listener of each user that joins, when its first peer joins, after that peer's
      * `on_peer_join`, Trystero's `onUserJoin`; a peer of this peer's own user makes no user join.
+     *
      * Until identities are derived from keys, a peer's user is the peer's own id.
      *
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
@@ -2796,7 +2798,9 @@ public:
     /**
      * Adds a listener of each problem the room handled itself, Trystero's `onError`: each report
      * is a @ref room_error, with its code, its message, the app's and the room's ids, and the
-     * context Trystero gives that code. Nothing is reported once the room is being left.
+     * context Trystero gives that code.
+     *
+     * Nothing is reported once the room is being left.
      *
      * | Code                  | When                                                       |
      * | `decrypt_failed`      | a peer's offer or answer did not open with the room key:   |
@@ -2924,8 +2928,8 @@ private:
 };
 
 /**
- * A named channel of messages of type `T` within a room, wire compatible with what Trystero's
- * `makeAction` returns.
+ * A named channel of messages of type `T` within a room, what Trystero's `makeAction` returns
+ * (not interoperable before Phase 2, as `room` says).
  *
  * Messages arrive at the listeners `on_message` adds, or, without one, at `async_receive`. Until
  * the action has a listener or was first awaited, its messages wait as Trystero's wait for a
@@ -3101,7 +3105,9 @@ public:
 
     /**
      * Receives the next message, when no listener is in place: the oldest queued, or the next to
-     * arrive. From the first call on, the action listens: its messages queue for the next.
+     * arrive.
+     *
+     * From the first call on, the action listens: its messages queue for the next.
      *
      * Completes with `(error_code, T, message_info)`; a message of another payload format than
      * `T`'s, or a JSON text that does not parse, completes with `error::transfer_rejected` and an
@@ -3174,7 +3180,8 @@ private:
 
 /**
  * A named channel of requests of type `T`, each answered with an `R` by the peer asked, within a
- * room, wire compatible with what Trystero's `makeAction` returns for `kind: 'request'`.
+ * room, what Trystero's `makeAction` returns for `kind: 'request'` (not interoperable before
+ * Phase 2, as `room` says).
  *
  * The peer asked answers with the listener `on_request` sets. While it has none, requests wait as
  * Trystero's messages wait for a listener, 32 per sender for 10 s. A room makes it with
@@ -3265,8 +3272,9 @@ public:
 
     /**
      * Sets the action's receive gate, Trystero's `onReceive`: asked about each request as it
-     * arrives, as `action::on_receive` asks. A refused request is answered with "payload rejected
-     * by receiver".
+     * arrives, as `action::on_receive` asks.
+     *
+     * A refused request is answered with "payload rejected by receiver".
      *
      * @tparam F A callable with a `const receive_info&`, whose metadata is the sender's own,
      * returning whether to receive the request.

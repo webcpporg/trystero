@@ -84,7 +84,9 @@ enum class frame_kind : std::uint8_t {
 inline constexpr std::uint8_t action_wire_version = 3;
 /**
  * The flag of an offer whose chunks are wide, up to @ref max_bulk_frame_bytes each, in its second
- * byte above the format, Trystero's `wideBulkFlag`. Trystero sets it when the connection's SCTP
+ * byte above the format, Trystero's `wideBulkFlag`.
+ *
+ * Trystero sets it when the connection's SCTP
  * takes messages of @ref max_bulk_frame_bytes; no other frame may carry it.
  */
 inline constexpr std::uint8_t wide_bulk_flag = 64;
@@ -127,8 +129,12 @@ inline constexpr std::size_t max_receive_decisions_per_peer = 8;
 /** The most messages of one action and peer kept until the action can take them,
  * `maxPreListenerMessages`; a newer one drops the oldest. */
 inline constexpr std::size_t max_pre_listener_messages = 32;
-/** The most bytes a channel may buffer for a control frame to be sent on it,
- * `maxControlBufferedBytes`: 1 MiB. Above it the peer is dropped. */
+/**
+ * The most bytes a channel may buffer for a control frame to be sent on it,
+ * `maxControlBufferedBytes`: 1 MiB.
+ *
+ * Above it the peer is dropped.
+ */
 inline constexpr std::size_t max_control_buffered_bytes = std::size_t{1024} * 1024;
 
 namespace detail {
