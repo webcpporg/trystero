@@ -25,6 +25,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 namespace webcpp::trystero::detail {
@@ -45,6 +47,22 @@ struct key_record {
 };
 
 /**
+ * The verification an @ref identity_cache makes in production: `protocol::verify_p256`.
+ *
+ * A cache is a template of a verifier so that a test can count and substitute the verifications
+ * (a seam of the tests, not of the public API): the bounds and the rule that a cached answer is
+ * given without verifying are then proven without thousands of real signatures.
+ */
+struct protocol_verifier {
+    /** Whether a signature is the key's, of the payload, `protocol::verify_p256`. */
+    [[nodiscard]] bool operator()(std::span<const std::uint8_t> signature,
+                                  std::span<const std::uint8_t> payload,
+                                  const webcpp::crypto::curves::p256::public_key& key) const {
+        return protocol::verify_p256(signature, payload, key);
+    }
+};
+
+/**
  * The key records and the verified signatures of an app, 0.27.0's `resolvedPubKeyCache` and
  * `verifiedSigPayloads` (design D18): at most @ref max_records records and at most
  * @ref max_signatures signatures whose payloads total at most @ref max_signature_bytes, the least
@@ -54,7 +72,8 @@ struct key_record {
  * keeps them per app and resolves them at once (design D18), so rooms of one app share them and two
  * apps never do.
  */
-class identity_cache {
+template <class Verifier = protocol_verifier>
+class basic_identity_cache {
 public:
     /** How many key records the cache keeps, 0.27.0's `createBoundedCache` default. */
     static constexpr std::size_t max_records = 4096;
@@ -70,21 +89,24 @@ public:
      * An empty cache.
      *
      * @param memory The resource of the records and the signatures: the app's.
+     * @param verifier What verifies a signature that is not cached, called with a signature of low
+     * S only.
      */
-    explicit identity_cache(std::pmr::memory_resource* memory)
-        : memory_(memory),
+    explicit basic_identity_cache(std::pmr::memory_resource* memory, Verifier verifier = {})
+        : verifier_(std::move(verifier)),
+          memory_(memory),
           records_(memory),
           record_order_(memory),
           signatures_(memory),
           signature_order_(memory) {}
 
     /** The maps hold views of their lists' nodes: no copy. */
-    identity_cache(const identity_cache&) = delete;
+    basic_identity_cache(const basic_identity_cache&) = delete;
     /** Not assignable either. */
-    identity_cache& operator=(const identity_cache&) = delete;
+    basic_identity_cache& operator=(const basic_identity_cache&) = delete;
 
     /** Frees every record and signature. */
-    ~identity_cache() = default;
+    ~basic_identity_cache() = default;
 
     /**
      * The record of a compact key, 0.27.0's `getVerifiedPubKeyRecord`: the cached one, made the
@@ -126,7 +148,7 @@ public:
 
     /**
      * Whether a signature is the key's, of the payload, 0.27.0's `verifyWithP256`: 64 bytes, low S
-     * (refused before any verification, `protocol::verify_p256`), by the key of a record
+     * (refused before any verification, by the cache itself), by the key of a record
      * (@ref record).
      *
      * A payload of at most @ref max_cached_payload_bytes is first looked up: when the key and the
@@ -150,8 +172,10 @@ public:
         if (rec == nullptr) {
             return false;
         }
+        // Only the signature cache is touched from here to the end, so `rec` stays valid; a call of
+        // record() in between could evict it.
         if (payload.size() > max_cached_payload_bytes) {
-            return protocol::verify_p256(signature, payload, rec->key);
+            return protocol::is_low_s(signature) && verifier_(signature, payload, rec->key);
         }
         const signature_key key = key_of(rec->compact, signature);
         const std::string_view key_text(key.data(), key.size());
@@ -159,7 +183,7 @@ public:
             signature_order_.splice(signature_order_.begin(), signature_order_, it->second);
             return std::ranges::equal(it->second->payload, payload);
         }
-        if (!protocol::verify_p256(signature, payload, rec->key)) {
+        if (!protocol::is_low_s(signature) || !verifier_(signature, payload, rec->key)) {
             return false;
         }
         while (signature_order_.size() >= max_signatures ||
@@ -263,18 +287,23 @@ private:
         return key;
     }
 
+    Verifier verifier_;
     std::pmr::memory_resource* memory_;
     // By compact text, each key a view of its record's text in the order list, which owns it.
-    std::pmr::map<std::string_view, std::pmr::list<key_record>::iterator, std::less<>> records_;
+    std::pmr::map<std::string_view, typename std::pmr::list<key_record>::iterator, std::less<>>
+        records_;
     // The records, the most recently used first.
     std::pmr::list<key_record> record_order_;
     // By key, each a view of its entry's key in the order list, which owns it.
-    std::pmr::map<std::string_view, std::pmr::list<signature_entry>::iterator, std::less<>>
+    std::pmr::map<std::string_view, typename std::pmr::list<signature_entry>::iterator, std::less<>>
         signatures_;
     // The verified signatures, the most recently used first.
     std::pmr::list<signature_entry> signature_order_;
     std::size_t signature_bytes_ = 0;
 };
+
+/** The cache of an app: its verifications are `protocol::verify_p256`. */
+using identity_cache = basic_identity_cache<>;
 
 }  // namespace webcpp::trystero::detail
 

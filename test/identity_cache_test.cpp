@@ -16,6 +16,7 @@
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 
+#include <webcpp/crypto/curves/p256.hpp>
 #include <webcpp/document/document.hpp>
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/value.hpp>
@@ -252,82 +253,147 @@ void payloads_over_4096_bytes_are_not_cached() {
     BOOST_TEST_EQ(cache.signature_bytes(), td::identity_cache::max_cached_payload_bytes);
 }
 
+/** A verifier that accepts every signature it is asked about and counts the asking. */
+struct counting_verifier {
+    std::size_t* calls;
+
+    bool operator()(std::span<const std::uint8_t>, std::span<const std::uint8_t>,
+                    const webcpp::crypto::curves::p256::public_key&) const {
+        ++*calls;
+        return true;
+    }
+};
+
+using counted_cache = td::basic_identity_cache<counting_verifier>;
+
+/** A signature of low S that no key made: r is `n + 1` and s is 1, both in range. */
+tp::p256_signature fake_signature(std::size_t n) {
+    tp::p256_signature signature{};
+    for (std::size_t i = 0; i < 4; ++i) {
+        signature[31 - i] = static_cast<std::uint8_t>((n + 1) >> (8 * i));
+    }
+    signature[63] = 1;
+    return signature;
+}
+
 void the_cache_holds_at_most_8192_signatures_and_2_mib() {
     const auto key = fixture_key("endpoint-a");
     if (!key) {
         return;
     }
+    std::size_t calls = 0;
     // By bytes: 512 payloads of 4096 bytes are 2 MiB; the 513th evicts the least recently used.
     {
-        td::identity_cache cache(std::pmr::get_default_resource());
+        counted_cache cache(std::pmr::get_default_resource(), counting_verifier{&calls});
         constexpr std::size_t fit =
             td::identity_cache::max_signature_bytes / td::identity_cache::max_cached_payload_bytes;
         std::vector<std::vector<std::uint8_t>> payloads;
         std::vector<tp::p256_signature> signatures;
         for (std::size_t i = 0; i <= fit; ++i) {
-            std::vector<std::uint8_t> payload(td::identity_cache::max_cached_payload_bytes,
-                                              static_cast<std::uint8_t>(i));
-            payload[0] = static_cast<std::uint8_t>(i >> 8U);
-            const auto signature = tp::sign_p256(key->key, payload);
-            if (!BOOST_TEST(signature.has_value())) {
-                return;
-            }
-            payloads.push_back(std::move(payload));
-            signatures.push_back(*signature);
+            payloads.emplace_back(td::identity_cache::max_cached_payload_bytes,
+                                  static_cast<std::uint8_t>(i));
+            signatures.push_back(fake_signature(i));
         }
         for (std::size_t i = 0; i < fit; ++i) {
             BOOST_TEST(cache.verify(key->compact, signatures[i], payloads[i]));
         }
+        BOOST_TEST_EQ(calls, fit);
         BOOST_TEST_EQ(cache.signatures(), fit);
         BOOST_TEST_EQ(cache.signature_bytes(), td::identity_cache::max_signature_bytes);
-        // The first, used again, stays; the second leaves for the last.
+        // The first, used again, stays and is not verified again; the second leaves for the last.
         BOOST_TEST(cache.verify(key->compact, signatures[0], payloads[0]));
+        BOOST_TEST_EQ(calls, fit);
         BOOST_TEST(cache.verify(key->compact, signatures[fit], payloads[fit]));
+        BOOST_TEST_EQ(calls, fit + 1);
         BOOST_TEST_EQ(cache.signatures(), fit);
         BOOST_TEST_EQ(cache.signature_bytes(), td::identity_cache::max_signature_bytes);
         BOOST_TEST(cache.holds_signature(key->compact, signatures[0]));
         BOOST_TEST(!cache.holds_signature(key->compact, signatures[1]));
         BOOST_TEST(cache.holds_signature(key->compact, signatures[2]));
         BOOST_TEST(cache.holds_signature(key->compact, signatures[fit]));
+        // A hit with another payload answers false, does not verify, and still becomes the most
+        // recently used, as 0.27.0's `get` makes it: the third, wrongly asked about, outlives the
+        // fourth.
+        BOOST_TEST(!cache.verify(key->compact, signatures[2], payloads[3]));
+        BOOST_TEST_EQ(calls, fit + 1);
         // A smaller payload evicts the least recently used only when it does not fit.
-        const auto small = tp::sign_p256(key->key, bytes_view("small"));
-        if (BOOST_TEST(small.has_value())) {
-            BOOST_TEST(cache.verify(key->compact, *small, bytes_view("small")));
-            BOOST_TEST_EQ(cache.signatures(), fit);
-            BOOST_TEST_EQ(cache.signature_bytes(),
-                          td::identity_cache::max_signature_bytes -
-                              td::identity_cache::max_cached_payload_bytes + 5);
-            BOOST_TEST(!cache.holds_signature(key->compact, signatures[2]));
-        }
+        const auto small = fake_signature(fit + 1);
+        BOOST_TEST(cache.verify(key->compact, small, bytes_view("small")));
+        BOOST_TEST_EQ(calls, fit + 2);
+        BOOST_TEST_EQ(cache.signatures(), fit);
+        BOOST_TEST_EQ(cache.signature_bytes(), td::identity_cache::max_signature_bytes -
+                                                   td::identity_cache::max_cached_payload_bytes +
+                                                   5);
+        BOOST_TEST(cache.holds_signature(key->compact, signatures[2]));
+        BOOST_TEST(!cache.holds_signature(key->compact, signatures[3]));
     }
     // By entries: 8192 signatures of short payloads; the 8193rd evicts the least recently used.
     {
-        td::identity_cache cache(std::pmr::get_default_resource());
+        calls = 0;
+        counted_cache cache(std::pmr::get_default_resource(), counting_verifier{&calls});
         std::vector<std::string> payloads;
         std::vector<tp::p256_signature> signatures;
         for (std::size_t i = 0; i <= td::identity_cache::max_signatures; ++i) {
             payloads.push_back("payload " + std::to_string(i));
-            const auto signature = tp::sign_p256(key->key, bytes_view(payloads.back()));
-            if (!BOOST_TEST(signature.has_value())) {
-                return;
-            }
-            signatures.push_back(*signature);
+            signatures.push_back(fake_signature(i));
         }
         std::size_t bytes = 0;
         for (std::size_t i = 0; i < td::identity_cache::max_signatures; ++i) {
             BOOST_TEST(cache.verify(key->compact, signatures[i], bytes_view(payloads[i])));
             bytes += payloads[i].size();
         }
+        BOOST_TEST_EQ(calls, td::identity_cache::max_signatures);
         BOOST_TEST_EQ(cache.signatures(), td::identity_cache::max_signatures);
         BOOST_TEST_EQ(cache.signature_bytes(), bytes);
         BOOST_TEST(cache.verify(key->compact, signatures[0], bytes_view(payloads[0])));
+        BOOST_TEST_EQ(calls, td::identity_cache::max_signatures);
         BOOST_TEST(cache.verify(key->compact, signatures.back(), bytes_view(payloads.back())));
+        BOOST_TEST_EQ(calls, td::identity_cache::max_signatures + 1);
         BOOST_TEST_EQ(cache.signatures(), td::identity_cache::max_signatures);
         BOOST_TEST_EQ(cache.signature_bytes(), bytes - payloads[1].size() + payloads.back().size());
         BOOST_TEST(cache.holds_signature(key->compact, signatures[0]));
         BOOST_TEST(!cache.holds_signature(key->compact, signatures[1]));
         BOOST_TEST(cache.holds_signature(key->compact, signatures.back()));
     }
+}
+
+void a_cached_answer_is_given_without_verifying() {
+    const auto key = fixture_key("endpoint-a");
+    if (!key) {
+        return;
+    }
+    std::size_t calls = 0;
+    counted_cache cache(std::pmr::get_default_resource(), counting_verifier{&calls});
+    const auto signature = fake_signature(0);
+    BOOST_TEST(cache.verify(key->compact, signature, bytes_view("payload")));
+    BOOST_TEST_EQ(calls, 1U);
+    // A hit, whatever the payload, is answered without verifying.
+    BOOST_TEST(cache.verify(key->compact, signature, bytes_view("payload")));
+    BOOST_TEST(!cache.verify(key->compact, signature, bytes_view("other")));
+    BOOST_TEST_EQ(calls, 1U);
+    // Another signature of the same payload is a miss, and so is another key's.
+    BOOST_TEST(cache.verify(key->compact, fake_signature(1), bytes_view("payload")));
+    BOOST_TEST_EQ(calls, 2U);
+    const auto other = fixture_key("endpoint-b");
+    if (BOOST_TEST(other.has_value())) {
+        BOOST_TEST(cache.verify(other->compact, signature, bytes_view("payload")));
+        BOOST_TEST_EQ(calls, 3U);
+    }
+    // A payload over 4096 bytes is verified each time, and kept never.
+    const std::vector<std::uint8_t> long_payload(td::identity_cache::max_cached_payload_bytes + 1);
+    BOOST_TEST(cache.verify(key->compact, signature, long_payload));
+    BOOST_TEST(cache.verify(key->compact, signature, long_payload));
+    BOOST_TEST_EQ(calls, 5U);
+    // A high S, or a signature of another length, or an off-curve key, is refused before the
+    // verifier is asked.
+    const auto before = calls;
+    auto high = signature;
+    high[32] = 0xff;
+    BOOST_TEST(!cache.verify(key->compact, high, bytes_view("payload")));
+    BOOST_TEST(!cache.verify(key->compact, high, long_payload));
+    BOOST_TEST(!cache.verify(key->compact, std::span(signature).first(63), bytes_view("payload")));
+    BOOST_TEST(!cache.verify("not a key", signature, bytes_view("payload")));
+    BOOST_TEST_EQ(calls, before);
 }
 
 void a_high_s_signature_is_refused_before_verification() {
@@ -422,6 +488,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(a_cached_signature_answers_for_its_payload_only);
     webcpp::test::run_case(payloads_over_4096_bytes_are_not_cached);
     webcpp::test::run_case(the_cache_holds_at_most_8192_signatures_and_2_mib);
+    webcpp::test::run_case(a_cached_answer_is_given_without_verifying);
     webcpp::test::run_case(a_high_s_signature_is_refused_before_verification);
     webcpp::test::run_case(ids_are_checked_against_their_keys);
     return boost::report_errors();
