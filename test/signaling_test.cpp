@@ -547,8 +547,8 @@ struct relay_harness {
     relay_harness(const relay_harness&) = delete;
     relay_harness& operator=(const relay_harness&) = delete;
 
-    // The strategy's stop allocates what it logs; a failure to allocate there ends the test, as
-    // in any destructor.
+    // The strategy's stop allocates the CLOSE messages it sends; a failure to allocate there ends
+    // the test, as in any destructor.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     ~relay_harness() { strategy->stop(); }
 
