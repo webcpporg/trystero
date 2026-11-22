@@ -499,13 +499,14 @@ holds only what is specific to trystero.
 - **The memory relays.** `test/support/memory_backend.hpp`, in
   `webcpp::trystero::test`, is a backend in memory: Nostr relays that forward
   ephemeral events to matching subscriptions, peer connections that pair
-  through their descriptions, data channels that deliver in order, and a
-  password's derivation, webcpp::hash's PBKDF2 at 1,000 iterations
-  (`pbkdf2_iterations`), in the call, its completion posted or held by
-  `derive_delay` until `release_derivations`, each event posted to the
-  `io_context`. `assign_user` and `test::group_users` give peers a user of
-  the test's choosing through a detail seam (ruling R17), and the app's
-  fixed endpoint key is a detail seam too (`detail::app_access::make` with
+  through their descriptions (`mem:<id>` and an `a=fingerprint:sha-256`
+  line of the connection's own, `memory_description`), data channels that
+  deliver in order, and a password's derivation, webcpp::hash's PBKDF2 at
+  1,000 iterations (`pbkdf2_iterations`), in the call, its completion posted
+  or held by `derive_delay` until `release_derivations`, each event posted to
+  the `io_context`. A peer's user is the one its handshake verified: a test
+  that needs one user with two peers makes two apps that import one
+  `user_identity`. The app's fixed endpoint key is a detail seam (`detail::app_access::make` with
   an endpoint scalar, which `test::endpoint_scalar` makes of a label, its
   peer id `test::peer_id_of`; `test::ordered_labels` and
   `test::label_beside` name apps whose ids are in an order a test needs). A

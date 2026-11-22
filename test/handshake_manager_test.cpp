@@ -126,8 +126,9 @@ struct bench {
     }
 };
 
-// The side whose id is lower initiates, in byte order, as 0.27.0 compares its ids: "Z" is below
-// "a", whatever the letters' case says.
+// The side whose id is lower initiates, in UTF-16 code unit order, as 0.27.0's `effectiveSelfId <
+// id` compares its ids: "Z" is below "a", whatever the letters' case says, and U+FF21, one code
+// unit, is above U+1F600, whose first unit is a surrogate, though its UTF-8 bytes are below.
 void the_lower_id_initiates() {
     bench b("M");
     b.begin("A");
@@ -139,6 +140,15 @@ void the_lower_id_initiates() {
     lower.begin("Z");
     BOOST_TEST(upper.calls == (std::vector<std::string>{"steps a initiator"}));
     BOOST_TEST(lower.calls == (std::vector<std::string>{"steps Z responder"}));
+    const std::string fullwidth = "\xef\xbc\xa1";  // U+FF21, UTF-16 FF21
+    const std::string emoji = "\xf0\x9f\x98\x80";  // U+1F600, UTF-16 D83D DE00
+    BOOST_TEST(fullwidth < emoji);                 // in bytes
+    bench wide(fullwidth);
+    wide.begin(emoji);
+    bench astral(emoji);
+    astral.begin(fullwidth);
+    BOOST_TEST(wide.calls == (std::vector<std::string>{"steps " + emoji + " responder"}));
+    BOOST_TEST(astral.calls == (std::vector<std::string>{"steps " + fullwidth + " initiator"}));
     // A peer is started once: a second start, or a start before its add, runs nothing.
     b.hs->start("A");
     b.hs->start("N");

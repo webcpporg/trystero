@@ -10,6 +10,9 @@
 
 #include "support/memory_backend.hpp"
 
+#include <webcpp/trystero/protocol/handshake.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
+
 #include <webcpp/asio/io_context.hpp>
 
 #include <boost/core/lightweight_test.hpp>
@@ -19,10 +22,14 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "require.hpp"
@@ -70,6 +77,9 @@ struct pair {
     std::vector<trystero::backend::connection_state> offerer_states;
     std::size_t offerer_id = 0;
     std::size_t answerer_id = 0;
+    /** The offerer's description and the answerer's. */
+    std::string offer;
+    std::string answer;
 };
 
 /** Makes and pairs two peer connections, as two rooms' negotiations do. */
@@ -125,6 +135,8 @@ void connect(memory_network& net, pair& p) {
                                                 std::string_view sdp) { answer = sdp; });
     webcpp::test::require(BOOST_TEST(run_until(net.io(), [&] { return !answer.empty(); })));
     p.offerer->set_remote_description("answer", answer, [](trystero::backend::error_code) {});
+    p.offer = offer;
+    p.answer = answer;
 }
 
 void ids_are_sizes_and_peer_of_pairs_them() {
@@ -221,6 +233,61 @@ void an_injected_frame_reaches_the_end_named() {
     const std::array<std::uint8_t, 1> x{'X'};
     net.inject(p.offerer_id, x);
     BOOST_TEST(run_until(io, [&] { return p.at_offerer.size() == 1; }));
+}
+
+/** The fingerprint a memory connection's description carries, computed here apart from the backend:
+ * the SHA-256 of `mem-fingerprint:<id>`, its bytes as hexadecimal pairs joined by `:`, in
+ * uppercase as written, or in lowercase as 0.27.0's extractDtlsFingerprints reads it. */
+std::string fingerprint_of(std::size_t id, bool upper) {
+    const auto digest = trystero::protocol::sha256("mem-fingerprint:" + std::to_string(id));
+    std::string out;
+    for (const auto byte : digest) {
+        std::array<char, 3> pair{};
+        std::snprintf(pair.data(), pair.size(), upper ? "%02X" : "%02x", byte);
+        if (!out.empty()) {
+            out += ':';
+        }
+        out += pair.data();
+    }
+    return out;
+}
+
+// A memory connection's description carries a DTLS fingerprint, as a browser's does, so that a
+// room's handshake binds both ends' (design D20): `mem:<id>`, then `a=fingerprint:sha-256` and the
+// connection's own fingerprint. A pair connects through such descriptions, the id read from the
+// first line, and a description whose first line names no connection is refused.
+void descriptions_carry_a_fingerprint() {
+    asio::io_context io;
+    memory_network net{io};
+    pair p;
+    connect(net, p);
+    const auto check = [](const std::string& sdp, std::size_t id) {
+        BOOST_TEST_EQ(sdp, "mem:" + std::to_string(id) + "\r\na=fingerprint:sha-256 " +
+                               fingerprint_of(id, true) + "\r\n");
+        const auto dtls =
+            trystero::protocol::dtls_fingerprints(sdp, std::pmr::get_default_resource());
+        if (BOOST_TEST_EQ(dtls.size(), 1U)) {
+            BOOST_TEST_EQ(std::string_view(dtls[0]), "sha-256 " + fingerprint_of(id, false));
+        }
+        BOOST_TEST_EQ(trystero::test::memory_description_id(sdp).value_or(id + 1), id);
+    };
+    check(p.offer, p.offerer_id);
+    check(p.answer, p.answerer_id);
+    BOOST_TEST_NE(p.offer, p.answer);
+    BOOST_TEST(run_until(
+        io, [&] { return p.offer_end->is_open() && p.answer_end && p.answer_end->is_open(); }));
+    BOOST_TEST(!trystero::test::memory_description_id("mem:12x\r\n"));
+    BOOST_TEST(!trystero::test::memory_description_id("v=0\r\nmem:12\r\n"));
+    BOOST_TEST(!trystero::test::memory_description_id("mem:"));
+    BOOST_TEST_EQ(trystero::test::memory_description_id("mem:12").value_or(0), 12U);
+    auto* const memory = std::pmr::get_default_resource();
+    const auto stranger = net.make_peer_connection({}, memory);
+    std::optional<trystero::backend::error_code> applied;
+    stranger->set_remote_description("offer", "v=0\r\nmem:" + std::to_string(p.offerer_id),
+                                     [&](trystero::backend::error_code ec) { applied = ec; });
+    BOOST_TEST(run_until(io, [&] { return applied.has_value(); }));
+    BOOST_TEST(applied.has_value() && *applied);
+    BOOST_TEST(!stranger->has_remote_description());
 }
 
 // `failed` is reported while the channel is still open, and the channel's close after it.
@@ -570,6 +637,7 @@ int main() {
     deferred_opens_open_one_end_at_a_time();
     a_frame_before_the_far_end_opens_waits_for_it();
     an_injected_frame_reaches_the_end_named();
+    descriptions_carry_a_fingerprint();
     a_failed_connection_reports_failed_then_closes();
     a_disconnection_and_a_reconnection_are_reported();
     a_buffering_channel_drains_and_says_so();

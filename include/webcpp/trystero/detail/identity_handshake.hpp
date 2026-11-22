@@ -326,8 +326,9 @@ private:
             .user_id = std::pmr::string(memory_),
             .endpoint_key = std::pmr::string(memory_),
             .user_key = std::pmr::string(memory_),
-            .endpoint_signature = signed_by->endpoint,
-            .user_signature = signed_by->user,
+            // In the run's resource: a std::pmr::string's copy takes the default one.
+            .endpoint_signature = std::pmr::string(signed_by->endpoint, memory_),
+            .user_signature = std::pmr::string(signed_by->user, memory_),
             .dtls = std::pmr::vector<std::pmr::string>(memory_),
         };
         return succeed(protocol::write_handshake_step(step_3, memory_));

@@ -14,6 +14,7 @@
 #include <webcpp/trystero/detail/app_impl.hpp>
 #include <webcpp/trystero/detail/handshake_manager.hpp>
 #include <webcpp/trystero/detail/ice_servers.hpp>
+#include <webcpp/trystero/detail/identity_handshake.hpp>
 #include <webcpp/trystero/detail/log.hpp>
 #include <webcpp/trystero/detail/nostr_strategy.hpp>
 #include <webcpp/trystero/detail/peer_link.hpp>
@@ -24,6 +25,7 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/options.hpp>
+#include <webcpp/trystero/protocol/handshake.hpp>
 #include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
@@ -134,7 +136,7 @@ struct message_info {
 struct peer_event {
     /** The peer's id. */
     std::string_view peer_id;
-    /** The id of the peer's user; until identities are derived from keys, the peer's own id. */
+    /** The id of the peer's user, the one its identity handshake verified. */
     std::string_view user_id;
 };
 
@@ -805,8 +807,7 @@ struct completion {
  * configuration, the self id, the relays, the rooms' keys) is the app's.
  *
  * | Internal action   | Meaning                                                           |
- * | \@_hsdata         | a message of the handshake's steps, at most 64 KiB; none are sent |
- * |                   | before the identity handshake (Task 2.4b)                         |
+ * | \@_hsdata         | a step of the identity handshake, a JSON text of at most 64 KiB   |
  * | \@_hsready        | the sender's side of the handshake passed, at most 128 KiB: an    |
  * |                   | empty text                                                        |
  * | \@_ping, \@_pong  | round-trip measurement                                            |
@@ -892,16 +893,20 @@ public:
 
     /**
      * Makes the handshake manager, whose callbacks reach the room while it lives: 0.27.0's
-     * `createHandshakeManager` as `room.ts` sets it up, without steps before the identity handshake
-     * (Task 2.4b), and without deferring the responder's ready frame before `max_users` (Task
-     * 2.5a).
+     * `createHandshakeManager` as `room.ts` sets it up, its steps the identity handshake, without
+     * deferring the responder's ready frame before `max_users` (Task 2.5a).
      */
     void make_handshakes(const std::weak_ptr<room_impl>& weak) {
         handshakes_ = std::allocate_shared<handshake_manager>(
             allocator(), app_->self_id(), false,
             handshake_callbacks{
                 .run_steps = bind<void(std::string_view, bool, handler<void(std::string_view)>)>(
-                    [](std::string_view, bool, handler<void(std::string_view)> done) { done({}); }),
+                    [weak](std::string_view peer, bool initiator,
+                           handler<void(std::string_view)> done) {
+                        if (const auto self = weak.lock()) {
+                            self->run_identity(peer, initiator, std::move(done));
+                        }
+                    }),
                 .send_ready = bind<void(std::string_view, std::string_view)>(
                     [weak](std::string_view peer, std::string_view ready_json) {
                         if (const auto self = weak.lock()) {
@@ -1024,11 +1029,14 @@ public:
                         }
                     }),
                 .connected = bind<void(std::string_view, std::shared_ptr<backend::peer_connection>,
-                                       std::shared_ptr<backend::data_channel>)>(
+                                       std::shared_ptr<backend::data_channel>, std::string_view,
+                                       std::string_view)>(
                     [weak](std::string_view peer, std::shared_ptr<backend::peer_connection> pc,
-                           std::shared_ptr<backend::data_channel> channel) {
+                           std::shared_ptr<backend::data_channel> channel,
+                           std::string_view local_sdp, std::string_view remote_sdp) {
                         if (const auto self = weak.lock()) {
-                            self->on_connected(peer, std::move(pc), std::move(channel));
+                            self->on_connected(peer, std::move(pc), std::move(channel), local_sdp,
+                                               remote_sdp);
                         }
                     }),
                 .failed = bind<void(const room_error&)>([weak](const room_error& e) {
@@ -1166,9 +1174,13 @@ public:
     /** This peer's user's id, the app's user identity's. */
     std::string_view self_user_id() const { return app_->user_id(); }
 
-    /** The id of an active peer's user, or the peer's own id for a peer not active. */
+    /** The id of a peer's user, the one its handshake verified, as 0.27.0 sets a peer's `userId`
+     * once verified; the peer's own id for a peer not verified. */
     std::string_view user_of(std::string_view peer) const {
-        return users_.user_of(peer).value_or(peer);
+        const auto it = peers_.find(peer);
+        return it != peers_.end() && it->second.identity
+                   ? std::string_view(it->second.identity->user_id)
+                   : peer;
     }
 
     /** The room's users but this peer's own, each with its active peers, in the room's resource:
@@ -1265,12 +1277,23 @@ public:
      * `connectPeer` keeps a connected peer that is not stale: a second connection that opens while
      * the peer's link is live is closed, and one whose link is ending replaces it.
      *
+     * The DTLS fingerprints of the negotiation's descriptions are kept with the peer: its identity
+     * handshake binds them, as 0.27.0 reads its connection's `localDescription` and
+     * `remoteDescription` (design D20).
+     *
      * Tip: the signaling calls it; the library's own tests call it with a pair of their own, as no
      * signal reaches a room for a peer it is connected to.
+     *
+     * @param peer_view The peer's id.
+     * @param pc The connection.
+     * @param channel Its open data channel.
+     * @param local_sdp The last description the connection's `set_local_description` gave.
+     * @param remote_sdp The last description it applied with `set_remote_description`.
      */
     // NOLINTBEGIN(performance-unnecessary-value-param): sinks, moved on
     void on_connected(std::string_view peer_view, std::shared_ptr<backend::peer_connection> pc,
-                      std::shared_ptr<backend::data_channel> channel) {
+                      std::shared_ptr<backend::data_channel> channel, std::string_view local_sdp,
+                      std::string_view remote_sdp) {
         // NOLINTEND(performance-unnecessary-value-param)
         const std::pmr::string peer(peer_view, memory_);
         const auto link =
@@ -1293,7 +1316,7 @@ public:
                 return;
             }
         }
-        bind_peer(peer, link);
+        bind_peer(peer, link, local_sdp, remote_sdp);
     }
 
     /** Holds the room's relays closed, or reconnects them; a room that left has none. */
@@ -1733,12 +1756,36 @@ private:
         completion<void(boost::system::error_code, std::chrono::milliseconds)> handler;
     };
 
+    /** A peer's run of the identity handshake: 0.27.0's `run` for the peer's connection, whose
+     * steps the handshake manager hands it, and the manager's `done`, called once. */
+    struct identity_run {
+        // NOLINTNEXTLINE(performance-unnecessary-value-param): a sink, moved on
+        identity_run(handler<void(std::string_view)> finished, local_identity self,
+                     identity_cache& cache, std::string_view app_id, std::string_view room_id,
+                     std::string_view remote_peer, bool initiator,
+                     std::span<const std::pmr::string> local_dtls,
+                     std::span<const std::pmr::string> remote_dtls,
+                     std::array<std::uint8_t, 16> nonce_random, std::pmr::memory_resource* memory)
+            : machine(self, cache, app_id, room_id, remote_peer, initiator, local_dtls, remote_dtls,
+                      nonce_random, memory),
+              done(std::move(finished)) {}
+
+        identity_handshake machine;
+        handler<void(std::string_view)> done;
+    };
+
     struct peer_state {
-        explicit peer_state(std::pmr::polymorphic_allocator<> a) : pings(a) {}
+        explicit peer_state(std::pmr::polymorphic_allocator<> a)
+            : local_dtls(a), remote_dtls(a), pings(a) {}
 
         std::shared_ptr<peer_link> link;
-        bool active =
-            false;  // its handshake completed: the manager's `phase::active`, until 2.4b/2.5a
+        /** The DTLS fingerprints of the link's local and remote descriptions. */
+        std::pmr::vector<std::pmr::string> local_dtls;
+        std::pmr::vector<std::pmr::string> remote_dtls;
+        /** Its identity handshake, while it runs; its outcome, once verified. */
+        std::shared_ptr<identity_run> run;
+        std::optional<identity_handshake::verified> identity;
+        bool active = false;  // its handshake completed: the manager's `phase::active`
         std::pmr::deque<pending_ping> pings;
     };
 
@@ -2036,7 +2083,8 @@ private:
      * entry (a kick); the entry is never held by reference across such a step, and each step
      * looks it up again by the link it holds. Each lambda keeps its own copy in the room's
      * resource, named: a plain copy of a std::pmr::string takes the default resource. */
-    void bind_peer(std::string_view peer_view, const std::shared_ptr<peer_link>& link) {
+    void bind_peer(std::string_view peer_view, const std::shared_ptr<peer_link>& link,
+                   std::string_view local_sdp, std::string_view remote_sdp) {
         // A peer is bound once until its removal: the signaling hands over no channel while its
         // entry is connected, which `on_channel_open` and `bound` set and only `forget` clears,
         // after `remove_peer` has taken the peer out.
@@ -2044,7 +2092,10 @@ private:
         const std::pmr::string peer(peer_view, memory_);
         const auto weak = weak_from_this();
         signaling_->bound(peer);
-        peers_.try_emplace(peer, allocator()).first->second.link = link;
+        auto& state = peers_.try_emplace(peer, allocator()).first->second;
+        state.link = link;
+        state.local_dtls = protocol::dtls_fingerprints(local_sdp, memory_);
+        state.remote_dtls = protocol::dtls_fingerprints(remote_sdp, memory_);
         handshakes_->add(peer);
         // The link's identity, never dereferenced: a link made later at its address is never the
         // one whose end this names, since the link calls its `ended` alive.
@@ -2080,6 +2131,99 @@ private:
         remove_peer(peer, reason);
     }
 
+    /**
+     * Runs the identity handshake with a peer, as 0.27.0's handshake manager runs the room's
+     * `identityHandshake.run`: this side's nonce drawn from the backend's randomness for this run,
+     * the fingerprints of the peer's descriptions, and the peer's `@_hsdata` messages through
+     * `next_message`. `done` takes "" once the peer's identity is verified and kept, else the
+     * reason the handshake failed.
+     */
+    void run_identity(std::string_view peer_view, bool initiator,
+                      handler<void(std::string_view)> done) {
+        const auto it = peers_.find(peer_view);
+        if (it == peers_.end()) {
+            done(handshake_manager::disconnected_reason);
+            return;
+        }
+        // 0.27.0's crypto.randomUUID(), fresh for every run.
+        std::array<std::uint8_t, 16> nonce{};
+        factory_.random(nonce);
+        const auto& endpoint = app_->endpoint();
+        const std::pmr::string peer(it->first, memory_);
+        auto run = std::allocate_shared<identity_run>(allocator(), std::move(done),
+                                                      local_identity{
+                                                          .endpoint = endpoint.key,
+                                                          .peer_id = endpoint.peer_id,
+                                                          .endpoint_key = endpoint.compact,
+                                                          .user = app_->user(),
+                                                      },
+                                                      app_->identities(), app_->app_id(), room_id_,
+                                                      peer, initiator, it->second.local_dtls,
+                                                      it->second.remote_dtls, nonce, memory_);
+        it->second.run = run;
+        auto first = run->machine.start();
+        step_identity(peer, run, std::move(first));
+    }
+
+    /** The peer's state, if `run` is still its identity handshake. */
+    peer_state* running(std::string_view peer, const std::shared_ptr<identity_run>& run) {
+        const auto it = peers_.find(peer);
+        return it != peers_.end() && it->second.run == run ? &it->second : nullptr;
+    }
+
+    /** Ends a run once: the handshake manager hears `reason`, "" when the identity verified. */
+    static void finish_identity(identity_run& run, std::string_view reason) {
+        if (!run.done) {
+            return;
+        }
+        auto done = std::move(run.done);
+        done(reason);
+    }
+
+    /**
+     * Acts on what a call of a peer's identity handshake gave: its identity, verified, kept in the
+     * peer's state first, as 0.27.0's `onVerified` keeps it before the initiator's step 3; then the
+     * message to send; then the run's end, or a wait for the peer's next message.
+     */
+    void step_identity(std::string_view peer, const std::shared_ptr<identity_run>& run,
+                       identity_handshake::outcome out) {
+        if (out.done) {
+            if (auto* const state = running(peer, run)) {
+                state->identity = std::move(*out.done);
+            }
+        }
+        if (!out.send.empty()) {
+            send_internal("@_hsdata", peer, protocol::payload_format::json, out.send);
+        }
+        if (!out.failure.empty()) {
+            finish_identity(*run, out.failure);
+            return;
+        }
+        if (out.done) {
+            finish_identity(*run, {});
+            return;
+        }
+        // The send may have let the peer go.
+        if (running(peer, run) == nullptr) {
+            finish_identity(*run, handshake_manager::disconnected_reason);
+            return;
+        }
+        handshakes_->next_message(
+            peer, bind<void(boost::system::error_code, std::string_view)>(
+                      [weak = weak_from_this(), peer = std::pmr::string(peer, memory_), run](
+                          boost::system::error_code ec, std::string_view json) {
+                          const auto self = weak.lock();
+                          if (!self) {
+                              return;
+                          }
+                          if (ec || self->running(peer, run) == nullptr) {
+                              finish_identity(*run, handshake_manager::disconnected_reason);
+                              return;
+                          }
+                          self->step_identity(peer, run, run->machine.receive(json));
+                      }));
+    }
+
     /** Both sides of a peer's handshake are ready, 0.27.0's `onActivate`: the peer joins, and its
      * user with its first peer. */
     void activate(std::string_view peer) {
@@ -2088,9 +2232,10 @@ private:
             return;
         }
         it->second.active = true;
-        // Its user joins with its first peer, as 0.27.0 counts a user's peers; this peer's own user
-        // is no other user.
-        std::pmr::string user(app_->user_of(peer), memory_);
+        it->second.run.reset();
+        // Its user, the one its handshake verified, joins with its first peer, as 0.27.0 counts a
+        // user's peers; this peer's own user is no other user.
+        std::pmr::string user(user_of(peer), memory_);
         const bool first_of_user = users_.add(peer, user) && user != self_user_id();
         std::pmr::string peer_copy(it->first, memory_);
         const auto link = it->second.link;
@@ -2293,7 +2438,9 @@ private:
         std::pmr::string peer = std::move(node.key());
         auto& state = node.mapped();
         // Its user leaves with its last peer, as 0.27.0 counts a user's peers.
-        std::pmr::string user(user_of(peer), memory_);
+        std::pmr::string user(
+            state.identity ? std::string_view(state.identity->user_id) : std::string_view(peer),
+            memory_);
         const bool last_of_user =
             state.active && users_.remove(peer).has_value() && user != self_user_id();
         log_("room", "peer ", peer, " gone: ", reason);
@@ -2437,9 +2584,10 @@ class request_action;
  * `app::join` makes it, joined; `async_leave` leaves with Trystero's farewell, and destroying it
  * leaves at once. Its peers meet over the relays, connect over WebRTC, each room with a connection
  * of its own to each peer, as 0.27.0's rooms do, and exchange the messages of the actions it makes,
- * written bare on the connection. On the branch `port/trystero-0.27` it is not interoperable with
- * Trystero 0.27.0 before Phase 2: its handshake has 0.27.0's frame and timer, but not yet the
- * identity handshake's signed steps, and it has no ECDSA P-256.
+ * written bare on the connection. A peer joins once 0.27.0's identity handshake has bound its
+ * endpoint and user keys to both DTLS fingerprints, and its user is the one it proved. On the
+ * branch `port/trystero-0.27` it is not interoperable with Trystero 0.27.0 before Phase 2 ends: its
+ * ping is not yet 0.27.0's, and no interop lane proves it.
  *
  * Every room uses its app's immutable password, under which the signals that make its connections
  * are sealed: as in 0.27.0, the sealing alone keeps peers of another password out, which never
@@ -2597,7 +2745,8 @@ public:
      * Adds a listener of each user that joins, when its first peer joins, after that peer's
      * `on_peer_join`, Trystero's `onUserJoin`; a peer of this peer's own user makes no user join.
      *
-     * Until identities are derived from keys, a peer's user is the peer's own id.
+     * A peer's user is the one its identity handshake verified: the peers of apps that present
+     * one `user_identity` are one user.
      *
      * @tparam F A callable with a `const user_event&`, whose views are valid for the call.
      * @param f The listener, kept in the room's resource beside those added before.

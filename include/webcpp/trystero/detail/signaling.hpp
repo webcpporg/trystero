@@ -183,9 +183,13 @@ public:
     struct callbacks {
         /** Publishes a signal on a topic, through the relay given. */
         handler<void(std::size_t relay, std::string_view topic, std::string_view content)> publish;
-        /** A negotiation ended with an open data channel: the connection is the room's. */
+        /** A negotiation ended with an open data channel: the connection is the room's, with the
+         * descriptions the negotiation set, the last one `set_local_description` gave and the last
+         * one applied with `set_remote_description`, whose DTLS fingerprints the room's handshake
+         * binds (design D20). The views are valid for the call. */
         handler<void(std::string_view peer, std::shared_ptr<backend::peer_connection>,
-                     std::shared_ptr<backend::data_channel>)>
+                     std::shared_ptr<backend::data_channel>, std::string_view local_sdp,
+                     std::string_view remote_sdp)>
             connected;
         /**
          * A negotiation with a peer failed: an offer or an answer did not open
@@ -322,13 +326,17 @@ private:
     static constexpr std::size_t remembered_decrypt_failures = 512;
 
     /** One side of a negotiation: a connection, the remote candidates waiting for its remote
-     * description. */
+     * description, and the descriptions it set. */
     struct side {
-        explicit side(pmr_allocator a) : pending_remote(a) {}
+        explicit side(pmr_allocator a) : pending_remote(a), local_sdp(a), remote_sdp(a) {}
 
         std::shared_ptr<backend::peer_connection> pc;
         std::shared_ptr<backend::data_channel> channel;
         std::pmr::vector<std::pmr::string> pending_remote;
+        // The last description `set_local_description` gave the connection.
+        std::pmr::string local_sdp;
+        // The last description the connection applied with `set_remote_description`.
+        std::pmr::string remote_sdp;
     };
 
     struct negotiation {
@@ -623,6 +631,7 @@ private:
             return;
         }
         used_.insert(sdp);  // sent back to the room in a peer's name, it is refused
+        m->offer.local_sdp = sdp;
         auto sealed = seal_signal("offer", m->offer_id, sdp);
         if (!sealed) {
             log_("signal", "could not seal the offer for ", peer, ": ", sealed.error());
@@ -761,13 +770,14 @@ private:
                                    reset_answer(*m);
                                    self->drop_if_done(peer);
                                }));
-        pc->set_remote_description("offer", sdp,
-                                   bind<void(boost::system::error_code)>(
-                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
-                                           if (const auto self = weak.lock()) {
-                                               self->on_offer_applied(peer, pc, ec);
-                                           }
-                                       }));
+        pc->set_remote_description(
+            "offer", sdp,
+            bind<void(boost::system::error_code)>(
+                [weak, peer = copy(peer), pc, offered = copy(sdp)](boost::system::error_code ec) {
+                    if (const auto self = weak.lock()) {
+                        self->on_offer_applied(peer, pc, ec, offered);
+                    }
+                }));
     }
 
     /** The same offer again: Trystero replays its answer on that relay, at most once a second. */
@@ -787,10 +797,10 @@ private:
         }
     }
 
-    /** Creates the answer once the offer is the connection's remote description. */
+    /** Creates the answer once the offer, `sdp`, is the connection's remote description. */
     void on_offer_applied(std::string_view peer,
                           const std::shared_ptr<backend::peer_connection>& pc,
-                          boost::system::error_code ec) {
+                          boost::system::error_code ec, std::string_view sdp) {
         auto* m = find(peer);
         if (m == nullptr || m->answer.pc != pc) {
             return;
@@ -800,6 +810,7 @@ private:
             reset_answer(*m);
             return;
         }
+        m->answer.remote_sdp = sdp;
         flush_remote_candidates(peer, m->answer);
         const auto weak = weak_from_this();
         pc->set_local_description(
@@ -821,6 +832,7 @@ private:
             return;
         }
         used_.insert(sdp);  // sent back to the room in a peer's name, it is refused
+        m->answer.local_sdp = sdp;
         const auto sealed = seal_signal("answer", m->answered_offer_id, sdp);
         if (!sealed) {
             log_("signal", "could not seal the answer for ", peer, ": ", sealed.error());
@@ -885,22 +897,23 @@ private:
                                   self->drop_if_done(peer);
                               }));
         log_("signal", "answer from ", peer);
-        pc->set_remote_description("answer", *sdp,
-                                   bind<void(boost::system::error_code)>(
-                                       [weak, peer = copy(peer), pc](boost::system::error_code ec) {
-                                           const auto self = weak.lock();
-                                           auto* n = self ? self->find(peer) : nullptr;
-                                           if (n == nullptr || n->offer.pc != pc) {
-                                               return;
-                                           }
-                                           if (ec) {
-                                               self->log_("webrtc", "the answer from ", peer,
-                                                          " was refused: ", ec);
-                                               reset_offer(*n);
-                                               return;
-                                           }
-                                           self->flush_remote_candidates(peer, n->offer);
-                                       }));
+        pc->set_remote_description(
+            "answer", *sdp,
+            bind<void(boost::system::error_code)>(
+                [weak, peer = copy(peer), pc, answered = copy(*sdp)](boost::system::error_code ec) {
+                    const auto self = weak.lock();
+                    auto* n = self ? self->find(peer) : nullptr;
+                    if (n == nullptr || n->offer.pc != pc) {
+                        return;
+                    }
+                    if (ec) {
+                        self->log_("webrtc", "the answer from ", peer, " was refused: ", ec);
+                        reset_offer(*n);
+                        return;
+                    }
+                    n->offer.remote_sdp = answered;
+                    self->flush_remote_candidates(peer, n->offer);
+                }));
     }
 
     /**
@@ -1166,10 +1179,12 @@ private:
         n->connected = true;
         auto connected_pc = std::move(winner->pc);
         auto channel = std::move(winner->channel);
+        const auto local_sdp = std::move(winner->local_sdp);
+        const auto remote_sdp = std::move(winner->remote_sdp);
         reset_offer(*n);
         reset_answer(*n);
         log_("webrtc", "data channel open with ", peer);
-        cb_.connected(peer, std::move(connected_pc), std::move(channel));
+        cb_.connected(peer, std::move(connected_pc), std::move(channel), local_sdp, remote_sdp);
     }
 
     void on_state(std::string_view peer_view, const std::shared_ptr<backend::peer_connection>& pc,
@@ -1209,6 +1224,8 @@ private:
         s.pc.reset();
         s.channel.reset();
         s.pending_remote.clear();
+        s.local_sdp.clear();
+        s.remote_sdp.clear();
     }
 
     /**

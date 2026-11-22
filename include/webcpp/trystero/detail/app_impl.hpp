@@ -178,22 +178,6 @@ public:
     /** The app resource, which outlives its rooms and pending operations. */
     [[nodiscard]] std::pmr::memory_resource* memory() const { return memory_; }
 
-    /** Names the user of a remote peer; the room copies the id during the call. */
-    using user_resolver = handler<std::string_view(std::string_view peer_id)>;
-
-    /** Names the user of each remote peer that becomes active in a room of the app from now on
-     * with `resolver`, moved into the app resource; an empty one names the peer's own id. The
-     * library's own tests group peers into users with it. */
-    void resolve_users_with(user_resolver resolver) {
-        user_resolver_ = user_resolver(std::allocator_arg, allocator(), std::move(resolver));
-    }
-
-    /** The user of the remote peer `peer_id`: until identities are derived from keys, the peer's
-     * own id. */
-    [[nodiscard]] std::string_view user_of(std::string_view peer_id) {
-        return user_resolver_ ? user_resolver_(peer_id) : peer_id;
-    }
-
     /** The shared logger, whose sentences use the app resource. */
     [[nodiscard]] const logger& log() const { return log_; }
 
@@ -216,6 +200,26 @@ public:
      */
     [[nodiscard]] std::string_view endpoint_key() const {
         return endpoint_ ? std::string_view(endpoint_->compact) : std::string_view();
+    }
+
+    /**
+     * The endpoint key, which signs this side of each handshake of the app's rooms.
+     *
+     * @return The key; only while @ref identity_failure is empty.
+     */
+    [[nodiscard]] const endpoint_identity& endpoint() const {
+        BOOST_ASSERT(endpoint_.has_value());
+        return *endpoint_;
+    }
+
+    /**
+     * The user identity every room of the app presents, which signs each handshake too.
+     *
+     * @return The identity; only while @ref identity_failure is empty.
+     */
+    [[nodiscard]] const user_identity& user() const {
+        BOOST_ASSERT(identity_.has_value());
+        return *identity_;
     }
 
     /**
@@ -471,7 +475,6 @@ private:
     std::size_t users_ = 0;
     relay_connectivity connectivity_ = relay_connectivity::automatic;
     bool relays_offline_ = false;
-    user_resolver user_resolver_;
     // The page's connectivity, watched while the relays are automatic and the app has a user:
     // last, so that it ends first.
     std::shared_ptr<void> page_watch_;

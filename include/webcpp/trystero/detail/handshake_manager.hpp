@@ -13,6 +13,7 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/handshake_reason.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 
 #include <boost/system/error_code.hpp>
 
@@ -39,9 +40,9 @@ namespace webcpp::trystero::detail {
  * up again after each call.
  */
 struct handshake_callbacks {
-    /** Runs the handshake's steps with a peer, 0.27.0's `onPeerHandshake`; `done` takes "" when
-     * they passed, else the reason they failed. None exist before the identity handshake
-     * (Task 2.4b). */
+    /** Runs the handshake's steps with a peer, 0.27.0's `onPeerHandshake`: the room's identity
+     * handshake, through @ref handshake_manager::next_message; `done` takes "" when they passed,
+     * else the reason they failed. */
     handler<void(std::string_view peer, bool initiator, handler<void(std::string_view)> done)>
         run_steps;
     /** Sends the ready frame, `@_hsready`, whose payload is `ready_json`: "" for 0.27.0's empty
@@ -73,12 +74,13 @@ struct handshake_callbacks {
  * | `awaiting_peer_ready`   | the peer's ready frame: `active`                                |
  * | `active`                | `clear` alone                                                   |
  *
- * The initiator is the side whose id is lower, in byte order, as 0.27.0 compares its strings of
- * ASCII. The ready frame is sent before `activate` is called, so that a send inside the room's
- * `on_peer_join` follows it on the wire. A failure is reported through `callbacks::failed` while
- * the handshake is pending, once per timer or message that causes it: the timer's 10 s ("handshake
- * timed out after 10000ms"), a 17th message buffered before the steps read it ("too many pending
- * handshake messages"), or the steps' own reason. The room then clears the peer.
+ * The initiator is the side whose id is lower in UTF-16 code unit order, as 0.27.0's
+ * `effectiveSelfId < id` compares its strings. The ready frame is sent before `activate` is called,
+ * so that a send inside the room's `on_peer_join` follows it on the wire. A failure is reported
+ * through `callbacks::failed` while the handshake is pending, once per timer or message that causes
+ * it: the timer's 10 s ("handshake timed out after 10000ms"), a 17th message buffered before the
+ * steps read it ("too many pending handshake messages"), or the steps' own reason. The room then
+ * clears the peer.
  *
  * Every allocation goes through the room's resource. It is owned by a `std::shared_ptr`, made with
  * `std::allocate_shared`: its timers and the steps' `done` name it weakly.
@@ -184,7 +186,7 @@ public:
                             }
                         }));
         e->at = phase::running_steps;
-        e->initiator = self_id_ < peer;
+        e->initiator = protocol::utf16_less(self_id_, peer);
         cb_.run_steps(peer, e->initiator,
                       bind<void(std::string_view)>([weak, peer = std::pmr::string(peer, memory_),
                                                     generation](std::string_view reason) {

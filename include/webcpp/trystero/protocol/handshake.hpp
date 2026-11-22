@@ -17,6 +17,7 @@
 #include <webcpp/trystero/protocol/handshake_reason.hpp>
 #include <webcpp/trystero/protocol/identity.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/document/parse.hpp>
@@ -37,23 +38,6 @@ namespace webcpp::trystero::protocol {
 inline constexpr std::size_t min_nonce_units = 16;
 
 namespace detail {
-
-/**
- * Whether `a` is before `b` in UTF-16 code unit order, JavaScript's string order, both UTF-8.
- *
- * The orders differ only where a character from U+E000 to U+FFFF (lead byte 0xee or 0xef) meets
- * one beyond U+FFFF (lead byte 0xf0 to 0xf4), whose surrogates are below 0xe000: those two lead
- * bytes are ranked above the others. Two valid texts first differ at a lead byte or at a
- * continuation byte of the same lead, which ranks as it is.
- */
-inline bool utf16_less(std::string_view a, std::string_view b) noexcept {
-    const auto rank = [](char c) {
-        const auto byte = static_cast<unsigned char>(c);
-        return byte == 0xeeU || byte == 0xefU ? byte + 0x10U : unsigned{byte};
-    };
-    return std::ranges::lexicographical_compare(a, b,
-                                                [&](char x, char y) { return rank(x) < rank(y); });
-}
 
 /**
  * Where the line after the one at `at` starts, as a multiline regular expression's `^` sees it:
@@ -147,7 +131,7 @@ inline bool joined_equal(std::span<const std::pmr::string> a,
         }
         at = detail::next_line(sdp, at);
     }
-    std::ranges::sort(out, detail::utf16_less);
+    std::ranges::sort(out, utf16_less);
     const auto duplicates = std::ranges::unique(out);
     out.erase(duplicates.begin(), duplicates.end());
     return out;

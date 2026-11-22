@@ -16,6 +16,7 @@
 #include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
 
 #include <webcpp/hash/hmac.hpp>
 #include <webcpp/hash/pbkdf2.hpp>
@@ -564,8 +565,56 @@ private:
     bool draining_ = false;
 };
 
-/** Peer connections pair through their descriptions: "mem:<id>" names the connection that wrote it.
+/**
+ * The description a memory connection writes: `mem:<id>`, which names it, then a DTLS fingerprint
+ * line, `a=fingerprint:sha-256 <F>`, `F` the 32 bytes of the SHA-256 of `mem-fingerprint:<id>` in
+ * uppercase hexadecimal pairs joined by `:`, as a browser writes its certificate's.
+ *
+ * @param id The connection's id.
+ * @param memory The resource of the text.
+ * @return The description, its lines ended by CRLF.
  */
+inline std::pmr::string memory_description(std::size_t id, std::pmr::memory_resource* memory) {
+    std::pmr::string label("mem-fingerprint:", memory);
+    protocol::json::append_integer(label, static_cast<std::int64_t>(id));
+    const auto digest = protocol::sha256(label);
+    std::pmr::string sdp("mem:", memory);
+    protocol::json::append_integer(sdp, static_cast<std::int64_t>(id));
+    sdp += "\r\na=fingerprint:sha-256 ";
+    constexpr std::string_view digits = "0123456789ABCDEF";
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+        if (i != 0) {
+            sdp += ':';
+        }
+        sdp += digits[digest[i] >> 4U];
+        sdp += digits[digest[i] & 0x0fU];
+    }
+    sdp += "\r\n";
+    return sdp;
+}
+
+/**
+ * The id of the connection that wrote a description: the number of its first line, `mem:<id>`.
+ *
+ * @param sdp The description.
+ * @return The id; nothing when the first line is not `mem:` and a number.
+ */
+inline std::optional<std::size_t> memory_description_id(std::string_view sdp) {
+    const auto first_line = sdp.substr(0, sdp.find_first_of("\r\n"));
+    if (!first_line.starts_with("mem:")) {
+        return std::nullopt;
+    }
+    std::size_t id = 0;
+    const auto* const end = first_line.data() + first_line.size();
+    const auto [at, ec] = std::from_chars(first_line.data() + 4, end, id);
+    if (ec != std::errc{} || at != end) {
+        return std::nullopt;
+    }
+    return id;
+}
+
+/** Peer connections pair through their descriptions (@ref memory_description): the first line,
+ * `mem:<id>`, names the connection that wrote it. */
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
@@ -603,8 +652,7 @@ public:
                 return;
             }
             self->local_set_ = true;
-            std::pmr::string sdp("mem:", self->memory_);
-            protocol::json::append_integer(sdp, static_cast<std::int64_t>(self->id_));
+            const auto sdp = memory_description(self->id_, self->memory_);
             done({}, self->remote_id_ ? "answer" : "offer", sdp);
             post_in(self->io_, self->memory_, [self] {
                 if (self->closed_ || !self->h_.ice_candidate) {
@@ -624,16 +672,12 @@ public:
         post_in(io_, memory_,
                 [self = shared_from_this(), sdp = std::pmr::string(sdp_view, memory_),
                  done = std::move(done)]() mutable {
-                    std::size_t remote = 0;
-                    const bool ours =
-                        sdp.starts_with("mem:") &&
-                        std::from_chars(sdp.data() + 4, sdp.data() + sdp.size(), remote).ec ==
-                            std::errc{};
-                    if (self->closed_ || !ours) {
+                    const auto remote = memory_description_id(sdp);
+                    if (self->closed_ || !remote) {
                         done(make_error_code(error::backend_failure));
                         return;
                     }
-                    self->remote_id_ = remote;
+                    self->remote_id_ = *remote;
                     done({});
                     self->try_connect();
                 });
@@ -731,7 +775,6 @@ public:
           memory_(memory),
           relays_(memory),
           unreachable_(memory),
-          users_(memory),
           connections_(std::allocate_shared<connection_registry>(
               std::pmr::polymorphic_allocator<>(memory))) {}
 
@@ -786,19 +829,6 @@ public:
     }
 
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
-
-    /** Makes `peer` a peer of `user` in every room of an app that `group_users` (rooms.hpp) gave
-     * this network, so that several peers make one user, as several apps of one user identity
-     * will. */
-    void assign_user(std::string_view peer, std::string_view user) {
-        users_.insert_or_assign(std::pmr::string(peer, memory_), std::pmr::string(user, memory_));
-    }
-
-    /** The user `assign_user` gave `peer`, or the peer's own id. */
-    [[nodiscard]] std::string_view user_of(std::string_view peer) const {
-        const auto it = users_.find(peer);
-        return it == users_.end() ? peer : std::string_view(it->second);
-    }
 
     std::shared_ptr<backend::peer_connection> make_peer_connection(
         std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) override {
@@ -1040,7 +1070,6 @@ private:
     std::pmr::memory_resource* memory_;
     std::pmr::map<std::pmr::string, memory_relay, std::less<>> relays_;
     std::pmr::set<std::pmr::string, std::less<>> unreachable_;
-    std::pmr::map<std::pmr::string, std::pmr::string, std::less<>> users_;  // by peer
     std::shared_ptr<connection_registry> connections_;
     std::size_t next_pc_ = 0;
     std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end

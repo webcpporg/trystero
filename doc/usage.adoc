@@ -175,8 +175,9 @@ its user identity, `app_config::identity` or an ephemeral one the app makes
 `create_user_identity`, kept as the text `export_user_identity` writes and
 read again with `import_user_identity`, 0.27.0's `trystero_uk_` text or the
 JSON of a private P-256 key; several apps given one are one user's
-endpoints. Until the handshake verifies a remote peer's user, a remote
-peer's user id is the peer's own id, one remote peer per user.
+endpoints. A remote peer joins once 0.27.0's identity handshake has
+verified its endpoint key and its user key, both bound to the DTLS
+fingerprints of the connection, and its user id is the one it proved.
 
 `on_peer_join` adds a listener of each peer whose handshake completed, with
 its `peer_event`, and `on_peer_leave` one of each joined peer that leaves;
