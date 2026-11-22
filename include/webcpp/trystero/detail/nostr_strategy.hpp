@@ -178,11 +178,14 @@ public:
     using announcement_handler = handler<std::pmr::string(std::string_view nonce)>;
 
     /** Every allocation goes through `memory`, the parsed relay messages' documents included;
-     * `all_failed`, when set, is called once every relay failed (see the table), at most once. */
+     * `all_failed`, when set, is called once every relay failed (see the table), at most once, with
+     * the text of the failure that settled it, empty when it has none (a relay that did not
+     * open). */
     nostr_strategy(backend::factory& factory, std::span<const std::pmr::string> urls,
                    std::pmr::vector<std::pmr::string> topics, std::string_view announce_topic,
                    announcement_handler announcement, message_handler on_message, logger log,
-                   std::pmr::memory_resource* memory, handler<void()> all_failed = {})
+                   std::pmr::memory_resource* memory,
+                   handler<void(std::string_view)> all_failed = {})
         : factory_(factory),
           memory_(memory),
           topics_(std::move(topics), memory),
@@ -451,19 +454,24 @@ private:
     }
 
     /** Signs an event of `content` on `topic` and sends it on `r`; one that cannot be signed is
-     * logged and dropped. Whether it was signed and its socket took it. */
-    bool send_event(relay_state& r, std::string_view topic, std::string_view content) {
+     * logged and dropped. The text of the failure, empty when the event was signed and its socket
+     * took it: as 0.27.0's `toErrorMessage(cause, ...)`, a signing failure carries its own text,
+     * and a socket that cannot queue the text, which 0.27.0 does not know, the port's. */
+    std::pmr::string send_event(relay_state& r, std::string_view topic, std::string_view content) {
         const auto* key = room_signer();
         if (key == nullptr) {
-            return false;
+            return {"cannot make the room's signing key", memory_};
         }
         const auto message =
             protocol::nostr::event_message(*key, unix_now(factory_), topic, content, memory_);
         if (!message) {
             log_("nostr", "cannot sign an event: ", message.error());
-            return false;
+            return std::pmr::string(message.error().message(), memory_);
         }
-        return r.socket->send(*message);
+        if (!r.socket->send(*message)) {
+            return {"the relay's connection cannot take the event", memory_};
+        }
+        return std::pmr::string(memory_);
     }
 
     /** `r`'s health now: a cooldown that ended is a probation, as `getRelayHealth` reads it. */
@@ -701,13 +709,13 @@ private:
             !std::ranges::all_of(relays_, [](const relay_state& r) { return r.boot_failed; })) {
             return;
         }
-        report_all_failed();
+        report_all_failed({});
     }
 
     /** Reports every relay failed, when no relay's first announcement succeeded and each relay
      * either failed to boot or had its first announcement settled, as 0.27.0's `queueAnnounce`
      * reports `relay-failed` once an initial announcement fails. */
-    void report_if_no_first_announcement() {
+    void report_if_no_first_announcement(std::string_view cause) {
         const auto succeeded = [](const relay_state& r) {
             return r.initial == first_announcement::succeeded;
         };
@@ -718,28 +726,28 @@ private:
             !std::ranges::all_of(relays_, settled)) {
             return;
         }
-        report_all_failed();
+        report_all_failed(cause);
     }
 
     /** Calls `all_failed` once in the strategy's life, whichever path reports it first, as 0.27.0's
-     * `reportAllRelaysFailed` reports once per room. */
-    void report_all_failed() {
+     * `reportAllRelaysFailed` reports once per room, with `cause`'s text. */
+    void report_all_failed(std::string_view cause) {
         if (std::exchange(all_failed_reported_, true)) {
             return;
         }
         log_("nostr", "every relay failed");
         if (all_failed_) {
-            all_failed_();
+            all_failed_(cause);
         }
     }
 
     /** Records how an announcement of the cadence went on `r`, as 0.27.0's `queueAnnounce` does:
      * a failure is logged once per run of failures, and a failed first announcement may mean that
-     * every relay failed. */
-    void announced_on(std::size_t index, bool sent) {
+     * every relay failed, for the reason `failure` gives; empty when it went. */
+    void announced_on(std::size_t index, std::string_view failure) {
         auto& r = relays_[index];
         const bool first = r.initial == first_announcement::pending;
-        if (sent) {
+        if (failure.empty()) {
             r.announce_errors = 0;
             if (first) {
                 r.initial = first_announcement::succeeded;
@@ -751,7 +759,7 @@ private:
         }
         if (first) {
             r.initial = first_announcement::failed;
-            report_if_no_first_announcement();
+            report_if_no_first_announcement(failure);
         }
     }
 
@@ -768,7 +776,7 @@ private:
             !r.open || remaining > time_point::duration::zero()) {
             next = std::max(steady_announce,
                             std::chrono::duration_cast<std::chrono::milliseconds>(remaining));
-            announced_on(index, true);  // skipped, which 0.27.0 counts as no failure
+            announced_on(index, {});  // skipped, which 0.27.0 counts as no failure
         } else {
             announced_on(index, send_event(r, announce_topic_, announcement()));
             // The report reaches the user's log sink, which may leave the room and so stop this.
@@ -946,7 +954,7 @@ private:
     std::pmr::string announce_topic_;
     announcement_handler announcement_;
     message_handler on_message_;
-    handler<void()> all_failed_;
+    handler<void(std::string_view)> all_failed_;
     logger log_;
     std::optional<protocol::nostr::signer> signer_;
     std::pmr::vector<relay_state> relays_;

@@ -200,8 +200,10 @@ resource with a transparent comparator, so a program looks a peer up by a
 Trystero's `onError`: each is a `room_error` (<<trystero-usage-errors>>).
 Every view a listener receives is valid for the call.
 
-`async_ping` measures the round trip to an active peer, from sending
-`@_ping` to receiving its `@_pong`, or completes with `error::no_such_peer`.
+`async_ping` measures the round trip to an active peer, from sending the
+request `@_ping` to receiving its answer, or completes with
+`error::no_such_peer`.  It has no timeout, as Trystero's, and completes with
+`error::room_left` or `error::peer_disconnected` when the room or the peer goes.
 
 `async_leave` says goodbye to every peer, Trystero's `@_leave`, gives the
 farewell 99 ms, as Trystero waits, then detaches its bindings and closes its relay
@@ -451,9 +453,11 @@ with no room nor peer.
 | `invalid_configuration` | the app dropped an unusable configuration value and continues without it
 | `already_joined` | a room of that id is already joined in the app
 | `too_many_rooms` | the app already holds 64 rooms, including farewells
-| `room_full`, `banned`, `plugin_failed`, `peer_error` | 0.27.0's room errors of the same names, which nothing reports before Phase 2 and Phase 3 bring users, roles and plugins
+| `room_full`, `plugin_failed` | 0.27.0's room errors of the same names; the room reports `room_full`, and nothing reports `plugin_failed` before Phase 3 brings plugins
+| `banned` | a peer refused this room's user with its ready message; its reason, when it gave one, is the message
+| `peer_error` | a peer's frame was malformed or against the protocol, or answers no request; its message says which, as 0.27.0's, and the peer is told to leave and goes
 | `identity_failed` | the app's endpoint key or its ephemeral user identity could not be made (a system without a generator): each room it joins reports it once the join has returned, then ends without reaching a relay
-| `relay_failed` | the first connection of every relay closed before any opened, reported once
+| `relay_failed` | the first connection of every relay closed before any opened, or no relay took its first announcement and the others failed to open; reported once, with the failure's text when there is one
 | `decrypt_failed` | an offer or an answer did not open with the room key: another password, a corrupted or forged signal, or a plaintext that is not UTF-8; reported at most once a minute per peer and stage
 | `peer_connect_failed` | the connection with a peer did not open after the exchange of descriptions; its message hints at TURN when none is configured
 | `already_subscribed` | a listener that takes one at a time is already set

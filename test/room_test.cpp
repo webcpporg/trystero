@@ -5359,6 +5359,124 @@ void a_ban_from_a_peer_reports_banned() {
     a_ban_from_a_peer_reports_banned_when(true);
 }
 
+// A frame that breaks the protocol is reported for a pending peer too, as 0.27.0's hasAnyPeer
+// takes either kind: B's step 2 is held, so A holds B as pending, and a frame of an unknown
+// version injected there is reported as peer_error with B's id, B told to leave.
+void a_pending_peer_breaking_the_protocol_reports_peer_error() {
+    counting_resource a_memory;  // first: A's connection ends are made in it
+    fixture f{true};
+    const auto labels = ordered_labels(2, "pending");
+    std::optional<std::size_t> held_at;  // A's end, where B's step 2 waits
+    std::size_t a_leaves = 0;
+    f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
+        if (end_in(f, from, &a_memory)) {
+            a_leaves += action_name(frame) == "@_leave" ? 1 : 0;
+            return trystero::test::memory_network::verdict::deliver;
+        }
+        if (!held_at && step_number(handshake_step(frame)) == 2) {
+            held_at = to;
+            return trystero::test::memory_network::verdict::hold;
+        }
+        return trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config(labels[0]);
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "pending");
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config(labels[1]));
+    auto b = join(b_app, "pending");
+    std::vector<reported_error> reports;
+    a.on_error(record_all_errors(f, reports));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
+    BOOST_TEST_EQ(a.peers().size(), 0U);
+    f.net.inject(*held_at, std::vector<std::uint8_t>{7, 0});
+    BOOST_TEST(run_until(f, [&] { return !reports.empty() && a_leaves == 1; }));
+    if (BOOST_TEST_EQ(reports.size(), 1U)) {
+        BOOST_TEST_EQ(trystero::room_error_code_name(reports[0].code), "peer-error");
+        BOOST_TEST_EQ(reports[0].message, "incompatible action protocol version");
+        BOOST_TEST_EQ(reports[0].peer_id, b_app.self_id());
+    }
+}
+
+// A ban frame from an active peer is ignored, as 0.27.0's processHandshakeReady ignores a refusal
+// from a peer that is not still being verified: nothing is reported and the peer stays.
+void a_ban_from_an_active_peer_is_ignored() {
+    counting_resource a_memory;  // first: A's connection ends are made in it
+    fixture f{true};
+    auto a_config = app_config("activeBanAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "activeban");
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("activeBanBBBBBBBBBBB"));
+    auto b = join(b_app, "activeban");
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b.peers().size() == 1; })));
+    std::vector<reported_error> reports;
+    a.on_error(record_all_errors(f, reports));
+    f.net.inject(open_end_in(f, &a_memory), recorded_handshake_frame("banned"));
+    trystero::test::advance(f, 15'000ms);
+    BOOST_TEST(reports.empty());
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+    BOOST_TEST_EQ(b.peers().size(), 1U);
+}
+
+// A ping that gets no answer fails when the room is left, with room_left, and when the peer goes,
+// with peer_disconnected, as 0.27.0's request fails (the room left by its destruction, as a
+// request's test explains); and a `@_ping` whose metadata names no
+// request is dropped, as 0.27.0 drops a request it cannot read: no answer, the peer stays.
+void a_ping_fails_when_the_room_or_the_peer_goes() {
+    namespace tp = trystero::protocol;
+    counting_resource a_memory;  // first: A's connection ends are made in it
+    fixture f{true};
+    bool silent = false;  // B's answers are dropped
+    std::size_t a_answers = 0;
+    f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
+        const bool from_a = end_in(f, from, &a_memory);
+        a_answers += from_a && action_name(frame) == "@_response" ? 1 : 0;
+        return silent && !from_a && action_name(frame) == "@_response"
+                   ? trystero::test::memory_network::verdict::drop
+                   : trystero::test::memory_network::verdict::deliver;
+    };
+    auto a_config = app_config("pingFailAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    std::optional<trystero::room> a(join(a_app, "pingfail"));
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("pingFailBBBBBBBBBBB"));
+    auto b = join(b_app, "pingfail");
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a->peers().size() == 1 && b.peers().size() == 1; })));
+    const std::string_view unreadable = "not json";
+    f.net.inject(open_end_in(f, &a_memory),
+                 tp::encode_inline("@_ping", tp::payload_format::text, unreadable, {}));
+    trystero::test::advance(f, 1000ms);
+    BOOST_TEST_EQ(a_answers, 0U);
+    BOOST_TEST_EQ(a->peers().size(), 1U);
+
+    silent = true;
+    std::optional<boost::system::error_code> gone;
+    a->async_ping(b.self_id(),
+                  [&](boost::system::error_code ec, std::chrono::milliseconds) { gone = ec; });
+    trystero::test::advance(f, 1000ms);
+    BOOST_TEST(!gone.has_value());
+    bool b_left = false;
+    b.async_leave([&](boost::system::error_code ec) { b_left = !ec; });
+    BOOST_TEST(run_until(f, [&] { return gone.has_value(); }));
+    BOOST_TEST(*gone == trystero::error::peer_disconnected);
+    BOOST_TEST(run_until(f, [&] { return b_left; }));
+
+    trystero::test::app c_app(f.io.get_executor(), f.net, app_config("pingFailCCCCCCCCCCC"));
+    auto c = join(c_app, "pingfail");
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a->peers().size() == 1; })));
+    std::optional<boost::system::error_code> left;
+    a->async_ping(c.self_id(),
+                  [&](boost::system::error_code ec, std::chrono::milliseconds) { left = ec; });
+    trystero::test::advance(f, 1000ms);
+    BOOST_TEST(!left.has_value());
+    a.reset();  // the room is left at once by its destruction, as a request's test explains
+    BOOST_TEST(run_until(f, [&] { return left.has_value(); }));
+    BOOST_TEST(*left == trystero::error::room_left);
+}
+
 // Every relay opens but takes no event, its socket's writes failing: no relay's first announcement
 // is written, so the room reports relay_failed once, as 0.27.0's queueAnnounce reports it, though
 // the cadence goes on announcing. One relay that never opens and one whose first announcement
@@ -5377,7 +5495,9 @@ void relay_failed_when_no_first_announcement_succeeds() {
         trystero::test::advance(f, 3min);
         if (BOOST_TEST_EQ(reports.size(), 1U)) {
             BOOST_TEST_EQ(trystero::room_error_code_name(reports[0].code), "relay-failed");
-            BOOST_TEST_EQ(reports[0].message, "all signaling relays failed");
+            // The failure's text, as 0.27.0's toErrorMessage(cause, ...); the constant is only
+            // for a failure with no text, a relay that never opened.
+            BOOST_TEST_EQ(reports[0].message, "the relay's connection cannot take the event");
             BOOST_TEST_EQ(reports[0].app_id, app_id);
             BOOST_TEST_EQ(reports[0].room_id, "silent");
             BOOST_TEST(reports[0].peer_id.empty());
@@ -5397,6 +5517,7 @@ void relay_failed_when_no_first_announcement_succeeds() {
         trystero::test::advance(f, 3min);
         if (BOOST_TEST_EQ(reports.size(), 1U)) {
             BOOST_TEST_EQ(trystero::room_error_code_name(reports[0].code), "relay-failed");
+            BOOST_TEST_EQ(reports[0].message, "the relay's connection cannot take the event");
         }
     }
     {
@@ -5717,6 +5838,9 @@ int main(int argc, char* argv[]) {
     run_case(a_protocol_violation_reports_peer_error);
     run_case(ready_refusals_are_read_as_0_27_0_reads_them);
     run_case(a_ban_from_a_peer_reports_banned);
+    run_case(a_pending_peer_breaking_the_protocol_reports_peer_error);
+    run_case(a_ban_from_an_active_peer_is_ignored);
+    run_case(a_ping_fails_when_the_room_or_the_peer_goes);
     run_case(ping_is_a_request_action);
     run_case(an_unexpected_response_offer_is_rejected);
     run_case(peer_connect_failed_says_whether_turn_was_configured);

@@ -1192,11 +1192,14 @@ public:
                         self->signaling_->handle(relay, content);
                     }
                 }),
-            log_, memory_, bind<void()>([weak] {
+            log_, memory_, bind<void(std::string_view)>([weak](std::string_view cause) {
                 if (const auto self = weak.lock()) {
                     const auto code = make_error_code(error::relay_failed);
                     std::array<char, 64> buffer{};  // the message without a std::string
-                    self->report({}, code, code.message(buffer.data(), buffer.size()));
+                    // As 0.27.0's toErrorMessage(cause, 'all signaling relays failed').
+                    self->report(
+                        {}, code,
+                        cause.empty() ? code.message(buffer.data(), buffer.size()) : cause);
                 }
             }));
     }
@@ -2469,7 +2472,8 @@ private:
                 handshakes_->receive_data(it_peer->first, as_text(m.payload()));
             }
         } else if (name == "@_ping") {
-            // 0.27.0's internal request action, whose listener answers each request with "".
+            // 0.27.0's internal request action, whose listener answers each request with "". One
+            // whose metadata names no request is dropped, as deliver_request drops a user's.
             if (const auto envelope = read_request(m.metadata(), decoding())) {
                 respond(m.peer, envelope->id, {});
             }
@@ -3287,7 +3291,15 @@ public:
      * | `peer_connect_failed` | the connection with a peer did not open after the exchange |
      * |                       | of descriptions; once per offer or answer                  |
      * | `relay_failed`        | the first connection of every relay failed before any      |
-     * |                       | opened; once                                               |
+     * |                       | opened, or no relay took its first announcement and the    |
+     * |                       | others failed to open; once, with the text of the failure  |
+     * |                       | that settled it, as 0.27.0 gives it                        |
+     * | `peer_error`          | a peer's frame was malformed or against the protocol, or   |
+     * |                       | it sent a `@_response` nothing waits for; the message says |
+     * |                       | which, as 0.27.0's, and the peer is told to leave and goes |
+     * | `banned`              | a peer refused this room's user with its ready message;    |
+     * |                       | its reason is the message when it gave one, and the room   |
+     * |                       | leaves the peer, which it may meet again                   |
      * | `handshake_failed`    | a connected peer's handshake failed, with 0.27.0's reason  |
      * |                       | as its message, as "handshake timed out after 10000ms";    |
      * |                       | the peer is told to leave, and goes                        |

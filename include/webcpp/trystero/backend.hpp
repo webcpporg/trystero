@@ -124,9 +124,11 @@ public:
      * closed is dropped, and so is one the connection cannot queue.
      *
      * @param text The message, read during the call.
-     * @return Whether the message was taken to be written; false when it was dropped. A room
-     * counts an announcement that was dropped as failed, as 0.27.0's strategy counts one whose
-     * write fails.
+     * @return Whether the message was taken to be written; false when it was dropped. This is the
+     * port's own notion: 0.27.0's `client.send` is a silent no-op on a socket that is not open, so
+     * there a dropped write is no failure, and only a signing or JSON failure fails an
+     * announcement. A room counts an announcement whose text the connection could not take, which
+     * on a socket the room sees open is a queue overflow, as a failed one.
      */
     virtual bool send(std::string_view text) = 0;
 

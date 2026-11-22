@@ -357,7 +357,7 @@ run the room:
 
 | `@_hsdata` | 0.26.0's password handshake, kept until Phase 2's signed handshake takes the action: the lower id sends a challenge, and the other answers with the hexadecimal SHA-256 of `<challenge>:<password>:<app>:<room>`
 | `@_hsready` | the sender's side of the handshake passed; a peer joins when both sides sent it
-| `@_ping`, `@_pong` | round trips
+| `@_ping` | a ping, a request of the internal action `@_ping` with an empty text, answered through `@_response` with an empty text
 | `@_leave` | the sender leaves the room
 | `@_response` | the answer to a request: a request is a message of its action whose metadata is `{"r":<id>,"m":<metadata>}`, and its answer a message of `@_response` whose metadata is `{"r":<id>}`, or `{"r":<id>,"e":<reason>}` for a refusal, its reason cut at 512 UTF-16 code units, as 0.27.0's
 |===

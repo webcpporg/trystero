@@ -109,7 +109,7 @@ has nothing of it to run beside its twin.
 
 | A refused request | rejects with the reason the peer gave | completes with `error::request_rejected` alone, the reason in the room's log | an error code carries no text of a peer's
 
-| An `@_response` that answers no request | its offer rejected, "unexpected response" | dropped, inline, or received and dropped, as a transfer | nothing waits for it
+| An `@_response` that answers no request | its offer rejected, "unexpected response" | the same: an offer is rejected "unexpected response" and an inline message is dropped, the port reporting `peer_error` as 0.27.0 does | none
 
 | A name made both a message action and a request action | throws "action type cannot be redefined" | the second handle's operations complete with `error::action_redefined` | trystero raises no exception of its own
 
@@ -117,7 +117,8 @@ has nothing of it to run beside its twin.
 
 | The hint of `peer_connect_failed` without TURN, and `turnConfigured` | "configure TURN via turnConfig or rtcConfig.iceServers"; a TURN server of the raw configuration counts | "configure TURN via app_config::ice_servers"; only a TURN server the app kept counts | the port's option is `ice_servers`, and a server it dropped as unusable is none
 
-| `relay-failed` | reported when every relay's first connection failed before one opened, or when every initial announcement failed | the first only | the strategy skips an announcement a relay cannot take now, rather than failing it
+| `relay-failed` | reported once per room, when every relay's first connection failed before one opened, or when no relay's first announcement succeeded and the others failed to open; its message is the cause's, falling back to "all signaling relays failed" | the same two conditions, once per room, a skipped announcement (relay not open or cooling down) counting as no failure as in 0.27.0; the message is the failure's text, the constant when a relay did not open | none
+| An announcement the socket cannot queue | `client.send` is a silent no-op on a socket that is not open, so a dropped write is no failure; only signing or JSON failures fail an announcement | `backend::websocket::send` returns whether it queued the text, and a refused text fails the announcement (a queue overflow on a socket the room sees open) | a connection that cannot take the text is a relay that cannot carry the announcement, and the port has no other way to see it
 
 | A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is checked to be its own, the SHA-256 of its NIP-01 serialization; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id taken unchecked would let a relay hide a genuine event behind a forged one it sends first under the same id, or fill the room's resource with the ids kept
 
