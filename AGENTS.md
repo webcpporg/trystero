@@ -410,10 +410,12 @@ holds only what is specific to trystero.
     frees them, as Chromium counts them against its 500 (measured with
     headless Chrome: the 501st throws "Cannot create so many
     PeerConnections", and a closed one counts until a collection).
-  - A signal's fields are bounded in `protocol/signal.hpp`: the peer id
-    (64 bytes; Trystero's are 20), the offer id, a sealed offer or answer
-    (64 KiB) and a sealed candidate (16 KiB, above the 8192 bytes of
-    plaintext Trystero takes).
+  - A signal is refused where 0.27.0's `parseSignalEnvelope` refuses it
+    (`protocol::read_signal`): a peer id of other than 20 base62
+    characters, an offer id outside `[\w.~:!-]{1,64}` (or none with an
+    offer, answer or candidate), a sealed offer or answer past 64 Ki UTF-16
+    code units, a sealed candidate past 4,096; the oracle's
+    `signal_envelopes` cases prove each refusal on 0.27.0 itself.
   - A room asks a peer below it to offer at most once in 5.3 s per relay,
     Trystero's announce interval, so a flood of low ids does not have the
     relays rate-limit the room.

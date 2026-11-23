@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <memory_resource>
 #include <optional>
@@ -401,21 +402,36 @@ void signals() {
         }
         return tp::read_signal(std::as_const(document.emplace(std::move(parsed).value())).root());
     };
-    const auto announce = read(R"({"peerId":"abc","nonce":"x1"})");
+    const auto announce = read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","nonce":"x1"})");
     if (!BOOST_TEST(announce.has_value())) {
         return;
     }
     BOOST_TEST(announce->is_announcement());
-    BOOST_TEST(!read(R"({"peerId":"abc","offer":""})").has_value());
-    BOOST_TEST(!read(R"({"offer":"x"})").has_value());
+    BOOST_TEST(announce->offer_id.empty());
+    BOOST_TEST(!read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":"o","offer":""})").has_value());
+    BOOST_TEST(!read(R"({"offerId":"o","offer":"x"})").has_value());
     BOOST_TEST(!read(R"(["peerId"])").has_value());
-    const auto written =
-        tp::write_signal({.peer_id = "me", .offer_id = "o1", .candidate = "1,2$AA=="}, "n0nce");
+    // 0.27.0's rules: a peer id of 20 base62 characters, an offer id of 1 to 64 of [\w.~:!-],
+    // required with an offer, answer or candidate and refusing whenever present and not one.
+    BOOST_TEST(!read(R"({"peerId":"abc"})").has_value());
+    BOOST_TEST(!read(R"({"peerId":"peerAAAAAAAAAAAAAAA-"})").has_value());
+    BOOST_TEST(!read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offer":"x"})").has_value());
+    BOOST_TEST(!read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":""})").has_value());
+    BOOST_TEST(!read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":5})").has_value());
+    BOOST_TEST(
+        !read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":"a b","answer":"x"})").has_value());
+    const auto with_id = read(R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":"a_.~:!-Z9"})");
+    BOOST_TEST(with_id.has_value() && with_id->offer_id == "a_.~:!-Z9");
+    const auto written = tp::write_signal(
+        {.peer_id = "peerAAAAAAAAAAAAAAAA", .offer_id = "o1", .candidate = "1,2$AA=="}, "n0nce");
     BOOST_TEST_EQ(written,
-                  R"({"peerId":"me","offerId":"o1","candidate":"1,2$AA==","nonce":"n0nce"})");
+                  R"({"peerId":"peerAAAAAAAAAAAAAAAA","offerId":"o1","candidate":"1,2$AA==",)"
+                  R"("nonce":"n0nce"})");
     const auto back = read(written);
-    BOOST_TEST_EQ(back->candidate, "1,2$AA==");
-    BOOST_TEST_EQ(back->offer_id, "o1");
+    if (BOOST_TEST(back.has_value())) {
+        BOOST_TEST_EQ(back->candidate, "1,2$AA==");
+        BOOST_TEST_EQ(back->offer_id, "o1");
+    }
     // Escaping matches JSON.stringify, so a sealed text or a candidate with quotes survives the
     // round trip. The expected text is named outside the macro: MSVC 14.3's preprocessor, which
     // stringizes the macro's arguments, reads a raw string's \" as an escape and stops (C2017).
@@ -491,8 +507,9 @@ void wide_fields_are_big_endian() {
                       expected_accepted.end());
 }
 
-// Each field of a signal is bounded, and the bound refuses nothing Trystero sends: its longest
-// candidate, 8192 bytes of plaintext, sealed with the longest IV in decimal, is read.
+// Each field of a signal is bounded as 0.27.0 bounds it, in UTF-16 code units: a candidate of
+// 3044 bytes of plaintext, sealed, is the longest read; a text that is not ASCII counts as
+// JavaScript counts it, a character beyond U+FFFF two units.
 void signal_bounds() {
     std::optional<wd::pmr::document> document;
     const auto read = [&document](const tp::signal_message& m) {
@@ -503,25 +520,45 @@ void signal_bounds() {
         return tp::read_signal(std::as_const(document.emplace(std::move(parsed).value())).root())
             .has_value();
     };
+    constexpr std::string_view peer = "peerAAAAAAAAAAAAAAAA";
     const auto key = tp::room_aes_key_without_password("my-app", "room-1");
     const std::array<std::uint8_t, tp::gcm_iv_size> iv{};
-    const auto longest_candidate =
-        tp::seal(key, iv, std::string(8192, 'c'), std::string_view("candidate|p|o")).value();
-    BOOST_TEST_EQ(longest_candidate.size(), tp::sealed_size(8192));
-    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .candidate = longest_candidate}));
+    const auto sealed_candidate = [&](std::size_t plaintext) {
+        return std::string(tp::seal(key, iv, std::string(plaintext, 'c'),
+                                    std::string_view("candidate|peerAAAAAAAAAAAAAAAA|o"))
+                               .value());
+    };
+    const auto longest_candidate = sealed_candidate(3044);
+    BOOST_TEST_EQ(longest_candidate.size(), tp::max_sealed_candidate_chars);
+    BOOST_TEST(read({.peer_id = peer, .offer_id = "o", .candidate = longest_candidate}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = "o", .candidate = sealed_candidate(3045)}));
 
     const auto of = [](std::size_t n) { return std::string(n, 'a'); };
-    const auto candidate = of(tp::max_sealed_candidate_bytes);
-    const auto description = of(tp::max_sealed_description_bytes);
-    const auto offer_id = of(tp::max_offer_id_bytes);
-    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .candidate = candidate}));
-    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .candidate = candidate + "a"}));
-    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .offer = description}));
-    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .offer = description + "a"}));
-    BOOST_TEST(read({.peer_id = "p", .offer_id = "o", .answer = description}));
-    BOOST_TEST(!read({.peer_id = "p", .offer_id = "o", .answer = description + "a"}));
-    BOOST_TEST(read({.peer_id = "p", .offer_id = offer_id, .offer = "x"}));
-    BOOST_TEST(!read({.peer_id = "p", .offer_id = offer_id + "a", .offer = "x"}));
+    const auto candidate = of(tp::max_sealed_candidate_chars);
+    const auto description = of(tp::max_sealed_description_chars);
+    const auto offer_id = of(tp::max_offer_id_chars);
+    BOOST_TEST(read({.peer_id = peer, .offer_id = "o", .candidate = candidate}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = "o", .candidate = candidate + "a"}));
+    BOOST_TEST(read({.peer_id = peer, .offer_id = "o", .offer = description}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = "o", .offer = description + "a"}));
+    BOOST_TEST(read({.peer_id = peer, .offer_id = "o", .answer = description}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = "o", .answer = description + "a"}));
+    BOOST_TEST(read({.peer_id = peer, .offer_id = offer_id, .offer = "x"}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = offer_id + "a", .offer = "x"}));
+    // U+00E9 is 2 bytes and 1 unit; U+1F600 is 4 bytes and 2 units.
+    const auto units = [](std::size_t n, std::string_view character) {
+        std::string out;
+        for (std::size_t i = 0; i < n; ++i) {
+            out += character;
+        }
+        return out;
+    };
+    BOOST_TEST(read({.peer_id = peer, .offer_id = "o", .candidate = units(4096, "\xc3\xa9")}));
+    BOOST_TEST(!read({.peer_id = peer, .offer_id = "o", .candidate = units(4097, "\xc3\xa9")}));
+    BOOST_TEST(
+        read({.peer_id = peer, .offer_id = "o", .candidate = units(2048, "\xf0\x9f\x98\x80")}));
+    BOOST_TEST(!read(
+        {.peer_id = peer, .offer_id = "o", .candidate = units(2048, "\xf0\x9f\x98\x80") + "a"}));
 }
 
 // Trystero's createEvent signed each of the oracle's events with its key, clock and auxiliary
@@ -588,9 +625,11 @@ void event_messages(const fixture_value& fixture) {
 }
 
 // A signal's text is JSON.stringify's of 0.27.0's object, member for member, with the same
-// strings, every byte of their quoting included, and the protocol reads the same fields back.
+// strings, every byte of their quoting included, and the protocol reads the same fields back
+// where 0.27.0's signal handler read the signal; it refused the three whose peer ids are none.
 void signal_texts(const fixture_value& fixture) {
     BOOST_TEST_EQ(fixture["signal_texts"].size(), 7U);
+    std::size_t read_back = 0;
     for (const auto entry : fixture["signal_texts"]) {
         const auto s = entry["signal"];
         const tp::signal_message m{
@@ -604,15 +643,18 @@ void signal_texts(const fixture_value& fixture) {
         BOOST_TEST_EQ(tp::write_signal(m, str(s["nonce"])), text);
         const auto document = parse_text(text, tp::max_parsed_signal_bytes).value();
         const auto read = tp::read_signal(document.root());
-        if (!BOOST_TEST(read.has_value())) {
+        // Read back where 0.27.0 read it, refused where its ids are none of 0.27.0's.
+        if (!BOOST_TEST_EQ(read.has_value(), !entry["read"].is_null()) || !read.has_value()) {
             continue;
         }
+        ++read_back;
         BOOST_TEST_EQ(read->peer_id, m.peer_id);
         BOOST_TEST_EQ(read->offer_id, m.offer_id);
         BOOST_TEST_EQ(read->offer, m.offer);
         BOOST_TEST_EQ(read->answer, m.answer);
         BOOST_TEST_EQ(read->candidate, m.candidate);
     }
+    BOOST_TEST_EQ(read_back, 4U);
 }
 
 /** `text` read as an action of JSON reads its payload, then written back as one sends it: once
@@ -679,21 +721,20 @@ std::string answer_sender(std::string_view text, std::string_view root_topic) {
     return std::string(signal->peer_id);
 }
 
-// A key written twice keeps its last value, as JSON.parse keeps it, an escaped key included: a
-// signal reads what 0.27.0's own signal handler read from the same text, and a relay's event is
-// acted on, with the same sender, exactly when 0.27.0's room acted on it.
-void duplicate_keys(const fixture_value& fixture) {
-    const auto cases = fixture["duplicate_keys"];
-    BOOST_TEST_EQ(cases["signals"].size(), 13U);
-    for (const auto entry : cases["signals"]) {
+/**
+ * Each signal of an oracle's list is read as 0.27.0's own signal handler read it: refused where
+ * `read` is null, otherwise with the same peer id and sealed texts, and the offer id of what it
+ * opened.
+ */
+void signals_read_as_0_27_0_read(const fixture_value& signals) {
+    for (const auto entry : signals) {
         const auto document = parse_text(str(entry["text"]), tp::max_parsed_signal_bytes).value();
         const auto read = tp::read_signal(document.root());
         const auto expected = entry["read"];
-        if (expected.is_null()) {
-            BOOST_TEST(!read.has_value());
-            continue;
+        if (!BOOST_TEST_EQ(read.has_value(), !expected.is_null())) {
+            std::cerr << "  the signal: " << str(entry["text"]).substr(0, 100) << '\n';
         }
-        if (!BOOST_TEST(read.has_value())) {
+        if (!read.has_value() || expected.is_null()) {
             continue;
         }
         BOOST_TEST_EQ(read->peer_id, str(expected["peer_id"]));
@@ -705,11 +746,37 @@ void duplicate_keys(const fixture_value& fixture) {
             BOOST_TEST_EQ(read->offer_id, str(expected["offer_id"]));
         }
     }
-    const auto root_topic = str(cases["root_topic"]);
-    BOOST_TEST_EQ(cases["events"].size(), 6U);
-    for (const auto entry : cases["events"]) {
+}
+
+/** Each relay event of an oracle's list is acted on, with the same sender, exactly when 0.27.0's
+ * room acted on it. */
+void events_acted_on_as_0_27_0_acted(const fixture_value& events, std::string_view root_topic) {
+    for (const auto entry : events) {
         BOOST_TEST_EQ(answer_sender(str(entry["text"]), root_topic), str(entry["acted"]));
     }
+}
+
+// A key written twice keeps its last value, as JSON.parse keeps it, an escaped key included: a
+// signal reads what 0.27.0's own signal handler read from the same text, and a relay's event is
+// acted on, with the same sender, exactly when 0.27.0's room acted on it.
+void duplicate_keys(const fixture_value& fixture) {
+    const auto cases = fixture["duplicate_keys"];
+    BOOST_TEST_EQ(cases["signals"].size(), 13U);
+    signals_read_as_0_27_0_read(cases["signals"]);
+    BOOST_TEST_EQ(cases["events"].size(), 6U);
+    events_acted_on_as_0_27_0_acted(cases["events"], str(cases["root_topic"]));
+}
+
+// A room refuses every signal 0.27.0's parseSignalEnvelope refuses, as 0.27.0's handler and room
+// showed on each: a peer id that is not 20 base62 characters, or no string; an offer id that is not
+// 1 to 64 characters of [\w.~:!-], present or needed by an offer, answer or candidate; a candidate
+// past 4,096 UTF-16 code units, a character beyond U+FFFF two. The last text of each bound is read.
+void signal_envelopes(const fixture_value& fixture) {
+    const auto cases = fixture["signal_envelopes"];
+    BOOST_TEST_EQ(cases["signals"].size(), 26U);
+    signals_read_as_0_27_0_read(cases["signals"]);
+    BOOST_TEST_EQ(cases["events"].size(), 8U);
+    events_acted_on_as_0_27_0_acted(cases["events"], str(cases["root_topic"]));
 }
 
 /** `text` with spaces after its value, which JSON allows, up to `size` bytes. */
@@ -721,19 +788,18 @@ std::string padded(std::string_view text, std::size_t size) {
 
 /** The longest signal the bounds of its fields admit: a sealed answer, whose key is the longest. */
 std::string longest_signal() {
-    const std::string peer(tp::max_peer_id_bytes, 'p');
-    const std::string offer_id(tp::max_offer_id_bytes, 'o');
-    const std::string description(tp::max_sealed_description_bytes, 'a');
+    const std::string peer(tp::peer_id_size, 'p');
+    const std::string offer_id(tp::max_offer_id_chars, 'o');
+    const std::string description(tp::max_sealed_description_chars, 'a');
     return std::string(
         tp::write_signal({.peer_id = peer, .offer_id = offer_id, .answer = description}));
 }
 
 // The bounds a room parses with refuse no text Trystero sends, and the relay's is under the length
 // that closes a relay's connection, so that a text between the two is dropped and the room goes on.
-static_assert(tp::max_parsed_signal_bytes == tp::max_sealed_description_bytes + 1024);
+static_assert(tp::max_parsed_signal_bytes == tp::max_sealed_description_chars + 1024);
 static_assert(tp::max_parsed_signal_bytes == 66560);
-static_assert(tp::max_sealed_description_bytes + tp::max_peer_id_bytes + tp::max_offer_id_bytes +
-                  64 <=
+static_assert(tp::max_sealed_description_chars + tp::peer_id_size + tp::max_offer_id_chars + 64 <=
               tp::max_parsed_signal_bytes);
 static_assert(tp::nostr::max_parsed_relay_text_bytes == tp::max_parsed_signal_bytes + 2048);
 static_assert(tp::nostr::max_parsed_relay_text_bytes == 68608);
@@ -776,9 +842,9 @@ void parse_bounds() {
     {
         const auto document = parse_text(longest, tp::max_parsed_signal_bytes).value();
         const auto read = tp::read_signal(document.root());
-        BOOST_TEST(read.has_value() && read->answer.size() == tp::max_sealed_description_bytes &&
-                   read->peer_id.size() == tp::max_peer_id_bytes &&
-                   read->offer_id.size() == tp::max_offer_id_bytes);
+        BOOST_TEST(read.has_value() && read->answer.size() == tp::max_sealed_description_chars &&
+                   read->peer_id.size() == tp::peer_id_size &&
+                   read->offer_id.size() == tp::max_offer_id_chars);
     }
     BOOST_TEST(refused_unread(longest + " ", tp::max_parsed_signal_bytes));
 
@@ -790,7 +856,7 @@ void parse_bounds() {
     if (!BOOST_TEST(key.has_value())) {
         return;
     }
-    const auto topic = tp::peer_topic("my-app", "room-1", std::string(tp::max_peer_id_bytes, 'p'));
+    const auto topic = tp::peer_topic("my-app", "room-1", std::string(tp::peer_id_size, 'p'));
     const auto message =
         tp::nostr::event_message(*key, std::chrono::sys_seconds(std::chrono::seconds(1759700000)),
                                  topic, signal)
@@ -1025,6 +1091,7 @@ int main(int argc, char* argv[]) {
     signal_texts(fixture);
     payload_texts(fixture);
     duplicate_keys(fixture);
+    signal_envelopes(fixture);
     parse_bounds();
     parse_cost();
     parse_depth();

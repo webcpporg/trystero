@@ -75,6 +75,28 @@ inline std::string peer_id_of(std::string_view label) {
     return std::string(key->peer_id);
 }
 
+/** A peer id a signal may carry, 20 base62 characters as 0.27.0 requires
+ * (protocol::is_signal_peer_id): `stem`, then '0's, then `number`, so that the ids of a stem differ
+ * and keep its first characters, which order them among the tests' apps. */
+inline std::string signal_id(std::string_view stem, std::size_t number) {
+    const auto digits = std::to_string(number);
+    webcpp::test::require(BOOST_TEST_LE(stem.size() + digits.size(), protocol::peer_id_size));
+    std::string id(stem);
+    id.append(protocol::peer_id_size - stem.size() - digits.size(), '0');
+    id += digits;
+    webcpp::test::require(BOOST_TEST(protocol::is_signal_peer_id(id)));
+    return id;
+}
+
+/** A peer id a signal may carry, `stem` and '0's to 20 base62 characters. */
+inline std::string signal_id(std::string_view stem) {
+    webcpp::test::require(BOOST_TEST_LE(stem.size(), protocol::peer_id_size));
+    std::string id(stem);
+    id.append(protocol::peer_id_size - stem.size(), '0');
+    webcpp::test::require(BOOST_TEST(protocol::is_signal_peer_id(id)));
+    return id;
+}
+
 /** `n` labels, `prefix` and a number each, ordered by the peer ids they derive, lowest first: a
  * test that needs one peer to initiate, the lower id, names its apps with them. */
 inline std::vector<std::string> ordered_labels(std::size_t n, std::string_view prefix = "peer") {
@@ -329,11 +351,10 @@ public:
         }
     }
 
-    /** Announces `count` ids, each `prefix` and a number. */
+    /** Announces `count` ids, each `prefix` and a number (@ref signal_id). */
     void announce(std::size_t count, std::string_view prefix) {
         for (std::size_t i = 0; i < count; ++i) {
-            std::pmr::string id(prefix);
-            id += std::to_string(next_++);
+            const auto id = signal_id(prefix, next_++);
             socket_->send(signed_event(topic_, protocol::write_signal({.peer_id = id})));
         }
     }

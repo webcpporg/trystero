@@ -306,8 +306,8 @@ public:
      * Adds a remote ICE candidate; the empty candidate that ends the remote gathering adds none.
      *
      * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call, at most
-     * `protocol::max_sealed_candidate_bytes`, the bound of a sealed candidate, which its opened
-     * JSON never passes.
+     * `protocol::max_sealed_candidate_chars` bytes, the bound of a sealed candidate, an ASCII text
+     * whose opened JSON is shorter.
      * @param done Called on the executor once it is added, or with `error::backend_failure` when
      * the JSON has no candidate or the platform refuses it.
      */
@@ -315,7 +315,7 @@ public:
                            handler<void(backend::error_code)> done) override {
         // The document lives in the room's resource for the call: the platform copies the views.
         const auto document = webcpp::document::parse(
-            candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_bytes),
+            candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_chars),
             std::pmr::polymorphic_allocator<std::byte>(memory_));
         const protocol::json::const_value object =
             document.has_value() ? document->root() : protocol::json::const_value();

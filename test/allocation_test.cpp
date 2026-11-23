@@ -810,7 +810,7 @@ void reading_a_text_allocates_through_its_resource() {
         text{.what = "relay event", .json = relayed, .bound = relay_bound},
         text{.what = "relay OK", .json = ok, .bound = relay_bound},
         text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
-        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
+        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_chars},
     };
     for (const text& t : texts) {
         const std::size_t outstanding = memory.outstanding;

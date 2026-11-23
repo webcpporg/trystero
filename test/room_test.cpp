@@ -77,6 +77,7 @@ using trystero::test::relay_a;
 using trystero::test::relay_b;
 using trystero::test::relayed_signal;
 using trystero::test::run_until;
+using trystero::test::signal_id;
 
 /** An app's state and a room of it, without their handles, for a case that calls the room as its
  * signaling does. The case abandons the room before the fixture goes. */
@@ -1286,7 +1287,7 @@ void forged_offers_make_no_connection() {
     // refused at the bound, unopened (a_flood_of_offers_at_one_instant_is_bounded).
     const auto instant = f.net.steady_now();
     for (std::size_t i = 0; i < flood; ++i) {
-        const std::string id = "0offer" + std::to_string(i);
+        const std::string id = signal_id("0offer", i);
         attacker.publish(a_topic,
                          {.peer_id = id, .offer_id = "offer", .offer = "not a sealed offer"});
         if (i % 20 == 19 && !BOOST_TEST(run_until(f, [&] { return refused == i + 1; }))) {
@@ -1324,7 +1325,7 @@ void a_flood_of_offers_at_one_instant_is_bounded() {
     const auto instant = f.net.steady_now();
     for (std::size_t i = 0; i < flood; ++i) {
         attacker.publish(z_topic, {
-                                      .peer_id = "0offer" + std::to_string(i),
+                                      .peer_id = signal_id("0offer", i),
                                       .offer_id = "offer",
                                       .offer = "not a sealed offer",
                                   });
@@ -1359,6 +1360,7 @@ void offers_in_one_name_are_answered_one_at_a_time() {
     const auto z = join(z_app, "one");
     const auto z_topic = trystero::protocol::peer_topic(app_id, "one", z_id);
     // Two sockets in the name of 0name, one on each relay, which see the room's answers to it.
+    const auto name = signal_id("0name");
     std::set<std::string> answered_through;
     flooder on_a(f, "one");
     flooder on_b(f, "one", relay_b);
@@ -1369,20 +1371,20 @@ void offers_in_one_name_are_answered_one_at_a_time() {
                 answered_through.emplace(relay);
             }
         };
-        socket->watch(trystero::protocol::peer_topic(app_id, "one", "0name"));
+        socket->watch(trystero::protocol::peer_topic(app_id, "one", name));
     }
     webcpp::test::require(BOOST_TEST(f.net.poll_ready()));
     const std::size_t joined = memory.in_use;
-    const auto sealed = flooder::sealed("one", "mem:999", "0name", "first");
+    const auto sealed = flooder::sealed("one", "mem:999", name, "first");
     const trystero::protocol::signal_message first{
-        .peer_id = "0name",
+        .peer_id = name,
         .offer_id = "first",
         .offer = sealed,
     };
     on_a.publish(z_topic, first);
     for (std::size_t i = 0; i < offers; ++i) {
         on_a.publish(z_topic, {
-                                  .peer_id = "0name",
+                                  .peer_id = name,
                                   .offer_id = "o" + std::to_string(i),
                                   .offer = padding + std::to_string(i),
                               });
@@ -1419,9 +1421,9 @@ void sealed_offers_that_fail_at_once_are_bounded() {
     for (std::size_t i = 0; i < flood; ++i) {
         const auto offer =
             flooder::sealed("churn", "not an SDP the connection takes " + std::to_string(i),
-                            "1churn" + std::to_string(i), "o");
+                            signal_id("1churn", i), "o");
         member.publish(a_topic,
-                       {.peer_id = "1churn" + std::to_string(i), .offer_id = "o", .offer = offer});
+                       {.peer_id = signal_id("1churn", i), .offer_id = "o", .offer = offer});
         if (!BOOST_TEST(run_until(f, [&] { return f.net.made_connections + refusals > i; }))) {
             break;
         }
@@ -1466,7 +1468,7 @@ void announcements_with_forged_answers_are_bounded() {
         }
     };
     for (std::size_t i = 0; i < flood; ++i) {
-        const auto id = "1churn" + std::to_string(i);
+        const auto id = signal_id("1churn", i);
         const auto topic = trystero::protocol::peer_topic(app_id, "churn", id);
         attacker.watch(topic);
         owners.emplace(std::string(topic), id);
@@ -2126,7 +2128,7 @@ void a_refused_peer_is_logged_once() {
     const auto before = f.net.relay(relay_a).events_seen;
     const std::size_t bound = trystero::detail::signaling::max_unconnected_peers;
     attacker.announce(bound + 8, "1fill");
-    attacker.announce_as("1same", 5);
+    attacker.announce_as(signal_id("1same"), 5);
     BOOST_TEST(
         run_until(f, [&] { return f.net.relay(relay_a).events_seen >= before + bound + 8 + 5; }));
     BOOST_TEST(run_until(f, [&] { return refusals == 9; }));
@@ -2134,11 +2136,12 @@ void a_refused_peer_is_logged_once() {
     BOOST_TEST_LE(f.net.live_connections(), 2 * bound);
 }
 
-// A peer id longer than protocol::max_peer_id_bytes is ignored in a signal; an app's own, drawn,
-// is 20 characters, in its rooms too.
+// A peer id of other than protocol::peer_id_size characters is ignored in a signal, as 0.27.0
+// ignores it; an app's own, drawn, is 20 characters, in its rooms too.
 void long_peer_ids_are_bounded() {
-    const std::string longest(trystero::protocol::max_peer_id_bytes, 'x');
-    const std::string too_long(trystero::protocol::max_peer_id_bytes + 1, 'x');
+    const std::string longest(trystero::protocol::peer_id_size, 'x');
+    const std::string too_long(trystero::protocol::peer_id_size + 1, 'x');
+    const std::string too_short(trystero::protocol::peer_id_size - 1, 'x');
     // {"peerId":<id>}, read as a room reads a signal.
     const auto signal = [](std::string_view id) {
         std::pmr::string text("{");
@@ -2154,8 +2157,10 @@ void long_peer_ids_are_bounded() {
     };
     const auto longest_signal = signal(longest);
     const auto too_long_signal = signal(too_long);
+    const auto too_short_signal = signal(too_short);
     BOOST_TEST(trystero::protocol::read_signal(longest_signal.root()).has_value());
     BOOST_TEST(!trystero::protocol::read_signal(too_long_signal.root()).has_value());
+    BOOST_TEST(!trystero::protocol::read_signal(too_short_signal.root()).has_value());
 
     fixture f{true};
     trystero::test::app a_app(f.io.get_executor(), f.net, app_config(""));
@@ -3901,7 +3906,7 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
         const auto since_epoch = f.net.steady_now().time_since_epoch();
         attacker.publish(a_topic,
                          {
-                             .peer_id = "0garbage" + std::to_string(i),
+                             .peer_id = signal_id("0garbage", i),
                              .offer_id = "o",
                              .offer = "not a sealed offer",
                          },
@@ -3917,7 +3922,7 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     trystero::test::advance(f, 1s);
     BOOST_TEST_EQ(reports.size(), remembered);
     for (std::size_t i = 0; i < std::min(reports.size(), remembered); ++i) {
-        BOOST_TEST_EQ(reports[i].peer_id, "0garbage" + std::to_string(i));
+        BOOST_TEST_EQ(reports[i].peer_id, signal_id("0garbage", i));
         BOOST_TEST(reports[i].stage == trystero::signal_stage::offer);
     }
     // An id seen again within the minute becomes the most recent: offered alone now, the first is
@@ -3935,8 +3940,8 @@ void signals_that_do_not_open_are_reported_once_per_peer_and_stage() {
     trystero::test::advance(f, 1s);
     BOOST_TEST_EQ(reports.size(), remembered + 2);
     if (reports.size() == remembered + 2) {
-        BOOST_TEST_EQ(reports[remembered].peer_id, "0garbage" + std::to_string(remembered));
-        BOOST_TEST_EQ(reports.back().peer_id, "0garbage1");
+        BOOST_TEST_EQ(reports[remembered].peer_id, signal_id("0garbage", remembered));
+        BOOST_TEST_EQ(reports.back().peer_id, signal_id("0garbage", 1));
     }
 }
 
@@ -4043,7 +4048,7 @@ bool end_in(fixture& f, std::size_t pc, const std::pmr::memory_resource* memory)
 }
 
 /** The ready frame of the fixture's `handshake_frames` entry `ready`, which 0.27.0 writes:
- * `@_hsready` with an empty text (crypto_layer's `handshake_frames_match` reads it from the
+ * `\@_hsready` with an empty text (crypto_layer's `handshake_frames_match` reads it from the
  * fixture). */
 std::vector<std::uint8_t> recorded_ready_frame() {
     return bytes_of_hex("0300405f6873726561647900000000000000000000000000000000000000000000000000");
@@ -4244,7 +4249,7 @@ void handshake_messages_keep_0_27_0s_bounds() {
     BOOST_TEST_EQ(a.peers().size(), 1U);
 }
 
-/** The JSON of an inline `@_hsdata` frame, a step of the identity handshake; empty for another
+/** The JSON of an inline `\@_hsdata` frame, a step of the identity handshake; empty for another
  * frame. */
 std::string handshake_step(std::span<const std::uint8_t> frame) {
     const auto decoded = trystero::protocol::decode_action(frame);
@@ -4263,7 +4268,7 @@ int step_number(std::string_view json) {
     return json.starts_with(head) && json.size() > head.size() ? json[head.size()] - '0' : 0;
 }
 
-/** The inline `@_hsdata` frame of a step's JSON, as a room sends it. */
+/** The inline `\@_hsdata` frame of a step's JSON, as a room sends it. */
 std::vector<std::uint8_t> step_frame(std::string_view json) {
     const auto frame = trystero::protocol::encode_inline(
         "@_hsdata", trystero::protocol::payload_format::json, "",
@@ -4465,7 +4470,7 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
  * A, whose id is lower, initiates; its step 1 to B is dropped, and `forge` of it is injected at
  * B's end in its place. Until then each holds the other as pending only: no peer, no user, no
  * user frame either way. B reports handshake_failed once, with `reason` and A's id, and kicks A
- * as 0.27.0's `kickPeer` does: one `@_leave` to A (dropped on its way), and B's end of the
+ * as 0.27.0's `kickPeer` does: one `\@_leave` to A (dropped on its way), and B's end of the
  * connection closed by B. A reports
  * nothing, and neither side reports a join. Once A's room is gone, B reports nothing more: the
  * failed run's timer went with it.
@@ -4649,7 +4654,7 @@ trystero::room_options at_most(std::size_t n) {
     return options;
 }
 
-/** The payload of an inline `@_hsready` frame, as text; empty for another frame. */
+/** The payload of an inline `\@_hsready` frame, as text; empty for another frame. */
 std::optional<std::string> ready_payload(std::span<const std::uint8_t> frame) {
     const auto decoded = trystero::protocol::decode_action(frame);
     const auto* p =

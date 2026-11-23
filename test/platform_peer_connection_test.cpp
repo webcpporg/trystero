@@ -660,7 +660,7 @@ std::string padded(std::string_view json, std::size_t size) {
     return out;
 }
 
-// A remote candidate of protocol::max_sealed_candidate_bytes, a host candidate's JSON with spaces
+// A remote candidate of protocol::max_sealed_candidate_chars, a host candidate's JSON with spaces
 // before its closing brace, is added once an offer is the connection's remote description; one
 // byte longer fails with error::backend_failure before it is read.
 void a_candidate_past_its_bound_fails() {
@@ -690,7 +690,7 @@ void a_candidate_past_its_bound_fails() {
     const std::string candidate =
         R"({"candidate":"candidate:1 1 UDP 2122317823 127.0.0.1 9 typ host","sdpMid":")" + mid +
         R"("})";
-    constexpr std::size_t bound = protocol::max_sealed_candidate_bytes;
+    constexpr std::size_t bound = protocol::max_sealed_candidate_chars;
     std::vector<backend::error_code> results;
     answerer->add_ice_candidate(padded(candidate, bound),
                                 [&](backend::error_code ec) { results.push_back(ec); });

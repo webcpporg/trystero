@@ -987,11 +987,12 @@ void the_room_key_is_made_at_the_first_event_and_dropped_on_stop() {
     BOOST_TEST(h.strategy->current_signer() == nullptr);
 }
 
-/** Two signalings of one room over the memory network, A ("a-peer", whose id is lower, so it
+/** Two signalings of one room over the memory network, A (`ids[0]`, whose id is lower, so it
  * offers) and B; each publishes on the other's self topic, through a queue `deliver` empties,
  * `tamper` first rewriting what goes to A. */
 struct signaling_pair {
-    static constexpr std::array<std::string_view, 2> ids{"a-peer", "b-peer"};
+    static constexpr std::array<std::string_view, 2> ids{"aPeer000000000000000",
+                                                         "bPeer000000000000000"};
     static constexpr std::string_view app_id = "pair-app";
     static constexpr std::string_view room_id = "pair-room";
 

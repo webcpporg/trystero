@@ -106,9 +106,9 @@ await pinned(messages.created_at, async () => {
 
 // Signals' texts, written as 0.27.0 writes each, with toJson (JSON.stringify), their members in
 // the order its signal handler gives them: an announcement {peerId} with the Nostr strategy's
-// nonce after it, an offer {peerId, offerId, offer}, and the offerer's and the answerer's answer and
-// candidate {peerId, offerId, answer} and {peerId, offerId, candidate}; their strings hold the event
-// messages' characters.
+// nonce after it, an offer {peerId, offerId, offer}, and the offerer's and the answerer's answer
+// and candidate {peerId, offerId, answer} and {peerId, offerId, candidate}; their strings hold the
+// event messages' characters.
 out.signal_texts = cases.signal_texts.map(signal => ({signal, text: toJson(signal)}))
 
 /**
@@ -153,15 +153,14 @@ const signalContext = async ({app_id: appId, room_id: roomId, self_id: selfId}, 
     }
 }
 
-// Signals whose objects hold a key twice, as 0.27.0's own signal handler reads them: each runs in
-// a room of the oracle's, on its root topic, which records the peer id it acts on
+// Signals as 0.27.0's own signal handler reads them: each runs in a room of the oracle's, `room`'s
+// app, room and self id, on its root topic, which records the peer id it acts on
 // (onPeerDiscovered) and the sealed text it opens (toPlain), with its offer id, by kind, and opens
 // nothing, so that the handler stops there. The room connects to no peer it would dial
 // (shouldConnectPeer), so that an announcement goes no further; a candidate is opened only for a
 // peer the room answers, so a second run, whose room answers every peer, reads the candidates.
 // `read` is null when 0.27.0 ignores the signal.
-{
-    const room = cases.duplicate_keys
+const readSignals = async (room, texts) => {
     const readSignal = async (text, answering) => {
         const read = {}
         const ctx = await signalContext(room, {
@@ -191,16 +190,38 @@ const signalContext = async ({app_id: appId, room_id: roomId, self_id: selfId}, 
         await handleMessage(0)(await ctx.rootTopicP, text, async () => {})
         return read
     }
-    out.duplicate_keys = {self_id: room.self_id, signals: []}
-    for (const text of room.signals) {
+    const signals = []
+    for (const text of texts) {
         const read = await readSignal(text, false)
         const second = await readSignal(text, true)
         if (second.candidate !== undefined) {
             read.candidate = second.candidate
             read.offer_id = second.offer_id
         }
-        out.duplicate_keys.signals.push({text, read: read.peer_id === undefined ? null : read})
+        signals.push({text, read: read.peer_id === undefined ? null : read})
     }
+    return signals
+}
+
+// And each signal's text read back by 0.27.0's own signal handler, in the duplicate keys' room:
+// `read` is null where it refuses the signal, whose ids are no ids of 0.27.0's.
+for (const [i, {text}] of out.signal_texts.entries()) {
+    out.signal_texts[i].read = (await readSignals(cases.duplicate_keys, [text]))[0].read
+}
+
+// Signals whose objects hold a key twice.
+out.duplicate_keys = {
+    self_id: cases.duplicate_keys.self_id,
+    signals: await readSignals(cases.duplicate_keys, cases.duplicate_keys.signals),
+}
+
+// Signals whose envelope 0.27.0's parseSignalEnvelope refuses, each of its rules broken once (a
+// peer id that is not 20 base62 characters, an offer id that is not 1 to 64 of [\w.~:!-], present
+// or required by an offer, answer or candidate, a candidate past 4,096 UTF-16 code units), and the
+// last text each bound admits, which it reads.
+out.signal_envelopes = {
+    self_id: cases.signal_envelopes.self_id,
+    signals: await readSignals(cases.signal_envelopes, cases.signal_envelopes.signals),
 }
 
 // Relay events whose objects hold a key twice, as 0.27.0's own Nostr strategy reads them. A room
@@ -211,7 +232,16 @@ const signalContext = async ({app_id: appId, room_id: roomId, self_id: selfId}, 
 // when it read the event's topic as the room's root topic and its content as the signal. After
 // each case comes an event of the oracle's own, whose report closes the case's. `acted` is the
 // sender the room reported, or null; in what is written the subscription's id, which Trystero
-// draws, is `sub`.
+// draws, is `sub`. The same room then gets each answer of the signal envelopes' events as the
+// content of an event of its root topic, so that 0.27.0's whole room, not only its signal handler,
+// shows which envelopes it refuses.
+//
+// The order of the reports is what closes a case: the case's event and the closing one are
+// delivered back to back, and both are answers through the same path, the same awaits and the same
+// failing toPlain, so 0.27.0 reports them in the order they came; an envelope it refuses it reports
+// not at all. A case whose event took more awaits than the closing one would be reported after it,
+// recorded as not acted on and counted in the next case; the expected file, compared byte for byte,
+// would show it as a failure of the oracle lane, never as a pass.
 class OracleSocket {
     static opened = []
 
@@ -271,22 +301,30 @@ class OracleSocket {
         return type === 'REQ' && filter['#x'].includes(root)
     })
     const subscription = JSON.parse(request)[1]
-    out.duplicate_keys.root_topic = root
-    out.duplicate_keys.events = []
-    for (const [i, members] of events.texts.entries()) {
-        acted.length = 0
-        const closing = `${events.closing_prefix}${i}`.padEnd(20, '0')
-        const closed = reported(closing)
-        socket.onmessage({data: eventText(subscription, members)})
-        socket.onmessage({data: eventText(subscription, [
-            ['tags', [['x', '{root}']]],
-            ['content', toJson({peerId: closing, offerId: events.offer_id, answer: 'x'})],
-        ])})
-        await closed
-        const senders = acted.filter(peerId => peerId !== closing)
-        if (senders.length > 1) throw new Error(`one event reported ${senders.length} senders`)
-        out.duplicate_keys.events.push({text: eventText('sub', members), acted: senders[0] ?? null})
+    const actOn = async (cases, closingPrefix) => {
+        const results = []
+        for (const [i, members] of cases.entries()) {
+            acted.length = 0
+            const closing = `${closingPrefix}${i}`.padEnd(20, '0')
+            const closed = reported(closing)
+            socket.onmessage({data: eventText(subscription, members)})
+            socket.onmessage({data: eventText(subscription, [
+                ['tags', [['x', '{root}']]],
+                ['content', toJson({peerId: closing, offerId: events.offer_id, answer: 'x'})],
+            ])})
+            await closed
+            const senders = acted.filter(peerId => peerId !== closing)
+            if (senders.length > 1) throw new Error(`one event reported ${senders.length} senders`)
+            results.push({text: eventText('sub', members), acted: senders[0] ?? null})
+        }
+        return results
     }
+    out.duplicate_keys.root_topic = root
+    out.duplicate_keys.events = await actOn(events.texts, events.closing_prefix)
+    out.signal_envelopes.root_topic = root
+    const envelopeEvent = content => [['tags', [['x', '{root}']]], ['content', content]]
+    out.signal_envelopes.events =
+        await actOn(cases.signal_envelopes.events.map(envelopeEvent), `${events.closing_prefix}E`)
     await room.leave()
     globalThis.WebSocket = WebSocket
 }

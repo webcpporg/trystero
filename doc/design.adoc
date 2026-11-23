@@ -237,7 +237,7 @@ in them, over webcpp::webrtc:
   checking), and new.
 * The candidates. A local candidate leaves as the JSON of an
   `RTCIceCandidateInit`, the form Trystero JS adds with `addIceCandidate`; a
-  remote one is read from that JSON, at most 16 KiB of it. Natively it
+  remote one is read from that JSON, at most 4,096 bytes of it. Natively it
   carries `sdpMid` and an `sdpMLineIndex` of 0, and no user name fragment, as
   libdatachannel gives none; a candidate whose text is not UTF-8, which JSON
   cannot carry, is not reported.

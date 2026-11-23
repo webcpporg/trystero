@@ -198,7 +198,7 @@ before reading it, as it drops a malformed one:
 | a relay's text | 68,608 bytes | an event that carries the longest signal, with 2 KiB for its other fields
 | a signal | 66,560 bytes | a sealed offer or answer of 64 KiB with the longest ids, and 1 KiB to spare
 | a handshake message | 1,024 bytes | ten times Trystero's longest, 99 bytes
-| a remote candidate | 16 KiB | the bound of a sealed candidate, which its opened JSON never passes
+| a remote candidate | 4,096 bytes | the bound of a sealed candidate, which its opened JSON never passes
 |===
 
 The image grows in place, twice as large each time, to at most twice the
@@ -399,10 +399,16 @@ what each costs a room.
   57 s, however soon they end; the platform backend makes at most 256 a
   minute on both targets (<<trystero-platform-config>>), and a page holds at
   most 256 (<<trystero-platform-runtime>>).
-* A signal's fields are bounded in `protocol/signal.hpp`: the peer id (64
-  bytes; Trystero's are 20), the offer id (64 bytes), a sealed offer or
-  answer (64 KiB) and a sealed candidate (16 KiB, above the 8192 bytes of
-  plaintext Trystero takes).
+* A signal is read as 0.27.0's `parseSignalEnvelope` reads it
+  (`protocol::read_signal`), and refused where it refuses it: a peer id of
+  other than 20 base62 characters, an offer id of other than 1 to 64
+  characters of `[\w.~:!-]` (or none with an offer, answer or candidate), a
+  sealed offer or answer of more than 64 Ki UTF-16 code units, a sealed
+  candidate of more than 4,096. The vectors of `signal_envelopes` in
+  `test/fixtures/oracle/expected.json` show 0.27.0 refusing each. 0.27.0
+  parses a text of up to 128 Ki characters; a room drops one of more than
+  66,560 bytes unread, which only members Trystero never writes, or sealed
+  text that is not ASCII and never opens, can make.
 * A relay is a third party too: its texts are bounded at 1 MiB, what the room
   holds unsent for it at 4 MiB, and, natively, its silence at 30 s
   (<<trystero-platform-relays>>).

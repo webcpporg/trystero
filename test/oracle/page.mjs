@@ -6,8 +6,8 @@
 
 // Another page for a twin whose room must meet a peer. Trystero JS 0.27.0 has one endpoint key, so
 // one peer id, per app and page (its module's client id), so two rooms of one twin's module would
-// be the same peer; a C++ program makes a second app instead. The other peer runs in a worker thread, with module instances of its own,
-// as a second page would:
+// be the same peer; a C++ program makes a second app instead. The other peer runs in a worker
+// thread, with module instances of its own, as a second page would:
 //
 //   import {openPage} from '../page.mjs'
 //   const other = openPage(async ({joinRoom, RTCPeerConnection, data, post, next}) => { ... }, data)
