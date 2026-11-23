@@ -73,7 +73,7 @@ struct p256_key {
  */
 [[nodiscard]] inline boost::system::result<p256_key> make_p256_key(
     std::span<const std::uint8_t> scalar) {
-    using keypair = webcpp::crypto::curves::p256::keypair;
+    using webcpp::crypto::curves::p256::keypair;
     auto key = scalar.empty() ? keypair::generate() : keypair::make(scalar);
     if (!key) {
         return key.error();

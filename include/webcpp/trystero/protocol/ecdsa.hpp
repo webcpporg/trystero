@@ -77,7 +77,7 @@ inline constexpr std::array<std::uint8_t, 32> p256_order{
     if (!key) {
         return std::nullopt;
     }
-    return std::move(*key);
+    return *key;
 }
 
 /**

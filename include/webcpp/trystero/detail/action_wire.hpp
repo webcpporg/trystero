@@ -581,22 +581,7 @@ private:
                     return;
                 }
                 if (const auto self = weak.lock()) {
-                    if (const auto it = self->outgoing_.find(peer); it != self->outgoing_.end()) {
-                        it->second.erase(id);
-                        if (it->second.empty()) {
-                            self->outgoing_.erase(it);
-                        }
-                    }
-                    // The receiver may hold a reservation for this transfer: tell it, as Trystero
-                    // does. A channel that refuses the frame is closing, which frees it anyway.
-                    if (ec && ec != make_error_code(error::transfer_rejected) &&
-                        ec != make_error_code(error::peer_disconnected)) {
-                        if (auto l = self->cb_.find_link(peer, true);
-                            l && l->buffered_amount() <= protocol::max_control_buffered_bytes) {
-                            static_cast<void>(
-                                l->send(*self->control_frame(protocol::append_cancelled, id)));
-                        }
-                    }
+                    self->end_outgoing(peer, id, ec);
                 }
                 state->complete(ec);
             });
@@ -623,6 +608,27 @@ private:
                     (*finish)(ec);
                 }
             }));
+    }
+
+    /** Forgets the outgoing transfer `id` to `peer`, settled with `ec`; one that failed but for a
+     * refusal or a departure is cancelled to the peer. */
+    void end_outgoing(const std::pmr::string& peer, std::uint32_t id,
+                      boost::system::error_code ec) {
+        if (const auto it = outgoing_.find(peer); it != outgoing_.end()) {
+            it->second.erase(id);
+            if (it->second.empty()) {
+                outgoing_.erase(it);
+            }
+        }
+        // The receiver may hold a reservation for this transfer: tell it, as Trystero does. A
+        // channel that refuses the frame is closing, which frees it anyway.
+        if (ec && ec != make_error_code(error::transfer_rejected) &&
+            ec != make_error_code(error::peer_disconnected)) {
+            if (auto l = cb_.find_link(peer, true);
+                l && l->buffered_amount() <= protocol::max_control_buffered_bytes) {
+                static_cast<void>(l->send(*control_frame(protocol::append_cancelled, id)));
+            }
+        }
     }
 
     /** Sends the chunks of transfer `id` from `offset` on, each of `chunk` payload bytes but the

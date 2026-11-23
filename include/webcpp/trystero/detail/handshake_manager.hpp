@@ -209,7 +209,8 @@ public:
         if (it == peers_.end()) {
             return;
         }
-        auto node = peers_.extract(it);
+        // A node handle's mapped value is mutable through a const handle.
+        const auto node = peers_.extract(it);
         auto& e = node.mapped();
         if (e.timer) {
             e.timer->cancel();
@@ -357,7 +358,7 @@ private:
     /** 0.27.0's `failPeerHandshake`: the timer stops and the room hears of it; the entry stays
      * until the room clears it. */
     void fail(std::string_view peer_view, std::uint64_t generation, std::string_view reason_view) {
-        auto* e = find(peer_view, generation);
+        const auto* e = find(peer_view, generation);
         if (e == nullptr) {
             return;
         }

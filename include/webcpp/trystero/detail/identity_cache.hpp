@@ -81,7 +81,7 @@ public:
     static constexpr std::size_t max_signatures = 8192;
     /** How many payload bytes the verified signatures keep in all, 0.27.0's
      * `maxSigCacheTotalBytes`. */
-    static constexpr std::size_t max_signature_bytes = 2 * 1024 * 1024;
+    static constexpr std::size_t max_signature_bytes = std::size_t{2} * 1024 * 1024;
     /** The longest payload whose signature is kept, 0.27.0's `maxCachedSigPayloadBytes`. */
     static constexpr std::size_t max_cached_payload_bytes = 4096;
 
@@ -137,7 +137,7 @@ public:
             record_order_.pop_back();
         }
         record_order_.push_front(key_record{
-            .key = std::move(*key),
+            .key = *key,
             .compact = std::pmr::string(compact, memory_),
             .peer_id = protocol::derive_peer_id(compact, memory_),
             .user_id = protocol::derive_user_id(compact, memory_),
@@ -274,7 +274,7 @@ private:
 
     /** A verified signature: its key and a copy of the payload it signs. */
     struct signature_entry {
-        signature_key key;
+        signature_key key{};
         std::pmr::vector<std::uint8_t> payload;
     };
 

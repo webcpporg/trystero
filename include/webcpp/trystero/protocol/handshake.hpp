@@ -50,7 +50,9 @@ inline std::size_t next_line(std::string_view text, std::size_t at) noexcept {
         if (text[i] == '\n' || text[i] == '\r') {
             return i + 1;
         }
-        if (text.substr(i, 3) == "\xe2\x80\xa8" || text.substr(i, 3) == "\xe2\x80\xa9") {
+        auto rest = text;
+        rest.remove_prefix(i);
+        if (rest.starts_with("\xe2\x80\xa8") || rest.starts_with("\xe2\x80\xa9")) {
             return i + 3;
         }
     }
@@ -237,22 +239,24 @@ struct handshake_read {
     std::string_view json, int expected_step,
     std::span<const std::pmr::string> expected_remote_dtls,
     std::span<const std::pmr::string> local_dtls, std::pmr::memory_resource* memory) {
-    const handshake_read refused{.claims = std::nullopt, .failure = handshake_reason::identity};
+    const auto refused = [] {
+        return handshake_read{.claims = std::nullopt, .failure = handshake_reason::identity};
+    };
     const auto parsed = webcpp::document::parse(json, json::protocol_limits(json.size()),
                                                 std::pmr::polymorphic_allocator<std::byte>(memory));
     if (!parsed) {
-        return refused;
+        return refused();
     }
     const json::const_value root = parsed->root();
     const auto step = root[handshake_step_key];
     if (!root.is_object() || !step.is_number() || step.value_or(std::int64_t{0}) != expected_step) {
-        return refused;
+        return refused();
     }
     const auto ps = root["ps"];
     const auto us = root["us"];
     const bool signed_step = expected_step != 1;
     if (signed_step && (!ps.is_string() || !us.is_string())) {
-        return refused;
+        return refused();
     }
     handshake_claims claims{
         .step = expected_step,
@@ -275,7 +279,7 @@ struct handshake_read {
     const auto units = n.length();
     if (!n.is_string() || !units || *units < min_nonce_units || !dtls.is_array() ||
         !uid.is_string() || json::text_of(uid).empty() || !pk.is_string() || !uk.is_string()) {
-        return refused;
+        return refused();
     }
     claims.nonce = json::text_of(n);
     claims.user_id = json::text_of(uid);

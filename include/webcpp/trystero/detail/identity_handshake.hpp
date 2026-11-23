@@ -170,7 +170,7 @@ private:
         awaiting_step_1,
         awaiting_step_2,
         awaiting_step_3,
-        finished
+        finished,
     };
 
     /** The two signatures of the transcript, base64url. */
@@ -197,7 +197,7 @@ private:
         stage_ = stage::finished;
         auto out = nothing();
         out.send = std::move(send);
-        out.done = std::move(remote_);
+        out.done.emplace(std::move(remote_));
         return out;
     }
 
@@ -326,7 +326,7 @@ private:
             // the peer here only stands for a case that cannot happen.
             return fail(protocol::handshake_reason::identity);
         }
-        protocol::handshake_claims step_3{
+        const protocol::handshake_claims step_3{
             .step = 3,
             .nonce = std::pmr::string(memory_),
             .user_id = std::pmr::string(memory_),

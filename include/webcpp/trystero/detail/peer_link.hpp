@@ -244,34 +244,50 @@ private:
         const std::pmr::polymorphic_allocator<> allocator(memory_);
         dc_->set_handlers({
             .open = {},
-            .message = {std::allocator_arg, allocator,
-                        [weak](backend::bytes frame) {
-                            if (const auto self = weak.lock()) {
-                                self->on_frame(std::move(frame));
-                            }
-                        }},
-            .close = {std::allocator_arg, allocator,
-                      [weak] {
-                          if (const auto self = weak.lock()) {
-                              self->end("data channel closed");
-                          }
-                      }},
-            .buffered_amount_low = {std::allocator_arg, allocator,
-                                    [weak] {
-                                        if (const auto self = weak.lock()) {
-                                            self->drained(true);
-                                        }
-                                    }},
+            .message =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak](backend::bytes frame) {
+                        if (const auto self = weak.lock()) {
+                            self->on_frame(std::move(frame));
+                        }
+                    },
+                },
+            .close =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak] {
+                        if (const auto self = weak.lock()) {
+                            self->end("data channel closed");
+                        }
+                    },
+                },
+            .buffered_amount_low =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak] {
+                        if (const auto self = weak.lock()) {
+                            self->drained(true);
+                        }
+                    },
+                },
         });
         pc_->set_handlers({
             .ice_candidate = {},
             .data_channel = {},
-            .state = {std::allocator_arg, allocator,
-                      [weak](backend::connection_state state) {
-                          if (const auto self = weak.lock()) {
-                              self->on_state(state);
-                          }
-                      }},
+            .state =
+                {
+                    std::allocator_arg,
+                    allocator,
+                    [weak](backend::connection_state state) {
+                        if (const auto self = weak.lock()) {
+                            self->on_state(state);
+                        }
+                    },
+                },
         });
     }
 

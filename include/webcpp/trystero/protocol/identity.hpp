@@ -59,10 +59,17 @@ namespace detail {
  * @return The length of one such character, 0 when there is none.
  */
 inline std::size_t js_space(std::string_view text, bool at_end) noexcept {
-    const auto piece = [&](std::size_t n) {
-        return text.size() < n ? std::string_view()
-               : at_end        ? text.substr(text.size() - n)
-                               : text.substr(0, n);
+    const auto piece = [&](std::size_t n) noexcept {
+        if (text.size() < n) {
+            return std::string_view();
+        }
+        auto p = text;
+        if (at_end) {
+            p.remove_prefix(text.size() - n);
+        } else {
+            p.remove_suffix(text.size() - n);
+        }
+        return p;
     };
     if (const auto one = piece(1); !one.empty()) {
         switch (one[0]) {
@@ -176,7 +183,7 @@ inline bool js_falsy(const json::const_value& v) {
         return std::nullopt;
     }
     const auto parsed =
-        webcpp::document::parse(json_text, webcpp::document::parse_options{},
+        webcpp::document::parse(json_text, webcpp::document::parse_options(),
                                 std::pmr::polymorphic_allocator<std::byte>(&wiping));
     if (!parsed) {
         return std::nullopt;

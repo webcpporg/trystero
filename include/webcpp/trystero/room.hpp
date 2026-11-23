@@ -1769,7 +1769,7 @@ public:
                      std::chrono::milliseconds{});
             return;
         }
-        send_request(peer, "@_ping", {}, {}, std::nullopt,
+        send_request(peer, "@_ping", encoded_payload(), std::string_view(), std::nullopt,
                      pending_ping{.started = steady_now(factory_), .handler = std::move(handler)});
     }
 
@@ -2323,16 +2323,16 @@ private:
         factory_.random(nonce);
         const auto& endpoint = app_->endpoint();
         const std::pmr::string peer(it->first, memory_);
-        auto run = std::allocate_shared<identity_run>(allocator(), std::move(done),
-                                                      local_identity{
-                                                          .endpoint = endpoint.key,
-                                                          .peer_id = endpoint.peer_id,
-                                                          .endpoint_key = endpoint.compact,
-                                                          .user = app_->user(),
-                                                      },
-                                                      app_->identities(), app_->app_id(), room_id_,
-                                                      peer, initiator, it->second.local_dtls,
-                                                      it->second.remote_dtls, nonce, memory_);
+        const auto run = std::allocate_shared<identity_run>(
+            allocator(), std::move(done),
+            local_identity{
+                .endpoint = endpoint.key,
+                .peer_id = endpoint.peer_id,
+                .endpoint_key = endpoint.compact,
+                .user = app_->user(),
+            },
+            app_->identities(), app_->app_id(), room_id_, peer, initiator, it->second.local_dtls,
+            it->second.remote_dtls, nonce, memory_);
         it->second.run = run;
         auto first = run->machine.start();
         step_identity(peer, run, std::move(first));
@@ -2366,9 +2366,13 @@ private:
         std::optional<ready_refusal> refused;
         if (out.done) {
             if (auto* const state = running(peer, run)) {
-                state->identity = std::move(*out.done);
+                // Constructed in place, as a move assignment of a std::pmr::string may allocate.
+                state->identity.emplace(std::move(*out.done));
                 kept = true;
-                refused = std::exchange(state->refusal_before_verified, std::nullopt);
+                if (auto& before = state->refusal_before_verified) {
+                    refused.emplace(std::move(*before));
+                    before.reset();
+                }
             }
         }
         if (!out.send.empty()) {
@@ -2673,9 +2677,11 @@ private:
         if (!state.identity) {
             // The last frame received wins, as 0.27.0 keeps one deferredReady; a plain one is the
             // manager's remote readiness, which it keeps itself.
-            const bool plain = !refusal;
-            state.refusal_before_verified = std::move(refusal);
-            if (plain) {
+            // Constructed in place, as a move assignment of a std::pmr::string may allocate.
+            state.refusal_before_verified.reset();
+            if (refusal) {
+                state.refusal_before_verified.emplace(std::move(*refusal));
+            } else {
                 handshakes_->receive_ready(peer);
             }
             return;
@@ -2741,8 +2747,10 @@ private:
      * verified, else the one this room refused while full (made the most recently used); empty
      * when neither. */
     std::optional<std::string_view> known_user(std::string_view peer) {
-        if (const auto it = peers_.find(peer); it != peers_.end() && it->second.identity) {
-            return std::string_view(it->second.identity->user_id);
+        if (const auto it = peers_.find(peer); it != peers_.end()) {
+            if (const auto& identity = it->second.identity) {
+                return std::string_view(identity->user_id);
+            }
         }
         const auto it = refused_.find(peer);
         if (it == refused_.end()) {
@@ -2857,15 +2865,15 @@ private:
             return;
         }
         const peer_link* const key = link.get();
-        auto& f = flushing_
-                      .try_emplace(key,
-                                   flushing_link{
-                                       .link = link,
-                                       .reason = std::pmr::string(reason, memory_),
-                                       .grace = factory_.make_timer(memory_),
-                                       .cap = factory_.make_timer(memory_),
-                                   })
-                      .first->second;
+        const auto& f = flushing_
+                            .try_emplace(key,
+                                         flushing_link{
+                                             .link = link,
+                                             .reason = std::pmr::string(reason, memory_),
+                                             .grace = factory_.make_timer(memory_),
+                                             .cap = factory_.make_timer(memory_),
+                                         })
+                            .first->second;
         const auto weak = weak_from_this();
         f.grace->start(flush_grace, bind<void()>([weak, key] {
                            const auto self = weak.lock();
@@ -2885,7 +2893,8 @@ private:
     }
 
     /** The handler that ends a flushing link once its channel drained. */
-    handler<void(bool)> bind_flushed(const std::weak_ptr<room_impl>& weak, const peer_link* key) {
+    handler<void(bool)> bind_flushed(const std::weak_ptr<room_impl>& weak,
+                                     const peer_link* key) const {
         return bind<void(bool)>([weak, key](bool) {
             if (const auto self = weak.lock()) {
                 self->end_flushed(key);
@@ -2899,7 +2908,8 @@ private:
         if (it == flushing_.end()) {
             return;
         }
-        auto node = flushing_.extract(it);
+        // A node handle's mapped value is mutable through a const handle.
+        const auto node = flushing_.extract(it);
         node.mapped().grace->cancel();
         node.mapped().cap->cancel();
         node.mapped().link->end(node.mapped().reason);
@@ -2973,7 +2983,11 @@ private:
         peers_.clear();
         users_.clear();  // without leaves, as 0.27.0 reports none once its room is leaving
         reserved_.clear();
-        for (auto& [key, flushing] : std::exchange(flushing_, decltype(flushing_)(memory_))) {
+        // Swapped out, both in the room's resource: a move assignment of the map would assign its
+        // entries' std::pmr::string, which may allocate.
+        decltype(flushing_) flushing_links(memory_);
+        flushing_links.swap(flushing_);
+        for (auto& [key, flushing] : flushing_links) {
             flushing.grace->cancel();
             flushing.cap->cancel();
             flushing.link->end("the room is left");
