@@ -238,6 +238,19 @@ webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform
 # watch is destroyed.
 webcpp.run platform_page_connectivity : platform_page_connectivity_test.cpp
   : $(platform) : emscripten ;
+# A page without the browser's generator: each room of an app that cannot make
+# its keys reports identity_failed, and no JavaScript exception enters
+# WebAssembly. Linked for node 19 or newer, Emscripten draws from
+# crypto.getRandomValues under node too, as in a page, where for older nodes it
+# would draw from node:crypto, which the test cannot take away.
+webcpp.run platform_page_entropy : platform_page_entropy_test.cpp
+  : $(platform) <linkflags>-sMIN_NODE_VERSION=190000 : emscripten ;
+# It runs only by name until webcpp::crypto guards its read: random_device's
+# read_entropy (crypto/detail/entropy.hpp) calls getentropy, whose Emscripten
+# implementation lets the exception of a missing or throwing
+# crypto.getRandomValues through, which terminates in the noexcept read
+# (measured with Emscripten 6.0.11). The guard is the crypto stream's.
+explicit platform_page_entropy ;
 # end::page[]
 
 # The same, built without exceptions, as a page's program may be: no

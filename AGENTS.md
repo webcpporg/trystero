@@ -9,14 +9,9 @@ chapter 15 gives trystero's design decisions with their reasons, and its
 holds only what is specific to trystero.
 
 - **The branch.** `port/trystero-0.27` (superproject `trystero/port-0.27`)
-  is Phase 1 of the port to Trystero 0.27.0, upstream commit `8d3f57e`, the
-  change `trystero-0-27` (proposals) and its design D1 to D16. It is not
-  interoperable before Phase 2, which brings ECDSA P-256 with
-  webcpp::crypto's `curves::p256`, and reaches `main` once, whole: until
-  then its oracle and interop lanes are `explicit`, the twins stay 0.26.0's,
-  a peer id is drawn at random and is its user's id (D8), and an app's rooms
-  keep 0.26.0's shared connection, presence frames and password handshake
-  (D9). Every value of 0.27.0's wire is proven against
+  is the port to Trystero 0.27.0, upstream commit `8d3f57e`, the change
+  `trystero-0-27` (proposals) and its design D1 to D23, and reaches `main`
+  once, whole. Its oracle and interop lanes meet Trystero 0.27.0. Every value of 0.27.0's wire is proven against
   `test/fixtures/expected/trystero-0.27.0.json`, which only
   `test/oracle/record_0_27.mjs` writes, run against a checkout of the pin
   (`node test/oracle/record_0_27.mjs <checkout>`); its copy in the
@@ -530,11 +525,8 @@ holds only what is specific to trystero.
   when enabled; allocation tests enable none. `connection`, `memory_backend`, `shared`,
   `shared_no_exceptions` and `shared_hardened` cover these paths, with
   sanitizers and library hardening checking resource lifetimes.
-- **The oracle and the interop tests, trystero's own lanes.** On the branch
-  both are off (`explicit` in `test/oracle/Jamfile`) until Phase 2's Task
-  2.6 pins them to 0.27.0, rewrites the twins and records them again; never
-  hand-edit a twin's `.expected` meanwhile.
-  `test/oracle/` pins Trystero 0.26.0 (`trystero`, `@trystero-p2p/core` and
+- **The oracle and the interop tests, trystero's own lanes.**
+  `test/oracle/` pins Trystero 0.27.0 (`trystero`, `@trystero-p2p/core` and
   `@trystero-p2p/nostr`, with `ws` 8.22.0 and `@noble/secp256k1` 3.2.0 for
   the local relay, which imports both, and werift 0.24.4, the WebRTC the
   twins give Trystero JS in Node as `rtcPolyfill`, which Trystero's README
@@ -553,61 +545,42 @@ holds only what is specific to trystero.
   `update-generated` writes it here. `interop`, on native and emscripten (`native.trystero.interop` and
   `emscripten.trystero.interop` in the report): two driven tests,
   `interop_native` and `interop_browser`, whose driver `interop/run.mjs`
-  meets the C++ peer, the native one as a process or the browser's in
-  headless Chrome, with Trystero JS peers in Chrome, over the in-memory
-  Nostr relay `interop/relay.mjs` on 127.0.0.1, with the existing scenarios and the shared scenarios below:
-  C++ offering, Trystero JS offering with a password, a Trystero JS peer
-  that also sends malformed candidates (`js.html`'s
-  `malformed-candidate-to`), a first relay whose URL no WebSocket can be
-  made to, a Trystero JS peer that also sends text messages on its data
-  channel (`text-messages`), a C++ peer given a TURN server without
-  credentials, a watcher without the key that answers every offer with
-  garbage in the other peer's name (`forger.html`), the same watcher
-  resending, after the Trystero JS peer's connections drop
-  (`window.drop`), the sealed answer and then the sealed offer it recorded
-  of that peer (`mode=replay`), which the C++ peer must refuse, the same
-  watcher sending the C++ peer its own sealed offer back as the other
-  peer's answer, and as its offer by way of a decoy id (`mode=reflect`),
-  which the C++ peer must refuse too, a flood of announcements and of
-  unsealed offers from fresh peer ids (`window.flood`,
-  `window.floodOffers`) whose offers the watcher answers too, a relay text
-  longer than 1 MiB, once and then after every subscription
-  (`relay.broadcast`, `relay.options.afterSubscribe`), the C++ peer and a
-  Trystero JS page each in two rooms of one app (`room2`), sharing one
-  connection and one self id per app, a wrong password,
-  and a mesh of three; and, for the native peer, three
-  more: a room moved over the joined one, which must leave it as
-  destroying it does; a relay that ends the connection just as the peer
-  writes, with a text longer than 1 MiB or a reset
-  (`relay.options.strike`), which twelve peers in turn must survive and
-  reconnect after; and the driver's own check that a native peer killed
-  by a signal (`abort` on its standard input) is named at once. The
-  native peer and `platform_websocket` are built with the standard
-  library's own checks (libc++'s extensive hardening, libstdc++'s
-  assertions), so that a completion that touches a cleared container
-  fails at once. Both lanes are of the kind `original`, so the CI gives
-  them its Node.
-  - Shared scenarios on both targets cover: (1) two rooms on one
-    connection, with chat and 100 KB files both ways; (2) a third room
-    joining later by presence; (3) the page's rooms joined before the C++
-    app's; (4) admission to a passwordless room by token and refusal by a
-    protected app with another password and self id, in both id orders;
-    (5) either side leaving one room while another keeps exchanging without a new connection; (6) departure from every room,
-    followed by idle expiry; (7) corrupted room proofs after authenticated
-    connection establishment, in both id orders, with
-    paced reports and the other room unaffected; (8) a 5,000-message flood
-    while another room pings; (9) a held handshake frame recovering in both
-    id orders with no false password report. Crossed adoption races allow
-    retries but fail by connection count above four constructions per side.
-  - Recovered-peer relay scenarios wait for fresh, currently joined peers on
-    both sides within the existing 30 s setup bound, then require a fresh
-    round-trip message before injecting a relay fault. A join reported by one
-    side alone does not prove the other's handshake completed. The controlled
-    `delayNextRecovery` fixture delays one outbound direction of the first
-    recovered channel for 12 s, beyond the C++ handshake deadline; a subsequent
-    connection must complete the setup. A departure after the relay fault
-    still fails. Console errors remain fatal, with RTCError fields recorded
-    alongside peer events so a failure is not reduced to `OperationError`.
+  meets the C++ peer (`interop/peer_room.hpp`), the native one as a process
+  (`native_peer.cpp`) or the browser's in headless Chrome (`peer.cpp` in
+  `cpp.html`), with Trystero 0.27.0 pages in Chrome (`js.html`, which does
+  what the C++ peer does, and `forger.html`), over the in-memory Nostr relay
+  `interop/relay.mjs` on 127.0.0.1. Its scenarios, each on both lanes: ids
+  and messages both ways (each side sees the other's peer and user ids, and
+  text, JSON, binary, a request and a ping go both ways); JS verifying the
+  C++ signatures (each joins the other only once its handshake verified
+  them); 1 MiB each way; one password meeting and another reported as
+  `decrypt_failed` by the higher id of the two, the C++ peer's id put below
+  and then above the page's (its `key` parameter, the endpoint key's label,
+  through `detail::app_access`, the driver deriving the id with 0.27.0's
+  own code); identities exported by one side and imported by the other;
+  two C++ apps of one imported identity, which a page sees as two peers and
+  one user; `max_users` 2 refusing a third user both ways (`room_full`,
+  `room-full`); requests and pings; leaves both ways (peer and user leave);
+  a forged user signature (`forger.html`: a custom identity whose `sign`
+  passes 0.27.0's startup check, then signs with another key), which the
+  C++ peer reports as `handshake_failed` and never joins; a mesh of two
+  pages and a C++ peer; and the relays' connectivity, each side going
+  offline, missing a new peer, and meeting it once online. Then the C++
+  peer's own robustness on the relays: a first relay whose URL no WebSocket
+  can be made to, a TURN server without credentials, a relay text longer
+  than 1 MiB, once and then after every subscription (`relay.broadcast`,
+  `relay.options.afterSubscribe`); and, for the native peer, a relay that
+  ends the connection just as the peer writes, with a text longer than 1 MiB
+  or a reset (`relay.options.strike`), which twelve peers in turn must
+  survive and reconnect after, and the driver's own check that a native peer
+  killed by a signal (`abort` on its standard input) is named at once. Every
+  wait of a scenario is for something that must happen, bounded far above
+  its time only to end a hang; what must not happen is checked once what
+  must has. The native peer and `platform_websocket` are built with the
+  standard library's own checks (libc++'s extensive hardening, libstdc++'s
+  assertions), so that a completion that touches a cleared container fails
+  at once. Both lanes are of the kind `original`, so the CI gives them its
+  Node.
   - Every peer gathers its ICE candidates on the machine alone: the C++
     peers get `stun:127.0.0.1:9`, where nothing answers, in place of
     Trystero's public STUN servers, the native peer binds its connections to

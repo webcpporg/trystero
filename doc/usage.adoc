@@ -9,8 +9,7 @@
 
 A room is what Trystero's `joinRoom` returns, and an action what its
 `makeAction` returns: this section is the {cpp} form of both, as 0.27.0
-has them, on the branch `port/trystero-0.27`, not interoperable before
-Phase 2.
+has them.
 
 [#trystero-usage-joining]
 === Joining

@@ -18,8 +18,7 @@ It ports the protocol of https://github.com/dmotz/trystero[Trystero] 0.27.0,
 and keeps its wire byte for byte. Once the port is whole, a room joined from
 {cpp} and the same room joined from Trystero's JavaScript are one room: the
 peers see each other, and an action sent from one side arrives on the
-other. On the branch `port/trystero-0.27`, not interoperable before Phase 2,
-its rooms meet each other only (<<trystero-design-phase-1>>).
+other.
 
 The library provides:
 

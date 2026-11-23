@@ -60,8 +60,7 @@ deliver their events to.
 [#trystero-design-phase-1]
 === Phase 1 of the port to Trystero 0.27.0
 
-On the branch `port/trystero-0.27`, not interoperable before Phase 2. The
-port follows the change `trystero-0-27` (proposals), whose design numbers its
+The port follows the change `trystero-0-27` (proposals), whose design numbers its
 decisions; those Phase 1 built are these.
 
 *The backend has no sealer (D4, D5).* Hashing, the derivation of a room's

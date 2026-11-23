@@ -14,18 +14,15 @@ after it, so a comment of the code or of a test cites it by that anchor:
 `b2 libs/trystero/doc`, which builds this page, fails on a citation that
 names no anchor of it. The tests are those of <<trystero-testing>>.
 
-On the branch `port/trystero-0.27`, not interoperable before Phase 2, the
-guarantees that Trystero JS peers hold, the first and the second's oracle,
-are suspended with the lanes that hold them, which Phase 2 turns back on
-against Trystero 0.27.0; the others hold on the branch as stated.
-
 . [[trystero-invariant-1]]*The wire is Trystero's.* A {cpp} peer,
 in the browser or native, and Trystero JS peers in one room join, exchange
 text, JSON and binary messages, files both ways with metadata, and pings,
-leave, and form a mesh, with either side offering. _Held by_ the `interop`
-lane, `interop_browser` on emscripten and `interop_native` natively, against
-Trystero JS itself in headless Chrome: on `main`, 0.26.0; on the branch the
-lane is off until Phase 2 meets 0.27.0 with it.
+leave, and form a mesh, with either side offering; each verifies the
+other's signatures before it joins it, sees its peer and user ids, and
+refuses another password, a third user past `max_users` and a forged user
+signature. _Held by_ the `interop` lane, `interop_browser` on emscripten and
+`interop_native` natively, against Trystero 0.27.0 itself in headless
+Chrome.
 . [[trystero-invariant-2]]*Every protocol value equals Trystero JS's.*
 Topics, ids, room keys, room auth tokens, the relay shuffle, sealed text,
 topic kinds, Nostr event ids, inline and chunked action frames and control
@@ -35,9 +32,8 @@ keeps are 0.26.0's. _Held by_ `crypto_layer` and `crypto_layer_release`,
 natively and on emscripten, against the vectors
 `test/oracle/record_0_27.mjs` recorded from 0.27.0's own code, sealed texts
 opened as 0.27.0 sealed them among them; and by `protocol`, against the
-values Trystero 0.26.0 wrote for the `oracle` lane, which on `main` fails
-when Trystero would write other values than those committed, and on the
-branch is off until Phase 2.
+values Trystero 0.27.0 writes for the `oracle` lane, which fails when
+Trystero would write other values than those committed.
 . [[trystero-invariant-3]]*A peer with another password never joins a
 protected {cpp} app's rooms.* Its initial signals do not open under the
 room's keys, derived from the app's password, so it obtains no shared
@@ -85,9 +81,7 @@ reflected as another kind, or for another offer, does not open, its AAD
 being another's. _Held by_ `room` (`a_replayed_answer_does_not_open`,
 `a_replayed_offer_is_refused`, `a_reflected_offer_is_refused_as_an_answer`,
 `a_reflected_offer_is_refused_as_an_offer` and
-`a_reflected_answer_does_not_open_as_an_answer`), and the replay and
-reflection scenarios of the `interop` lane, off on the branch until
-Phase 2.
+`a_reflected_answer_does_not_open_as_an_answer`).
 . [[trystero-invariant-8]]*A relay that stops reading is dropped.* Once the
 text held unsent for it would pass 4 MiB, the connection is dropped, and
 reports one close, after which the room reconnects with its backoff, as it

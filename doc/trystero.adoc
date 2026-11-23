@@ -19,21 +19,15 @@ public Nostr relays and exchange messages directly, over WebRTC data
 channels. The wire is Trystero's: once the port is whole, a room joined from
 {cpp} and the same room joined from Trystero's JavaScript are one room.
 
-*On the branch `port/trystero-0.27`, not interoperable before Phase 2.* This
-page describes the branch, Phase 1 of the port from Trystero 0.26.0 to
-0.27.0 (upstream commit `8d3f57e`). Phase 1 speaks 0.27.0's topics, room
-keys, sealing, ids, relays and action wire, each value proven against
-vectors recorded from 0.27.0's own code (<<trystero-protocol>>), and has
-0.27.0's room API: listeners that return a subscription, users, room errors
-and the relays' connectivity. Its rooms still meet only each other: every
-0.27.0 room runs a handshake signed with ECDSA P-256, which Phase 2 brings
-with webcpp::crypto's `curves::p256`. Until then a peer's id is drawn at
-random and is its user's id too, and an app's rooms share one connection to
-each remote peer, with 0.26.0's presence frames and password handshake
-inside it (<<trystero-design-phase-1>>). The twins and the interop lane are
-Trystero 0.26.0's, and off on the branch until Phase 2 records them again
-against 0.27.0 (<<trystero-testing-lanes>>). The branch reaches `main` once,
-whole and interoperable.
+*On the branch `port/trystero-0.27`.* This page describes the branch, the
+port from Trystero 0.26.0 to 0.27.0 (upstream commit `8d3f57e`). It speaks
+0.27.0's topics, room keys, sealing, ids, relays and action wire, each value
+proven against vectors recorded from 0.27.0's own code
+(<<trystero-protocol>>), 0.27.0's identities and handshake, signed with
+ECDSA P-256, and has 0.27.0's room API: listeners that return a
+subscription, users, room errors and the relays' connectivity. Its rooms
+meet Trystero 0.27.0's, which the interop lane proves in headless Chrome
+(<<trystero-testing-lanes>>). The branch reaches `main` once, whole.
 
 This page teaches trystero section by section: what a room is, how a program
 joins one in the browser and natively, how its actions carry messages, where

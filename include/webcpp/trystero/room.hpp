@@ -3083,9 +3083,7 @@ class request_action;
  * leaves at once. Its peers meet over the relays, connect over WebRTC, each room with a connection
  * of its own to each peer, as 0.27.0's rooms do, and exchange the messages of the actions it makes,
  * written bare on the connection. A peer joins once 0.27.0's identity handshake has bound its
- * endpoint and user keys to both DTLS fingerprints, and its user is the one it proved. On the
- * branch `port/trystero-0.27` it is not interoperable with Trystero 0.27.0 before Phase 2 ends: no
- * interop lane proves it yet.
+ * endpoint and user keys to both DTLS fingerprints, and its user is the one it proved.
  *
  * Every room uses its app's immutable password, under which the signals that make its connections
  * are sealed: as in 0.27.0, the sealing alone keeps peers of another password out, which never
@@ -3422,8 +3420,7 @@ private:
 };
 
 /**
- * A named channel of messages of type `T` within a room, what Trystero's `makeAction` returns
- * (not interoperable before Phase 2, as `room` says).
+ * A named channel of messages of type `T` within a room, what Trystero's `makeAction` returns.
  *
  * Messages arrive at the listeners `on_message` adds, or, without one, at `async_receive`. Until
  * the action has a listener or was first awaited, its messages wait as Trystero's wait for a
@@ -3676,8 +3673,7 @@ private:
 
 /**
  * A named channel of requests of type `T`, each answered with an `R` by the peer asked, within a
- * room, what Trystero's `makeAction` returns for `kind: 'request'` (not interoperable before
- * Phase 2, as `room` says).
+ * room, what Trystero's `makeAction` returns for `kind: 'request'`.
  *
  * The peer asked answers with the listener `on_request` sets. While it has none, requests wait as
  * Trystero's messages wait for a listener, 32 per sender for 10 s. A room makes it with

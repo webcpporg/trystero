@@ -316,12 +316,9 @@ built from scratch, with `b2 -a`.
 === The oracle and the interop lanes
 
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
-against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
-`package-lock.json`, with Node, run as `node --conditions=development`. On
-the branch `port/trystero-0.27`, not interoperable before Phase 2, both are
-off, their targets `explicit`: their Trystero is 0.26.0, whose wire the
-branch no longer speaks, and Phase 2 pins them to 0.27.0 and turns them
-back on. The branch's vectors come from `test/oracle/record_0_27.mjs`,
+against Trystero itself, pinned at 0.27.0 by `test/oracle/package.json` and
+`package-lock.json`, with Node, run as `node --conditions=development`. The
+branch's vectors come from `test/oracle/record_0_27.mjs`,
 which `node test/oracle/record_0_27.mjs <checkout>` runs against a checkout
 of 0.27.0 at `8d3f57e` and which writes
 `test/fixtures/expected/trystero-0.27.0.json`, the file the `crypto_layer`
@@ -345,55 +342,42 @@ include::{library-root}/test/oracle/Jamfile[tag=interop]
 ----
 
 `interop`, natively and on emscripten, meets each {cpp} peer, the native one
-as a process and the browser's in headless Chrome, with Trystero JS peers in
-Chrome, over an in-memory Nostr relay on 127.0.0.1 that verifies every
-event's id and signature as a public relay does. Its scenarios: the {cpp}
-peer offering; Trystero JS offering, with a password; a Trystero JS peer that
-also sends malformed candidates, or text messages on its data channel; a
-first relay to which no WebSocket can be made; a {cpp} peer given a TURN
-server without credentials; a watcher without the key that answers every
-offer with garbage in the other peer's name, that resends a sealed answer
-and offer it recorded, and that sends the {cpp} peer its own sealed offer
-back, which the {cpp} peer must refuse; a flood of announcements and of
-unsealed offers from fresh peer ids; a relay text longer than 1 MiB; a {cpp}
-peer and a Trystero JS page each in two rooms of one app, sharing one
-connection and one peer id per app; a wrong password;
-and a mesh of three. The native peer meets three more: a room
-moved over the joined one, which must leave it as destroying it does; a
-relay that ends the connection just as the peer writes, which twelve peers in
-turn must survive; and the driver's own check that a peer killed by a signal
-is named at once.
+as a process and the browser's in headless Chrome, with Trystero 0.27.0
+pages in Chrome, over an in-memory Nostr relay on 127.0.0.1 that verifies
+every event's id and signature as a public relay does. The {cpp} peers
+(`test/oracle/interop/peer_room.hpp`) and the page (`js.html`) take the same
+parameters and report the same events. Its scenarios, each in both lanes:
 
-The shared-connection scenarios run in both lanes:
+. Each side sees the other's peer and user ids, and text, JSON and binary
+  messages, a request and a ping go both ways.
+. The page joins the {cpp} peer only once it verified its endpoint and user
+  signatures, and the {cpp} peer the page likewise.
+. 1 MiB each way.
+. One password meets; another is reported as `decrypt_failed` by the higher
+  id of the two, which cannot open the lower id's offer, the {cpp} peer's id
+  put below the page's and then above it, and no peer joins.
+. Each side imports an identity the other exported, and presents its user.
+. Two {cpp} apps of one imported identity are two peers and one user to a
+  page.
+. A room with `max_users` 2 refuses a third user, the page's and the {cpp}
+  peer's, `room-full` and `room_full`.
+. Requests and pings complete both ways.
+. A leave is the other side's peer and user leave, both ways.
+. A page whose identity's `sign` passes 0.27.0's startup check and then
+  signs with another key is reported as `handshake_failed` and never
+  joined.
+. Two pages and a {cpp} peer form a mesh.
+. A peer whose relays go offline misses a new peer, and meets it once they
+  are online again, each side in turn.
 
-. Two rooms exchange chat and 100 KB files both ways on one adopted,
-  connected transport.
-. A third room joins later through presence on that transport.
-. Rooms the JS page joined first bind when the {cpp} app joins them later.
-. A peer can enter another room of a passwordless app by token, while a
-  protected app with another password and self id shares no connection or
-  presence with it, in either id order.
-. Either side leaves one room while the other keeps exchanging, making
-  no connection.
-. Leaving every room closes the transport after the configured idle time.
-. An authenticated peer sending wrong room proofs in both id orders gives
-  paced lower-id reports while
-  the other room keeps exchanging over the same connection.
-. A 5,000-message flood in one room leaves pings in another completing
-  within 2 s.
-. A held handshake frame recovers in both id orders after one timeout,
-  without a false password report; the other room keeps exchanging.
-
-The {cpp} peers accept `room2Delay` and `room3Delay` in milliseconds; the JS
-page also accepts `room2Delay`. These delayed joins establish the first room
-before a shared-binding scenario begins;
-the proof-pacing scenario first authenticates the shared password domain,
-then corrupts room proofs after the initial announcement burst.
-
-The adoption scenarios allow a crossed pair of connections to resolve, but
-fail with connection counts if either side constructs more than four. Transient
-recovery accounts for JS reuse during the higher id's dropping window
-(<<trystero-protocol-limitations>>).
+Then the {cpp} peer's own robustness on the relays: a first relay to which
+no WebSocket can be made; a TURN server without credentials; a relay text
+longer than 1 MiB, once and after every subscription; and, natively, a relay
+that ends the connection just as the peer writes, which twelve peers in turn
+must survive, and the driver's own check that a peer killed by a signal is
+named at once. Each wait of a scenario is for something that must happen,
+bounded only to end a hang; what must not happen is checked once what must
+has.
 
 Every peer gathers its ICE candidates on the machine alone: the {cpp} peers
 get `stun:127.0.0.1:9` in place of Trystero's public STUN servers, the
@@ -437,9 +421,6 @@ program on Trystero 0.26.0, which the oracle lane runs through
 The twins agree with {n-twins-agreeing} of the programs and diverge from
 {n-twins-divergent}; {n-examples-without-twin} has none, with its reason in
 `test/oracle/twins/without-twin.txt`: the chat, a page that prints nothing.
-On the branch the twins and their outputs stay 0.26.0's, and the oracle lane
-that runs them is off, until Phase 2 runs them on 0.27.0
-(<<trystero-testing-lanes>>).
 
 Trystero JS has one self id per page, so a twin whose room meets a peer, as
 a {cpp} program's second app does, runs that peer as a second page, a worker

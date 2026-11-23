@@ -257,8 +257,7 @@ Each drop reports one close, and the room reconnects with its backoff
 [#trystero-platform-randomness]
 === Randomness and a password's derivation
 
-On the branch `port/trystero-0.27`, not interoperable before Phase 2. The
-backend's randomness, the ids and nonces a room draws, and the IV of each
+The backend's randomness, the ids and nonces a room draws, and the IV of each
 seal, come from webcpp::crypto's `random_device`, the platform's one secure
 source: `getentropy` natively, and in a page, through it,
 `crypto.getRandomValues`. When it has none, `random()` aborts the program,
@@ -266,7 +265,9 @@ since nothing is safe without it. In a page whose `getRandomValues` is
 missing or throws, Emscripten's `getentropy` lets the exception into
 WebAssembly, where trystero 0.1.0's own source caught it in JavaScript: the
 program ends either way, and the guard belongs to webcpp::crypto's
-`random_device` (design Open Question 1). The room's signing key draws its
+`random_device` (design Open Question 1). The test `platform_page_entropy`,
+which expects each room of such a page to report `identity_failed` and no
+exception in WebAssembly, runs only by name until that guard lands. The room's signing key draws its
 secret and each signature's auxiliary bytes from `random_device` too.
 
 The backend has no sealer: a room seals and opens its signals in the call,

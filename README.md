@@ -7,18 +7,15 @@ public Nostr relays and exchange messages directly, over WebRTC data channels.
 The wire is Trystero's: once the port is whole, a room joined from C++ and the
 same room joined from Trystero's JavaScript are one room.
 
-**On the branch `port/trystero-0.27`, not interoperable before Phase 2.** This
-branch is Phase 1 of the port from Trystero 0.26.0 to 0.27.0 (upstream commit
-`8d3f57e`): 0.27.0's topics, room keys, sealing, ids, relays and action wire,
-each value proven against vectors recorded from 0.27.0's own code, and
-0.27.0's room API, with listeners that return a subscription, users, room
-errors, request actions and the relays' connectivity. Its rooms meet only each
-other: every 0.27.0 room runs a handshake signed with ECDSA P-256, which
-Phase 2 brings with webcpp::crypto's `curves::p256`. Until then a peer's id is
-drawn at random and is its user's id too, and an app's rooms share 0.26.0's
-connection, with its presence frames and password handshake. The oracle and
-interop lanes are off on the branch, and the twins are still 0.26.0's. The
-branch reaches `main` once, whole and interoperable.
+**On the branch `port/trystero-0.27`.** This branch ports the library from
+Trystero 0.26.0 to 0.27.0 (upstream commit `8d3f57e`): 0.27.0's topics, room
+keys, sealing, ids, relays and action wire, each value proven against vectors
+recorded from 0.27.0's own code; 0.27.0's identities, signed with ECDSA P-256,
+and its handshake; and 0.27.0's room API, with listeners that return a
+subscription, users, room errors, request actions and the relays'
+connectivity. Its rooms meet Trystero 0.27.0's: the interop lane meets 0.27.0
+pages in headless Chrome with the browser's peer and the native one. The
+branch reaches `main` once, whole.
 
 A room runs on two targets, native and emscripten, through one platform
 backend:
@@ -397,12 +394,12 @@ page's app, `webcpp-trystero-chat`, and room, `lobby`. Within a few seconds
 each tab shows the other's id, its first six characters, "joined", and
 counts it as a peer; what you send from one tab appears in the other, under
 the sender's id. Every tab that joins the same app and room joins the same
-chat. On `main` so does any Trystero JS 0.26.0 page; on the branch no
-Trystero JS page does before Phase 2.
+chat. On `main` so does any Trystero JS 0.26.0 page; on the branch any
+Trystero 0.27.0 page does.
 
-A native peer and a page meet too. On `main` the lane `interop` of
-`test/oracle` meets the native peer, and the browser's, with Trystero JS pages
-in headless Chrome (The tests, below); on the branch it is off until Phase 2.
+A native peer and a page meet too. The lane `interop` of `test/oracle` meets
+the native peer, and the browser's, with Trystero JS pages in headless Chrome
+(The tests, below).
 
 ### When something goes wrong
 
@@ -436,9 +433,8 @@ peer connections and data channels run whole rooms in one process.
 `8d3f57e`).
 
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
-against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
-`package-lock.json`, with Node; on the branch both are off until Phase 2 pins
-them to 0.27.0:
+against Trystero itself, pinned at 0.27.0 by `test/oracle/package.json` and
+`package-lock.json`, with Node:
 
     b2 libs/trystero/test/oracle//oracle
     b2 libs/trystero/test/oracle//interop

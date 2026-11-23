@@ -7,8 +7,7 @@
 [#trystero-protocol]
 == The protocol
 
-On the branch `port/trystero-0.27`, not interoperable before Phase 2. A room
-speaks Trystero 0.27.0's topics, room keys, sealing, ids, relays, Nostr
+A room speaks Trystero 0.27.0's topics, room keys, sealing, ids, relays, Nostr
 events and action wire, byte for byte. The protocol's pure functions are in
 `<webcpp/trystero/protocol/>`; the `crypto_layer` test compares them, byte
 for byte, with the vectors 0.27.0's own code computed,

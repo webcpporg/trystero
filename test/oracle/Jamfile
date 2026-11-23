@@ -35,14 +35,14 @@ webcpp.generated vectors : vectors.py
 webcpp.lane oracle : twins cases-protocol generated-vectors ;
 # end::oracle[]
 
-# Trystero JS meets each C++ peer over a relay of its own on 127.0.0.1: the
-# browser's peer in headless Chrome, and the native peer as a process, both
-# over the platform backend. The native peer is built with the standard
-# libraries' own checks, so that a completion that touches a container its
-# socket cleared fails at once. Each driver has
-# 2400 s for its bounded scenarios and Chrome's start, including the
-# wrong-password observation windows and transient-handshake recovery. The
-# scenarios report their peer events on failure before this outer bound.
+# Trystero 0.27.0 meets each C++ peer over a relay of its own on 127.0.0.1:
+# the browser's peer in headless Chrome, and the native peer as a process,
+# both over the platform backend (interop/run.mjs names the scenarios). The
+# native peer is built with the standard libraries' own checks, so that a
+# completion that touches a container its socket cleared fails at once. Each
+# driver has 2400 s for its scenarios and Chrome's start; each wait of a
+# scenario is bounded far below that, and a scenario that fails reports its
+# peers' events before this outer bound.
 # tag::interop[]
 webcpp.drive interop_browser : interop/peer.cpp
   : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web
@@ -55,9 +55,3 @@ webcpp.drive interop_native : interop/native_peer.cpp
   : interop/run.mjs : --native : native ;
 webcpp.lane interop : interop_browser interop_native : native emscripten ;
 # end::interop[]
-
-# On the branch port/trystero-0.27 the oracle and interop lanes are off until
-# Phase 2's Task 2.6b turns them on. Their targets stay explicit (webcpp.lane
-# makes each so), so that the library's test and example directories never
-# build them; they run only by name.
-explicit twins cases-protocol generated-vectors interop_browser interop_native ;

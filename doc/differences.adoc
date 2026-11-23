@@ -8,7 +8,6 @@
 [#trystero-differences]
 == Differences from Trystero
 
-On the branch `port/trystero-0.27`, not interoperable before Phase 2.
 trystero ports the part of Trystero 0.27.0 that rooms of messages need: the
 Nostr strategy, the signaling, the action wire with its request actions, and
 the room's API with its listeners, users and errors. Where it keeps a
@@ -191,11 +190,7 @@ join over a Nostr relay of their own on 127.0.0.1, whose URL is in their
 environment, `TRYSTERO_RELAY_URL`, and two peers of one program meet there,
 as two apps in {cpp} and as two pages in Trystero JS
 (<<trystero-testing-twins>>). The lane `relayed` runs the programs, and
-fails when one no longer prints what is shown here. On the branch the twins
-are Trystero 0.26.0's, and so is what they printed: the oracle lane, which
-runs them, is off until Phase 2 runs them on 0.27.0 and records their
-outputs again (<<trystero-testing-lanes>>); each section says where 0.27.0
-behaves otherwise than its twin printed. The twins of the programs of
+fails when one no longer prints what is shown here. The twins of the programs of
 `example/` agree with {n-twins-agreeing} of them, the quick start among them
 (<<trystero-quick-start>>), and diverge from {n-twins-divergent}, each a
 difference below; {n-examples-without-twin} program has no twin, the chat
