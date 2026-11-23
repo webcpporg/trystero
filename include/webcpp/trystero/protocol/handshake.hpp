@@ -6,7 +6,7 @@
 
 /**
  The messages of Trystero 0.27.0's identity handshake (`handshake.ts`): the DTLS fingerprints of a
- description, the three steps sent as `@_hsdata` payloads, the reading of a step without its key
+ description, the three steps sent as `\@_hsdata` payloads, the reading of a step without its key
  checks, and the transcript both sides sign.
 */
 #ifndef WEBCPP_TRYSTERO_PROTOCOL_HANDSHAKE_HPP
@@ -98,8 +98,8 @@ inline bool joined_equal(std::span<const std::pmr::string> a,
 
 /**
  * The DTLS fingerprints of a description, 0.27.0's `extractDtlsFingerprints`: the value of each
- * line `a=fingerprint:<value>` (a multiline `^a=fingerprint:([^\r\n]+)$`, so a line also starts
- * after U+2028 or U+2029, and the value runs to the line's `\r` or `\n`), without the white space
+ * line `a=fingerprint:<value>` (a multiline `^a=fingerprint:([^\\r\\n]+)$`, so a line also starts
+ * after U+2028 or U+2029, and the value runs to the line's `\\r` or `\\n`), without the white space
  * JavaScript's `trim` removes, lowercased; the empty ones dropped, the others deduplicated and
  * sorted in UTF-16 order.
  *
@@ -166,7 +166,7 @@ struct handshake_claims {
  *
  * @param claims The step's members.
  * @param memory The resource the text is allocated in.
- * @return The text, an `@_hsdata` payload.
+ * @return The text, an `\@_hsdata` payload.
  */
 [[nodiscard]] inline std::pmr::string write_handshake_step(const handshake_claims& claims,
                                                            std::pmr::memory_resource* memory) {
@@ -203,7 +203,7 @@ struct handshake_claims {
     return out;
 }
 
-/** A step read by @ref read_handshake_step: its members, or the reason it is refused. */
+/** What @ref read_handshake_step reads of a step, its members or the reason it is refused. */
 struct handshake_read {
     /** The members; nothing when the step is refused. */
     std::optional<handshake_claims> claims;
@@ -228,7 +228,7 @@ struct handshake_read {
  * Tip: the text is read with the protocol's limits (@ref json::protocol_limits), nested 16 deep at
  * most: a step 0.27.0 writes nests 2 deep.
  *
- * @param json The `@_hsdata` payload.
+ * @param json The `\@_hsdata` payload.
  * @param expected_step The step expected: 1, 2 or 3.
  * @param expected_remote_dtls The fingerprints of the remote description this side applied.
  * @param local_dtls The fingerprints of this side's description.

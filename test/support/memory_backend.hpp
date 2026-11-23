@@ -618,8 +618,8 @@ inline std::optional<std::size_t> memory_description_id(std::string_view sdp) {
     return id;
 }
 
-/** Peer connections pair through their descriptions (@ref memory_description): the first line,
- * `mem:<id>`, names the connection that wrote it. */
+/** Peer connections pair through their descriptions, which @ref memory_description writes; the
+ * first line, `mem:<id>`, names the connection that wrote it. */
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:

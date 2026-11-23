@@ -50,7 +50,7 @@ struct local_identity {
 /**
  * One side's run of 0.27.0's identity handshake with one remote peer, `createIdentityHandshake`'s
  * `run`, as a synchronous step machine: the room calls @ref start once, then @ref receive with each
- * `@_hsdata` payload of the peer, and sends what each returns.
+ * `\@_hsdata` payload of the peer, and sends what each returns.
  *
  * The initiator sends step 1 (its nonce, fingerprints, user id, endpoint and user keys), the
  * responder answers step 2 (its own, and its two signatures of the transcript), and the initiator,
@@ -76,7 +76,7 @@ public:
 
     /** What a call of the machine gives the room. */
     struct outcome {
-        /** An `@_hsdata` payload to send, or empty. */
+        /** An `\@_hsdata` payload to send, or empty. */
         std::pmr::string send;
         /** The remote's identity once verified; then the run is over. */
         std::optional<verified> done;
@@ -147,7 +147,7 @@ public:
     }
 
     /**
-     * Takes the remote's next `@_hsdata` payload: step 1 (responder), step 2 (initiator) or step 3
+     * Takes the remote's next `\@_hsdata` payload: step 1 (responder), step 2 (initiator) or step 3
      * (responder). Before @ref start and once the run is over, it takes nothing.
      *
      * @param json The payload.

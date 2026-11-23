@@ -2002,9 +2002,9 @@ private:
         return name == "@_leave" || name == "@_hsdata" || name == "@_hsready";
     }
 
-    /** The longest handshake message, 0.27.0's `maxPayloadBytes` of `@_hsdata`. */
+    /** The longest handshake message, 0.27.0's `maxPayloadBytes` of `\@_hsdata`. */
     static constexpr std::size_t max_handshake_data_bytes = std::size_t{64} * 1024;
-    /** The longest ready frame's payload, 0.27.0's `maxPayloadBytes` of `@_hsready`. */
+    /** The longest ready frame's payload, 0.27.0's `maxPayloadBytes` of `\@_hsready`. */
     static constexpr std::size_t max_handshake_ready_bytes = std::size_t{128} * 1024;
 
     /** The longest payload of an action, 0.27.0's `maxPayloadBytes`: the handshake's own; every
@@ -2136,7 +2136,7 @@ private:
     }
 
     /** 0.27.0's `canReceiveFromPeer`: a peer's messages are received once its handshake
-     * completed, the handshake's own and `@_leave` while it is pending. */
+     * completed, the handshake's own and `\@_leave` while it is pending. */
     bool may_receive(std::string_view peer, std::string_view name) const {
         return handshakes_->can_receive(peer, is_internal_to_pending(name));
     }
@@ -2301,7 +2301,7 @@ private:
     /**
      * Runs the identity handshake with a peer, as 0.27.0's handshake manager runs the room's
      * `identityHandshake.run`: this side's nonce drawn from the backend's randomness for this run,
-     * the fingerprints of the peer's descriptions, and the peer's `@_hsdata` messages through
+     * the fingerprints of the peer's descriptions, and the peer's `\@_hsdata` messages through
      * `next_message`. `done` takes "" once the peer's identity is verified and kept, else the
      * reason the handshake failed.
      */
@@ -3310,7 +3310,7 @@ public:
      * |                       | others failed to open; once, with the text of the failure  |
      * |                       | that settled it, as 0.27.0 gives it                        |
      * | `peer_error`          | a peer's frame was malformed or against the protocol, or   |
-     * |                       | it sent a `@_response` nothing waits for; the message says |
+     * |                       | it sent a `\@_response` none waits for; the message says  |
      * |                       | which, as 0.27.0's, and the peer is told to leave and goes |
      * | `banned`              | a peer refused this room's user with its ready message;    |
      * |                       | its reason is the message when it gave one, and the room   |

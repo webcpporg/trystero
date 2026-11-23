@@ -250,7 +250,7 @@ public:
 
 private:
     /** The signer of a key pair: its x-only public key's text, in `memory`. */
-    static boost::system::result<signer> from_keypair(
+    [[nodiscard]] static boost::system::result<signer> from_keypair(
         webcpp::crypto::curves::secp256k1::keypair key, std::pmr::memory_resource* memory) {
         const auto xonly = key.xonly_public_key();
         if (!xonly) {

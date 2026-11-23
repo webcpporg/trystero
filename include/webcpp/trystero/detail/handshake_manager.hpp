@@ -45,7 +45,7 @@ struct handshake_callbacks {
      * else the reason they failed. */
     handler<void(std::string_view peer, bool initiator, handler<void(std::string_view)> done)>
         run_steps;
-    /** Sends the ready frame, `@_hsready`, whose payload is `ready_json`: "" for 0.27.0's empty
+    /** Sends the ready frame, `\@_hsready`, whose payload is `ready_json`: "" for 0.27.0's empty
      * text, else a JSON text. */
     handler<void(std::string_view peer, std::string_view ready_json)> send_ready;
     /** The steps passed on this side, 0.27.0's `onLocalHandshakePassed`: false when the room
@@ -222,9 +222,9 @@ public:
     }
 
     /**
-     * A message of the peer's steps, the payload of an `@_hsdata` frame, 0.27.0's `receiveData`: to
-     * the step waiting for one, else buffered, a 17th buffered one failing the handshake. Dropped
-     * once the steps passed.
+     * A message of the peer's steps, the payload of an `\@_hsdata` frame, 0.27.0's `receiveData`:
+     * to the step waiting for one, else buffered, a 17th buffered one failing the handshake.
+     * Dropped once the steps passed.
      *
      * @param peer The peer's id.
      * @param json The payload, copied when buffered.
