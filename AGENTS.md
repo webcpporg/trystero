@@ -11,7 +11,8 @@ holds only what is specific to trystero.
 - **The branch.** `port/trystero-0.27` (superproject `trystero/port-0.27`)
   is the port to Trystero 0.27.0, upstream commit `8d3f57e`, the change
   `trystero-0-27` (proposals) and its design D1 to D23, and reaches `main`
-  once, whole. Its oracle and interop lanes meet Trystero 0.27.0. Every value of 0.27.0's wire is proven against
+  once, whole. Its oracle and interop lanes meet Trystero 0.27.0. Every
+  value of 0.27.0's wire is proven against
   `test/fixtures/expected/trystero-0.27.0.json`, which only
   `test/oracle/record_0_27.mjs` writes, run against a checkout of the pin
   (`node test/oracle/record_0_27.mjs <checkout>`); its copy in the
@@ -87,8 +88,8 @@ holds only what is specific to trystero.
   `backend::data_channel`, abstract classes, as chapter 15 decided: the
   memory relays (`test/support/memory_backend.hpp`) implement them for the
   rooms of the tests, on both targets, where node has no WebRTC, and the
-  interop's native peer wraps the platform backend's (`delayed_channel`,
-  `observed_connection`). Their one implementation over a platform is
+  interop's native peer derives from the platform backend to count the
+  connections it makes. Their one implementation over a platform is
   `webrtc/`, which webcpp::webrtc's table "trystero's backend, part by
   part" maps part by part. The interface's clocks are std::chrono's, so
   that no unit is converted at the seam: `factory::steady_now` returns the
@@ -292,8 +293,7 @@ holds only what is specific to trystero.
   restarts announcements. `platform_peer_connection` tests real queued events
   (the offerer made on an executor the test runs), FIFO, replacement, close,
   limits and resource release (`webrtc::data_channel::pending_frames`);
-  `shared` tests closure during adoption, and interop controls native open
-  delivery while a JS peer sends both rooms' presence first.
+  `shared` tests closure during adoption.
 - **Wide chunks.** `backend::peer_connection::max_message_size` is
   `sctp.maxMessageSize`; the platform backend reads webcpp::webrtc's
   `peer_connection::max_message_size()` (natively libdatachannel's
@@ -468,13 +468,7 @@ holds only what is specific to trystero.
   until withdrawal. A changed domain password requires a new app.
   Configuration errors go to `app::on_error`; room errors name peer
   problems. A passwordless app's connected peers can echo another room's
-  token and join it. The Trystero JS 0.26.0 wire of the shared connection is
-  kept on the branch until Phase 2: a JS page
-  that mixes room passwords retains its one-way handshake exposure,
-  including admission to its higher-id rooms without their password and
-  offline-guess material. C++ app domains protect the C++ app's admission;
-  they do not repair a remote JS page. A peer that already knows the domain
-  password can still send a bad room proof, kicked and paced by rebinding.
+  token and join it.
 - **Shared connection bounds.** A connection accepts 64 advertised tokens
   and at most 64 kept frames for local unbound rooms, expiring 10 s after
   the first, and drops unknown room tokens. A malformed envelope ends all
@@ -551,9 +545,11 @@ holds only what is specific to trystero.
   what the C++ peer does, and `forger.html`), over the in-memory Nostr relay
   `interop/relay.mjs` on 127.0.0.1. Its scenarios, each on both lanes: ids
   and messages both ways (each side sees the other's peer and user ids, and
-  text, JSON, binary, a request and a ping go both ways); JS verifying the
-  C++ signatures (each joins the other only once its handshake verified
-  them); 1 MiB each way; one password meeting and another reported as
+  text, JSON, binary, a request and a ping go both ways, the C++ peer's id
+  below and then above the page's, so that each side offers in turn); JS
+  verifying the C++ signatures (each joins the other only once its handshake
+  verified them); 1 MiB each way in 64 KiB frames (js.html's
+  `window.largest`); one password meeting and another reported once as
   `decrypt_failed` by the higher id of the two, the C++ peer's id put below
   and then above the page's (its `key` parameter, the endpoint key's label,
   through `detail::app_access`, the driver deriving the id with 0.27.0's
@@ -563,9 +559,20 @@ holds only what is specific to trystero.
   `room-full`); requests and pings; leaves both ways (peer and user leave);
   a forged user signature (`forger.html`: a custom identity whose `sign`
   passes 0.27.0's startup check, then signs with another key), which the
-  C++ peer reports as `handshake_failed` and never joins; a mesh of two
-  pages and a C++ peer; and the relays' connectivity, each side going
-  offline, missing a new peer, and meeting it once online. Then the C++
+  C++ peer reports as `handshake_failed`, once per handshake run, and never
+  joins; a mesh of two pages and a C++ peer; and the relays' connectivity,
+  each side going offline (the relay sees its subscriptions closed),
+  missing a new peer, and meeting it once online, then starting offline
+  (`offline` parameter). The relay keeps what it forwarded
+  (`relay.received`), counts a topic's subscribers (`relay.subscribed`) and
+  holds picked events until `relay.release()` (`relay.options.hold`). Then,
+  on the local relay, peers that mean harm, through the driver's own relay
+  client (`openPublisher`, 0.27.0's `createEvent`, `genKey` and `encrypt`):
+  malformed candidates sealed for the C++ peer's offer, which it drops and
+  logs; and a flood of unsealed offers and announcements from fresh ids,
+  bounded by the C++ peer's 32 negotiations and 64 connections (cpp.html's
+  `madePeerConnections`, the native peer's `made-connection` events),
+  `decrypt_failed` once per peer and stage. Then the C++
   peer's own robustness on the relays: a first relay whose URL no WebSocket
   can be made to, a TURN server without credentials, a relay text longer
   than 1 MiB, once and then after every subscription (`relay.broadcast`,

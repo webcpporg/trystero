@@ -23,6 +23,16 @@ window.trysteroLog = (category, text) => {
     console.log(line)
     document.getElementById('log').append(line + '\n')
 }
+// Counts the page's RTCPeerConnections, every one made, as Chromium counts them until a garbage collection: the flood
+// scenario bounds them.
+window.madePeerConnections = 0
+const PeerConnection = window.RTCPeerConnection
+window.RTCPeerConnection = class extends PeerConnection {
+    constructor(...args) {
+        super(...args)
+        ++window.madePeerConnections
+    }
+}
 // The program's main starts the peer, runs it for the page's life, and defines window.leave,
 // window.offline and window.online, which post to it.
 // The program run.mjs serves under /build/, as b2 linked it: interop_browser.js, beside its wasm.

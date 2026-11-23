@@ -10,7 +10,8 @@
 // the process ends; "offline" and "online" to set the app's relay connectivity; "abort" to make it
 // die by a signal, as a crash does. The app's log goes to stderr. Its peer connections are bound
 // to 127.0.0.1, so that it meets the other peers of this machine on the loopback alone, with no
-// network beyond it.
+// network beyond it, and each one the backend makes is the event `made-connection`, as cpp.html
+// counts the page's.
 #include "peer_room.hpp"
 
 #include <webcpp/trystero/platform/backend.hpp>
@@ -26,6 +27,9 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -43,6 +47,28 @@ std::map<std::string, std::string, std::less<>> arguments(int argc, char* const*
     }
     return out;
 }
+
+/** Writes one event, a line of JSON, on stdout. */
+void emit(std::string_view event) {
+    std::cout << event << '\n';
+    std::cout.flush();
+}
+
+/** The platform backend, whose every connection made is the event `made-connection`. */
+class counting_backend : public trystero::platform::backend {
+public:
+    using trystero::platform::backend::backend;
+
+    std::shared_ptr<trystero::backend::peer_connection> make_peer_connection(
+        std::span<const trystero::backend::ice_server> servers,
+        std::pmr::memory_resource* memory) override {
+        auto pc = trystero::platform::backend::make_peer_connection(servers, memory);
+        if (pc) {
+            emit(R"({"kind":"made-connection"})");
+        }
+        return pc;
+    }
+};
 
 /** Reads the driver's commands while the room runs. */
 struct command_reader {
@@ -90,17 +116,14 @@ struct command_reader {
 int main(int argc, char* argv[]) {
     const auto args = arguments(argc, argv);
     boost::asio::io_context io;
-    trystero::platform::backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
+    counting_backend backend(io.get_executor(), {.bind_address = "127.0.0.1"});
     interop::peer peer(
         io.get_executor(), backend,
         [&args](std::string_view name) {
             const auto found = args.find(name);
             return found == args.end() ? std::string() : found->second;
         },
-        [](std::string_view event) {
-            std::cout << event << '\n';
-            std::cout.flush();
-        },
+        emit,
         [](std::string_view category, std::string_view text) {
             std::cerr << category << ": " << text << '\n';
         });

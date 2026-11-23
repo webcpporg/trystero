@@ -155,7 +155,8 @@ programs move from 0.26.0 to 0.27.0:
   the actions it receives right after it is joined.
 
 | `handshake_failed`, reserved
-| 0.27.0's `handshake-failed`, which Phase 2's handshake reports.
+| 0.27.0's `handshake-failed`, which the room reports when a connected peer's
+  handshake fails.
 |===
 
 `room(executor, backend, room_config, room_id)` and `room_config`, of
@@ -447,7 +448,7 @@ with no room nor peer.
 | `channel_stalled` | the data channel stopped draining for 10 s
 | `wrong_password` | a peer sharing a connection failed the room's password handshake, or sent a handshake message of the wrong shape
 | `handshake_timed_out` | a peer sharing a connection did not finish the handshake in 10 s
-| `handshake_failed` | 0.27.0's `handshake-failed`; nothing reports it before Phase 2's handshake
+| `handshake_failed` | 0.27.0's `handshake-failed`: a connected peer's identity handshake failed, with 0.27.0's reason
 | `backend_failure` | the browser or the native stack refused an operation, or a room's keys could not be derived
 | `invalid_configuration` | the app dropped an unusable configuration value and continues without it
 | `already_joined` | a room of that id is already joined in the app

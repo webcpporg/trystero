@@ -47,6 +47,11 @@ const nativePeer = option('--native')
 if (!browserPeer && !nativePeer) throw new Error('pass --browser <interop_browser.js> or --native <native_peer>')
 const buildDir = browserPeer && dirname(resolve(browserPeer))
 
+// Every wait of the driver is for something that must happen: its bound only ends a run that hangs, naming what did not
+// happen, so it is far above the time anything takes on the most loaded machine. No scenario waits for something not
+// to happen: what must not happen is checked once what must happen has, and again at the scenario's end.
+const bound = 240_000
+
 const findChrome = () => {
     const explicit = option('--chrome') ?? process.env.CHROME
     if (explicit) return explicit
@@ -142,7 +147,8 @@ const startChrome = async () => {
     // What Chrome says on standard error, the last of it, for a Chrome that does not start.
     let said = ''
     chrome.stderr.on('data', data => (said = (said + data).slice(-2000)))
-    for (let i = 0; ; i++) {
+    const end = Date.now() + bound
+    for (;;) {
         const active = join(left.profile, 'DevToolsActivePort')
         const port = existsSync(active) ? readFileSync(active, 'utf8').split('\n')[0] : ''
         if (/^[0-9]+$/.test(port)) {
@@ -152,7 +158,7 @@ const startChrome = async () => {
                 return
             } catch {}
         }
-        if (i > 100 || exited(chrome)) throw new Error(`Chrome did not start; it said:\n${said}`)
+        if (Date.now() > end || exited(chrome)) throw new Error(`Chrome did not start; it said:\n${said}`)
         await new Promise(r => setTimeout(r, 100))
     }
 }
@@ -163,8 +169,8 @@ const openPage = async (path, label) => {
     let id = 0
     const pending = new Map()
     const problems = []
-    // Every call settles within ms, 10 s unless it says: a closing tab may never answer.
-    const send = (method, params = {}, ms = 10_000) => new Promise(resolve => {
+    // Every call settles within ms, `bound` unless it says: a closing tab may never answer.
+    const send = (method, params = {}, ms = bound) => new Promise(resolve => {
         const i = ++id
         const timer = setTimeout(() => {
             pending.delete(i)
@@ -189,7 +195,7 @@ const openPage = async (path, label) => {
     await send('Runtime.enable')
     await send('Page.navigate', {url: base + path})
     // A call that does not answer in time fails by name, with the expression it ran.
-    const evaluate = async (expression, ms = 10_000) => {
+    const evaluate = async (expression, ms = bound) => {
         const answer = await send('Runtime.evaluate', {expression, returnByValue: true, awaitPromise: true}, ms)
         if (answer === undefined) throw new Error(`${label}: ${expression} did not answer in ${ms / 1000} s`)
         if (answer.exceptionDetails) throw new Error(`${label}: ${expression}: ${answer.exceptionDetails.exception?.description ?? answer.exceptionDetails.text}`)
@@ -265,11 +271,6 @@ const fromCpp = {size: 100_000, checksum: checksum(pattern(100_000, 13)), metada
 const fromJs = {size: 100_000, checksum: checksum(pattern(100_000, 7)), metadata: '{"name":"from-js.bin"}'}
 const wideFromCpp = {size: 1024 * 1024, checksum: checksum(pattern(1024 * 1024, 13))}
 const wideFromJs = {size: 1024 * 1024, checksum: checksum(pattern(1024 * 1024, 7))}
-
-// Every wait of a scenario is for something that must happen: its bound only ends a run that hangs, naming what did
-// not happen, so it is far above the time anything takes on the most loaded machine. No scenario waits for something
-// not to happen: what must not happen is checked once what must happen has, and again at the scenario's end.
-const bound = 240_000
 
 // Waits for `condition`, at most `ms`, and no longer once a peer of the scenario died by a signal: what it waits for
 // may never come, and the death is the failure to name.
@@ -347,6 +348,53 @@ const keyAround = async (id, below) => {
     }
 }
 
+// 0.27.0's topics of a room: the root, hashTopic of topicPath(Trystero, app, room), the base64url SHA-256 of the JSON
+// array of its parts; and a peer's own, hashTopic of topicPath(root's path, peer id).
+const rootPath = room => JSON.stringify(['Trystero', app, room])
+const hashTopic = path => createHash('sha256').update(path).digest('base64url')
+const rootTopicOf = room => hashTopic(rootPath(room))
+const selfTopicOf = (room, peer) => hashTopic(JSON.stringify([rootPath(room), peer]))
+
+// What the local relay forwarded of `peer`'s signals of kind `signal` ('announce', 'offer', 'answer', 'candidate'),
+// on `topic` when given.
+const relayed = (peer, signal, topic) =>
+    left.relay.received.filter(e => e.peerId === peer && e.signal === signal && (topic === undefined || e.topic === topic))
+
+// What anyone who reads and writes the relays can send, through a client of the local relay of its own, with 0.27.0's
+// own code: Nostr events (createEvent, signed by a key of its own) and signals sealed under a room's key (genKey,
+// encrypt). Each publish waits for the relay's OK, which the relay gives once every subscription has the event.
+const {createEvent, createSigner} = await import(pathToFileURL(join(here, '../node_modules/@trystero-p2p/nostr/dist/protocol.mjs')).href)
+const {encrypt, genKey} = await import(pathToFileURL(join(here, '../node_modules/@trystero-p2p/core/dist/crypto.mjs')).href)
+const openPublisher = async () => {
+    const socket = new WebSocket(left.relay.url)
+    const acks = new Map()
+    await new Promise((resolve, reject) => {
+        socket.onopen = resolve
+        socket.onerror = () => reject(new Error('the publisher could not reach the relay'))
+    })
+    socket.onmessage = ({data}) => {
+        const [type, id, ok, why] = JSON.parse(data)
+        if (type === 'OK') acks.get(id)?.(ok ? null : why)
+    }
+    socket.onclose = () => {
+        for (const ack of acks.values()) ack('the relay closed the publisher')
+    }
+    const signer = createSigner()
+    return {
+        publish: async (topic, content) => {
+            const text = await createEvent(topic, JSON.stringify(content), signer)
+            const {id} = JSON.parse(text)[1]
+            const refused = await new Promise(resolve => {
+                acks.set(id, resolve)
+                socket.send(text)
+            })
+            acks.delete(id)
+            if (refused) throw new Error(`the relay refused an event: ${refused}`)
+        },
+        close: () => socket.close(),
+    }
+}
+
 // Runs a scenario against the C++ peer of `cppKind`: 'cpp' (the browser's, in a page) or 'native' (a process). Its
 // body gets `open(kind, params)`, which opens a peer, in the scenario's room unless `params.room` names another:
 // 'cpp' (the C++ peer of the lane), 'js' or 'forger' (pages of Trystero 0.27.0).
@@ -388,21 +436,47 @@ const scenario = async (name, cppKind, body) => {
     for (const p of pages) await p.close()
 }
 
-// 1. Each side sees the other's peer and user ids (the C++ peer's app::self_id and app::user_id, the page's
-// getSelf()), and text, JSON and binary messages go both ways.
-const idsAndMessages = cppKind => scenario('ids_and_messages_both_ways', cppKind, async open => {
-    const cpp = await open('cpp')
-    const js = await open('js')
-    const c = await idsOf(cpp), j = await idsOf(js)
-    if (!/^[0-9A-Za-z]{20}$/.test(c.self) || !/^[0-9A-Za-z]{22}$/.test(c.user)) {
-        return `the C++ peer's ids ${JSON.stringify(c)} are not 0.27.0's`
+// The peers of a room that joined `of` (its ids): none must have, checked once what must happen has, and at the end.
+const joinedBy = async (pages, of) => {
+    const joined = []
+    for (const page of pages) {
+        if (has(await page.events(), 'peer-join', e => e.peer === of.self)) joined.push(page.label)
     }
-    const failed = await exchange(cpp, js)
-    if (failed) return failed
-    const seen = await js.value('window.peers()')
-    if (seen[c.self] !== c.user) return `the page's getPeers() is ${JSON.stringify(seen)}, not ${c.self} of ${c.user}`
-    if (!has(await cpp.events(), 'user-join', e => e.user === j.user && e.peer === j.self)) return 'the C++ peer saw no user join'
-    if (!has(await js.events(), 'user-join', e => e.user === c.user && e.peer === c.self)) return 'the page saw no user join'
+    return joined
+}
+
+// How many reports of one kind one peer may have made by now, at most one per peer and stage each 60 s (0.27.0's
+// reportDecryptErr): one, and one more for each 60 s since `since`, however slow the machine is.
+const reportsAllowed = since => 1 + Math.floor((Date.now() - since) / 60_000)
+
+// 1. Each side sees the other's peer and user ids (the C++ peer's app::self_id and app::user_id, the page's
+// getSelf()), and text, JSON and binary messages go both ways: with either side offering, as in 0.27.0 the lower id
+// offers, so the C++ peer's id is put below the page's, then above it (its key, `keyAround`), and the local relay
+// shows the offer of the lower. No candidate of either is refused (the malformed candidate scenario's control).
+const idsAndMessages = cppKind => scenario('ids_and_messages_both_ways', cppKind, async open => {
+    for (const cppLower of [true, false]) {
+        const order = cppLower ? 'the C++ peer offering' : 'the page offering'
+        const room = freshRoom()
+        const js = await open('js', {room})
+        const j = await idsOf(js)
+        const cpp = await open('cpp', {room, key: await keyAround(j.self, cppLower)})
+        const c = await idsOf(cpp)
+        if (!/^[0-9A-Za-z]{20}$/.test(c.self) || !/^[0-9A-Za-z]{22}$/.test(c.user)) {
+            return `the C++ peer's ids ${JSON.stringify(c)} are not 0.27.0's`
+        }
+        if ((c.self < j.self) !== cppLower) return `the C++ peer's id ${c.self} is not ${cppLower ? 'below' : 'above'} ${j.self}`
+        const failed = await exchange(cpp, js)
+        if (failed) return `${order}: ${failed}`
+        if (!usePublic) {
+            const [offerer, answerer] = cppLower ? [c, j] : [j, c]
+            if (!relayed(offerer.self, 'offer', selfTopicOf(room, answerer.self)).length) return `${order}: the relay saw no offer of ${offerer.self}`
+        }
+        const seen = await js.value('window.peers()')
+        if (seen[c.self] !== c.user) return `${order}: the page's getPeers() is ${JSON.stringify(seen)}, not ${c.self} of ${c.user}`
+        if (!has(await cpp.events(), 'user-join', e => e.user === j.user && e.peer === j.self)) return `${order}: the C++ peer saw no user join`
+        if (!has(await js.events(), 'user-join', e => e.user === c.user && e.peer === c.self)) return `${order}: the page saw no user join`
+        if ((await cpp.log()).includes('dropped a candidate')) return `${order}: the C++ peer refused a candidate of the page`
+    }
     return null
 })
 
@@ -420,7 +494,9 @@ const signatures = cppKind => scenario('js_verifies_cpp_signatures', cppKind, as
     return errors.length ? `errors: ${JSON.stringify(errors)}` : null
 })
 
-// 3. 1 MiB each way, on the action `wide`.
+// 3. 1 MiB each way, on the action `wide`, in 0.27.0's wide frames: the page sends and receives frames of 64 KiB
+// (maxBulkFrameBytes, js.html's window.largest), where a link that fell back to the narrow chunks has 16 KiB ones.
+const wideFrame = 64 * 1024
 const wideTransfers = cppKind => scenario('wide_transfers_both_ways', cppKind, async open => {
     const cpp = await open('cpp', {wide: 1})
     const js = await open('js', {wide: 1})
@@ -430,29 +506,42 @@ const wideTransfers = cppKind => scenario('wide_transfers_both_ways', cppKind, a
     const done = async () => got(await cpp.events(), j.self, wideFromJs) && got(await js.events(), c.self, wideFromCpp) &&
         has(await cpp.events(), 'sent', e => e.what === 'wide' && e.error === '') &&
         has(await js.events(), 'sent', e => e.what === 'wide' && e.error === '')
-    return (await until(done)) ? null : 'the 1 MiB transfers did not both complete'
+    if (!(await until(done))) return 'the 1 MiB transfers did not both complete'
+    const largest = await js.value('window.largest')
+    if (largest.sent !== wideFrame || largest.received !== wideFrame) {
+        return `the page's largest frames are ${JSON.stringify(largest)}, not ${wideFrame} bytes each way`
+    }
+    return null
 })
 
 // 4. One password meets; another gives decrypt_failed on the C++ side and decrypt-failed on the page (0.27.0's code
 // name both), and no join. Of two peers of different passwords the lower id offers and the higher cannot open the
 // offer, as in 0.27.0: so the C++ peer's id is put below the page's, then above it (its key, `keyAround`), and the
-// higher of the two reports the offer it could not open, naming the lower.
+// higher of the two reports the offer it could not open, naming the lower, once however often the lower offers (the
+// local relay shows a second offer forwarded to it).
 const passwords = cppKind => scenario('passwords', cppKind, async open => {
     const failed = await exchange(await open('cpp', {password: 'secret'}), await open('js', {password: 'secret'}))
     if (failed) return `with one password: ${failed}`
     for (const cppLower of [true, false]) {
         const room = freshRoom()
+        const since = Date.now()
         const js = await open('js', {room, password: 'another'})
         const j = await idsOf(js)
         const cpp = await open('cpp', {room, password: 'secret', key: await keyAround(j.self, cppLower)})
         const c = await idsOf(cpp)
         if ((c.self < j.self) !== cppLower) return `the C++ peer's id ${c.self} is not ${cppLower ? 'below' : 'above'} ${j.self}`
-        const [reporter, offerer] = cppLower ? [js, c] : [cpp, j]
-        const reported = async () => has(await reporter.events(), 'error', e => e.code === 'decrypt-failed' && e.peer === offerer.self)
-        const ok = await until(reported)
-        const joins = [...await cpp.events(), ...await js.events()].filter(e => e.kind === 'peer-join')
-        if (joins.length) return `peers with different passwords joined: ${JSON.stringify(joins)}`
-        if (!ok) return `${reporter.label}, the higher id, did not report decrypt-failed for the offer of ${offerer.self}`
+        const [reporter, offerer, reporterId] = cppLower ? [js, c, j] : [cpp, j, c]
+        const reports = async () => count(await reporter.events(), 'error', e => e.code === 'decrypt-failed' && e.peer === offerer.self)
+        if (!(await until(async () => (await reports()) > 0))) {
+            return `${reporter.label}, the higher id, did not report decrypt-failed for the offer of ${offerer.self}`
+        }
+        if (!usePublic && !(await until(() => relayed(offerer.self, 'offer', selfTopicOf(room, reporterId.self)).length >= 2))) {
+            return `the relay forwarded no second offer of ${offerer.self}`
+        }
+        const reported = await reports()
+        if (reported > reportsAllowed(since)) return `${reporter.label} reported decrypt-failed ${reported} times`
+        const joined = [...await joinedBy([js], c), ...await joinedBy([cpp], j)]
+        if (joined.length) return `peers with different passwords joined: ${joined.join(', ')}`
     }
     return null
 })
@@ -460,14 +549,14 @@ const passwords = cppKind => scenario('passwords', cppKind, async open => {
 // 5. The C++ peer imports a trystero_uk_ text a page exported (createUserIdentity, exportUserIdentity), and a page
 // imports one a C++ peer exported (create_user_identity, export_user_identity): each presents the user it imported,
 // and each sees the other's.
+const identityOf = async page => {
+    if (!(await until(async () => has(await page.events(), 'identity')))) throw new Error(`${page.label} exported no identity`)
+    return (await page.events()).find(e => e.kind === 'identity')
+}
 const importedIdentities = cppKind => scenario('imported_identities', cppKind, async open => {
     const exporting = freshRoom()
-    const textOf = async page => {
-        if (!(await until(async () => has(await page.events(), 'identity')))) throw new Error(`${page.label} exported no identity`)
-        return (await page.events()).find(e => e.kind === 'identity')
-    }
-    const fromPage = await textOf(await open('js', {room: exporting, export: 1}))
-    const fromCppPeer = await textOf(await open('cpp', {room: exporting, export: 1}))
+    const fromPage = await identityOf(await open('js', {room: exporting, export: 1}))
+    const fromCppPeer = await identityOf(await open('cpp', {room: exporting, export: 1}))
     for (const {text} of [fromPage, fromCppPeer]) {
         if (!/^trystero_uk_[A-Za-z0-9_-]+$/.test(text)) return `an exported text is not a user key: ${text}`
     }
@@ -479,11 +568,11 @@ const importedIdentities = cppKind => scenario('imported_identities', cppKind, a
     return exchange(cpp, js)
 })
 
-// 6. Two C++ apps importing one identity, and a page: the page sees two peers and one user.
+// 6. Two C++ apps importing one identity (a third C++ app exported it, in a room of its own), and a page: the page
+// sees two peers and one user.
 const oneUserTwoCppPeers = cppKind => scenario('one_user_two_cpp_peers', cppKind, async open => {
-    const first = await open('cpp', {export: 1})
-    if (!(await until(async () => has(await first.events(), 'identity')))) return 'the first C++ peer exported no identity'
-    const {text, user} = (await first.events()).find(e => e.kind === 'identity')
+    const {text, user} = await identityOf(await open('cpp', {room: freshRoom(), export: 1}))
+    const first = await open('cpp', {identity: text})
     const second = await open('cpp', {identity: text})
     const js = await open('js')
     const a = await idsOf(first), b = await idsOf(second)
@@ -508,8 +597,10 @@ const oneUserTwoCppPeers = cppKind => scenario('one_user_two_cpp_peers', cppKind
 })
 
 // 7. A page room with maxUsers 2 holding two users refuses the C++ peer as a third (room_full on the C++ side), and
-// a C++ room with max_users 2 holding two refuses a page (room-full on the page).
+// a C++ room with max_users 2 holding two refuses a page (room-full on the page). What must not happen, the third
+// joining, is checked once the refusal came, and again at the end.
 const maxUsers = cppKind => scenario('max_users_both_ways', cppKind, async open => {
+    const refusedJoins = []
     {
         const full = await open('js', {maxUsers: 2})
         const other = await open('js')
@@ -518,10 +609,10 @@ const maxUsers = cppKind => scenario('max_users_both_ways', cppKind, async open 
             return 'the page of maxUsers 2 did not take its second user'
         }
         const cpp = await open('cpp')
+        const c = await idsOf(cpp)
         const refused = async () => has(await cpp.events(), 'error', e => e.code === 'room-full' && e.peer === f.self)
         if (!(await until(refused))) return 'the C++ peer was not refused with room_full by the full page'
-        if (has(await cpp.events(), 'peer-join', e => e.peer === f.self)) return 'the C++ peer joined the full page'
-        if (has(await full.events(), 'peer-join', e => e.peer !== o.self)) return 'the full page took a third user'
+        refusedJoins.push([full, c], [cpp, f])
     }
     {
         const room = freshRoom()
@@ -535,8 +626,10 @@ const maxUsers = cppKind => scenario('max_users_both_ways', cppKind, async open 
         const t = await idsOf(third)
         const refused = async () => has(await third.events(), 'error', e => e.code === 'room-full' && e.peer === c.self)
         if (!(await until(refused))) return 'the page was not refused with room-full by the full C++ room'
-        if (has(await third.events(), 'peer-join', e => e.peer === c.self)) return 'the page joined the full C++ room'
-        if (has(await cpp.events(), 'peer-join', e => e.peer === t.self)) return 'the full C++ room took a third user'
+        refusedJoins.push([cpp, t], [third, c])
+    }
+    for (const [page, of] of refusedJoins) {
+        if ((await joinedBy([page], of)).length) return `${page.label} joined ${of.self}, a third user`
     }
     return null
 })
@@ -578,16 +671,24 @@ const leaves = cppKind => scenario('leaves', cppKind, async open => {
 })
 
 // 10. forger.html joins with a custom identity whose sign() passes 0.27.0's startup check and then signs with
-// another key: the C++ peer reports handshake_failed for it and never joins it.
+// another key: the C++ peer reports handshake_failed for it, once per handshake run (one per connection the C++
+// peer's log shows negotiated with it, by its offer ids), and never joins it.
 const forgedUserSignature = cppKind => scenario('a_forged_user_signature', cppKind, async open => {
     const cpp = await open('cpp')
     const forger = await open('forger')
     const f = await idsOf(forger)
-    const failed = async () => has(await cpp.events(), 'error', e => e.code === 'handshake-failed' && e.peer === f.self)
-    if (!(await until(failed))) return 'the C++ peer did not report handshake_failed for the forger'
+    const reports = async () => count(await cpp.events(), 'error', e => e.code === 'handshake-failed' && e.peer === f.self)
+    if (!(await until(async () => (await reports()) > 0))) return 'the C++ peer did not report handshake_failed for the forger'
     if (count(await forger.events(), 'signed') < 2) return 'the forger signed nothing after its startup check'
-    if (has(await cpp.events(), 'peer-join', e => e.peer === f.self)) return 'the C++ peer joined the forger'
-    return null
+    if ((await joinedBy([cpp], f)).length) return 'the C++ peer joined the forger'
+    const log = await cpp.log()
+    const runs = new Set([
+        ...[...log.matchAll(new RegExp(`sending offer (\\S+) to ${f.self}`, 'g'))].map(m => m[1]),
+        ...[...log.matchAll(new RegExp(`offer (\\S+) from ${f.self}`, 'g'))].map(m => m[1]),
+    ]).size
+    const reported = await reports()
+    if (reported > runs) return `the C++ peer reported handshake_failed ${reported} times for ${runs} connections`
+    return (await joinedBy([cpp], f)).length ? 'the C++ peer joined the forger' : null
 })
 
 // 11. Two pages and a C++ peer: each joins both others, and exchanges with each.
@@ -605,32 +706,173 @@ const mesh = cppKind => scenario('mesh', cppKind, async open => {
     return (await until(met)) ? null : 'the two pages did not join each other'
 })
 
-// 12. Relay connectivity, each side in turn: two peers meet; one goes offline; the other leaves and a new peer
-// joins in its place, which the offline peer cannot find while its relays are held closed (its log shows no relay
-// reconnected in that time); the offline peer goes online, and meets the new peer.
+// 12. Relay connectivity, each side in turn, as the local relay sees it. Two peers meet; one, the holder, goes
+// offline: the relay has its subscriptions closed. The other leaves and a new peer joins in its place, whose
+// announcement the relay forwards to no subscription of the holder, which does not meet it then; the holder goes
+// online, subscribes again, and meets the new peer. Then a late peer of the holder's kind starts offline: once the
+// relay forwarded an announcement of the new peer after the late one joined, the late one has neither subscribed nor
+// sent anything; it goes online, subscribes, and meets the new peer.
 const relayConnectivity = cppKind => scenario('relay_connectivity', cppKind, async open => {
     for (const offline of ['cpp', 'js']) {
         const room = freshRoom()
-        const kinds = offline === 'cpp' ? ['cpp', 'js'] : ['js', 'cpp']
-        const holder = await open(kinds[0], {room})
-        const leaver = await open(kinds[1], {room})
-        const failed = offline === 'cpp' ? await exchange(holder, leaver) : await exchange(leaver, holder)
+        const [mine, theirs] = offline === 'cpp' ? ['cpp', 'js'] : ['js', 'cpp']
+        const pair = (a, b) => (offline === 'cpp' ? exchange(a, b) : exchange(b, a))
+        const subscribed = page => left.relay.subscribed(selfTopicOf(room, page.self))
+        const holder = await open(mine, {room})
+        const leaver = await open(theirs, {room})
+        const h = await idsOf(holder), l = await idsOf(leaver)
+        const failed = await pair(holder, leaver)
         if (failed) return `${offline} offline: ${failed}`
         await holder.offline()
-        if (!(await until(async () => has(await holder.events(), 'connectivity', e => e.mode === 'offline')))) {
-            return `${holder.label} did not go offline`
-        }
-        const l = await idsOf(leaver)
+        if (!(await until(() => subscribed(h) === 0))) return `${holder.label} went offline, and the relay still has its subscription`
         await leaver.leave()
         if (!(await until(async () => has(await holder.events(), 'peer-leave', e => e.peer === l.self)))) {
             return `${holder.label} did not see ${leaver.label} leave`
         }
-        const next = await open(kinds[1], {room})
+        const next = await open(theirs, {room})
         const n = await idsOf(next)
-        if (has(await holder.events(), 'peer-join', e => e.peer === n.self)) return `${holder.label} met ${next.label} while offline`
+        if (!(await until(() => relayed(n.self, 'announce', rootTopicOf(room)).length > 0))) {
+            return `the relay forwarded no announcement of ${next.label}`
+        }
+        if (subscribed(h) !== 0) return `${holder.label} subscribed again while offline`
+        if ((await joinedBy([holder], n)).length) return `${holder.label} met ${next.label} while offline`
         await holder.online()
-        const again = offline === 'cpp' ? await exchange(holder, next) : await exchange(next, holder)
+        if (!(await until(() => subscribed(h) > 0))) return `${holder.label} went online, and did not subscribe again`
+        const again = await pair(holder, next)
         if (again) return `${offline} back online: ${again}`
+
+        const late = await open(mine, {room, offline: 1})
+        const t = await idsOf(late)
+        const announced = relayed(n.self, 'announce', rootTopicOf(room)).length
+        if (!(await until(() => relayed(n.self, 'announce', rootTopicOf(room)).length > announced))) {
+            return `the relay forwarded no announcement of ${next.label} after ${late.label} joined`
+        }
+        if (subscribed(t) !== 0) return `${late.label} started offline, and subscribed`
+        if (left.relay.received.some(e => e.peerId === t.self)) return `${late.label} started offline, and sent a signal`
+        await late.online()
+        if (!(await until(() => subscribed(t) > 0))) return `${late.label} went online, and did not subscribe`
+        const met = await pair(late, next)
+        if (met) return `${late.label} online: ${met}`
+    }
+    return null
+})
+
+// ---- adversarial peers on the relays ------------------------------------------------------------------------------
+// A peer of the room sends the C++ peer candidates that are not candidates, sealed under the room's key for the C++
+// peer's offer to the page in the page's name, as a broken or hostile peer of the room can: a text that is not JSON,
+// and an RTCIceCandidateInit whose candidate WebRTC refuses (in a page, Chrome's addIceCandidate rejects it). The C++
+// peer's id is below the page's, so that it offers; the relay holds the page's answer until the candidates are in, so
+// that the C++ peer holds them until its offer is answered, and then adds them: it drops each, says so, throws
+// nothing into WebAssembly, and the exchange completes. ids_and_messages_both_ways is the control: no candidate of a
+// page is dropped there.
+const malformedCandidates = ['not JSON at all', JSON.stringify({candidate: 'candidate:not a candidate', sdpMid: '0'})]
+const malformedCandidateScenario = cppKind => scenario('a_malformed_candidate', cppKind, async open => {
+    const room = freshRoom()
+    const js = await open('js', {room})
+    const j = await idsOf(js)
+    left.relay.options.hold = (topic, content) => content?.peerId === j.self && typeof content?.answer === 'string'
+    let cpp
+    try {
+        cpp = await open('cpp', {room, key: await keyAround(j.self, true)})
+        const c = await idsOf(cpp)
+        if (!(c.self < j.self)) return `the C++ peer's id ${c.self} is not below ${j.self}`
+        if (!(await until(() => relayed(c.self, 'offer', selfTopicOf(room, j.self)).length > 0))) {
+            return 'the relay forwarded no offer of the C++ peer to the page'
+        }
+        const {offerId} = relayed(c.self, 'offer', selfTopicOf(room, j.self))[0]
+        const key = genKey('', app, room)
+        const publisher = await openPublisher()
+        try {
+            for (const candidate of malformedCandidates) {
+                await publisher.publish(selfTopicOf(room, c.self), {
+                    peerId: j.self, offerId, candidate: await encrypt(key, candidate, `candidate|${j.self}|${offerId}`),
+                })
+            }
+        } finally {
+            publisher.close()
+        }
+    } finally {
+        left.relay.release()
+    }
+    const failed = await exchange(cpp, js)
+    if (failed) return failed
+    const dropped = (await cpp.log()).split(`dropped a candidate from ${j.self}`).length - 1
+    return dropped >= malformedCandidates.length
+        ? null : `the C++ peer dropped ${dropped} candidates of the page, not the ${malformedCandidates.length} malformed ones`
+})
+
+// After a page joined the C++ peer, a flooder who reads and writes the relays, with no key, sends what no key is needed
+// for, each from fresh ids: offers sealed by no key to the C++ peer, each twice, from ids below its own, and then
+// announcements on the room's topic from ids above its own, which the C++ peer offers to. The C++ peer handles every
+// one (its log names each id, or its refusal); reports each offer it cannot open as decrypt-failed at most once per
+// peer and stage (0.27.0's reportDecryptErr); offers to at most max_unconnected_peers (32) of the announcing ids, makes
+// at most max_connections_per_window (64) connections in the flood (counted as the platform counts them: cpp.html's
+// RTCPeerConnections, the native backend's made-connection events), and goes on with the page: no peer leaves, and a
+// chat message after the flood is echoed. The page offers to the announcing ids too, as a 0.27.0 peer does.
+const floodCount = 300
+const unconnectedBound = 32
+const connectionBound = 64
+const floodScenario = cppKind => scenario('a_flood_of_signals_from_fresh_ids', cppKind, async open => {
+    const room = freshRoom()
+    const since = Date.now()
+    const cpp = await open('cpp', {room})
+    const js = await open('js', {room})
+    const failed = await exchange(cpp, js)
+    if (failed) return failed
+    const c = await idsOf(cpp)
+    const fresh = prefix => {
+        const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+        return prefix + Array.from({length: 20 - prefix.length}, () => alphabet[Math.floor(Math.random() * 62)]).join('')
+    }
+    const offering = Array.from({length: floodCount}, () => fresh('0000000000'))
+    const announcing = Array.from({length: floodCount}, () => fresh('zzzzzzzzzz'))
+    if (!(offering.every(id => id < c.self) && announcing.every(id => id > c.self))) {
+        return `the C++ peer's id ${c.self} is not between the flood's`
+    }
+    const connections = async () => cppKind === 'native'
+        ? count(await cpp.events(), 'made-connection')
+        : await cpp.value('window.madePeerConnections')
+    const before = {connections: await connections(), cpp: (await cpp.events()).length, js: (await js.events()).length}
+    const publisher = await openPublisher()
+    try {
+        for (const peerId of offering) {
+            for (let i = 0; i < 2; ++i) {
+                await publisher.publish(selfTopicOf(room, c.self), {peerId, offerId: 'forged', offer: 'not a sealed offer'})
+            }
+        }
+        for (const peerId of announcing) await publisher.publish(rootTopicOf(room), {peerId})
+    } finally {
+        publisher.close()
+    }
+    const ids = async said => new Set([...(await cpp.log()).matchAll(new RegExp(`(?:${said}|refusing) (\\w{20})`, 'g'))].map(m => m[1]))
+    const handled = async () => {
+        const opened = await ids('could not open the offer from'), heard = await ids('announcement from')
+        return offering.every(id => opened.has(id)) && announcing.every(id => heard.has(id))
+    }
+    if (!(await until(handled))) return 'the C++ peer did not handle every signal of the flood'
+    const log = await cpp.log()
+    const offered = new Set([...log.matchAll(/announcement from (\w{20}): our id is lower, so we offer/g)]
+        .map(m => m[1]).filter(id => announcing.includes(id)))
+    const made = (await connections()) - before.connections
+    const reports = new Map()
+    for (const e of (await cpp.events()).slice(before.cpp)) {
+        if (e.kind === 'error' && e.code === 'decrypt-failed') reports.set(e.peer, (reports.get(e.peer) ?? 0) + 1)
+    }
+    const facts = `the C++ peer offered to ${offered.size} of ${floodCount} announcing ids, made ${made} connections ` +
+        `in the flood, and reported decrypt-failed for ${reports.size} of ${floodCount} offering ids`
+    console.log(`  ${facts}`)
+    if (offered.size > unconnectedBound) return `${facts}; it offered to more than ${unconnectedBound}`
+    if (made > connectionBound) return `${facts}; more than ${connectionBound} connections`
+    if (reports.size === 0) return `${facts}; no offer of the flood was reported`
+    const allowed = reportsAllowed(since)
+    const often = [...reports].filter(([, n]) => n > allowed)
+    if (often.length) return `${facts}; reported more than ${allowed} times: ${JSON.stringify(often)}`
+    const text = 'still exchanging after the flood'
+    await js.value(`window.chat(${JSON.stringify(text)}, ${JSON.stringify(c.self)})`)
+    const echoed = async () => (await js.events()).slice(before.js).some(e => e.kind === 'chat' && e.text === `echo: ${text}`)
+    if (!(await until(echoed))) return `${facts}; the page's chat message after the flood was not echoed`
+    if ([...(await cpp.events()).slice(before.cpp), ...(await js.events()).slice(before.js)].some(e => e.kind === 'peer-leave')) {
+        return `${facts}; a peer left during the flood`
     }
     return null
 })
@@ -706,13 +948,11 @@ const strikes = [232, 231, 232, 233, 232, 231, 232, 233, 232, 232, 232, 232].map
     delay,
     action: i < 8 ? 'too-long' : 'reset',
 }))
-// 0.27.0's root topic: hashTopic of topicPath, the base64url SHA-256 of the JSON array of its parts.
-const topicOf = room => createHash('sha256').update(JSON.stringify(['Trystero', app, room])).digest('base64url')
 const strikeScenario = cppKind => scenario('a_relay_that_ends_the_connection_during_a_write', cppKind, async open => {
     const peers = []
     for (const {delay, action} of strikes) {
         const room = freshRoom()
-        left.relay.options.strike = {action, delay, topic: topicOf(room)}
+        left.relay.options.strike = {action, delay, topic: rootTopicOf(room)}
         const peer = await open('cpp', {room})
         peers.push(peer)
         const lost = await until(async () => (await peer.log()).includes(`lost ${left.relay.url}`))
@@ -736,8 +976,9 @@ const killedScenario = cppKind => scenario('a_native_peer_killed_by_a_signal_is_
     return named ? null : 'the driver did not name the signal that killed the native peer'
 })
 
-// Every scenario the options ask for, in turn: each of the twelve of 0.27.0's interop against the lane's C++ peer,
-// then the C++ peer's own relay robustness, on a local relay.
+// Every scenario the options ask for, in turn: each of the twelve of 0.27.0's interop against the lane's C++ peer (the
+// twelfth sees the relay's side, so it needs the local relay), then, on the local relay, adversarial peers and the C++
+// peer's own relay robustness.
 const scenarios = async () => {
     for (const cppKind of [...(browserPeer ? ['cpp'] : []), ...(nativePeer ? ['native'] : [])]) {
         await idsAndMessages(cppKind)
@@ -751,8 +992,10 @@ const scenarios = async () => {
         await leaves(cppKind)
         await forgedUserSignature(cppKind)
         await mesh(cppKind)
-        await relayConnectivity(cppKind)
         if (!usePublic) {
+            await relayConnectivity(cppKind)
+            await malformedCandidateScenario(cppKind)
+            await floodScenario(cppKind)
             await refusedRelayScenario(cppKind)
             await unusableIceScenario(cppKind)
             await oversizedRelayTextScenario(cppKind)

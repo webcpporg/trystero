@@ -43,6 +43,31 @@ const checksum = bytes => {
 const pattern = (size, step) => new Uint8Array(size).map((_, i) => (i * step) % 256)
 const sent = (what, peer) => [() => record('sent', {what, peer, error: ''}), e => record('sent', {what, peer, error: String(e)})]
 
+// The largest message this page sent and received on its data channels, for the wide transfer: 0.27.0 sends a
+// transfer in frames of 64 KiB (maxBulkFrameBytes) to a peer whose connection can take them, else of 16 KiB. Trystero
+// looks RTCPeerConnection up when it makes one, so the class it finds is this one.
+window.largest = {sent: 0, received: 0}
+const sizeOf = data => data?.byteLength ?? data?.size ?? data?.length ?? 0
+const channelSend = RTCDataChannel.prototype.send
+RTCDataChannel.prototype.send = function (data) {
+    window.largest.sent = Math.max(window.largest.sent, sizeOf(data))
+    return channelSend.call(this, data)
+}
+const watch = channel =>
+    channel.addEventListener('message', ({data}) => (window.largest.received = Math.max(window.largest.received, sizeOf(data))))
+const PeerConnection = window.RTCPeerConnection
+window.RTCPeerConnection = class extends PeerConnection {
+    constructor(...args) {
+        super(...args)
+        this.addEventListener('datachannel', ({channel}) => watch(channel))
+    }
+    createDataChannel(...args) {
+        const channel = super.createDataChannel(...args)
+        watch(channel)
+        return channel
+    }
+}
+
 // The user: an imported identity, a new one whose text the identity event carries, or, with neither, a new
 // one of this page alone ('none': the pages of one origin would otherwise share the one IndexedDB keeps).
 let identity = 'none'

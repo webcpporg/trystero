@@ -34,16 +34,12 @@ reason:
   decoding would be the application's. A room ignores a frame of one of
   these actions.
 
-| Identities: the `identity` option, `createUserIdentity`,
-  `exportUserIdentity`, `importUserIdentity` and `clearUserIdentity`, the
-  signed handshake, `maxUsers`
-| Phase 2: each needs ECDSA P-256, which webcpp::crypto's `curves::p256`
-  brings. Until then a peer's id is drawn at random, its user's id is its
-  own, and `room_full`, `banned`, `identity_failed`, `handshake_failed` and
-  `peer_error` are reported by nothing. 0.27.0's default, `identity:
-  'local'`, keeps the user key in IndexedDB; the port will have no implicit
-  persistence (design D15): a program keeps an identity with
-  `export_user_identity` and `import_user_identity`.
+| 0.27.0's default identity, `identity: 'local'`, with
+  `clearUserIdentity`
+| It keeps the user key in IndexedDB; the port has no implicit persistence
+  (design D15): an app's user is the identity its configuration gives, else
+  a new one, and a program keeps an identity with `export_user_identity` and
+  `import_user_identity`.
 
 | `makeState`, `makeUserState`, `roles`, `scale` and the plugins of `use`,
   with `ready`
@@ -82,7 +78,7 @@ has nothing of it to run beside its twin.
 |===
 | Behaviour | Trystero JS | Here | Why
 
-| Scope of the peer id | the page: one peer id for each app id, from an endpoint identity the page creates once and caches, and a user id from the user's key | an `app` object: its peer id, drawn for it, and its user's id the same, until Phase 2 | no static state; several peers in one process; P-256 keys come with Phase 2
+| Scope of the peer id | the page: one peer id for each app id, from an endpoint identity the page creates once and caches, and a user id from the user's key | an `app` object: its peer id, from an endpoint key it draws, and its user's id from the identity its configuration gives, else a new one | no static state; several peers in one process
 
 | Passwords across rooms | configured per room | one immutable `app_config::password` for every room, separate apps and peer ids for different passwords | the shared connection's sealed negotiation authenticates one password domain before any of its rooms reuse it
 
@@ -445,7 +441,7 @@ These rows of <<trystero-differences-behaviour>> and
 | Both sides draw their peer ids, so a program and its twin print ids that no two runs share, and neither API lets a program name one: what differs is which object holds an id and its connections, which the `app_impl` and `shared` tests hold over the memory relays.
 
 | Listener tokens, `getSelf`, the order of `getPeers` and `getUsers`, `onReceive` and `onRequest`, a refused request, a redefined action
-| What differs is the form of the API, a token, a value at once, a map, a callable that answers at once, an error code, which a program and its twin write each in its own language; the `subscription`, `room` and `user_table` tests hold the {cpp} side over the memory relays. Each program and twin run again once Phase 2 makes the rooms meet Trystero 0.27.0.
+| What differs is the form of the API, a token, a value at once, a map, a callable that answers at once, an error code, which a program and its twin write each in its own language; the `subscription`, `room` and `user_table` tests hold the {cpp} side over the memory relays.
 
 | A plaintext that is not UTF-8; an `@_response` that answers no request; a JSON metadata holding a lone surrogate
 | Only a peer that means harm, or one that writes a text no Trystero peer writes, sends one. The `crypto_layer` test refuses such a plaintext, and the `room` test reads a refusal's reason that ends in a lone surrogate.

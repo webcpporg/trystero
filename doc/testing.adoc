@@ -349,13 +349,17 @@ every event's id and signature as a public relay does. The {cpp} peers
 parameters and report the same events. Its scenarios, each in both lanes:
 
 . Each side sees the other's peer and user ids, and text, JSON and binary
-  messages, a request and a ping go both ways.
+  messages, a request and a ping go both ways, with the {cpp} peer's id put
+  below the page's and then above it, so that each side offers in turn (the
+  lower id offers, as in 0.27.0), which the relay shows.
 . The page joins the {cpp} peer only once it verified its endpoint and user
   signatures, and the {cpp} peer the page likewise.
-. 1 MiB each way.
+. 1 MiB each way, in 0.27.0's wide frames of 64 KiB both ways, which the
+  page sees on its data channel.
 . One password meets; another is reported as `decrypt_failed` by the higher
-  id of the two, which cannot open the lower id's offer, the {cpp} peer's id
-  put below the page's and then above it, and no peer joins.
+  id of the two, which cannot open the lower id's offer, once however often
+  it is offered, the {cpp} peer's id put below the page's and then above it,
+  and no peer joins.
 . Each side imports an identity the other exported, and presents its user.
 . Two {cpp} apps of one imported identity are two peers and one user to a
   page.
@@ -364,11 +368,24 @@ parameters and report the same events. Its scenarios, each in both lanes:
 . Requests and pings complete both ways.
 . A leave is the other side's peer and user leave, both ways.
 . A page whose identity's `sign` passes 0.27.0's startup check and then
-  signs with another key is reported as `handshake_failed` and never
-  joined.
+  signs with another key is reported as `handshake_failed`, once per
+  handshake run, and never joined.
 . Two pages and a {cpp} peer form a mesh.
-. A peer whose relays go offline misses a new peer, and meets it once they
-  are online again, each side in turn.
+. A peer whose relays go offline has its subscriptions closed at the relay,
+  misses a new peer whose announcement the relay forwarded, and subscribes
+  again and meets it once online; a peer that starts offline subscribes to
+  nothing and sends nothing until it goes online, and then meets the others;
+  each side in turn.
+
+Then, on the local relay, peers that mean harm: a peer of the room that sends
+the {cpp} peer candidates that are not candidates, sealed under the room's key
+for its offer (the relay holds the page's answer until they are in), which the
+{cpp} peer drops, saying so, before it completes the exchange; and a flood of
+offers sealed by no key and of announcements, each from fresh ids, sent with
+0.27.0's own code, which the {cpp} peer handles each, reports at most once per
+peer and stage, answers with at most its bounds of negotiations (32) and
+connections (64), counted as the platform counts them, and survives with the
+page it joined.
 
 Then the {cpp} peer's own robustness on the relays: a first relay to which
 no WebSocket can be made; a TURN server without credentials; a relay text
@@ -377,7 +394,13 @@ that ends the connection just as the peer writes, which twelve peers in turn
 must survive, and the driver's own check that a peer killed by a signal is
 named at once. Each wait of a scenario is for something that must happen,
 bounded only to end a hang; what must not happen is checked once what must
-has.
+has, and again at the scenario's end.
+
+The handshake of a Trystero 0.27.0 page has its own fixed bound, 10 s: on a
+machine so loaded that a handshake takes longer, the page reports
+`handshake-timeout`, and `js_verifies_cpp_signatures`, which fails on any
+error, fails. That is a known risk, not a reason to tolerate the error: the
+fix is at its cause, the work the handshake waits on.
 
 Every peer gathers its ICE candidates on the machine alone: the {cpp} peers
 get `stun:127.0.0.1:9` in place of Trystero's public STUN servers, the

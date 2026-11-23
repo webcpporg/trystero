@@ -44,8 +44,8 @@ the {cpp} app's admission; an upstream JS page that mixes passwords retains
 its one-way handshake exposure (<<trystero-protocol-limitations>>). _Held
 by_ `room` (`the_same_password_joins_and_another_does_not` and
 `decrypt_failed_is_reported_once_a_minute`), `platform_room`
-(`another_password_never_joins`), and password-domain tests of `shared` and
-`interop`.
+(`another_password_never_joins`), and the interop's `passwords` scenario,
+with either side offering.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
 both ways.* It is offered, accepted and sent in chunks of at most 16,370
 bytes, and arrives whole, from either peer. _Held by_ `room`

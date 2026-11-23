@@ -72,15 +72,11 @@ connections and channels use the app's resource; libdatachannel, OpenSSL,
 natively the cipher context of each seal and open and the PBKDF2 thread, and
 the browser retain their own internal allocations.
 
-A passwordless app's rooms are open to peers already connected through any
-of its rooms: presence reveals their tokens. A protected app uses a separate
-identity and connection; the initial sealed signaling authenticates its
-password before its rooms can share that connection. The shared connection
-keeps the Trystero JS 0.26.0 wire until Phase 2, including its one-way room
-handshake: a JS page
-that mixes room passwords still exposes its own rooms. Configure each JS
-app with one password too. A peer that knows a C++ app's password can still
-send a wrong room proof, reported by the lower id only.
+An app's password, `app_config::password`, seals the signals of each of its
+rooms, as a Trystero JS room's password seals its own: a peer of another
+password reads none of them, and the room reports its sealed offer or answer
+as `decrypt_failed`. Each room negotiates its own connections with
+Trystero 0.27.0's signed handshake, as a Trystero JS room does.
 
 ## Building inside the superproject
 

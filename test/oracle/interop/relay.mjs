@@ -7,7 +7,9 @@
 // A Nostr relay for the interop test, the examples that run over a relay and their twins, NIP-01 only and in memory:
 // REQ with kinds, since and #x filters, CLOSE, and EVENT, which it verifies like a public relay (the id is the SHA-256
 // of the canonical serialization, the signature a valid BIP-340 one) before forwarding it to the subscriptions open
-// at that moment. Nothing is stored: Trystero's kinds are ephemeral.
+// at that moment. Nothing is stored for the clients: Trystero's kinds are ephemeral. For the interop test's checks
+// it keeps what it was sent (`received`), tells how many clients subscribe to a topic (`subscribed`), and can hold the
+// events a predicate picks back until `release` (`options.hold`).
 import {createHash} from 'node:crypto'
 import {schnorr} from '@noble/secp256k1'
 import {WebSocketServer} from 'ws'
@@ -17,12 +19,20 @@ export const startRelay = (port = 0) =>
         const server = new WebSocketServer({port, host: '127.0.0.1'})
         const subscriptions = new Map() // socket -> Map(subId -> filter)
         const stats = {events: 0, rejected: 0}
+        // Every event forwarded, in the order it was: {topic, peerId, offerId, signal}, of its content as JSON, `signal`
+        // being 'announce' for a content without offer, answer or candidate, else the first of those it has; all null
+        // for a content that is not JSON.
+        const received = []
+        // Events that options.hold picked, in order, forwarded by release().
+        const held = []
         // options.afterSubscribe: a raw text sent after every subscription, when not null.
         // options.strike: {action, delay, topic}, when not null: the next subscription to `topic` takes it, and `delay`
         // milliseconds later the relay resets that client's TCP connection (action 'reset') or sends it a text longer
         // than 1 MiB (action 'too-long'). A C++ peer announces 233 ms after it subscribed, so a delay just below that
         // ends its connection as that write starts.
-        const options = {afterSubscribe: null, strike: null}
+        // options.hold: (topic, content) => boolean, when not null: an event it picks is acknowledged but held back from
+        // the subscriptions until release().
+        const options = {afterSubscribe: null, strike: null, hold: null}
         const tooLong = 'x'.repeat(1024 * 1024 + 1)
         const strikeLater = (socket, {action, delay}) =>
             setTimeout(() => {
@@ -31,6 +41,26 @@ export const startRelay = (port = 0) =>
                 else socket.send(tooLong)
             }, delay)
         const send = (socket, message) => socket.readyState === 1 && socket.send(JSON.stringify(message))
+        const contentOf = event => {
+            try {
+                return JSON.parse(event.content)
+            } catch {
+                return null
+            }
+        }
+        const signalOf = content =>
+            ['offer', 'answer', 'candidate'].find(k => typeof content?.[k] === 'string') ?? 'announce'
+        const forward = (event, topic) => {
+            const content = contentOf(event)
+            received.push({
+                topic, peerId: content?.peerId ?? null, offerId: content?.offerId ?? null, signal: content ? signalOf(content) : null,
+            })
+            for (const [other, subs] of subscriptions) {
+                for (const [subId, filter] of subs) {
+                    if (matches(filter, event, topic)) send(other, ['EVENT', subId, event])
+                }
+            }
+        }
         const matches = (filter, event, topic) =>
             (!filter.kinds || filter.kinds.includes(event.kind)) &&
             (!filter['#x'] || filter['#x'].includes(topic)) &&
@@ -72,13 +102,12 @@ export const startRelay = (port = 0) =>
                         return send(socket, ['OK', event.id, false, problem])
                     }
                     stats.events++
-                    send(socket, ['OK', event.id, true, ''])
+                    // Forwarded before the OK: a client that waits for its OK knows every subscription has the event
+                    // before anything it sends next.
                     const topic = event.tags.find(t => t[0] === 'x')?.[1]
-                    for (const [other, subs] of subscriptions) {
-                        for (const [subId, filter] of subs) {
-                            if (matches(filter, event, topic)) send(other, ['EVENT', subId, event])
-                        }
-                    }
+                    if (options.hold?.(topic, contentOf(event))) held.push([event, topic])
+                    else forward(event, topic)
+                    send(socket, ['OK', event.id, true, ''])
                 }
             })
         })
@@ -86,6 +115,18 @@ export const startRelay = (port = 0) =>
         const broadcast = text => {
             for (const socket of subscriptions.keys()) socket.readyState === 1 && socket.send(text)
         }
+        // release(): ends options.hold and forwards what it held, in order.
+        const release = () => {
+            options.hold = null
+            for (const [event, topic] of held.splice(0)) forward(event, topic)
+        }
+        // subscribed(topic): how many open clients subscribe to `topic`.
+        const subscribed = topic =>
+            [...subscriptions.entries()].filter(([socket, subs]) =>
+                socket.readyState === 1 && [...subs.values()].some(f => f?.['#x']?.includes(topic))).length
         server.on('listening', () =>
-            resolve({url: `ws://127.0.0.1:${server.address().port}`, stats, options, broadcast, close: () => server.close()}))
+            resolve({
+                url: `ws://127.0.0.1:${server.address().port}`, stats, options, received, broadcast, release, subscribed,
+                close: () => server.close(),
+            }))
     })
