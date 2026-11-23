@@ -1087,6 +1087,7 @@ void user_key_buffers_are_wiped() {
     // The watch sees a copy of a scalar's text freed as it is.
     {
         const std::pmr::string copy(str(section("user_identity")["jwk"]["d"]), &watch);
+        BOOST_TEST(!copy.empty());
     }
     BOOST_TEST_EQ(watch.hits(), 1U);
     std::vector<std::string> texts;
@@ -1148,9 +1149,10 @@ void user_key_text_is_read_as_0_27_0_reads_it() {
     BOOST_TEST(!accepts("[" + json + "]"));
     // The prefixed text of the JSON with a byte order mark, which TextDecoder drops.
     const std::string bom_json = "\xef\xbb\xbf" + json;
-    BOOST_TEST(accepts(std::string(tp::user_key_prefix) +
-                       std::string(tp::to_base64url(bytes_view(bom_json)))));
-    BOOST_TEST(!accepts(std::string(tp::user_key_prefix)));
+    std::string bom_text(tp::user_key_prefix);
+    bom_text += tp::to_base64url(bytes_view(bom_json));
+    BOOST_TEST(accepts(bom_text));
+    BOOST_TEST(!accepts(tp::user_key_prefix));
     BOOST_TEST(!accepts("   "));
 }
 
@@ -1242,6 +1244,9 @@ void cpp_signatures_are_deterministic_and_low_s() {
         BOOST_TEST(tp::is_low_s(*first));
         BOOST_TEST(tp::verify_p256(*first, bytes_view(payload), *point));
     }
+}
+
+void identities_sign_as_their_keys() {
     // A user identity signs as its key does.
     const auto identity = trystero::import_user_identity(str(section("user_identity")["text"]));
     if (BOOST_TEST(identity.has_value())) {
@@ -1263,13 +1268,15 @@ void cpp_signatures_are_deterministic_and_low_s() {
         BOOST_TEST_EQ(text.size(), 214U);
         const auto again = trystero::import_user_identity(text);
         BOOST_TEST(again.has_value() && again->user_id() == a->user_id());
-        // A move copies: the identity moved from keeps its key.
+        // A move copies: an identity has no move of its own, so the one moved from keeps its key.
+        // What the analysis says of the move below (it does nothing, the identity moved from could
+        // be const and is used after it) is what this case asserts.
+        // NOLINTBEGIN(bugprone-use-after-move,performance-move-const-arg,misc-const-correctness)
         auto moved = *a;
         const auto target = std::move(moved);
-        // NOLINTBEGIN(bugprone-use-after-move): an identity's move is its copy
         BOOST_TEST_EQ(moved.user_id(), target.user_id());
         BOOST_TEST(moved.sign(bytes_view("payload")).has_value());
-        // NOLINTEND(bugprone-use-after-move)
+        // NOLINTEND(bugprone-use-after-move,performance-move-const-arg,misc-const-correctness)
     }
 }
 
@@ -1354,9 +1361,9 @@ tp::bytes scalar_of(std::string_view label) {
 struct handshake_side {
     trystero::detail::endpoint_identity endpoint;
     trystero::user_identity user;
-    trystero::detail::identity_cache cache{std::pmr::get_default_resource()};
     std::pmr::vector<std::pmr::string> local_dtls;
     std::pmr::vector<std::pmr::string> remote_dtls;
+    trystero::detail::identity_cache cache{std::pmr::get_default_resource()};
     std::optional<trystero::detail::identity_handshake> machine{};
 };
 
@@ -1383,12 +1390,11 @@ std::unique_ptr<handshake_side> side_of(const fixture_value& c, std::string_view
     const bool initiator = role == "initiator";
     const auto self = c[role];
     const auto remote = c[initiator ? "responder" : "initiator"];
-    auto side = std::unique_ptr<handshake_side>(new handshake_side{
-        .endpoint = endpoint_of(str(self["endpoint"])),
-        .user = user_of(str(self["user"])),
-        .local_dtls = dtls_of(str(self["sdp_local"])),
-        .remote_dtls = dtls_of(str(self["sdp_remote"])),
-    });
+    // The endpoint, the user, the local and the remote fingerprints; the cache and the machine
+    // take their defaults.
+    auto side = std::make_unique<handshake_side>(
+        endpoint_of(str(self["endpoint"])), user_of(str(self["user"])),
+        dtls_of(str(self["sdp_local"])), dtls_of(str(self["sdp_remote"])));
     BOOST_TEST_EQ(side->endpoint.peer_id, str(self["peer_id"]));
     BOOST_TEST_EQ(side->user.user_id(), str(self["user_id"]));
     side->machine.emplace(
@@ -1431,7 +1437,7 @@ void dtls_fingerprints_match() {
             if (step == 3) {
                 continue;
             }
-            const auto role = str(m["from"]) == "A" ? "initiator" : "responder";
+            const auto* const role = str(m["from"]) == "A" ? "initiator" : "responder";
             BOOST_TEST(dtls_of(str(c[role]["sdp_local"])) == claims_of(str(m["json"])).dtls);
             ++sent;
         }
@@ -1441,10 +1447,10 @@ void dtls_fingerprints_match() {
     // U+2029), the value to the line's \r or \n, trimmed, lowercased, deduplicated, in UTF-16
     // order.
     using list = std::pmr::vector<std::pmr::string>;
-    BOOST_TEST(dtls_of("") == list{});
-    BOOST_TEST(dtls_of("a=fingerprint:") == list{});
-    BOOST_TEST(dtls_of("a=fingerprint:   \r\n") == list{});
-    BOOST_TEST(dtls_of(" a=fingerprint:x\r\nb a=fingerprint:y") == list{});
+    BOOST_TEST(dtls_of("").empty());
+    BOOST_TEST(dtls_of("a=fingerprint:").empty());
+    BOOST_TEST(dtls_of("a=fingerprint:   \r\n").empty());
+    BOOST_TEST(dtls_of(" a=fingerprint:x\r\nb a=fingerprint:y").empty());
     BOOST_TEST(dtls_of("a=fingerprint:B\na=fingerprint: b \r\ra=fingerprint:A") ==
                (list{"a", "b"}));
     BOOST_TEST(dtls_of("v=0\xe2\x80\xa8"
@@ -1489,6 +1495,35 @@ void handshake_steps_match() {
     }
 }
 
+/** `json` with the value of its top-level member `member` replaced by `value`, a JSON text. */
+std::pmr::string with_member(std::pmr::string json, std::string_view member,
+                             std::string_view value) {
+    const std::string key = "\"" + std::string(member) + "\":";
+    const auto at = json.find(key);
+    BOOST_TEST(at != std::string::npos);
+    auto end = at + key.size();
+    int depth = 0;
+    bool quoted = false;
+    for (; end < json.size(); ++end) {
+        const char ch = json[end];
+        if (quoted) {
+            quoted = ch != '"';
+            continue;
+        }
+        if (ch == '"') {
+            quoted = true;
+        } else if (ch == '[') {
+            ++depth;
+        } else if (ch == ']') {
+            --depth;
+        } else if ((ch == ',' || ch == '}') && depth == 0) {
+            break;
+        }
+    }
+    json.replace(at + key.size(), end - at - key.size(), value);
+    return json;
+}
+
 void handshake_steps_are_read_as_0_27_0_reads_them() {
     const auto c = handshake_case("verified");
     const auto a_dtls = dtls_of(str(c["initiator"]["sdp_local"]));
@@ -1500,32 +1535,8 @@ void handshake_steps_are_read_as_0_27_0_reads_them() {
     };
     // A step 1 with one member replaced.
     const auto step1 = [&](std::string_view member, std::string_view value) {
-        auto claims = claims_of(message_of(c, 1));
-        std::pmr::string json = tp::write_handshake_step(claims, memory);
-        const std::string key = "\"" + std::string(member) + "\":";
-        const auto at = json.find(key);
-        BOOST_TEST(at != std::string::npos);
-        auto end = at + key.size();
-        int depth = 0;
-        bool quoted = false;
-        for (; end < json.size(); ++end) {
-            const char ch = json[end];
-            if (quoted) {
-                quoted = ch != '"';
-                continue;
-            }
-            if (ch == '"') {
-                quoted = true;
-            } else if (ch == '[') {
-                ++depth;
-            } else if (ch == ']') {
-                --depth;
-            } else if ((ch == ',' || ch == '}') && depth == 0) {
-                break;
-            }
-        }
-        json.replace(at + key.size(), end - at - key.size(), value);
-        return json;
+        const auto claims = claims_of(message_of(c, 1));
+        return with_member(tp::write_handshake_step(claims, memory), member, value);
     };
     const auto identity = tp::handshake_reason::identity;
     const auto mismatch = tp::handshake_reason::dtls_mismatch;
@@ -1575,9 +1586,11 @@ void handshake_steps_are_read_as_0_27_0_reads_them() {
     auto unsigned_step2 = tp::write_handshake_step(step2, memory);
     unsigned_step2.replace(unsigned_step2.find(":1,"), 3, ":2,");
     BOOST_TEST_EQ(read(unsigned_step2, 2).failure, identity);
-    BOOST_TEST_EQ(read("{\"__trystero_id\":3,\"ps\":\"a\"}", 3).failure, identity);
-    BOOST_TEST_EQ(read("{\"__trystero_id\":2,\"ps\":\"a\",\"us\":\"b\"}", 3).failure, identity);
-    const auto step3 = read("{\"__trystero_id\":3,\"ps\":\"a\",\"us\":\"\"}", 3);
+    const std::string_view without_us = R"({"__trystero_id":3,"ps":"a"})";
+    const std::string_view numbered_2 = R"({"__trystero_id":2,"ps":"a","us":"b"})";
+    BOOST_TEST_EQ(read(without_us, 3).failure, identity);
+    BOOST_TEST_EQ(read(numbered_2, 3).failure, identity);
+    const auto step3 = read(R"({"__trystero_id":3,"ps":"a","us":""})", 3);
     if (BOOST_TEST(step3.claims.has_value())) {
         BOOST_TEST_EQ(step3.claims->endpoint_signature, std::string_view("a"));
         BOOST_TEST(step3.claims->user_signature.empty());
@@ -1695,6 +1708,64 @@ void signatures_of_another_transcript_are_refused() {
     BOOST_TEST(!replayed.done.has_value());
 }
 
+/** The outcomes of a recorded case's run on the C++ side of `role`, its start and each message of
+ * the other side's, up to its first failure. */
+std::vector<trystero::detail::identity_handshake::outcome> run_side(const fixture_value& c,
+                                                                    std::string_view role) {
+    const auto side = side_of(c, role);
+    const std::string_view own = role == "initiator" ? "A" : "B";
+    std::vector<trystero::detail::identity_handshake::outcome> outcomes;
+    outcomes.push_back(side->machine->start());
+    for (const auto m : c["messages"]) {
+        if (!outcomes.back().failure.empty()) {
+            break;
+        }
+        if (str(m["from"]) != own) {
+            outcomes.push_back(side->machine->receive(str(m["json"])));
+        }
+    }
+    return outcomes;
+}
+
+/** What a side of a recorded case ended in. */
+enum class side_end : std::uint8_t {
+    verified,
+    waits,
+    failed,
+};
+
+/** Checks the C++ side of `role` of a recorded case against 0.27.0's: verified as it, waiting
+ * as it, or failed with its reason; returns which. */
+side_end check_side(const fixture_value& c, std::string_view role) {
+    const auto error = c[std::string(role) + "_error"];
+    const std::string_view own = role == "initiator" ? "A" : "B";
+    const auto outcomes = run_side(c, role);
+    const auto failed =
+        std::ranges::find_if(outcomes, [](const auto& o) { return !o.failure.empty(); });
+    const auto done =
+        std::ranges::find_if(outcomes, [](const auto& o) { return o.done.has_value(); });
+    if (error.is_null()) {
+        // The side 0.27.0 verified verifies too.
+        BOOST_TEST(failed == outcomes.end());
+        if (BOOST_TEST(done != outcomes.end())) {
+            BOOST_TEST_EQ(done->done->user_id, str(c["verified"][own]["user_id"]));
+        }
+        return side_end::verified;
+    }
+    BOOST_TEST(done == outcomes.end());
+    if (str(error) == "waits") {
+        BOOST_TEST(failed == outcomes.end());
+        return side_end::waits;
+    }
+    std::string_view expected = str(error);
+    BOOST_TEST(expected.starts_with("Trystero: "));
+    expected.remove_prefix(std::string_view("Trystero: ").size());
+    if (BOOST_TEST(failed != outcomes.end())) {
+        BOOST_TEST_EQ(failed->failure, expected);
+    }
+    return side_end::failed;
+}
+
 void handshake_failures_match() {
     std::size_t failing = 0;
     std::size_t waiting = 0;
@@ -1704,43 +1775,10 @@ void handshake_failures_match() {
             continue;
         }
         for (const std::string_view role : {"initiator", "responder"}) {
-            const auto error = c[std::string(role) + "_error"];
-            const auto side = side_of(c, role);
-            const std::string_view own = role == "initiator" ? "A" : "B";
-            std::vector<trystero::detail::identity_handshake::outcome> outcomes;
-            outcomes.push_back(side->machine->start());
-            for (const auto m : c["messages"]) {
-                if (!outcomes.back().failure.empty()) {
-                    break;
-                }
-                if (str(m["from"]) != own) {
-                    outcomes.push_back(side->machine->receive(str(m["json"])));
-                }
-            }
-            const auto failed =
-                std::ranges::find_if(outcomes, [](const auto& o) { return !o.failure.empty(); });
-            const auto done =
-                std::ranges::find_if(outcomes, [](const auto& o) { return o.done.has_value(); });
-            if (error.is_null()) {
-                // The side 0.27.0 verified verifies too.
-                BOOST_TEST(failed == outcomes.end());
-                if (BOOST_TEST(done != outcomes.end())) {
-                    BOOST_TEST_EQ(done->done->user_id, str(c["verified"][own]["user_id"]));
-                }
-                ++verified;
-            } else if (str(error) == "waits") {
-                BOOST_TEST(failed == outcomes.end());
-                BOOST_TEST(done == outcomes.end());
-                ++waiting;
-            } else {
-                std::string_view expected = str(error);
-                BOOST_TEST(expected.starts_with("Trystero: "));
-                expected.remove_prefix(std::string_view("Trystero: ").size());
-                if (BOOST_TEST(failed != outcomes.end())) {
-                    BOOST_TEST_EQ(failed->failure, expected);
-                }
-                BOOST_TEST(done == outcomes.end());
-                ++failing;
+            switch (check_side(c, role)) {
+                case side_end::verified: ++verified; break;
+                case side_end::waits: ++waiting; break;
+                case side_end::failed: ++failing; break;
             }
         }
     }
@@ -1761,7 +1799,7 @@ void uuid_nonces_have_16_units_or_more() {
                                        memory)
             .claims.has_value();
     };
-    for (const std::uint8_t fill : {0x00, 0x5a, 0xff}) {
+    for (const std::uint8_t fill : std::to_array<std::uint8_t>({0x00, 0x5a, 0xff})) {
         std::array<std::uint8_t, 16> random{};
         random.fill(fill);
         const auto uuid = tp::uuid_v4(random);
@@ -1868,6 +1906,7 @@ int main(int argc, char* argv[]) {
     webcpp::test::run_case(user_proof_matches);
     webcpp::test::run_case(low_s_matches);
     webcpp::test::run_case(cpp_signatures_are_deterministic_and_low_s);
+    webcpp::test::run_case(identities_sign_as_their_keys);
     webcpp::test::run_case(scalars_are_checked_against_the_order);
     webcpp::test::run_case(dtls_fingerprints_match);
     webcpp::test::run_case(handshake_steps_match);

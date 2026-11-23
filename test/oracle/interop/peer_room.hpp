@@ -195,8 +195,10 @@ public:
                        {{"code", "identity-create"}, {"error", created.error().message()}});
                 return;
             }
-            record("identity", {{"text", trystero::export_user_identity(*created)},
-                                {"user", created->user_id()}});
+            record("identity", {
+                                   {"text", trystero::export_user_identity(*created)},
+                                   {"user", created->user_id()},
+                               });
             config.identity = *created;
         }
         if (const std::string key = param("key"); !key.empty()) {
@@ -224,9 +226,11 @@ public:
         }
         room_.emplace(std::move(*joined));
         wide_ = !param("wide").empty();
-        record("joined", {{"self", app_->self_id()},
-                          {"user", app_->user_id()},
-                          {"relays", room_->relay_urls()}});
+        record("joined", {
+                             {"self", app_->self_id()},
+                             {"user", app_->user_id()},
+                             {"relays", room_->relay_urls()},
+                         });
         listen();
     }
 
@@ -273,22 +277,28 @@ private:
     /** An error, its code by 0.27.0's name, or by its message for a code 0.27.0 has not. */
     void record_error(const trystero::room_error& e) const {
         const std::string_view name = trystero::room_error_code_name(e.code);
-        record("error", {{"code", name.empty() ? e.code.message() : std::string(name)},
-                         {"error", e.message},
-                         {"peer", e.peer_id}});
+        record("error", {
+                            {"code", name.empty() ? e.code.message() : std::string(name)},
+                            {"error", e.message},
+                            {"peer", e.peer_id},
+                        });
     }
 
-    /** A completion of a send to `peer` that records it as `what`. */
-    auto sent(std::string_view what, const trystero::peer_id& peer) const {
-        return [this, what = std::string(what), peer](boost::system::error_code ec) {
+    /** A completion of a send to `peer` that records it as `what`; it holds its own copies, which
+     * its moves move rather than copy. */
+    [[nodiscard]] auto sent(std::string_view what, const trystero::peer_id& peer) const {
+        return [this, what = std::string(what),
+                peer = trystero::peer_id(peer)](boost::system::error_code ec) {
             record("sent", {{"what", what}, {"peer", peer}, {"error", ec ? ec.message() : ""}});
         };
     }
 
     void greet(const trystero::peer_id& peer) {
         const auto to = [&peer](std::string_view metadata = {}) {
-            return trystero::send_options{.targets = {peer},
-                                          .metadata = std::pmr::string(metadata)};
+            return trystero::send_options{
+                .targets = {peer},
+                .metadata = std::pmr::string(metadata),
+            };
         };
         chat_->async_send("hello from C++", to(), sent("chat", peer));
         auto cafezinho =
@@ -299,19 +309,21 @@ private:
         file_->async_send(pattern(100'000, 13), to(R"({"name":"from-cpp.bin"})"),
                           sent("file", peer));
         if (wide_) {
-            wide_action_->async_send(pattern(1024 * 1024, 13), to(), sent("wide", peer));
+            wide_action_->async_send(pattern(std::size_t{1024} * 1024, 13), to(),
+                                     sent("wide", peer));
         }
         question_->async_request(
             "question from C++", trystero::request_options{.target = peer, .metadata = {}},
-            [this, peer](boost::system::error_code ec, std::string answer) {
+            [this, peer = trystero::peer_id(peer)](boost::system::error_code ec,
+                                                   std::string answer) {
                 record("response",
                        {{"peer", peer}, {"text", answer}, {"error", ec ? ec.message() : ""}});
             });
-        room_->async_ping(
-            peer, [this, peer](boost::system::error_code ec, std::chrono::milliseconds rtt) {
-                record("ping",
-                       {{"peer", peer}, {"error", ec ? ec.message() : ""}, {"ms", rtt.count()}});
-            });
+        room_->async_ping(peer, [this, peer = trystero::peer_id(peer)](
+                                    boost::system::error_code ec, std::chrono::milliseconds rtt) {
+            record("ping",
+                   {{"peer", peer}, {"error", ec ? ec.message() : ""}, {"ms", rtt.count()}});
+        });
     }
 
     void listen() {
@@ -350,10 +362,12 @@ private:
             });
         const auto bytes_of = [this](std::string_view kind) {
             return [this, kind](const trystero::bytes& data, const trystero::message_info& info) {
-                record(kind, {{"from", info.from},
-                              {"size", data.size()},
-                              {"checksum", checksum(data)},
-                              {"metadata", info.metadata}});
+                record(kind, {
+                                 {"from", info.from},
+                                 {"size", data.size()},
+                                 {"checksum", checksum(data)},
+                                 {"metadata", info.metadata},
+                             });
             };
         };
         file_->on_message(bytes_of("file"));

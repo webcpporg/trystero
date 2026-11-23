@@ -109,6 +109,7 @@ inline std::vector<std::string> ordered_labels(std::size_t n, std::string_view p
     }
     std::ranges::sort(by_id);
     std::vector<std::string> out;
+    out.reserve(by_id.size());
     for (auto& [id, label] : by_id) {
         out.push_back(std::move(label));
     }
@@ -135,6 +136,11 @@ struct app_setup : trystero::app_config {
     /** The label of the app's endpoint key (@ref endpoint_scalar); empty draws a key. */
     std::pmr::string label;
 };
+
+/** The configuration of a setup, without its label: for a test that names its keys itself. */
+inline trystero::app_config config_of(app_setup setup) {
+    return std::move(static_cast<trystero::app_config&>(setup));
+}
 
 /** An app of the tests' app id over the two memory relays, its endpoint key named `label`; with
  * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */

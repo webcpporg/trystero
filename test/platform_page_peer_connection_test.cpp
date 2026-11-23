@@ -111,7 +111,7 @@ void set_sctp(std::optional<double> size) {
 // The connection's largest message is the page's own `sctp.maxMessageSize`, as webcpp::webrtc's
 // max_message_size() reads it, within webcpp::webrtc's 256 KiB: nothing while the connection has
 // no SCTP transport, then what the transport says, at most 256 KiB for a larger size or none.
-void max_message_size_is_the_transports(trystero::backend::peer_connection& pc) {
+void max_message_size_is_the_transports(const trystero::backend::peer_connection& pc) {
     BOOST_TEST(!pc.max_message_size().has_value());
     set_sctp(16384);
     BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(16384));

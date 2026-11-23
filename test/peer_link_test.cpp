@@ -82,15 +82,23 @@ struct link_pair {
     void bind() {
         const std::pmr::polymorphic_allocator<> alloc(std::pmr::get_default_resource());
         link->bind({
-            .frame = {std::allocator_arg, alloc,
-                      [this](trystero::backend::bytes frame) {
-                          got.emplace_back(frame.begin(), frame.end());
-                      }},
-            .ended = {std::allocator_arg, alloc,
-                      [this](std::string_view why) {
-                          ended = why;
-                          ++ends;
-                      }},
+            .frame =
+                {
+                    std::allocator_arg,
+                    alloc,
+                    [this](trystero::backend::bytes frame) {
+                        got.emplace_back(frame.begin(), frame.end());
+                    },
+                },
+            .ended =
+                {
+                    std::allocator_arg,
+                    alloc,
+                    [this](std::string_view why) {
+                        ended = why;
+                        ++ends;
+                    },
+                },
         });
     }
 
@@ -160,18 +168,26 @@ void a_frame_that_ends_the_link_stops_the_replay() {
     p.receive(1, 3);
     const std::pmr::polymorphic_allocator<> alloc(std::pmr::get_default_resource());
     p.link->bind({
-        .frame = {std::allocator_arg, alloc,
-                  [&p](trystero::backend::bytes frame) {
-                      p.got.emplace_back(frame.begin(), frame.end());
-                      if (p.got.size() == 2) {
-                          p.link->end("ended by the room");
-                      }
-                  }},
-        .ended = {std::allocator_arg, alloc,
-                  [&p](std::string_view why) {
-                      p.ended = why;
-                      ++p.ends;
-                  }},
+        .frame =
+            {
+                std::allocator_arg,
+                alloc,
+                [&p](trystero::backend::bytes frame) {
+                    p.got.emplace_back(frame.begin(), frame.end());
+                    if (p.got.size() == 2) {
+                        p.link->end("ended by the room");
+                    }
+                },
+            },
+        .ended =
+            {
+                std::allocator_arg,
+                alloc,
+                [&p](std::string_view why) {
+                    p.ended = why;
+                    ++p.ends;
+                },
+            },
     });
     BOOST_TEST_EQ(p.got.size(), 2U);
     BOOST_TEST_EQ(p.ends, 1U);

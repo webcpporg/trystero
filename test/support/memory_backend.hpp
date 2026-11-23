@@ -682,7 +682,7 @@ public:
                         done(make_error_code(error::backend_failure));
                         return;
                     }
-                    self->remote_id_ = *remote;
+                    self->remote_id_ = remote;
                     done({});
                     self->try_connect();
                 });

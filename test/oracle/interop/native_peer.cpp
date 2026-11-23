@@ -96,16 +96,24 @@ struct command_reader {
         return true;
     }
 
+    /**
+     * Reads the next command.
+     *
+     * Tip: the reads are a loop of asynchronous operations, not a recursion: each completion runs
+     * once the call that started its read has returned. The next read is started through a
+     * pointer, so that the analysis of calls (misc-no-recursion) sees no cycle through Asio.
+     */
     void read() {
         boost::asio::async_read_until(
-            input, line, '\n', [this](boost::system::error_code ec, std::size_t size) {
+            input, line, '\n',
+            [this, again = &command_reader::read](boost::system::error_code ec, std::size_t size) {
                 if (ec) {
                     return;
                 }
                 const std::string command(static_cast<const char*>(line.data().data()), size);
                 line.consume(size);
                 if (handle(command)) {
-                    read();
+                    (this->*again)();
                 }
             });
     }

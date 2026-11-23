@@ -64,6 +64,7 @@ namespace {
 
 using trystero::test::app_config;
 using trystero::test::app_id;
+using trystero::test::config_of;
 using trystero::test::counting_resource;
 using trystero::test::document_of;
 using trystero::test::endpoint_scalar;
@@ -89,17 +90,17 @@ struct app_room {
 app_room make_app_room(fixture& f, std::string_view label, std::string_view room_id,
                        std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     const std::pmr::polymorphic_allocator<> alloc(memory);
-    trystero::app_config config{
-        .app_id = app_id,
-        .relay_urls = {relay_a, relay_b},
-        .memory = memory,
-    };
     app_room out;
     const auto scalar = trystero::test::endpoint_scalar(label);
-    out.app = std::allocate_shared<trystero::detail::app_impl>(
-        alloc, f.io.get_executor(), f.net, std::move(config),
-        std::span<const std::uint8_t>(scalar));
-    out.room = trystero::detail::room_impl::make(out.app, {}, room_id);
+    out.app =
+        std::allocate_shared<trystero::detail::app_impl>(alloc, f.io.get_executor(), f.net,
+                                                         trystero::app_config{
+                                                             .app_id = app_id,
+                                                             .relay_urls = {relay_a, relay_b},
+                                                             .memory = memory,
+                                                         },
+                                                         std::span<const std::uint8_t>(scalar));
+    out.room = trystero::detail::room_impl::make(out.app, trystero::room_options(), room_id);
     return out;
 }
 
@@ -299,6 +300,47 @@ std::string hex_of(std::span<const std::uint8_t> frame) {
     return out;
 }
 
+/** The vectors' transfer case `name` of `action_frames`; a case missing ends the test. */
+webcpp::document::basic_const_value<> recorded_transfer(std::string_view name) {
+    webcpp::test::require(BOOST_TEST(vectors().has_value()));
+    webcpp::document::basic_const_value<> recorded;
+    for (const auto entry : vectors()->root()["action_frames"]) {
+        if (entry["case"].value_or(std::string_view()) == name) {
+            recorded = entry;
+        }
+    }
+    webcpp::test::require(BOOST_TEST(recorded["frames"].is_array()));
+    return recorded;
+}
+
+/** Checks the frames of a transfer, each with the connection that sent it, against the recorded
+ * case's: who sent it, its size, and its bytes or its header. */
+void check_transfer_frames(
+    const webcpp::document::basic_const_value<>& recorded,
+    const std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>>& frames) {
+    std::size_t i = 0;
+    for (const auto expected : recorded["frames"]) {
+        if (!BOOST_TEST_LT(i, frames.size())) {
+            break;
+        }
+        const auto& [from, frame] = frames[i];
+        const bool from_a = from == frames.front().first;
+        BOOST_TEST_EQ(from_a ? "A" : "B", expected["from"].value_or(std::string_view()));
+        BOOST_TEST_EQ(static_cast<std::int64_t>(frame.size()),
+                      expected["size"].value_or(std::int64_t{-1}));
+        const auto hex = hex_of(frame);
+        if (expected["hex"].is_string()) {
+            BOOST_TEST_EQ(hex, expected["hex"].value_or(std::string_view()));
+        } else {
+            const auto head = expected["head"].value_or(std::string_view());
+            BOOST_TEST(!head.empty());
+            BOOST_TEST_EQ(std::string_view(hex).substr(0, head.size()), head);
+        }
+        ++i;
+    }
+    BOOST_TEST_EQ(frames.size(), i);
+}
+
 /**
  * Sends, from A to B over `f`'s network, the 200 KiB binary message of the vectors' transfer case
  * `name` of `action_frames` ("file", `{"name":"big.bin"}`), and checks every frame of its transfer
@@ -308,14 +350,7 @@ std::string hex_of(std::span<const std::uint8_t> frame) {
  */
 void a_transfer_sends_the_frames_of(fixture& f, std::string_view name) {
     namespace tp = trystero::protocol;
-    webcpp::test::require(BOOST_TEST(vectors().has_value()));
-    webcpp::document::basic_const_value<> recorded;
-    for (const auto entry : vectors()->root()["action_frames"]) {
-        if (entry["case"].value_or(std::string_view()) == name) {
-            recorded = entry;
-        }
-    }
-    webcpp::test::require(BOOST_TEST(recorded["frames"].is_array()));
+    const auto recorded = recorded_transfer(name);
     // The frames of a transfer: its offer, its answer and its chunks, with the connection that
     // sent each.
     std::vector<std::pair<std::size_t, std::vector<std::uint8_t>>> frames;
@@ -353,28 +388,7 @@ void a_transfer_sends_the_frames_of(fixture& f, std::string_view name) {
     BOOST_TEST(run_until(f, [&] { return sent.has_value() && !got.empty(); }));
     BOOST_TEST(sent.has_value() && !*sent);
     BOOST_TEST_ALL_EQ(got.begin(), got.end(), payload.begin(), payload.end());
-
-    std::size_t i = 0;
-    for (const auto expected : recorded["frames"]) {
-        if (!BOOST_TEST_LT(i, frames.size())) {
-            break;
-        }
-        const auto& [from, frame] = frames[i];
-        const bool from_a = from == frames.front().first;
-        BOOST_TEST_EQ(from_a ? "A" : "B", expected["from"].value_or(std::string_view()));
-        BOOST_TEST_EQ(static_cast<std::int64_t>(frame.size()),
-                      expected["size"].value_or(std::int64_t{-1}));
-        const auto hex = hex_of(frame);
-        if (expected["hex"].is_string()) {
-            BOOST_TEST_EQ(hex, expected["hex"].value_or(std::string_view()));
-        } else {
-            const auto head = expected["head"].value_or(std::string_view());
-            BOOST_TEST(!head.empty());
-            BOOST_TEST_EQ(std::string_view(hex).substr(0, head.size()), head);
-        }
-        ++i;
-    }
-    BOOST_TEST_EQ(frames.size(), i);
+    check_transfer_frames(recorded, frames);
 }
 
 // 0.27.0 sends a transfer's chunks wide to a peer whose connection's SCTP takes 64 KiB messages
@@ -388,10 +402,11 @@ void a_wide_link_sends_wide_chunks() {
 // To a peer whose connection takes smaller messages, or does not say, 0.27.0 sends its chunks
 // narrow, each a 16 KiB frame.
 void a_narrow_link_sends_narrow_chunks() {
-    for (const auto size :
-         {std::optional<std::size_t>(std::size_t{16} * 1024),
-          std::optional<std::size_t>(trystero::protocol::max_bulk_frame_bytes - 1),
-          std::optional<std::size_t>()}) {
+    for (const auto size : {
+             std::optional<std::size_t>(std::size_t{16} * 1024),
+             std::optional<std::size_t>(trystero::protocol::max_bulk_frame_bytes - 1),
+             std::optional<std::size_t>(),
+         }) {
         fixture f{true};
         f.net.max_message_size = size;
         a_transfer_sends_the_frames_of(f, "bulk");
@@ -422,7 +437,7 @@ void a_refused_chunk_ends_the_transfer_with_the_peer() {
     b.on_peer_leave([&](const trystero::peer_event&) { ++b_left; });
     std::optional<boost::system::error_code> sent;
     a.make_action<trystero::bytes>("file").async_send(
-        trystero::bytes(std::size_t{200} * 1024, 7), {},
+        trystero::bytes(std::size_t{200} * 1024, 7), trystero::send_options(),
         [&](boost::system::error_code ec) { sent = ec; });
     BOOST_TEST(run_until(f, [&] { return sent.has_value() && a_left == 1 && b_left == 1; }));
     BOOST_TEST(sent == std::optional<boost::system::error_code>(
@@ -3037,7 +3052,7 @@ trystero::test::app_setup app_config_of(std::string_view label,
 trystero::user_identity make_user_identity() {
     auto made = trystero::create_user_identity();
     webcpp::test::require(BOOST_TEST(made.has_value()));
-    return std::move(*made);
+    return *made;
 }
 
 // Two peers of one user, two apps that import one user identity, and a peer of a user of its own.
@@ -3460,11 +3475,11 @@ void an_apps_ids_derive_from_its_keys() {
     }
     BOOST_TEST_NE(a_app.user_id(), b_app.user_id());
     // An app of the same endpoint key has the same peer id, and a user of its own.
-    trystero::test::app again(f.io.get_executor(), f.net, app_config("derive-a"));
+    const trystero::test::app again(f.io.get_executor(), f.net, app_config("derive-a"));
     BOOST_TEST_EQ(again.self_id(), a_app.self_id());
     BOOST_TEST_NE(again.user_id(), a_app.user_id());
     // An app whose key is drawn has a peer id of its own.
-    trystero::test::app drawn(f.io.get_executor(), f.net, app_config(""));
+    const trystero::test::app drawn(f.io.get_executor(), f.net, app_config(""));
     BOOST_TEST_EQ(drawn.self_id().size(), trystero::protocol::peer_id_size);
     BOOST_TEST_NE(drawn.self_id(), a_app.self_id());
 }
@@ -3493,7 +3508,7 @@ void two_apps_of_one_imported_identity_share_a_user_id() {
     const auto imported = trystero::import_user_identity(trystero::export_user_identity(*identity));
     webcpp::test::require(BOOST_TEST(imported.has_value()));
     c_config.identity = *imported;
-    trystero::test::app c_app(f.io.get_executor(), f.net, std::move(c_config));
+    const trystero::test::app c_app(f.io.get_executor(), f.net, std::move(c_config));
     BOOST_TEST_EQ(c_app.user_id(), identity->user_id());
 }
 
@@ -3524,8 +3539,8 @@ void self_reports_the_identity() {
 void an_endpoint_that_cannot_be_made_reports_identity_failed() {
     fixture f{true};
     const std::array<std::uint8_t, 32> zero{};
-    auto a_app =
-        trystero::detail::app_access::make(f.io.get_executor(), f.net, app_config("unused"), zero);
+    auto a_app = trystero::detail::app_access::make(f.io.get_executor(), f.net,
+                                                    config_of(app_config("unused")), zero);
     BOOST_TEST(a_app.self_id().empty());
     auto a = join(a_app, "failed");
 
@@ -3576,8 +3591,8 @@ void a_user_key_that_cannot_be_made_reports_identity_failed() {
     fixture f{true};
     const std::array<std::uint8_t, 32> zero{};
     const auto scalar = endpoint_scalar("user-failed");
-    auto a_app = trystero::detail::app_access::make(f.io.get_executor(), f.net,
-                                                    app_config("user-failed"), scalar, zero);
+    auto a_app = trystero::detail::app_access::make(
+        f.io.get_executor(), f.net, config_of(app_config("user-failed")), scalar, zero);
     BOOST_TEST_EQ(a_app.self_id(), peer_id_of("user-failed"));
     BOOST_TEST(a_app.user_id().empty());
     auto a = join(a_app, "failed");
@@ -3612,8 +3627,8 @@ void a_user_key_that_cannot_be_made_reports_identity_failed() {
     // A user scalar fixes the user id as the endpoint scalar fixes the peer id; a given identity
     // takes its place.
     const auto user_scalar = endpoint_scalar("user-fixed");
-    auto fixed = trystero::detail::app_access::make(f.io.get_executor(), f.net,
-                                                    app_config("user-fixed"), scalar, user_scalar);
+    const auto fixed = trystero::detail::app_access::make(
+        f.io.get_executor(), f.net, config_of(app_config("user-fixed")), scalar, user_scalar);
     const auto expected =
         trystero::detail::user_identity_access::make(user_scalar, std::pmr::get_default_resource());
     webcpp::test::require(BOOST_TEST(expected.has_value()));
@@ -3623,8 +3638,8 @@ void a_user_key_that_cannot_be_made_reports_identity_failed() {
     const auto given_identity = trystero::create_user_identity();
     webcpp::test::require(BOOST_TEST(given_identity.has_value()));
     config.identity = *given_identity;
-    auto given = trystero::detail::app_access::make(f.io.get_executor(), f.net, std::move(config),
-                                                    scalar, zero);
+    const auto given = trystero::detail::app_access::make(f.io.get_executor(), f.net,
+                                                          std::move(config), scalar, zero);
     BOOST_TEST_EQ(given.user_id(), given_identity->user_id());
 }
 
@@ -4064,7 +4079,6 @@ void a_handshake_that_never_completes_fails_after_10_s() {
     fixture f{true};
     f.net.defer_opens = true;
     const auto labels = ordered_labels(2, "slow");  // the apps, by ascending peer id
-    const std::string a_id = peer_id_of(labels[0]);
     const std::string b_id = peer_id_of(labels[1]);
     auto a_config = app_config(labels[0]);
     a_config.memory = &a_memory;
@@ -4184,6 +4198,27 @@ void sends_inside_on_peer_join_follow_the_ready_frame() {
     BOOST_TEST(ready < hello);
 }
 
+/** A side's answer to an offer: whether it accepted or rejected it, and why. */
+struct offer_answer {
+    trystero::protocol::frame_kind kind{};
+    std::string reason;
+};
+
+/** Checks that the offers 1 and 3 were rejected as too large and 2 and 4 accepted. */
+void check_bound_answers(const std::map<std::uint32_t, offer_answer>& answers) {
+    for (const std::uint32_t refused : {1U, 3U}) {
+        if (BOOST_TEST(answers.contains(refused))) {
+            BOOST_TEST(answers.at(refused).kind == trystero::protocol::frame_kind::rejected);
+            BOOST_TEST_EQ(answers.at(refused).reason, "payload exceeds receiver size limit");
+        }
+    }
+    for (const std::uint32_t taken : {2U, 4U}) {
+        if (BOOST_TEST(answers.contains(taken))) {
+            BOOST_TEST(answers.at(taken).kind == trystero::protocol::frame_kind::accepted);
+        }
+    }
+}
+
 // A handshake message is at most 64 KiB and a ready frame's payload 128 KiB, 0.27.0's
 // maxPayloadBytes of `@_hsdata` and `@_hsready`: an offer of one byte more is rejected as "payload
 // exceeds receiver size limit", one at the bound accepted.
@@ -4191,19 +4226,14 @@ void handshake_messages_keep_0_27_0s_bounds() {
     namespace tp = trystero::protocol;
     counting_resource a_memory;
     fixture f{true};
-
-    struct answer {
-        tp::frame_kind kind;
-        std::string reason;
-    };
-
-    std::map<std::uint32_t, answer> from_a;  // A's answers, by transfer id
+    std::map<std::uint32_t, offer_answer> from_a;  // A's answers, by transfer id
     f.net.filter = [&](std::size_t from, std::size_t, std::span<const std::uint8_t> frame) {
         if (end_in(f, from, &a_memory)) {
             const auto decoded = tp::decode_action(frame);
             if (const auto* m =
                     decoded.frame ? std::get_if<tp::control_message>(&*decoded.frame) : nullptr) {
-                from_a.insert_or_assign(m->id, answer{m->kind, std::string(m->reason)});
+                from_a.insert_or_assign(
+                    m->id, offer_answer{.kind = m->kind, .reason = std::string(m->reason)});
             }
         }
         return trystero::test::memory_network::verdict::deliver;
@@ -4235,17 +4265,7 @@ void handshake_messages_keep_0_27_0s_bounds() {
     f.net.inject(*a_pc, tp::encode_cancelled(2));
     f.net.inject(*a_pc, tp::encode_offer("@_hsready", tp::payload_format::json, "", 4, hsready));
     BOOST_TEST(run_until(f, [&] { return from_a.size() == 4; }));
-    for (const std::uint32_t refused : {1U, 3U}) {
-        if (BOOST_TEST(from_a.contains(refused))) {
-            BOOST_TEST(from_a.at(refused).kind == tp::frame_kind::rejected);
-            BOOST_TEST_EQ(from_a.at(refused).reason, "payload exceeds receiver size limit");
-        }
-    }
-    for (const std::uint32_t taken : {2U, 4U}) {
-        if (BOOST_TEST(from_a.contains(taken))) {
-            BOOST_TEST(from_a.at(taken).kind == tp::frame_kind::accepted);
-        }
-    }
+    check_bound_answers(from_a);
     BOOST_TEST_EQ(a.peers().size(), 1U);
 }
 
@@ -4333,6 +4353,45 @@ void check_pending_pair(fixture& f, trystero::room& a, trystero::room& b,
     BOOST_TEST_EQ(delivered, 0U);
 }
 
+/** A step of the identity handshake as the network saw it: whether A sent it, the connection
+ * that sent it and the one it went to, and its JSON. */
+struct sent_step {
+    bool from_a = false;
+    std::size_t from = 0;
+    std::size_t to = 0;
+    std::string json;
+};
+
+/** Checks the steps of one run between `impl_a`, the initiator, and `impl_b`: steps 1 and 3 from
+ * A, 2 from B, each claiming its sender's keys and fingerprints. */
+void check_identity_steps(const std::vector<sent_step>& steps,
+                          const trystero::detail::app_impl& impl_a,
+                          const trystero::detail::app_impl& impl_b) {
+    namespace tp = trystero::protocol;
+    webcpp::test::require(BOOST_TEST_EQ(steps.size(), 3U));
+    for (int n = 1; n <= 3; ++n) {
+        const auto& step = steps.at(static_cast<std::size_t>(n - 1));
+        BOOST_TEST_EQ(step_number(step.json), n);
+        BOOST_TEST_EQ(step.from_a, n != 2);
+        if (n == 3) {
+            continue;
+        }
+        const auto sender = dtls_of_connection(step.from);
+        const auto receiver = dtls_of_connection(step.to);
+        webcpp::test::require(BOOST_TEST_EQ(sender.size(), 1U));
+        BOOST_TEST_NE(sender.front(), receiver.front());
+        const auto read = tp::read_handshake_step(step.json, n, sender, receiver,
+                                                  std::pmr::get_default_resource());
+        webcpp::test::require(BOOST_TEST(read.claims.has_value()));
+        const auto& claims = *read.claims;
+        BOOST_TEST_ALL_EQ(claims.dtls.begin(), claims.dtls.end(), sender.begin(), sender.end());
+        const auto& by = n == 1 ? impl_a : impl_b;
+        BOOST_TEST_EQ(claims.user_id, by.user_id());
+        BOOST_TEST_EQ(claims.endpoint_key, by.endpoint_key());
+        BOOST_TEST_EQ(claims.user_key, by.user().public_key());
+    }
+}
+
 // Two peers run 0.27.0's identity handshake, and each joins the other's room under the user it
 // proved, the other app's `user_id()`. A, whose id is lower, sends steps 1 and 3, B step 2; each
 // step claims the fingerprints of the description its sender wrote, which its receiver applied
@@ -4343,18 +4402,15 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
     namespace tp = trystero::protocol;
     counting_resource a_memory;  // first: A's connection ends are made in it, which names them
     fixture f{true};
-
-    struct sent_step {
-        bool from_a;
-        std::size_t from;
-        std::size_t to;
-        std::string json;
-    };
-
     std::vector<sent_step> steps;
     f.net.filter = [&](std::size_t from, std::size_t to, std::span<const std::uint8_t> frame) {
         if (auto json = handshake_step(frame); !json.empty()) {
-            steps.push_back({end_in(f, from, &a_memory), from, to, std::move(json)});
+            steps.push_back({
+                .from_a = end_in(f, from, &a_memory),
+                .from = from,
+                .to = to,
+                .json = std::move(json),
+            });
         }
         return trystero::test::memory_network::verdict::deliver;
     };
@@ -4375,7 +4431,7 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
     });
     std::vector<std::string> failures;
     const auto record_failure = [&](const trystero::room_error& e) {
-        failures.push_back(std::string(e.message));
+        failures.emplace_back(e.message);
     };
     a.on_error(record_failure);
     b->on_error(record_failure);
@@ -4399,30 +4455,8 @@ void peers_verify_each_other_and_join_with_their_user_ids() {
     BOOST_TEST(failures.empty());
 
     // Steps 1 and 3 from A, 2 from B, each claiming its sender's keys and fingerprints.
-    webcpp::test::require(BOOST_TEST_EQ(steps.size(), 3U));
-    const auto& impl_a = trystero::detail::app_access::impl(a_app);
-    const auto& impl_b = trystero::detail::app_access::impl(b_app);
-    for (int n = 1; n <= 3; ++n) {
-        const auto& step = steps.at(static_cast<std::size_t>(n - 1));
-        BOOST_TEST_EQ(step_number(step.json), n);
-        BOOST_TEST_EQ(step.from_a, n != 2);
-        if (n == 3) {
-            continue;
-        }
-        const auto sender = dtls_of_connection(step.from);
-        const auto receiver = dtls_of_connection(step.to);
-        webcpp::test::require(BOOST_TEST_EQ(sender.size(), 1U));
-        BOOST_TEST_NE(sender.front(), receiver.front());
-        const auto read = tp::read_handshake_step(step.json, n, sender, receiver,
-                                                  std::pmr::get_default_resource());
-        webcpp::test::require(BOOST_TEST(read.claims.has_value()));
-        const auto& claims = *read.claims;
-        BOOST_TEST_ALL_EQ(claims.dtls.begin(), claims.dtls.end(), sender.begin(), sender.end());
-        const auto& by = n == 1 ? impl_a : impl_b;
-        BOOST_TEST_EQ(claims.user_id, by.user_id());
-        BOOST_TEST_EQ(claims.endpoint_key, by.endpoint_key());
-        BOOST_TEST_EQ(claims.user_key, by.user().public_key());
-    }
+    check_identity_steps(steps, trystero::detail::app_access::impl(a_app),
+                         trystero::detail::app_access::impl(b_app));
 
     // B meets A again: the second run's nonces are new.
     std::set<std::string> drawn_uuids;  // the UUID of every 16-byte draw of the backend's
@@ -4517,9 +4551,9 @@ void a_forged_step_1_fails_with(
     b.on_peer_join([&](const trystero::peer_event&) { ++joins; });
     std::size_t delivered = 0;
     a->make_action<std::string>("chat").on_message(
-        [&](std::string, const trystero::message_info&) { ++delivered; });
+        [&](const std::string&, const trystero::message_info&) { ++delivered; });
     b.make_action<std::string>("chat").on_message(
-        [&](std::string, const trystero::message_info&) { ++delivered; });
+        [&](const std::string&, const trystero::message_info&) { ++delivered; });
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return dropped.has_value(); })));
     const std::size_t b_end = dropped->first;
     check_pending_pair(f, *a, b, {b_end, f.net.peer_of(b_end)}, user_frames, delivered);
@@ -4614,9 +4648,9 @@ void a_handshake_left_at_step(int held_step) {
     b->on_peer_join([&](const trystero::peer_event&) { ++joins; });
     std::size_t delivered = 0;
     a.make_action<std::string>("chat").on_message(
-        [&](std::string, const trystero::message_info&) { ++delivered; });
+        [&](const std::string&, const trystero::message_info&) { ++delivered; });
     b->make_action<std::string>("chat").on_message(
-        [&](std::string, const trystero::message_info&) { ++delivered; });
+        [&](const std::string&, const trystero::message_info&) { ++delivered; });
     bool left = false;
     std::size_t b_after_leave = 0;
     b->on_error([&](const trystero::room_error&) { b_after_leave += left ? 1 : 0; });
@@ -4698,7 +4732,7 @@ auto record_all_errors(fixture& f, std::vector<reported_error>& to) {
 /** Checks that every report of `reports` is 0.27.0's `room-full` of room `room_id`, one from each
  * of `peers`. */
 void check_room_full_reports(const std::vector<reported_error>& reports, std::string_view room_id,
-                             std::set<std::string> peers) {
+                             const std::set<std::string>& peers) {
     std::set<std::string> from;
     for (const auto& e : reports) {
         BOOST_TEST_EQ(trystero::room_error_code_name(e.code), "room-full");
@@ -4807,7 +4841,7 @@ void concurrent_admissions_respect_the_limit() {
     auto b_config = app_config(labels[1]);
     b_config.memory = &b_memory;
     trystero::test::app b_app(f.io.get_executor(), f.net, std::move(b_config));
-    auto b = join(b_app, "race");
+    const auto b = join(b_app, "race");
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
     BOOST_TEST(a.peers().empty());  // B is admitted, not joined
     auto c_config = app_config(labels[2]);
@@ -5007,7 +5041,7 @@ void a_refusal_survives_the_close() {
     f.net.channel_capacity = 1;
     f.net.drain_per_post = 1;
     trystero::test::app a_app(f.io.get_executor(), f.net, app_config("flushAAAAAAAAAAAAAAAA"));
-    auto a = join(a_app, "flush", at_most(1));
+    const auto a = join(a_app, "flush", at_most(1));
     trystero::test::app c_app(f.io.get_executor(), f.net, app_config("flushCCCCCCCCCCCCCCCC"));
     auto c = join(c_app, "flush");
     std::vector<reported_error> c_reports;
@@ -5035,7 +5069,7 @@ void a_refused_link_ends_after_its_grace() {
     auto a = join(a_app, "grace", at_most(1));
     std::size_t delivered = 0;
     a.make_action<std::string>("chat").on_message(
-        [&](std::string, const trystero::message_info&) { ++delivered; });
+        [&](const std::string&, const trystero::message_info&) { ++delivered; });
     trystero::test::app c_app(f.io.get_executor(), f.net, app_config("graceCCCCCCCCCCCCCCCCC"));
     auto c = join(c_app, "grace");
     std::vector<reported_error> c_reports;
@@ -5275,6 +5309,37 @@ void a_protocol_violation_reports_peer_error() {
     }
 }
 
+/** The JSON text of `letters` then `emoji` times U+1F600 (UTF-8, written in bytes for a compiler
+ * whose narrow literals are not UTF-8), quoted. */
+std::string quoted_emoji(std::string_view letters, std::size_t emoji) {
+    std::string out = "\"";
+    out += letters;
+    for (std::size_t i = 0; i < emoji; ++i) {
+        out += "\xF0\x9F\x98\x80";
+    }
+    out += '"';
+    return out;
+}
+
+/** Checks that ready frames other than a refusal, and a refusal's JSON sent as a text, are read as
+ * plain ready frames. */
+void check_plain_ready_frames(const trystero::detail::decoding& to) {
+    namespace td = trystero::detail;
+    for (const auto* plain : {
+             R"({"ok":true})",
+             R"({"ok":false,"err":"other"})",
+             R"({"ok":"false","err":"peer banned"})",
+             R"({"err":"peer banned"})",
+             R"(["ok",false])",
+             R"("")",
+             "not json",
+         }) {
+        BOOST_TEST(!td::read_refusal(trystero::protocol::payload_format::json, plain, to));
+    }
+    const std::string_view as_text = R"({"ok":false,"err":"peer banned"})";
+    BOOST_TEST(!td::read_refusal(trystero::protocol::payload_format::text, as_text, to));
+}
+
 // A ban's refusal is read as 0.27.0's processHandshakeReady reads `{ok: false, err}`: a JSON
 // object whose `ok` is false and whose `err` is "peer banned", its reason kept when it is a text
 // of at most 512 UTF-16 code units, a character beyond the basic plane counting two; "room full"
@@ -5284,9 +5349,8 @@ void ready_refusals_are_read_as_0_27_0_reads_them() {
     using kind = td::ready_refusal::kind;
     auto* const memory = std::pmr::get_default_resource();
     const td::decoding to{.memory = memory, .max_json_document_bytes = 1U << 20U};
-    const auto read = [&](std::string_view json, trystero::protocol::payload_format format =
-                                                     trystero::protocol::payload_format::json) {
-        return td::read_refusal(format, json, to);
+    const auto read = [&](std::string_view json) {
+        return td::read_refusal(trystero::protocol::payload_format::json, json, to);
     };
     const auto ban = [&](std::string_view reason_json) {
         std::string json(R"({"ok":false,"err":"peer banned","reason":)");
@@ -5308,14 +5372,8 @@ void ready_refusals_are_read_as_0_27_0_reads_them() {
     const std::string at_bound = '"' + std::string(512, 'x') + '"';
     const std::string past_bound = '"' + std::string(513, 'x') + '"';
     // 255 emoji and two letters are 512 units; 256 emoji, 512 units; and one letter more, 513.
-    std::string emoji_at_bound = "\"xx";
-    std::string emoji_past_bound = "\"x";
-    for (int i = 0; i < 255; ++i) {
-        emoji_at_bound += "\U0001F600";
-        emoji_past_bound += "\U0001F600";
-    }
-    emoji_at_bound += '"';
-    emoji_past_bound += "\U0001F600\"";
+    const std::string emoji_at_bound = quoted_emoji("xx", 255);
+    const std::string emoji_past_bound = quoted_emoji("x", 256);
     for (const auto& [json, kept] : std::vector<std::pair<std::string, bool>>{
              {at_bound, true},
              {past_bound, false},
@@ -5334,20 +5392,7 @@ void ready_refusals_are_read_as_0_27_0_reads_them() {
     const auto lone = ban(R"("spam\ud83d")");
     BOOST_TEST(lone.has_value() &&
                lone->reason == std::optional<std::pmr::string>("spam\xEF\xBF\xBD"));
-    for (const auto* plain : {
-             R"({"ok":true})",
-             R"({"ok":false,"err":"other"})",
-             R"({"ok":"false","err":"peer banned"})",
-             R"({"err":"peer banned"})",
-             R"(["ok",false])",
-             R"("")",
-             "not json",
-         }) {
-        BOOST_TEST(!read(plain).has_value());
-    }
-    BOOST_TEST(
-        !read(R"({"ok":false,"err":"peer banned"})", trystero::protocol::payload_format::text)
-             .has_value());
+    check_plain_ready_frames(to);
 }
 
 /**
@@ -5457,7 +5502,7 @@ void a_pending_peer_breaking_the_protocol_reports_peer_error() {
     trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
     auto a = join(a_app, "pending");
     trystero::test::app b_app(f.io.get_executor(), f.net, app_config(labels[1]));
-    auto b = join(b_app, "pending");
+    const auto b = join(b_app, "pending");
     std::vector<reported_error> reports;
     a.on_error(record_all_errors(f, reports));
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return held_at.has_value(); })));
@@ -5538,7 +5583,7 @@ void a_ping_fails_when_the_room_or_the_peer_goes() {
     BOOST_TEST(run_until(f, [&] { return b_left; }));
 
     trystero::test::app c_app(f.io.get_executor(), f.net, app_config("pingFailCCCCCCCCCCC"));
-    auto c = join(c_app, "pingfail");
+    const auto c = join(c_app, "pingfail");
     webcpp::test::require(BOOST_TEST(run_until(f, [&] { return a->peers().size() == 1; })));
     std::optional<boost::system::error_code> left;
     a->async_ping(c.self_id(),
@@ -5656,9 +5701,13 @@ void ping_is_a_request_action() {
     const auto* p = request.frame ? std::get_if<tp::proposal>(&*request.frame) : nullptr;
     webcpp::test::require(BOOST_TEST(p != nullptr));
     const auto metadata = std::string(p->metadata);
-    webcpp::test::require(BOOST_TEST(metadata.starts_with(R"({"r":")")));
-    const std::string id = metadata.substr(6, recorded_id.size());
-    BOOST_TEST_EQ(metadata, R"({"r":")" + id + "\"}");
+    // The texts are named outside the test macros, whose arguments MSVC's preprocessor misreads
+    // with these raw literals in them.
+    const std::string_view head = R"({"r":")";
+    webcpp::test::require(BOOST_TEST(metadata.starts_with(head)));
+    const std::string id = metadata.substr(head.size(), recorded_id.size());
+    const std::string expected_metadata = std::string(head) + id + "\"}";
+    BOOST_TEST_EQ(metadata, expected_metadata);
     const auto as_recorded = [&](std::string frame) {
         const auto at = frame.find(
             hex_of(std::span(reinterpret_cast<const std::uint8_t*>(id.data()), id.size())));

@@ -170,9 +170,13 @@ void an_off_curve_key_has_no_record() {
     auto moved = *point;
     moved[64] ^= 1U;
     const auto off_curve = tp::compact_public_key(moved);
-    for (const std::string_view refused :
-         {std::string_view(origin), std::string_view(off_curve), std::string_view("not a key"),
-          std::string_view(key->compact).substr(1), std::string_view()}) {
+    for (const std::string_view refused : {
+             std::string_view(origin),
+             std::string_view(off_curve),
+             std::string_view("not a key"),
+             std::string_view(key->compact).substr(1),
+             std::string_view(),
+         }) {
         BOOST_TEST(cache.record(refused) == nullptr);
         BOOST_TEST(!cache.verify_peer_id(tp::derive_peer_id(refused), refused));
         BOOST_TEST(!cache.verify_user_id(tp::derive_user_id(refused), refused));
@@ -257,8 +261,9 @@ void payloads_over_4096_bytes_are_not_cached() {
 struct counting_verifier {
     std::size_t* calls;
 
-    bool operator()(std::span<const std::uint8_t>, std::span<const std::uint8_t>,
-                    const webcpp::crypto::curves::p256::public_key&) const {
+    bool operator()(std::span<const std::uint8_t> /*signature*/,
+                    std::span<const std::uint8_t> /*digest*/,
+                    const webcpp::crypto::curves::p256::public_key& /*key*/) const {
         ++*calls;
         return true;
     }
@@ -433,34 +438,39 @@ void a_high_s_signature_is_refused_before_verification() {
     BOOST_TEST_EQ(cache.signatures(), 1U);
 }
 
+/** Checks that the peer id and the user id of a fixture key are its own and no other key's. */
+void check_ids_of(const fixture_value& entry) {
+    const auto compact = str(entry["compact"]);
+    const auto peer_id = str(entry["peer_id"]);
+    const auto user_id = str(entry["user_id"]);
+    td::identity_cache cache(std::pmr::get_default_resource());
+    // Ids that are not ids are refused before any lookup.
+    BOOST_TEST(!cache.verify_peer_id("", compact));
+    BOOST_TEST(!cache.verify_user_id(user_id.substr(1), compact));
+    BOOST_TEST(!cache.verify_user_id(std::string(user_id) + "0", compact));
+    BOOST_TEST(!cache.verify_user_id(std::string(user_id.substr(1)) + "-", compact));
+    BOOST_TEST(!cache.verify_user_id(std::string(user_id.substr(1)) + "\xc3", compact));
+    BOOST_TEST_EQ(cache.records(), 0U);
+    // Each id is its own key's.
+    BOOST_TEST(cache.verify_peer_id(peer_id, compact));
+    BOOST_TEST(cache.verify_user_id(user_id, compact));
+    BOOST_TEST(!cache.verify_peer_id(user_id, compact));
+    BOOST_TEST(!cache.verify_user_id(std::string(peer_id) + "00", compact));
+    BOOST_TEST(!cache.verify_peer_id(peer_id.substr(1), compact));
+    BOOST_TEST_EQ(cache.records(), 1U);
+    // And no other key's.
+    for (const auto other : section("p256_keys")) {
+        if (str(other["compact"]) != compact) {
+            BOOST_TEST(!cache.verify_peer_id(peer_id, str(other["compact"])));
+            BOOST_TEST(!cache.verify_user_id(user_id, str(other["compact"])));
+        }
+    }
+}
+
 void ids_are_checked_against_their_keys() {
     std::size_t keys = 0;
     for (const auto entry : section("p256_keys")) {
-        const auto compact = str(entry["compact"]);
-        const auto peer_id = str(entry["peer_id"]);
-        const auto user_id = str(entry["user_id"]);
-        td::identity_cache cache(std::pmr::get_default_resource());
-        // Ids that are not ids are refused before any lookup.
-        BOOST_TEST(!cache.verify_peer_id("", compact));
-        BOOST_TEST(!cache.verify_user_id(user_id.substr(1), compact));
-        BOOST_TEST(!cache.verify_user_id(std::string(user_id) + "0", compact));
-        BOOST_TEST(!cache.verify_user_id(std::string(user_id.substr(1)) + "-", compact));
-        BOOST_TEST(!cache.verify_user_id(std::string(user_id.substr(1)) + "\xc3", compact));
-        BOOST_TEST_EQ(cache.records(), 0U);
-        // Each id is its own key's.
-        BOOST_TEST(cache.verify_peer_id(peer_id, compact));
-        BOOST_TEST(cache.verify_user_id(user_id, compact));
-        BOOST_TEST(!cache.verify_peer_id(user_id, compact));
-        BOOST_TEST(!cache.verify_user_id(std::string(peer_id) + "00", compact));
-        BOOST_TEST(!cache.verify_peer_id(peer_id.substr(1), compact));
-        BOOST_TEST_EQ(cache.records(), 1U);
-        // And no other key's.
-        for (const auto other : section("p256_keys")) {
-            if (str(other["compact"]) != compact) {
-                BOOST_TEST(!cache.verify_peer_id(peer_id, str(other["compact"])));
-                BOOST_TEST(!cache.verify_user_id(user_id, str(other["compact"])));
-            }
-        }
+        check_ids_of(entry);
         ++keys;
     }
     BOOST_TEST_GE(keys, 2U);

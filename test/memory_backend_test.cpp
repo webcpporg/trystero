@@ -243,7 +243,8 @@ std::string fingerprint_of(std::size_t id, bool upper) {
     std::string out;
     for (const auto byte : digest) {
         std::array<char, 3> pair{};
-        std::snprintf(pair.data(), pair.size(), upper ? "%02X" : "%02x", byte);
+        // Two digits and the terminator always fit: the count it returns says nothing new.
+        static_cast<void>(std::snprintf(pair.data(), pair.size(), upper ? "%02X" : "%02x", byte));
         if (!out.empty()) {
             out += ':';
         }
