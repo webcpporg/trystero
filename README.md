@@ -446,7 +446,7 @@ them to 0.27.0:
 
 `oracle` runs Trystero's own functions over the inputs of
 `test/fixtures/cases/protocol.json` and checks that they still write
-`test/fixtures/expected/expected.json`, the values the protocol tests
+`test/fixtures/oracle/expected.json`, the values the protocol tests
 reproduce; `b2 libs/trystero/test/oracle//update-expected` writes it again.
 `interop` meets each C++ peer, the native one and the browser's, with
 Trystero JS peers in headless Chrome, over a Nostr relay of its own on

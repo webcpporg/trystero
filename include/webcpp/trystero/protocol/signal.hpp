@@ -61,7 +61,7 @@ static_assert(sealed_size(8192) <= max_sealed_candidate_bytes);
  * and 1 KiB to spare, so that it refuses no signal they accept.
  */
 inline constexpr std::size_t max_parsed_signal_bytes = max_sealed_description_bytes + 1024;
-// The 64 bytes hold the 53 of the keys and the punctuation of an answer from a passive room.
+// The 64 bytes hold the keys and the punctuation of an offer or an answer, 38 at most.
 static_assert(max_sealed_description_bytes + max_peer_id_bytes + max_offer_id_bytes + 64 <=
                   max_parsed_signal_bytes,
               "the longest signal the bounds of its fields admit is read");
@@ -86,19 +86,6 @@ struct signal_message {
     std::string_view answer = {};
     /** A sealed ICE candidate, `candidate`. */
     std::string_view candidate = {};
-    /**
-     * Whether the sender's room is passive, `passive`: a Trystero room joined with `passive`
-     * announces only once it has seen a peer that is not passive.
-     */
-    bool passive = false;
-    /**
-     * Whether the sender answers the offer, which places `offerId` in the text.
-     *
-     * Trystero's answerer writes `offerId` after its answer or candidate, its offerer before its
-     * offer or candidate. Written only; a reader leaves it false, the order being no part of the
-     * meaning.
-     */
-    bool answering = false;
 
     /**
      * Whether the message is an announcement.
@@ -148,7 +135,6 @@ inline std::optional<signal_message> read_signal(const json::const_value& docume
     }
     text("peerId", out.peer_id, false);
     text("offerId", out.offer_id, false);
-    out.passive = document["passive"].value_or(false);
     if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes ||
         out.offer_id.size() > max_offer_id_bytes ||
         out.offer.size() > max_sealed_description_bytes ||
@@ -160,7 +146,9 @@ inline std::optional<signal_message> read_signal(const json::const_value& docume
 }
 
 /**
- * The JSON text of a message, with its members in Trystero's order and the empty ones left out.
+ * The JSON text of a message, as 0.27.0's signal handler writes it: `peerId`, then `offerId`, then
+ * the one of `offer`, `answer` and `candidate` it carries, the empty ones left out, and `nonce`
+ * last, as the Nostr strategy adds it to an announcement.
  *
  * @param m The message.
  * @param nonce A random text, which makes repeated announcements distinct events; empty for none.
@@ -185,19 +173,10 @@ inline std::pmr::string write_signal(
         json::detail::append_utf8(out, value);
     };
     field("peerId", m.peer_id);
-    if (!m.answering) {
-        field("offerId", m.offer_id);
-    }
+    field("offerId", m.offer_id);
     field("offer", m.offer);
     field("answer", m.answer);
     field("candidate", m.candidate);
-    if (m.answering) {
-        field("offerId", m.offer_id);
-    }
-    if (m.passive) {
-        json::append_key(out, "passive");
-        out += "true";
-    }
     field("nonce", nonce);
     out += '}';
     return out;

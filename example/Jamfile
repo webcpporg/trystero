@@ -35,7 +35,6 @@ local differences =
     diff_json_refused
     diff_passwords
     diff_peers
-    diff_relay_config
     diff_relay_sockets
     diff_send_to_absent_peer
     ;

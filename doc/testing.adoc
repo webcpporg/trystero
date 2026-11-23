@@ -334,7 +334,7 @@ include::{library-root}/test/oracle/Jamfile[tag=oracle]
 
 `oracle`, which names no target, runs Trystero's own functions over the
 inputs of `test/fixtures/cases/protocol.json` and checks that they still
-write `test/fixtures/expected/expected.json` byte for byte, the values the
+write `test/fixtures/oracle/expected.json` byte for byte, the values the
 `protocol` test reproduces, and runs the twins of the
 examples (<<trystero-testing-twins>>); `update-expected` is the only writer
 of the expected values and of each divergent twin's output.

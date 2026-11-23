@@ -23,11 +23,12 @@ const room = joinRoom({...config, rtcPolyfill: RTCPeerConnection}, 'lobby')
 
 // tag::example[]
 const peerId = await new Promise(joined => {
-    room.onPeerJoin = joined
+    room.onPeerJoin(({peerId}) => joined(peerId))
 })
 const peers = room.getPeers()
 console.log(`peers: ${Object.keys(peers).length}`)
-console.log(`the joined peer's entry: its ${peers[peerId].constructor.name}`)
+const {userId, connection} = peers[peerId]
+console.log(`the joined peer's entry: its ${userId ? 'user id' : 'nothing'}, with its ${connection.constructor.name}`)
 // end::example[]
 other.post('leave')
 await Promise.all([room.leave(), other.done])

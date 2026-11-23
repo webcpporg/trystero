@@ -239,46 +239,6 @@ include::{twins}/diff_passwords.expected[]
 include::{examples}/diff_passwords.expected[]
 ----
 
-[#trystero-differences-relay-config]
-==== Relay and ICE configuration
-
-Trystero JS:: Each `joinRoom` takes its own `relayConfig` and `rtcConfig`: a
-kitchen joined with a second configuration after the lobby uses the second
-configuration's relays and ICE servers, under the page's one peer id. 0.26.0
-gave every room joined while one remained the first room's relays, and a
-room that bound over a shared connection its negotiating room's ICE
-servers, as its twin printed.
-trystero:: Relays and ICE servers are the app's, for every room of the app: a
-room with another configuration is a room of another app, which uses its
-own, under another peer id. A room hands out neither its relays' sockets nor
-its connections, so the program gives each app a backend that records what
-the app asks of the platform's.
-Why:: One configuration for what the rooms of an app share, its relays and
-its shared connections.
-
-[source]
-----
-include::{examples}/diff_relay_config.cpp[tag=example,indent=0]
-----
-
-.The twin, on Trystero JS
-[source,javascript]
-----
-include::{twins}/diff_relay_config.mjs[lines=7..]
-----
-
-.Trystero JS 0.26.0 printed
-[listing]
-----
-include::{twins}/diff_relay_config.expected[]
-----
-
-.trystero prints
-[listing]
-----
-include::{examples}/diff_relay_config.expected[]
-----
-
 [#trystero-differences-relay-sockets]
 ==== Relay sockets
 

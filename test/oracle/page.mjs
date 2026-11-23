@@ -4,16 +4,16 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Another page for a twin whose room must meet a peer. Trystero JS has one self id per page, its
-// module's selfId, so two rooms of one twin's module would be the same peer; a C++ program makes
-// a second app instead. The other peer runs in a worker thread, with module instances of its own,
+// Another page for a twin whose room must meet a peer. Trystero JS 0.27.0 has one endpoint key, so
+// one peer id, per app and page (its module's client id), so two rooms of one twin's module would
+// be the same peer; a C++ program makes a second app instead. The other peer runs in a worker thread, with module instances of its own,
 // as a second page would:
 //
 //   import {openPage} from '../page.mjs'
 //   const other = openPage(async ({joinRoom, RTCPeerConnection, data, post, next}) => { ... }, data)
 //
 // The function is the page's program, written in the twin and run in the worker from its source,
-// so it reaches nothing of the twin's but what it is given: Trystero's joinRoom and selfId,
+// so it reaches nothing of the twin's but what it is given: Trystero's joinRoom,
 // werift's RTCPeerConnection (the WebRTC Trystero's README names for Node, as rtcPolyfill), the
 // data given to openPage, which must be cloneable, post(message), which sends the twin a message,
 // and next(), which resolves to the next message the twin sends it. The twin's side holds
@@ -41,12 +41,11 @@ export const openPage = (program, data) => {
 }
 
 if (!isMainThread) {
-    const {joinRoom, selfId} = await import('trystero')
+    const {joinRoom} = await import('trystero')
     const {RTCPeerConnection} = await import('werift')
     const program = (0, eval)(`(${workerData.source})`)
     await program({
         joinRoom,
-        selfId,
         RTCPeerConnection,
         data: workerData.data,
         post: message => parentPort.postMessage(message),

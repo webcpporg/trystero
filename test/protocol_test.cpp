@@ -4,8 +4,8 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// Tests the protocol layer against values Trystero JS 0.26 computed itself, which the original's
-// oracle wrote into fixtures/expected/expected.json. The fixture's path is the test's one argument,
+// Tests the protocol layer against values Trystero JS 0.27.0 computed itself, which the original's
+// oracle wrote into fixtures/oracle/expected.json. The fixture's path is the test's one argument,
 // as webcpp.run passes its input file. The fixture is read with webcpp::document, and every text
 // the protocol writes is read back as a room reads it, with webcpp::document::parse into a
 // pmr::document, within protocol::json::protocol_limits of its bound.
@@ -140,8 +140,8 @@ std::int64_t integer_of(const tp::json::const_value& v) {
 }
 
 void nostr_events(const fixture_value& fixture) {
-    // The kinds are 0.26's; 0.27.0's are crypto_layer's topic_kind_matches.
     for (const auto e : fixture["nostr_events"]) {
+        BOOST_TEST_EQ(integer(e["kind"]), std::int64_t{tp::nostr::topic_kind(str(e["topic"]))});
         const auto created_at =
             std::chrono::sys_seconds(std::chrono::seconds(integer(e["created_at"])));
         const auto id = tp::nostr::event_id(str(e["pubkey"]), created_at,
@@ -409,15 +409,13 @@ void signals() {
     BOOST_TEST(!read(R"({"peerId":"abc","offer":""})").has_value());
     BOOST_TEST(!read(R"({"offer":"x"})").has_value());
     BOOST_TEST(!read(R"(["peerId"])").has_value());
-    const auto written = tp::write_signal(
-        {.peer_id = "me", .offer_id = "o1", .candidate = "1,2$AA==", .passive = true}, "n0nce");
-    BOOST_TEST_EQ(
-        written,
-        R"({"peerId":"me","offerId":"o1","candidate":"1,2$AA==","passive":true,"nonce":"n0nce"})");
+    const auto written =
+        tp::write_signal({.peer_id = "me", .offer_id = "o1", .candidate = "1,2$AA=="}, "n0nce");
+    BOOST_TEST_EQ(written,
+                  R"({"peerId":"me","offerId":"o1","candidate":"1,2$AA==","nonce":"n0nce"})");
     const auto back = read(written);
     BOOST_TEST_EQ(back->candidate, "1,2$AA==");
     BOOST_TEST_EQ(back->offer_id, "o1");
-    BOOST_TEST(back->passive);
     // Escaping matches JSON.stringify, so a sealed text or a candidate with quotes survives the
     // round trip. The expected text is named outside the macro: MSVC 14.3's preprocessor, which
     // stringizes the macro's arguments, reads a raw string's \" as an escape and stops (C2017).
@@ -528,10 +526,10 @@ void signal_bounds() {
 
 // Trystero's createEvent signed each of the oracle's events with its key, clock and auxiliary
 // bytes: its topic and content hold every control character, `"`, `\`, U+2028, U+2029, DEL and
-// astral characters. Each id is the one the protocol computes over the event's fields, each
-// signature verifies, and the signer made from the oracle's secret has the event's public key. The
-// oracle's kinds are 0.26's: an event the protocol writes for the same topic and content holds
-// 0.27.0's kind, the same fields otherwise, an id of its own and a signature that verifies.
+// astral characters. Each kind is the one the protocol gives the topic, each id the one it computes
+// over the event's fields, each signature verifies, and the signer made from the oracle's secret
+// has the event's public key. An event the protocol writes for the same topic and content holds the
+// same fields, an id of its own and a signature that verifies.
 void event_messages(const fixture_value& fixture) {
     const auto messages = fixture["event_messages"];
     const auto secret = hex(messages["secret_key"]);
@@ -566,6 +564,7 @@ void event_messages(const fixture_value& fixture) {
         const auto event = theirs->root()[1];
         BOOST_TEST_EQ(tp::json::text_of(event["pubkey"]), key->pubkey_hex());
         const auto kind = static_cast<std::uint32_t>(integer_of(event["kind"]));
+        BOOST_TEST_EQ(kind, tp::nostr::topic_kind(topic));
         const auto id = tp::nostr::event_id(key->pubkey_hex(), created_at, kind, topic, content);
         BOOST_TEST_EQ(tp::to_hex(id), str(e["id"]));
         BOOST_TEST(verifies(event));
@@ -588,29 +587,18 @@ void event_messages(const fixture_value& fixture) {
     }
 }
 
-// A signal's text is JSON.stringify's of Trystero's object, member for member, with the same
+// A signal's text is JSON.stringify's of 0.27.0's object, member for member, with the same
 // strings, every byte of their quoting included, and the protocol reads the same fields back.
 void signal_texts(const fixture_value& fixture) {
     BOOST_TEST_EQ(fixture["signal_texts"].size(), 7U);
     for (const auto entry : fixture["signal_texts"]) {
         const auto s = entry["signal"];
-        // The answerer's messages are those whose second member is the answer or the candidate.
-        std::string_view second;
-        std::size_t at = 0;
-        for (const std::string_view key : s.keys()) {
-            if (at++ == 1) {
-                second = key;
-            }
-        }
         const tp::signal_message m{
             .peer_id = str(s["peerId"]),
             .offer_id = str(s["offerId"]),
             .offer = str(s["offer"]),
             .answer = str(s["answer"]),
             .candidate = str(s["candidate"]),
-            .passive = s["passive"].value_or(false),
-            .answering =
-                second == "answer" || (second == "candidate" && !s["offerId"].is_undefined()),
         };
         const auto text = str(entry["text"]);
         BOOST_TEST_EQ(tp::write_signal(m, str(s["nonce"])), text);
@@ -624,7 +612,6 @@ void signal_texts(const fixture_value& fixture) {
         BOOST_TEST_EQ(read->offer, m.offer);
         BOOST_TEST_EQ(read->answer, m.answer);
         BOOST_TEST_EQ(read->candidate, m.candidate);
-        BOOST_TEST_EQ(read->passive, m.passive);
     }
 }
 
@@ -693,8 +680,8 @@ std::string answer_sender(std::string_view text, std::string_view root_topic) {
 }
 
 // A key written twice keeps its last value, as JSON.parse keeps it, an escaped key included: a
-// signal reads what Trystero's own signal handler read from the same text, and a relay's event is
-// acted on, with the same sender, exactly when Trystero's room acted on it.
+// signal reads what 0.27.0's own signal handler read from the same text, and a relay's event is
+// acted on, with the same sender, exactly when 0.27.0's room acted on it.
 void duplicate_keys(const fixture_value& fixture) {
     const auto cases = fixture["duplicate_keys"];
     BOOST_TEST_EQ(cases["signals"].size(), 13U);
@@ -713,8 +700,7 @@ void duplicate_keys(const fixture_value& fixture) {
         BOOST_TEST_EQ(read->offer, str(expected["offer"]));
         BOOST_TEST_EQ(read->answer, str(expected["answer"]));
         BOOST_TEST_EQ(read->candidate, str(expected["candidate"]));
-        BOOST_TEST_EQ(read->passive, expected["passive"].value_or(false));
-        // Trystero shows an offer's id, which it keeps to answer with.
+        // 0.27.0 shows the offer id of what it opens; an announcement's it never reads.
         if (expected.contains("offer_id")) {
             BOOST_TEST_EQ(read->offer_id, str(expected["offer_id"]));
         }
@@ -733,13 +719,13 @@ std::string padded(std::string_view text, std::size_t size) {
     return out;
 }
 
-/** The longest signal the bounds of its fields admit: a passive room's sealed offer. */
+/** The longest signal the bounds of its fields admit: a sealed answer, whose key is the longest. */
 std::string longest_signal() {
     const std::string peer(tp::max_peer_id_bytes, 'p');
     const std::string offer_id(tp::max_offer_id_bytes, 'o');
     const std::string description(tp::max_sealed_description_bytes, 'a');
-    return std::string(tp::write_signal(
-        {.peer_id = peer, .offer_id = offer_id, .offer = description, .passive = true}));
+    return std::string(
+        tp::write_signal({.peer_id = peer, .offer_id = offer_id, .answer = description}));
 }
 
 // The bounds a room parses with refuse no text Trystero sends, and the relay's is under the length
@@ -790,8 +776,9 @@ void parse_bounds() {
     {
         const auto document = parse_text(longest, tp::max_parsed_signal_bytes).value();
         const auto read = tp::read_signal(document.root());
-        BOOST_TEST(read.has_value() && read->offer.size() == tp::max_sealed_description_bytes &&
-                   read->peer_id.size() == tp::max_peer_id_bytes && read->passive);
+        BOOST_TEST(read.has_value() && read->answer.size() == tp::max_sealed_description_bytes &&
+                   read->peer_id.size() == tp::max_peer_id_bytes &&
+                   read->offer_id.size() == tp::max_offer_id_bytes);
     }
     BOOST_TEST(refused_unread(longest + " ", tp::max_parsed_signal_bytes));
 
@@ -1017,8 +1004,7 @@ void text() {
 
 int main(int argc, char* argv[]) {
     if (!BOOST_TEST_EQ(argc, 2)) {
-        BOOST_LIGHTWEIGHT_TEST_OSTREAM
-            << "usage: protocol_test <fixtures/expected/expected.json>\n";
+        BOOST_LIGHTWEIGHT_TEST_OSTREAM << "usage: protocol_test <fixtures/oracle/expected.json>\n";
         return boost::report_errors();
     }
     const auto loaded = load(argv[1]);
