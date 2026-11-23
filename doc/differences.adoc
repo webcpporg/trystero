@@ -110,7 +110,7 @@ has nothing of it to run beside its twin.
 
 | A refused request | rejects with the reason the peer gave | completes with `error::request_rejected` alone, the reason in the room's log | an error code carries no text of a peer's
 
-| An `@_response` that answers no request | its offer rejected, "unexpected response" | the same: an offer is rejected "unexpected response" and an inline message is dropped, the port reporting `peer_error` as 0.27.0 does | none
+| An `@_response` that answers no request | its offer rejected, "unexpected response" | the same: an offer is rejected "unexpected response", an inline message is dropped, nothing is reported and the peer stays | none
 
 | A name made both a message action and a request action | throws "action type cannot be redefined" | the second handle's operations complete with `error::action_redefined` | trystero raises no exception of its own
 
@@ -119,6 +119,8 @@ has nothing of it to run beside its twin.
 | The hint of `peer_connect_failed` without TURN, and `turnConfigured` | "configure TURN via turnConfig or rtcConfig.iceServers"; a TURN server of the raw configuration counts | "configure TURN via app_config::ice_servers"; only a TURN server the app kept counts | the port's option is `ice_servers`, and a server it dropped as unusable is none
 
 | `relay-failed` | reported once per room, when every relay's first connection failed before one opened, or when no relay's first announcement succeeded and the others failed to open; its message is the cause's, falling back to "all signaling relays failed" | the same two conditions, once per room, a skipped announcement (relay not open or cooling down) counting as no failure as in 0.27.0; the message is the failure's text, the constant when a relay did not open | none
+
+| The message of `identity-failed` | the underlying error's message when it has one, WebCrypto's for instance, else "endpoint identity resolution failed" or "identity resolution failed" | always the fallback text of the two | a key webcpp::crypto cannot make fails with an error code, whose message is its category's text, not the cause a page's WebCrypto would name
 
 | An announcement the socket cannot queue | `client.send` is a silent no-op on a socket that is not open, so a dropped write is no failure; only signing or JSON failures fail an announcement | `backend::websocket::send` returns whether it queued the text, and a refused text fails the announcement (a queue overflow on a socket the room sees open) | a connection that cannot take the text is a relay that cannot carry the announcement, and the port has no other way to see it
 
@@ -135,6 +137,8 @@ has nothing of it to run beside its twin.
 | A JSON payload nested deeper than 256 | delivered: `JSON.parse` takes it | not delivered | webcpp::document's default, a bounded depth
 
 | A JSON payload whose document passes the room's `room_options::max_json_document_bytes`, 64 MiB by default: some 350,000 values of one character | delivered: `JSON.parse` has no bound but the page's memory | not delivered (<<trystero-differences-json-refused>>) | each value of a document is a node of 192 bytes of image, 96 times its text at most, so a program bounds what a peer's JSON may take of its room's resource; every payload within the bound is delivered
+
+| The width of a transfer's chunks over a connection whose peer announces no message size limit (`a=max-message-size:0`) | narrow, 16 KiB frames: `sctp.maxMessageSize` is then `Infinity`, which is not finite | wide, 64 KiB frames: webcpp::webrtc's `max_message_size()` reports such a connection's limit as `options::max_message_size` in a browser and libdatachannel's local limit natively | webcpp::webrtc has no value for "no limit"; a receiver takes either width, as every 0.27.0 peer takes frames up to 64 KiB
 |===
 
 Each difference a program can show has one, `example/diff_<topic>.cpp`,
@@ -424,6 +428,12 @@ its reason.
 
 | The hint of `peer_connect_failed`
 | A connection that fails after its descriptions were exchanged, which the loopback of the lanes never fails; the `room` test fails one over the memory relays.
+
+| The message of `identity-failed`
+| Only a system without a generator fails to make a key, which no machine of the lanes is; the `room` test reports both fallback texts.
+
+| The width of a transfer's chunks over a connection with no message size limit
+| A browser and libdatachannel each announce a limit, so no connection of the lanes has none; either width reaches the receiver whole, so neither API shows which one was sent.
 
 | Relay sockets and the Nostr key: the key
 | Which key signs a room's events only the relay sees; neither a room nor a peer reports it. The sockets are shown (<<trystero-differences-relay-sockets>>).

@@ -4885,6 +4885,74 @@ void a_refused_user_is_not_dialed_again() {
     refused_user_is_not_dialed_again(false);
 }
 
+// A connection a full room refuses when its channel opens lets the peer negotiate again, as
+// 0.27.0's onPeer destroys it and its close prunes the peer's signaling state: A, a room of at most
+// 2 users, refuses C while B is in it; B leaves, and C's next negotiation with A is made, its
+// channels held closed; D fills A's place before they open, so that A refuses C's connection at
+// its open; D leaves, and C joins A. B and C are unbounded.
+void a_connection_refused_at_its_open_lets_the_peer_back() {
+    counting_resource a_memory;  // first: the apps' connection ends are made in them
+    counting_resource c_memory;
+    fixture f{true};
+    auto a_config = app_config("reopenAAAAAAAAAAAAAA");
+    a_config.memory = &a_memory;
+    trystero::test::app a_app(f.io.get_executor(), f.net, std::move(a_config));
+    auto a = join(a_app, "reopen", at_most(2));
+    trystero::test::app b_app(f.io.get_executor(), f.net, app_config("reopenBBBBBBBBBBBBBB"));
+    std::optional<trystero::room> b(join(b_app, "reopen"));
+    webcpp::test::require(
+        BOOST_TEST(run_until(f, [&] { return a.peers().size() == 1 && b->peers().size() == 1; })));
+    auto c_config = app_config("reopenCCCCCCCCCCCCCC");
+    c_config.memory = &c_memory;
+    trystero::test::app c_app(f.io.get_executor(), f.net, std::move(c_config));
+    auto c = join(c_app, "reopen");
+    std::vector<reported_error> c_reports;
+    c.on_error(record_errors(f, c_reports, trystero::error::room_full));
+    webcpp::test::require(BOOST_TEST(run_until(f, [&] { return c_reports.size() == 1; })));
+    check_room_full_reports(c_reports, "reopen", {std::string(a_app.self_id())});
+    // B leaves: A has a place, and C's next negotiation with A is made with its channels closed.
+    const auto made_before = f.net.made_connections;
+    f.net.defer_opens = true;
+    b.reset();
+    std::optional<std::size_t> a_end;
+    webcpp::test::require(BOOST_TEST(run_until(
+        f,
+        [&] {
+            for (std::size_t id = made_before; id < f.net.made_connections && !a_end; ++id) {
+                const auto other = f.net.peer_of(id);
+                if (other != id && end_in(f, id, &a_memory) && end_in(f, other, &c_memory)) {
+                    a_end = id;
+                }
+            }
+            return a_end.has_value();
+        },
+        60s)));
+    const auto c_end = f.net.peer_of(*a_end);
+    f.net.defer_opens = false;
+    // D fills the place before the channels open.
+    trystero::test::app d_app(f.io.get_executor(), f.net, app_config("reopenDDDDDDDDDDDDDD"));
+    std::optional<trystero::room> d(join(d_app, "reopen"));
+    webcpp::test::require(BOOST_TEST(run_until(
+        f, [&] { return a.peers().size() == 1 && a.peers().contains(d_app.self_id()); })));
+    f.net.open(*a_end);
+    f.net.open(c_end);
+    const auto a_end_open = [&] {
+        const auto connection = f.net.find(*a_end);
+        const auto channel = connection ? connection->channel() : nullptr;
+        return channel && channel->is_open();
+    };
+    // A refused the connection at its open: its end closes, and C is not among A's peers.
+    BOOST_TEST(run_until(f, [&] { return !a_end_open(); }));
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+    BOOST_TEST(!a.peers().contains(c_app.self_id()));
+    // D leaves: C's next negotiation reaches A, which has a place for it again. (C and D, both
+    // unbounded, are each other's peers meanwhile.)
+    d.reset();
+    BOOST_TEST(run_until(f, [&] { return a.peers().contains(c_app.self_id()); }, 60s));
+    BOOST_TEST_EQ(a.peers().size(), 1U);
+    BOOST_TEST(c.peers().contains(a_app.self_id()));
+}
+
 // A full room's refusal that reaches a peer before it verified the refusing peer waits for the
 // verification, as 0.27.0 keeps it as the entry's deferredReady: A, the initiator, gets the
 // refusal while B's step 2 is held, reports nothing, and reports room_full with B's id once step 2
@@ -5761,6 +5829,7 @@ int main(int argc, char* argv[]) {
     run_case(another_peer_of_a_present_user_is_admitted);
     run_case(concurrent_admissions_respect_the_limit);
     run_case(a_refused_user_is_not_dialed_again);
+    run_case(a_connection_refused_at_its_open_lets_the_peer_back);
     run_case(a_refusal_waits_for_the_peers_verification);
     run_case(a_refusal_survives_the_close);
     run_case(a_refused_link_ends_after_its_grace);

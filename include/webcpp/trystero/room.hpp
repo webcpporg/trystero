@@ -1425,9 +1425,12 @@ public:
             return;
         }
         // A peer a full room refused is not taken back while it stays full, as 0.27.0's onPeer
-        // destroys a peer canConnectPeer refuses.
+        // destroys a peer canConnectPeer refuses; that close prunes the peer's signaling state, so
+        // its next negotiation is weighed again. The link owns the connection, which the
+        // signaling's entry no longer holds: forgetting the entry closes nothing of it.
         if (!can_connect(peer)) {
             link->end("room full");
+            signaling_->forget(peer);
             return;
         }
         if (const auto it = peers_.find(peer); it != peers_.end()) {

@@ -415,6 +415,8 @@ whose error refuses the request: the requester's request then completes
 with `error::request_rejected`, without the reason, which the room logs;
 `error::request_timed_out` after the timeout, `error::not_connected` for a
 target not connected, `error::peer_disconnected` when the peer leaves first.
+An answer that answers no request is dropped, as 0.27.0 drops it: its offer
+is rejected "unexpected response", and nothing is reported; the peer stays.
 The listener answers at once; Trystero's may answer with a promise. A name
 is a message action or a request action, not both: a handle of the other
 kind completes its operations with `error::action_redefined`, where
@@ -484,7 +486,7 @@ with no room nor peer.
 | `room_full` | 0.27.0's `room-full`, reported by the room a peer's full room refused, with that peer's id, once its handshake verified the peer; the peer goes, and is not announced to again
 | `plugin_failed` | 0.27.0's `plugin-failed`, which nothing reports: plugins are not ported
 | `banned` | 0.27.0's `banned`, reported by the room a pending peer refused with its ready frame, with that peer's id and its reason, when it gave one, in the message; a peer has no roles to ban with, so only a Trystero JS peer sends one
-| `peer_error` | a peer's frame was malformed or against the protocol, or answers no request; its message says which, as 0.27.0's, and the peer is told to leave and goes
+| `peer_error` | a peer's frame was malformed or against the protocol; its message says which, as 0.27.0's, and the peer is told to leave and goes
 | `identity_failed` | the app's endpoint key or its ephemeral user identity could not be made (a system without a generator): each room it joins reports it once the join has returned, then ends without reaching a relay
 | `relay_failed` | the first connection of every relay closed before any opened, or no relay took its first announcement and the others failed to open; reported once, with the failure's text when there is one
 | `decrypt_failed` | an offer or an answer did not open with the room key: another password, a corrupted or forged signal, or a plaintext that is not UTF-8; reported at most once a minute per peer and stage

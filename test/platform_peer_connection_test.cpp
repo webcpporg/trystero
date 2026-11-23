@@ -380,7 +380,7 @@ void closing_one_end_is_seen_by_the_other() {
     BOOST_TEST(!p.off_thread);
 }
 
-// Presence can reach the native executor before the posted open event hands a channel over
+// A frame can reach the native executor before the posted open event hands a channel over
 // from signaling. Installing the receiver afterwards must deliver those frames in order.
 void messages_wait_for_the_receiver_during_handoff() {
     queued_pair p;

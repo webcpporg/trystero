@@ -295,6 +295,9 @@ private:
             remote_dtls_for(*claims), local_dtls_, claims->user_id, self_.user.user_id(), memory_);
         const auto signed_by = sign();
         if (!signed_by) {
+            // Our own key could not sign, not a fault of the peer's; 0.27.0 fails the run with
+            // WebCrypto's error. A key webcpp::crypto made always signs, so the reason that blames
+            // the peer here only stands for a case that cannot happen.
             return fail(protocol::handshake_reason::identity);
         }
         stage_ = stage::awaiting_step_3;
@@ -318,6 +321,9 @@ private:
         }
         const auto signed_by = sign();
         if (!signed_by) {
+            // Our own key could not sign, not a fault of the peer's; 0.27.0 fails the run with
+            // WebCrypto's error. A key webcpp::crypto made always signs, so the reason that blames
+            // the peer here only stands for a case that cannot happen.
             return fail(protocol::handshake_reason::identity);
         }
         protocol::handshake_claims step_3{

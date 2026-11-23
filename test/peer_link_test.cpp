@@ -253,8 +253,33 @@ void a_bound_frame_above_64_kib_ends_the_link() {
 }
 
 // A disconnection ends the link after 5 s, as 0.27.0's grace; a reconnection before then cancels
-// it.
+// it, and a second disconnection while the grace runs does not extend it, as 0.27.0 starts the
+// grace only from an open connection (its connection and ICE states both report one).
 void a_disconnected_state_ends_after_its_grace() {
+    {
+        link_pair p;
+        p.bind();
+        p.net.disconnect(p.local_id);
+        BOOST_TEST(p.net.advance(4'000ms));
+        p.net.disconnect(p.local_id);
+        BOOST_TEST(p.net.advance(999ms));
+        BOOST_TEST_EQ(p.ends, 0U);
+        BOOST_TEST(p.net.advance(1ms));
+        BOOST_TEST_EQ(p.ended, "connection lost");
+    }
+    {
+        // Once a reconnection cancelled it, the next disconnection has a grace of its own.
+        link_pair p;
+        p.bind();
+        p.net.disconnect(p.local_id);
+        BOOST_TEST(p.net.advance(4'000ms));
+        p.net.reconnect(p.local_id);
+        p.net.disconnect(p.local_id);
+        BOOST_TEST(p.net.advance(4'999ms));
+        BOOST_TEST_EQ(p.ends, 0U);
+        BOOST_TEST(p.net.advance(1ms));
+        BOOST_TEST_EQ(p.ended, "connection lost");
+    }
     {
         link_pair p;
         p.bind();

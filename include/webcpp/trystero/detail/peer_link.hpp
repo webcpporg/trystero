@@ -309,23 +309,30 @@ private:
     /** 0.27.0's `failData`, which warns "excessive pre-handler data; disconnecting peer". */
     void fail_data() { end("excessive pre-handler data"); }
 
-    /** Ends a failed or closed connection at once, and a disconnected one after its grace. */
+    /** Ends a failed or closed connection at once, and a disconnected one after its grace, which a
+     * later disconnection does not extend, as 0.27.0 starts it only from an open connection. */
     void on_state(backend::connection_state state) {
         using backend::connection_state;
         if (state == connection_state::failed || state == connection_state::closed) {
             end(state == connection_state::failed ? "connection failed" : "connection closed");
         } else if (state == connection_state::disconnected) {
+            if (in_grace_) {
+                return;
+            }
             if (!disconnect_timer_) {
                 disconnect_timer_ = factory_.make_timer(memory_);
             }
+            in_grace_ = true;
             disconnect_timer_->start(
                 disconnected_grace, {std::allocator_arg, std::pmr::polymorphic_allocator<>(memory_),
                                      [weak = weak_from_this()] {
                                          if (const auto self = weak.lock()) {
+                                             self->in_grace_ = false;
                                              self->end("connection lost");
                                          }
                                      }});
-        } else if (disconnect_timer_) {
+        } else if (in_grace_) {
+            in_grace_ = false;
             disconnect_timer_->cancel();
         }
     }
@@ -360,6 +367,8 @@ private:
     std::pmr::string reason_;
     bool bound_ = false;
     bool ended_ = false;
+    /** Whether a disconnection's grace runs on `disconnect_timer_`. */
+    bool in_grace_ = false;
 };
 
 }  // namespace webcpp::trystero::detail

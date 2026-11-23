@@ -115,7 +115,8 @@ public:
         awaiting_remote_ready,
         /** The ready frame is being prepared: reserved for Phase 3's state plugin, whose
          * preparation is asynchronous. Until then the preparation ends in the call that starts it,
-         * and no peer is ever in this phase. */
+         * and no peer is ever in this phase, so the cases that read it (`receive_ready`'s
+         * among them) are untested until Phase 3 enters it. */
         preparing_ready,
         /** The ready frame was sent; it waits for the peer's. */
         awaiting_peer_ready,
