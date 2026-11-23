@@ -25,13 +25,14 @@ webcpp::crypto's libsecp256k1, are built from pinned sources:
 
 | webcpp::crypto
 | every room: the AES-256-GCM of its signals, natively OpenSSL's and on
-  emscripten BearSSL's, its randomness, its secrets, and the BIP-340
-  signatures of the Nostr events peers meet through, over libsecp256k1
-  0.8.0 with its `schnorrsig` and `extrakeys` modules
-| `/webcpp/crypto//crypto`, `//gcm-default` and `//secp256k1-default`, the
-  superproject's `libs/crypto`; libsecp256k1 is `/third_party//secp256k1`,
-  built from `third_party/libs/secp256k1`, and BearSSL, on emscripten,
-  `/third_party//bearssl`, from `third_party/libs/bearssl`
+  emscripten BearSSL's, its randomness, its secrets, the ECDSA P-256
+  signatures of its identities and handshakes, BearSSL's on every target,
+  and the BIP-340 signatures of the Nostr events peers meet through, over
+  libsecp256k1 0.8.0 with its `schnorrsig` and `extrakeys` modules
+| `/webcpp/crypto//crypto`, `//gcm-default`, `//p256-default` and
+  `//secp256k1-default`, the superproject's `libs/crypto`; libsecp256k1 is
+  `/third_party//secp256k1`, built from `third_party/libs/secp256k1`, and
+  BearSSL `/third_party//bearssl`, from `third_party/libs/bearssl`
 
 | webcpp::asio
 | every room

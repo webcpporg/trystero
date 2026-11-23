@@ -26,31 +26,35 @@ Chrome.
 . [[trystero-invariant-2]]*Every protocol value equals Trystero JS's.*
 Topics, ids, room keys, room auth tokens, the relay shuffle, sealed text,
 topic kinds, Nostr event ids, inline and chunked action frames and control
-frames are what Trystero 0.27.0's own functions compute from the same
-inputs, byte for byte; the envelopes, room tokens and presence the branch
-keeps are 0.26.0's. _Held by_ `crypto_layer` and `crypto_layer_release`,
+frames, compact keys and the ids they derive, user key texts, the
+handshake's steps, transcript and ready frames, and ping frames are what
+Trystero 0.27.0's own functions compute from the same inputs, byte for byte,
+and 0.27.0 verifies the signatures it recorded. _Held by_ `crypto_layer` and
+`crypto_layer_release`,
 natively and on emscripten, against the vectors
 `test/oracle/record_0_27.mjs` recorded from 0.27.0's own code, sealed texts
-opened as 0.27.0 sealed them among them; and by `protocol`, against the
-values Trystero 0.27.0 writes for the `oracle` lane, which fails when
-Trystero would write other values than those committed.
+opened as 0.27.0 sealed them among them; by `protocol` and `signaling`,
+against the values Trystero 0.27.0 writes for the `oracle` lane, which fails
+when Trystero would write other values than those committed; and by the
+`oracle` lane's `generated-vectors`, which records the vectors again from
+the published packages.
 . [[trystero-invariant-3]]*A peer with another password never joins a
 protected {cpp} app's rooms.* Its initial signals do not open under the
-room's keys, derived from the app's password, so it obtains no shared
-connection into that domain, and the room reports `decrypt_failed`, at most
-once a minute per peer and stage. Every
-room of that app uses the same immutable password. This promise concerns
-the {cpp} app's admission; an upstream JS page that mixes passwords retains
-its one-way handshake exposure (<<trystero-protocol-limitations>>). _Held
-by_ `room` (`the_same_password_joins_and_another_does_not` and
+room's keys, derived from the app's password, so it never connects, and
+the room reports `decrypt_failed`, at most once a minute per peer and stage.
+Every room of that app uses the same immutable password. _Held by_ `room`
+(`two_passwords_never_meet` and
 `decrypt_failed_is_reported_once_a_minute`), `platform_room`
 (`another_password_never_joins`), and the interop's `passwords` scenario,
 with either side offering.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
 both ways.* It is offered, accepted and sent in chunks of at most 16,370
-bytes, and arrives whole, from either peer. _Held by_ `room`
-(`large_payloads_travel_in_chunks_both_ways`, 100 KB each way), and the
-file transfers of the `interop` lane.
+bytes, or 65,522 on a connection that takes messages of 64 KiB, as 0.27.0
+sends them, and arrives whole, from either peer. _Held by_ `room`
+(`large_payloads_travel_in_chunks_both_ways`, 100 KB each way,
+`a_wide_link_sends_wide_chunks` and
+`a_wide_transfer_arrives_in_wide_chunks_in_any_order`), and the interop's
+`wide_transfers_both_ways` scenario, 1 MiB each way.
 . [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
 resources,* but what <<trystero-allocation-outside>> lists: from its
 construction until its `io_context` has drained, neither the global
@@ -95,16 +99,32 @@ session's queue does, which checks one close and no message after it; the
 reconnection by `room`
 (`a_relay_that_closes_at_once_is_tried_less_and_less_often`).
 
-. [[trystero-invariant-9]]*One connection per remote peer per app is shared
-by its rooms,* on the branch until Phase 2 retires 0.26.0's sharing
-(<<trystero-design-phase-1>>). Each room keeps its own membership and actions on that
-connection. _Held by_ `shared`, cases 1 to 3, and the interop's first shared
-scenario.
+. [[trystero-invariant-9]]*Each room of an app has its own connection to
+each remote peer,* as each room of 0.27.0 has: its frames travel bare on
+it, no other room uses it, and a room keeps one connection per peer.
+_Held by_ `room` (`rooms_of_one_app_have_their_own_connections`,
+`a_room_keeps_one_connection_per_peer` and `frames_travel_bare`), and the
+interop lane, whose Trystero 0.27.0 pages read the {cpp} peer's frames.
 . [[trystero-invariant-10]]*A room's departure leaves the app's other rooms
-joined.* They continue sending over the same connection. _Held by_
-`shared`, case 8, and shared interop scenario 5, with either side leaving.
-. [[trystero-invariant-11]]*Different passwords share no {cpp} app
-connection or presence.* Protected rooms use a separate app with a
-distinct self id; a peer of a passwordless app gains no binding to that
-protected app by echoing tokens. _Held by_ the password-domain cases of
-`shared` and shared interop scenario 4.
+joined.* They keep their connections to the peer and go on sending, and the
+room that left negotiates nothing more. _Held by_ `room`
+(`leaving_one_room_keeps_the_other_rooms_connection` and
+`a_leaving_room_negotiates_nothing`).
+. [[trystero-invariant-11]]*A peer joins only once its signed handshake
+verified it.* Its endpoint key derives its id, its user key derives its
+user id, both signatures of the transcript verify, and the fingerprints it
+claims are those of the connection; a forged step, other fingerprints, or a
+handshake that does not complete in 10 s fail it, and the peer never joins.
+_Held by_ `room` (`peers_verify_each_other_and_join_with_their_user_ids`,
+`a_forged_step_fails_the_handshake`,
+`another_fingerprint_fails_the_handshake` and
+`a_handshake_that_never_completes_fails_after_10_s`), `handshake_manager`,
+and the interop's `a_forged_user_signature` and
+`js_verifies_cpp_signatures` scenarios.
+. [[trystero-invariant-12]]*A room holds at most `max_users` users.* A peer
+of a new user is refused once its handshake passed, and its room reports
+`room_full`; a peer of a user present is admitted. _Held by_ `room`
+(`a_full_room_refuses_a_new_user`,
+`another_peer_of_a_present_user_is_admitted` and
+`concurrent_admissions_respect_the_limit`), and the interop's
+`max_users_both_ways` scenario.

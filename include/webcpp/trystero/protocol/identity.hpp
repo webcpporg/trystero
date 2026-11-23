@@ -134,13 +134,14 @@ inline bool js_falsy(const json::const_value& v) {
 }  // namespace detail
 
 /**
- * Reads a user key as 0.27.0's `tryParsePrivateJwk` reads a text: the text without the white space
- * `String.prototype.trim` removes; when it starts with @ref user_key_prefix, the rest is strict
- * base64url of the JSON, read as `TextDecoder` reads it (a leading byte order mark dropped); when
- * it starts with `{`, it is the JSON. The JSON is an object whose `d`, `x` and `y` are nonempty
- * strings, `d` the strict base64url of 32 bytes that are a valid scalar (@ref is_p256_scalar),
- * `x` and `y` of 32 bytes each; its `kty`, unless absent or falsy, is `"EC"`, and its `crv`
- * `"P-256"`.
+ * Reads a user key as 0.27.0's `tryParsePrivateJwk` reads a text.
+ *
+ * The text is read without the white space `String.prototype.trim` removes; when it starts with
+ * @ref user_key_prefix, the rest is strict base64url of the JSON, read as `TextDecoder` reads it
+ * (a leading byte order mark dropped); when it starts with `{`, it is the JSON. The JSON is an
+ * object whose `d`, `x` and `y` are nonempty strings, `d` the strict base64url of 32 bytes that
+ * are a valid scalar (@ref is_p256_scalar), `x` and `y` of 32 bytes each; its `kty`, unless
+ * absent or falsy, is `"EC"`, and its `crv` `"P-256"`.
  *
  * Every buffer that held `d`, its text, the decoded JSON, the parse's document and the scalar's
  * bytes, is wiped before the call returns.

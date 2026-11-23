@@ -98,9 +98,9 @@ using bytes = std::vector<std::uint8_t>;
  * Binary data in a memory resource, an action's binary payload in the room's resource.
  *
  * A message received as `pmr_bytes` uses the room's effective `room_options::memory`, which
- * must outlive the value. A received buffer in the same resource is moved into the value;
- * a buffer in the app's distinct resource is copied once into the room's. An inline payload
- * is taken out of its frame before being moved or copied.
+ * must outlive the value. A room receives its frames, and assembles its transfers, in that
+ * resource, so the payload is moved into the value: an inline payload is taken out of its frame
+ * first.
  *
  * @see "Allocation", in the guide.
  */

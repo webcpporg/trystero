@@ -14,30 +14,33 @@ has them.
 [#trystero-usage-joining]
 === Joining
 
-An `app` is this program in one application and password domain: one peer
-id, drawn when the app is made, one immutable password, and one connection
-to each remote peer, which every room of the app it shares with that peer
-uses, as 0.26.0's pages shared them and as the branch keeps until Phase 2
-(<<trystero-design-phase-1>>). Constructing it takes the executor every
-listener and completion runs on, the backend, which must outlive it, and
-its configuration, `app_config`, moved. A room is joined with `join`, which
-returns a `boost::system::result<room>` to test, or an error:
-`error::already_joined` while a room of that id is joined in the app, as
-0.27.0 refuses a second join, and `error::too_many_rooms` when 64 rooms
-count, since a peer drops a shared connection that advertises more. Joining
-an id in its 99 ms farewell finishes that farewell first and joins afresh.
-A room of an app with a password announces itself once the app has derived
-its keys, off the room's thread; `join` returns before
-(<<trystero-design-phase-1>>).
+An `app` is this program in one application and password domain: one
+endpoint identity, a P-256 key it makes when it is made, whose public key
+derives its peer id; one user identity, the one its configuration gives or
+an ephemeral one it makes; one immutable password; its relays and its ICE
+servers. Each room of the app negotiates its own connection to each remote
+peer, as each room of 0.27.0 does: the app shares its identity, its relays'
+configuration and its rooms' keys with its rooms, and no connection.
+Constructing it takes the executor every listener and completion runs on,
+the backend, which must outlive it, and its configuration, `app_config`,
+moved. A room is joined with `join`, which returns a
+`boost::system::result<room>` to test, or an error:
+`error::invalid_max_users` for a `room_options::max_users` of 0 or above
+2^53^ - 1, as 0.27.0's `joinRoom` throws, and `error::already_joined` while
+a room of that id is joined in the app, as 0.27.0 refuses a second join.
+Joining an id in its 99 ms farewell finishes that farewell first and joins
+afresh. A room of an app with a password announces itself once the app has
+derived its keys, off the room's thread; `join` returns before
+(<<trystero-design-port>>).
 
 `join` and the app's other methods run where its executor runs. An app and
 all its rooms use that executor; a multithreaded `io_context` needs a strand.
 Destroying or moving over the app handle releases it; its rooms keep the
 app's state alive and continue. Two `app` objects, even with the same app
-id, are two peers. Rooms with different passwords use separate apps with
-distinct peer ids. A room has no password override; changing the domain
-password requires a new app. No registry or identity is kept in static
-storage.
+id, are two peers, of one user when they are given one `user_identity`.
+Rooms with different passwords use separate apps with distinct peer ids. A
+room has no password override; changing the domain password requires a new
+app. No registry or identity is kept in static storage.
 
 [cols="1,3",options="header"]
 |===
@@ -49,10 +52,11 @@ storage.
 | `password`
 | The immutable password shared by every room of this app, copied into the
   app's resource. Each room derives its keys from it
-  (<<trystero-protocol-crypto>>), and the shared connection's challenge
-  handshake checks it. Empty, the app is passwordless. Different passwords
-  require separate apps and distinct peer ids; they share no connections,
-  presence or tokens (<<trystero-protocol-limitations>>).
+  (<<trystero-protocol-crypto>>), which seal its signals: a peer of another
+  password opens none of them, and never connects, as in 0.27.0, which has
+  no password challenge. Empty, the app is passwordless, its signals still
+  sealed with the app and room ids. Different passwords require separate
+  apps and distinct peer ids.
 
 | `relay_urls`
 | The Nostr relays. Empty, `relay_redundancy` of 0.27.0's 30 defaults, in
@@ -73,11 +77,6 @@ storage.
   imported (0.27.0's `'custom'`); absent, the app makes an ephemeral one
   (0.27.0's `'none'`), lost with the app (<<trystero-usage-peers>>).
 
-| `idle_timeout`
-| How long a shared connection with no rooms stays after a departure,
-  123,333 ms; 0 closes it immediately. A negative value becomes 0 and is
-  reported. A connection whose last binding was kicked closes at once.
-
 | `log`
 | One sink for the app and its rooms, called with a category (`app`, `nostr`,
   `signal`, `webrtc`, `room` or `action`) and a sentence composed in the
@@ -88,11 +87,11 @@ storage.
   must be non-null (<<trystero-allocation>>).
 |===
 
-It has no `self_id`: 0.27.0 has no custom peer id, and an app draws a P-256
-endpoint key, whose public key derives its id, 20 base62 characters, which
-`app::self_id()` and `room::self()` give.
-`app_config` is move-only because its log sink is a `handler`: pass it
-moved, or build it in place. Each room adds `room_options`:
+It has no `self_id`: 0.27.0 has no custom peer id, and an app derives its
+id, 20 base62 characters, from its endpoint key, which `app::self_id()` and
+`room::self()` give. `app_config` is move-only because its log sink is a
+`handler`: pass it moved, or build it in place. Each room adds
+`room_options`:
 
 [cols="1,3",options="header"]
 |===
@@ -104,6 +103,9 @@ moved, or build it in place. Each room adds `room_options`:
 | `max_json_document_bytes`
 | The largest image a received JSON payload's document may take of the room's resource, webcpp::document's default, 64 MiB; a payload past it is not delivered (<<trystero-protocol-json>>).
 
+| `max_users`
+| The most users the room holds, its own included, Trystero's `maxUsers`; empty, no bound. A peer of a user already in the room is admitted when it is full; a peer of a new user is refused once its handshake passed, and its room reports `room_full` (<<trystero-usage-peers>>).
+
 | `memory`
 | The room's own resource; null uses the app's resource.
 |===
@@ -112,21 +114,33 @@ It has no `handshake_timeout`: 0.27.0 removed `handshakeTimeoutMs`, and a
 peer has 10 s to finish the handshake.
 
 [#trystero-usage-migration]
-==== Moving from 0.26.0's API
+==== Moving from trystero 0.1.0
 
-Programs of trystero 0.1.0, the port of 0.26.0, move as Trystero's own
-programs move from 0.26.0 to 0.27.0:
+trystero 0.1.0 ported Trystero 0.26.0. Its programs move as Trystero's own
+programs move from 0.26.0 to 0.27.0, and its rooms meet only Trystero
+0.27.0's now, as 0.27.0's meet no 0.26.0 room:
 
 [cols="2,3",options="header"]
 |===
-| Before | On the branch
+| In 0.1.0 | Now
 
 | `app_config::self_id`
-| Gone: the app derives its id from the endpoint key it draws;
+| Gone: the app derives its id from the endpoint key it makes;
   `app::self_id()` and `room::self()` give it.
 
 | `room_options::handshake_timeout`
 | Gone: a peer has 10 s.
+
+| `app_config::idle_timeout`, `app::max_rooms` and `error::too_many_rooms`
+| Gone with the connection an app's rooms shared: each room has its own
+  connections, closed as it leaves, and an app joins any number of rooms.
+
+| `error::wrong_password` and `error::handshake_timed_out`
+| Gone with 0.26.0's password handshake: a peer of another password is
+  reported as `decrypt_failed`, and a handshake that fails, its 10 s
+  included, as `handshake_failed` with 0.27.0's reason. The values of
+  `error` that followed them moved: a program compares codes with the
+  enumerators, never with numbers it kept.
 
 | `on_peer_join(f)`, `on_peer_leave(f)`, `on_error(f)` and an action's
   `on_message(f)`, each setting the one handler and replacing the one before
@@ -154,9 +168,18 @@ programs move from 0.26.0 to 0.27.0:
 | Dropped, and their transfers rejected, as 0.27.0 keeps none: a room makes
   the actions it receives right after it is joined.
 
-| `handshake_failed`, reserved
-| 0.27.0's `handshake-failed`, which the room reports when a connected peer's
-  handshake fails.
+| No user: a peer was its id
+| A peer's user is the one its handshake verified; an app presents
+  `app_config::identity`, or an ephemeral user, and a program keeps one
+  across runs with `export_user_identity` and `import_user_identity`.
+
+| A room of any number of peers
+| `room_options::max_users` bounds its users, and `join` refuses a bound of
+  0 with `error::invalid_max_users`.
+
+| `backend::websocket::send` returns nothing
+| It returns whether the socket queued the text, for a backend of a
+  program's own (<<trystero-differences-behaviour>>).
 |===
 
 `room(executor, backend, room_config, room_id)` and `room_config`, of
@@ -169,7 +192,7 @@ trystero's earlier versions, are gone too: a room is joined through an
 
 A peer is one endpoint in the room, a user who it is: in 0.27.0 several
 peers, the tabs of one person, may be one user. An app's peer id derives
-from the P-256 endpoint key it draws when it is made, and its user id from
+from the P-256 endpoint key it makes when it is made, and its user id from
 its user identity, `app_config::identity` or an ephemeral one the app makes
 (`app::self_id`, `app::user_id`). A `user_identity` is made with
 `create_user_identity`, kept as the text `export_user_identity` writes and
@@ -206,28 +229,36 @@ request `@_ping` to receiving its answer, or completes with
 `error::room_left` or `error::peer_disconnected` when the room or the peer goes.
 
 `async_leave` says goodbye to every peer, Trystero's `@_leave`, gives the
-farewell 99 ms, as Trystero waits, then detaches its bindings and closes its relay
+farewell 99 ms, as Trystero waits, then closes its connections and its relay
 sockets, and every pending operation completes with `error::room_left`.
 Destroying a room leaves at once, without the 99 ms, and so does assigning
 another room over a joined one: every peer is told, and every pending
 operation completes with `error::room_left`, even while an `action` of it
 lives.
 
-Over the shared connection, a kick or a peer's `@_leave` ends only that
-room's binding: the app's other rooms keep using the connection. When it
-stays live, rebinding waits one step after the end, initially 11 s, the
-handshake's 10 s plus 1 s, doubling after each further end to at most 5
-minutes. A completed handshake or the connection's end resets the count.
-After its own kick the lower id refuses bindings until that time and keeps
-frames; the higher id drops frames until it sends presence, but accepts the
-lower id's presence. A binding also requires the peer to have advertised
-the token itself, by its presence or by a frame of the room on its
-connection. A peer on a protected app's shared connection already
-authenticated with that app's password through the initial sealed
-negotiation. A peer that knows it can still send a wrong room proof: only
-the lower id reports that proof as `wrong_password`; the higher id answers
-and sees a departure. Malformed challenge data is rejected by its receiver
-too. This room handshake is 0.26.0's, one way, kept until Phase 2.
+A room admits a peer as 0.27.0's handshake manager does. Once the data
+channel opens, the side whose id is lower in UTF-16 order initiates: it
+sends its nonce, the DTLS fingerprints of its description, its user id and
+its endpoint and user keys; the other answers with its own and its two
+signatures of the transcript, which binds the app, the room, both ids, both
+nonces, both sides' fingerprints and both users; the initiator verifies
+them, signs the transcript too, and the responder verifies those
+(<<trystero-protocol-handshake>>). Each side then sends its ready frame,
+and the peer joins once both did. Until then the peer is pending: absent
+from `peers()` and `users()`, and its frames other than the handshake's and
+`@_leave` are not delivered. A handshake that does not complete in 10 s, a
+step that does not verify, fingerprints that are not the connection's, or
+more than 16 messages the handshake has not read, end the peer: its room
+reports `handshake_failed` with 0.27.0's reason, once a handshake, and the
+peer is told to leave.
+
+In a room with `room_options::max_users`, a peer whose handshake passed is
+admitted when its user is in the room already, or the users, those of
+admissions under way included, are fewer than the bound; else it is refused
+with a ready frame saying "room full", and its room reports `room_full`
+with the refusing peer's id. The room counts users, not peers: another tab
+of a user present is welcome in a full room. It does not dial a peer it
+refused again while it stays full.
 
 [#trystero-usage-listeners]
 === Listeners and subscriptions
@@ -267,7 +298,7 @@ messages travel and how they are received:
 | `webcpp::document::document` | JSON | parsed into a document of its own, with the standard allocator
 | `webcpp::document::pmr::document` | JSON | parsed into a document of the room's resource, which holds its image and the parse's working state
 | `trystero::bytes` | binary | a copy of the bytes
-| `trystero::pmr_bytes` | binary | the transfer's buffer, moved when resources match, otherwise copied once into the room's resource
+| `trystero::pmr_bytes` | binary | the payload's buffer in the room's resource, moved
 | `std::span<const std::uint8_t>` | binary | a view of the frame, valid during the listener
 | `trystero::payload` | any | a `std::variant` of `std::string`, `webcpp::document::document` and `bytes`, by format
 |===
@@ -446,15 +477,13 @@ with no room nor peer.
 | `transfer_rejected` | the receiver refused the transfer, or a message had another format than the awaited type
 | `transfer_timed_out` | the receiver neither accepted nor refused within 120 s
 | `channel_stalled` | the data channel stopped draining for 10 s
-| `wrong_password` | a peer sharing a connection failed the room's password handshake, or sent a handshake message of the wrong shape
-| `handshake_timed_out` | a peer sharing a connection did not finish the handshake in 10 s
-| `handshake_failed` | 0.27.0's `handshake-failed`: a connected peer's identity handshake failed, with 0.27.0's reason
+| `handshake_failed` | 0.27.0's `handshake-failed`, reported by the room whose handshake with a connected peer failed, once a handshake, with 0.27.0's reason: a step that does not verify, fingerprints that are not the connection's, more than 16 unread messages, or 10 s passed ("handshake timed out after 10000ms"); the peer is told to leave
 | `backend_failure` | the browser or the native stack refused an operation, or a room's keys could not be derived
 | `invalid_configuration` | the app dropped an unusable configuration value and continues without it
 | `already_joined` | a room of that id is already joined in the app
-| `too_many_rooms` | the app already holds 64 rooms, including farewells
-| `room_full`, `plugin_failed` | 0.27.0's room errors of the same names; the room reports `room_full`, and nothing reports `plugin_failed` before Phase 3 brings plugins
-| `banned` | a peer refused this room's user with its ready message; its reason, when it gave one, is the message
+| `room_full` | 0.27.0's `room-full`, reported by the room a peer's full room refused, with that peer's id, once its handshake verified the peer; the peer goes, and is not announced to again
+| `plugin_failed` | 0.27.0's `plugin-failed`, which nothing reports: plugins are not ported
+| `banned` | 0.27.0's `banned`, reported by the room a pending peer refused with its ready frame, with that peer's id and its reason, when it gave one, in the message; a peer has no roles to ban with, so only a Trystero JS peer sends one
 | `peer_error` | a peer's frame was malformed or against the protocol, or answers no request; its message says which, as 0.27.0's, and the peer is told to leave and goes
 | `identity_failed` | the app's endpoint key or its ephemeral user identity could not be made (a system without a generator): each room it joins reports it once the join has returned, then ends without reaching a relay
 | `relay_failed` | the first connection of every relay closed before any opened, or no relay took its first announcement and the others failed to open; reported once, with the failure's text when there is one
@@ -467,4 +496,5 @@ with no room nor peer.
 | `request_timed_out` | the request was not answered within its timeout
 | `action_redefined` | the action's name was made the other kind of action first
 | `invalid_user_identity` | `import_user_identity` was given a text that is no user key, a point that is not on the curve, or a scalar that is not its point's
+| `invalid_max_users` | `app::join` was given a `room_options::max_users` of 0 or above 2^53^ - 1
 |===

@@ -15,8 +15,8 @@ another machine. The backend interface is the seam: a program's tests run its
 rooms over a backend of their own, in memory, as trystero's own tests run
 whole rooms over `test/support/memory_backend.hpp`, a backend whose Nostr
 relays forward ephemeral events to matching subscriptions, whose peer
-connections pair through their descriptions, whose data channels deliver in
-order, and whose derivation of a password's master runs webcpp::hash's
+connections pair through their descriptions, each with a DTLS fingerprint
+line of its own for the handshake, whose data channels deliver in order, and whose derivation of a password's master runs webcpp::hash's
 PBKDF2 in the call, 1,000 iterations in place of 600,000 since its rooms
 meet only each other, each event posted to the `io_context`. It is in the namespace
 `webcpp::trystero::test`, outside the library's public headers, and a
@@ -93,21 +93,25 @@ list (<<trystero-building-project>>).
   kinds, `hash32` and `str_to_num`, domain tags, the relay shuffle, `gen_id`
   and the ids derived from a compact key, strict base64url, room keys with
   and without a password, room auth tokens, sealed texts and their AAD, the
-  texts `open` refuses, and the action wire's recorded frames; and
-  trystero's wipe. The 600,000 iterations of a password's PBKDF2 run in
+  texts `open` refuses, the action wire's recorded frames, P-256 keys,
+  compact keys and signatures, low S, user identities exported and
+  imported, the user's proof, the handshake's steps, transcript and frames,
+  and the ping's frames; and trystero's wipe. The 600,000 iterations of a password's PBKDF2 run in
   `crypto_layer_release` alone, a release build.
 
 | `protocol`
-| What the branch keeps of 0.26.0 and what 0.27.0 did not change, against
-  values Trystero JS 0.26.0 computed itself: room tokens, envelopes and
-  presence, Nostr event ids, a JSON payload's numbers and key order; and the
-  rules no recorded value shows: an action's name, the wide chunks' bound,
-  an offer's size, big-endian fields, and the bounds of a signal's fields.
+| Against values Trystero JS 0.27.0 computed itself, which the oracle lane
+  writes into `test/fixtures/oracle/expected.json`: Nostr event ids, a JSON
+  payload's numbers and key order, and the rules no recorded value shows: an
+  action's name, the wide chunks' bound, an offer's size, big-endian fields,
+  and the bounds of a signal's fields.
 
 | `signaling`
-| The signaling and the Nostr strategy alone: an answerer's signals, a signal
-  or a relay's text read at its bound and dropped one byte past it, and a
-  relay's text read 16 deep and dropped one level deeper.
+| The signaling and the Nostr strategy alone: an answerer's signals, each
+  signal 0.27.0's `parseSignalEnvelope` refuses refused, against the
+  oracle's `signal_envelopes`, a signal or a relay's text read at its bound
+  and dropped one byte past it, and a relay's text read 16 deep and dropped
+  one level deeper.
 
 | `subscription`, `user_table`
 | The listeners of an event, 0.27.0's emitter: in the order added, removed
@@ -117,12 +121,16 @@ list (<<trystero-building-project>>).
 
 | `room`, `room_asyncify_release`
 | Whole rooms in one process, over the memory relays: every payload format,
-  100 KB transfers both ways, wide transfers received, frames of an action
-  not made dropped, request actions, receive gates and progress, listeners,
-  users, `self()`, sends to users and to absent targets, 0.27.0's room
-  errors and their pacing, relay connectivity, a password's keys derived
-  after the join returns, once per room and again after a failure, ping,
-  passwords right and wrong, leaving and
+  100 KB transfers both ways, wide transfers sent and received, frames of an
+  action not made dropped, 0.27.0's bounds on frames, the identity
+  handshake, its ready frames, its 10 s and its failures, forged steps and
+  other fingerprints among them, ids derived from keys and imported
+  identities, `max_users` and its admissions, request actions, receive gates
+  and progress, listeners, users, `self()`, sends to users and to absent
+  targets, 0.27.0's room errors, each with its emitter, and their pacing,
+  relay connectivity, a password's keys derived after the join returns, once
+  per room and again after a failure, ping, passwords right and wrong, the
+  connections of each room its own, leaving and
   returning, a room moved over a joined one, ICE servers checked as WebRTC
   checks them, floods of announcements and of forged, replayed and reflected
   signals, offers that keep their places when new ids arrive at the same
@@ -132,25 +140,34 @@ list (<<trystero-building-project>>).
   rejected document receive.
 
 | `app_impl`, `app_impl_asyncify_release`
-| Configuration copying and validation, resource ownership, weak room
-  registration, shared adoption, stale replacement, reentrant adoption,
-  last-user closure and quiet destruction with pending work.
+| Configuration copying and validation, no custom self id, resource
+  ownership, weak room registration, the relays' connectivity reaching every
+  room, the page's watch ending with its last user, quiet destruction with
+  pending work, and the password wiped before it is freed.
 
-| `connection`
-| Shared transport routing, advertised token and kept-frame limits, binding
-  detachment, departures and kicks, idle expiry and drain ordering.
+| `peer_link`, `peer_link_hardened`
+| One room's connection to one peer alone, over a memory pair: the frames
+  kept before the room binds it, in order, and 0.27.0's bounds on them, the
+  bound on a frame once bound, which follows the connection's largest
+  message, the drain waiters, and a disconnection's grace; once more
+  natively with the standard libraries' checks.
+
+| `handshake_manager`, `handshake_manager_hardened`
+| A room's handshakes alone, 0.27.0's handshake manager: who initiates, the
+  ready frame before the join, the join once both sides are ready, a
+  deferred responder, the 16 buffered messages, the 10 s on the virtual
+  clock, and a clear that fails a waiting step; once more natively with the
+  standard libraries' checks.
+
+| `identity_cache`
+| An app's key records and verified signatures against 0.27.0's vectors:
+  their bounds, least recently used out, a cached answer given without
+  verifying again, a high S refused before verification, and ids checked
+  against their keys.
 
 | `memory_backend`
 | Virtual timer ordering, cancellation, held-frame order, deferred opens,
   injection and failures, and byte-accurate buffering and drain.
-
-| `shared`, `shared_no_exceptions`, `shared_hardened`
-| Multiple apps and rooms with one connection per remote peer, adoption
-  races, presence and reuse, room isolation, departures, idle connections,
-  password-domain isolation, invalid room proofs, transient handshake recovery,
-  fairness, bounds, a handshake message read at its bound and failing one
-  byte past it, and resource ownership. The suite also runs without exceptions and with
-  standard-library hardening; sanitizers check lifetimes and detachment.
 
 | `allocation`, `allocation_asyncify_release`
 | Every allocation of two apps and their rooms goes through their resources
@@ -318,11 +335,16 @@ built from scratch, with `b2 -a`.
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
 against Trystero itself, pinned at 0.27.0 by `test/oracle/package.json` and
 `package-lock.json`, with Node, run as `node --conditions=development`. The
-branch's vectors come from `test/oracle/record_0_27.mjs`,
-which `node test/oracle/record_0_27.mjs <checkout>` runs against a checkout
-of 0.27.0 at `8d3f57e` and which writes
+vectors come from `test/oracle/record_0_27.mjs`, which
+`node test/oracle/record_0_27.mjs <checkout>` runs against a checkout of
+0.27.0 at `8d3f57e` and which writes
 `test/fixtures/expected/trystero-0.27.0.json`, the file the `crypto_layer`
-tests read:
+and `identity_cache` tests read. WebCrypto's ECDSA is random, so the
+recorder takes its previous output and keeps each signature recorded there
+that 0.27.0 still verifies, signing only what is missing: a run over the
+fixture writes it again byte for byte. The fixture's `recorded_with` names
+the Node that recorded it, `node v26.13.0`, the one member that is not
+0.27.0's:
 
 [listing]
 ----
@@ -332,9 +354,16 @@ include::{library-root}/test/oracle/Jamfile[tag=oracle]
 `oracle`, which names no target, runs Trystero's own functions over the
 inputs of `test/fixtures/cases/protocol.json` and checks that they still
 write `test/fixtures/oracle/expected.json` byte for byte, the values the
-`protocol` test reproduces, and runs the twins of the
+`protocol` and `signaling` tests reproduce, and runs the twins of the
 examples (<<trystero-testing-twins>>); `update-expected` is the only writer
 of the expected values and of each divergent twin's output.
+`generated-vectors` runs the recorder over the published packages,
+`@trystero-p2p/core` and `@trystero-p2p/nostr` 0.27.0, with the fixture as
+its previous output (`test/oracle/vectors.py`, `record_0_27.mjs --dist`),
+which must write the fixture again byte for byte, keeping its
+`recorded_with` so that any Node, the CI's pinned one included, compares
+what the packages compute: what a JS peer installs is the pinned source.
+`update-generated` is the fixture's only writer there.
 
 [listing]
 ----
@@ -437,7 +466,7 @@ include::{library-root}/example/Jamfile[tag=differences]
 ----
 
 Each of these programs has its twin in `test/oracle/twins/`, the same
-program on Trystero 0.26.0, which the oracle lane runs through
+program on Trystero 0.27.0, which the oracle lane runs through
 `test/oracle/run_twin.mjs`: a relay of its own, its URL in
 `TRYSTERO_RELAY_URL`, and the twin, whose output must be the program's
 `.expected`, or, for a difference, its own `.expected`, which must differ.
@@ -445,11 +474,12 @@ The twins agree with {n-twins-agreeing} of the programs and diverge from
 {n-twins-divergent}; {n-examples-without-twin} has none, with its reason in
 `test/oracle/twins/without-twin.txt`: the chat, a page that prints nothing.
 
-Trystero JS has one self id per page, so a twin whose room meets a peer, as
+Trystero JS has one endpoint identity per app id and page, so a twin whose
+room meets a peer, as
 a {cpp} program's second app does, runs that peer as a second page, a worker
 thread with Trystero's modules of its own (`test/oracle/page.mjs`). Node has
 no WebRTC: Trystero JS takes werift's `RTCPeerConnection` as `rtcPolyfill`,
-the WebRTC for Node that Trystero 0.26.0's own README names, pinned at 0.24.4
+the WebRTC for Node that Trystero's own README names, pinned at 0.24.4
 in `test/oracle/package.json` for the twins alone. The {cpp} programs whose
 apps meet bind their connections to 127.0.0.1 with `stun:127.0.0.1:9`, and
 the twins have no ICE server, so every peer stays on the machine.

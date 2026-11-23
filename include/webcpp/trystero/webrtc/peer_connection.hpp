@@ -357,7 +357,9 @@ public:
      * The largest message a channel of the connection sends, as webcpp::webrtc's
      * `max_message_size()` reads it from the transport: natively libdatachannel's
      * `rtcGetRemoteMaxMessageSize`, in a page the browser's `sctp.maxMessageSize`, each bounded by
-     * webcpp::webrtc's `options::max_message_size`. It is the limit the channels' sends check.
+     * webcpp::webrtc's `options::max_message_size`.
+     *
+     * It is the limit the channels' sends check.
      *
      * @return The size; nothing before the peer's limit is known (natively before a remote
      * description is applied, in a page while the connection has no SCTP transport).

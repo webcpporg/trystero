@@ -4,18 +4,18 @@ trystero is a header-only port of [Trystero](https://github.com/dmotz/trystero)
 0.27.0's serverless WebRTC rooms for C++20, one of the libraries of
 [webcpp](https://github.com/webcpporg/webcpp). Peers find each other over
 public Nostr relays and exchange messages directly, over WebRTC data channels.
-The wire is Trystero's: once the port is whole, a room joined from C++ and the
-same room joined from Trystero's JavaScript are one room.
+The wire is Trystero's: a room joined from C++ and the same room joined from
+Trystero's JavaScript are one room.
 
-**On the branch `port/trystero-0.27`.** This branch ports the library from
-Trystero 0.26.0 to 0.27.0 (upstream commit `8d3f57e`): 0.27.0's topics, room
+trystero speaks Trystero 0.27.0 (upstream commit `8d3f57e`): its topics, room
 keys, sealing, ids, relays and action wire, each value proven against vectors
-recorded from 0.27.0's own code; 0.27.0's identities, signed with ECDSA P-256,
-and its handshake; and 0.27.0's room API, with listeners that return a
-subscription, users, room errors, request actions and the relays'
+recorded from 0.27.0's own code; its identities, signed with ECDSA P-256, and
+its handshake; and its room API, with listeners that return a subscription,
+users, `max_users`, room errors, request actions and the relays'
 connectivity. Its rooms meet Trystero 0.27.0's: the interop lane meets 0.27.0
-pages in headless Chrome with the browser's peer and the native one. The
-branch reaches `main` once, whole.
+pages in headless Chrome with the browser's peer and the native one. Programs
+of trystero 0.1.0, the port of Trystero 0.26.0, move as
+[Moving from trystero 0.1.0](#moving-from-trystero-010) says.
 
 A room runs on two targets, native and emscripten, through one platform
 backend:
@@ -43,32 +43,39 @@ with an error code. Every part of it, the platform backend included, compiles
 and works without exceptions: webcpp::webrtc calls libdatachannel's C API,
 where none crosses.
 
-An `app` represents this program in one application: one peer id, drawn when
-the app is made, and one connection per remote peer, shared by its rooms, with
-one immutable password for the app, from which each room derives its keys off
-the room's thread. Different passwords use separate apps with distinct peer
-ids. Construct it with the executor, backend and moved `app_config`, then call
-`join` and test its `boost::system::result<room>`. 0.27.0 removed the custom
-peer id and the handshake timeout, and so did the branch: `app_config` has no
-`self_id`, and `room_options` no `handshake_timeout`. A room's `on_*`
-functions add listeners and return a `subscription`; `on_error` reports a
-`room_error` with 0.27.0's code; a send to a target not connected completes
-with `error::not_connected`. Rooms have no password override. A new password
-requires a new app. Two peers in one process use two apps; rooms that must not
-be linked use one app each.
+An `app` represents this program in one application: one P-256 endpoint key,
+made with the app, whose public key derives its peer id; one user, the
+`user_identity` its configuration gives or an ephemeral one it makes; and one
+immutable password, from which each room derives its keys off the room's
+thread. Each room negotiates its own connection to each remote peer, as a
+room of 0.27.0 does, and admits a peer once 0.27.0's handshake verified its
+endpoint and its user, both signed over the connection's DTLS fingerprints.
+Different passwords use separate apps with distinct peer ids. Construct it
+with the executor, backend and moved `app_config`, then call `join` and test
+its `boost::system::result<room>`. 0.27.0 removed the custom peer id and the
+handshake timeout: `app_config` has no `self_id`, and `room_options` no
+`handshake_timeout`; `room_options::max_users` bounds a room's users. A
+room's `on_*` functions add listeners and return a `subscription`;
+`on_error` reports a `room_error` with 0.27.0's code; a send to a target not
+connected completes with `error::not_connected`. `create_user_identity`,
+`export_user_identity` and `import_user_identity` make, keep and read again
+a user, 0.27.0's text included: nothing is kept for the program, which
+stores the exported text where it wants. Rooms have no password override. A
+new password requires a new app. Two peers in one process use two apps;
+rooms that must not be linked use one app each.
 
-`app_config::memory` receives the app's state, shared connections, received
-frames and every log sentence. `room_options::memory` receives a room's
-state, bindings, actions, relays, handlers and JSON; null uses the app's
-resource. A received owning binary payload moves when its message buffer
-and room resources match, and is copied once otherwise; received pmr text
-is always copied once. Completion handlers use their own associated allocator,
+`app_config::memory` receives the app's state, its identities and the key
+records and signatures it verified, the rooms' keys and every log sentence.
+`room_options::memory` receives a room's state, its connections and the
+frames received on them, actions, relays, handlers and JSON; null uses the
+app's resource. A received `pmr_bytes` payload moves out of its frame;
+received pmr text is always copied once. Completion handlers use their own associated allocator,
 which `webcpp::asio::bind_allocator` sets. The app's resource must outlive
 its handle, all its rooms, retained values and pending operations; each
 room's resource must outlive its values and operations too. Declare both
 before the io_context and drain or destroy it first; in a browser keep them
 for the page's life. Pools suit long-lived apps and rooms. webcpp::webrtc's
-connections and channels use the app's resource; libdatachannel, OpenSSL,
+connections and channels use the room's resource; libdatachannel, OpenSSL,
 natively the cipher context of each seal and open and the PBKDF2 thread, and
 the browser retain their own internal allocations.
 
@@ -77,6 +84,35 @@ rooms, as a Trystero JS room's password seals its own: a peer of another
 password reads none of them, and the room reports its sealed offer or answer
 as `decrypt_failed`. Each room negotiates its own connections with
 Trystero 0.27.0's signed handshake, as a Trystero JS room does.
+
+## Moving from trystero 0.1.0
+
+trystero 0.1.0 ported Trystero 0.26.0; its rooms meet only Trystero 0.27.0's
+now, as 0.27.0's meet no 0.26.0 room. A program moves as Trystero's own
+programs move from 0.26.0 to 0.27.0:
+
+- `app_config::self_id` and `room_options::handshake_timeout` are gone: the
+  app derives its id from its endpoint key (`app::self_id()`,
+  `room::self()`), and a peer has 10 s for its handshake.
+- `app_config::idle_timeout`, `app::max_rooms` and `error::too_many_rooms`
+  are gone with the connection an app's rooms shared: each room has its own.
+- `error::wrong_password` and `error::handshake_timed_out` are gone with
+  0.26.0's password handshake: another password is `decrypt_failed`, a failed
+  handshake `handshake_failed`. The values of `error` after them moved, so a
+  program compares codes with the enumerators.
+- Each `on_*` adds a listener and returns a `subscription`; a join listener
+  takes a `peer_event`, an error listener a `room_error`; `peers()` maps each
+  peer's id to its `peer_info`, and `users()` lists the users.
+- A send to a target that has not joined completes with
+  `error::not_connected`, where it was `error::no_such_peer`.
+- A peer's user is the one its handshake verified: `app_config::identity`
+  gives the app's, and `export_user_identity` and `import_user_identity` keep
+  one across runs. `room_options::max_users` bounds a room's users.
+- A backend of a program's own returns from `backend::websocket::send`
+  whether the socket queued the text.
+
+The page's "Moving from trystero 0.1.0" lists each change with its
+counterpart.
 
 ## Building inside the superproject
 
@@ -89,7 +125,7 @@ pinned sources, and so are webcpp::crypto's libsecp256k1 and BearSSL:
 | Library | Needed by | Found where |
 | --- | --- | --- |
 | webcpp::hash | every room: the SHA-256 of its topics and keys, HMAC, HKDF, and the PBKDF2 of a password's master | `/webcpp/hash//hash` |
-| webcpp::crypto | every room: the AES-256-GCM of its signals (natively OpenSSL's, on emscripten BearSSL's), its randomness, its secrets, and the BIP-340 signatures of its Nostr events, over libsecp256k1 0.8.0 with its `schnorrsig` and `extrakeys` modules | `/webcpp/crypto//crypto`, `//gcm-default` and `//secp256k1-default`; libsecp256k1 from `third_party/libs/secp256k1`, BearSSL from `third_party/libs/bearssl` |
+| webcpp::crypto | every room: the AES-256-GCM of its signals (natively OpenSSL's, on emscripten BearSSL's), its randomness, its secrets, the ECDSA P-256 of its identities and handshakes, BearSSL's on every target, and the BIP-340 signatures of its Nostr events, over libsecp256k1 0.8.0 with its `schnorrsig` and `extrakeys` modules | `/webcpp/crypto//crypto`, `//gcm-default`, `//p256-default` and `//secp256k1-default`; libsecp256k1 from `third_party/libs/secp256k1`, BearSSL from `third_party/libs/bearssl` |
 | webcpp::asio | every room | `/webcpp/asio//asio` |
 | webcpp::webrtc | the platform backend's WebRTC | `/webcpp/webrtc//webrtc` |
 | webcpp::beast | the platform backend's relays: their WebSockets, and natively their TLS | natively `/webcpp/beast//tls`, Boost.Beast over the source-built OpenSSL; in a page `/webcpp/beast//browser`, over the page's `WebSocket` |
@@ -138,12 +174,11 @@ The quick start and the programs of the differences run in the lane
 `relayed`, each over a Nostr relay of its own on 127.0.0.1, whose URL
 `example/run_over_relay.mjs` gives the program in `TRYSTERO_RELAY_URL`; each
 passes when it ends by itself having printed its `.expected`. Each has its
-twin, the same program on Trystero JS, under `test/oracle/twins/`, still on
-Trystero 0.26.0 on the branch. The chat needs a browser, so the build links
-its program and never runs it.
+twin, the same program on Trystero JS 0.27.0, under `test/oracle/twins/`.
+The chat needs a browser, so the build links its program and never runs it.
 
 The quick start, whole: two apps of one program, `alice` and `bob`, each a
-peer with an id it draws, join the room `lobby` of the app
+peer with an id of its own, join the room `lobby` of the app
 `webcpp-trystero-quick-start`; alice greets bob when he joins, bob answers
 from a coroutine, each prints what it received, after the other's name, and
 both leave, which ends the program. Without `TRYSTERO_RELAY_URL` it meets
@@ -172,8 +207,8 @@ namespace trystero = webcpp::trystero;
 
 namespace {
 
-/** What one peer's app is made with: the relay `relay` names, or the public ones. Each app draws
- * its own id, 20 random characters. */
+/** What one peer's app is made with: the relay `relay` names, or the public ones. Each app makes
+ * its own endpoint key, whose public key derives its id. */
 trystero::app_config config_for(const char* relay) {
     trystero::app_config config;
     config.app_id = "webcpp-trystero-quick-start";
@@ -197,7 +232,7 @@ asio::awaitable<void> answer(trystero::room& lobby, trystero::action<std::string
     if (ec) {
         co_return;
     }
-    // The sender's id is drawn on each run: its name prints the same every time.
+    // The sender's id derives from a key made on each run: its name prints the same every time.
     std::cout << "alice: " << text << '\n';
     auto [failed] = co_await chat.async_send("hello back", {.targets = {info.from}, .metadata = {}},
                                              asio::as_tuple(asio::use_awaitable));
@@ -390,8 +425,7 @@ page's app, `webcpp-trystero-chat`, and room, `lobby`. Within a few seconds
 each tab shows the other's id, its first six characters, "joined", and
 counts it as a peer; what you send from one tab appears in the other, under
 the sender's id. Every tab that joins the same app and room joins the same
-chat. On `main` so does any Trystero JS 0.26.0 page; on the branch any
-Trystero 0.27.0 page does.
+chat, and so does any Trystero JS 0.27.0 page.
 
 A native peer and a page meet too. The lane `interop` of `test/oracle` meets
 the native peer, and the browser's, with Trystero JS pages in headless Chrome
@@ -448,14 +482,15 @@ Playwright's `chrome-headless-shell`.
 
 ## What derives from Trystero
 
-trystero ports Trystero 0.27.0, and on `main` 0.26.0, Copyright (c) 2021 Dan
-Motzenbecker, distributed under the MIT License. These parts of this repository derive from
+trystero ports Trystero 0.27.0, Copyright (c) 2021 Dan Motzenbecker,
+distributed under the MIT License. These parts of this repository derive from
 Trystero:
 
 - the wire protocol, ported from Trystero's code into
   `include/webcpp/trystero`: the Nostr strategy's topics, events and signals,
-  the room keys, their derivation and the sealing of signals, the room's
-  handshake and its password check, and the action wire with its requests;
+  the room keys, their derivation and the sealing of signals, the
+  identities, their keys, ids and texts, the room's signed handshake and its
+  ready frames, and the action wire with its requests;
 - its constants: the domain tags, the topic prefixes, the id alphabet and
   lengths, the announcement cadence, the event kinds, the relay health and
   the backpressure threshold;

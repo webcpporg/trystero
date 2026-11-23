@@ -174,11 +174,13 @@ public:
     }
 
     /**
-     * Sends a binary message when the channel is open. One the channel refuses, larger than the
-     * connection's `max_message_size()` or past webcpp::webrtc's bound on what it buffers, closes
-     * the channel, which the handler `close` reports: a frame is never dropped while the channel
-     * goes on, so that a transfer cannot wait on a chunk that was never sent, as a browser's
-     * `send` throws and its channel goes on no further.
+     * Sends a binary message when the channel is open.
+     *
+     * One the channel refuses, larger than the connection's `max_message_size()` or past
+     * webcpp::webrtc's bound on what it buffers, closes the channel, which the handler `close`
+     * reports: a frame is never dropped while the channel goes on, so that a transfer cannot wait
+     * on a chunk that was never sent, as a browser's `send` throws and its channel goes on no
+     * further.
      *
      * @param frame The message, read during the call.
      */

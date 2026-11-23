@@ -7,22 +7,18 @@
 [#trystero-protocol]
 == The protocol
 
-A room speaks Trystero 0.27.0's topics, room keys, sealing, ids, relays, Nostr
-events and action wire, byte for byte. The protocol's pure functions are in
-`<webcpp/trystero/protocol/>`; the `crypto_layer` test compares them, byte
-for byte, with the vectors 0.27.0's own code computed,
-`test/fixtures/expected/trystero-0.27.0.json`, which
+A room speaks Trystero 0.27.0's topics, room keys, sealing, ids, identities,
+handshake, relays, Nostr events and action wire, byte for byte. The
+protocol's pure functions are in `<webcpp/trystero/protocol/>`; the
+`crypto_layer` test compares them, byte for byte, with the vectors 0.27.0's
+own code computed, `test/fixtures/expected/trystero-0.27.0.json`, which
 `test/oracle/record_0_27.mjs` records by importing 0.27.0's
 `packages/core/src` and `packages/nostr/src` unchanged and pinning
-randomness only around the calls whose output it decides; the `protocol`
-test holds, against the values Trystero 0.26.0 computed, what 0.27.0 did not
-change, a Nostr event's id and the JSON texts, and what the branch keeps of
-0.26.0, the envelope and its room token (<<trystero-testing>>). What no
-0.27.0 room can do without ECDSA P-256 is still 0.26.0's, inside a room's
-connection, until Phase 2: the envelope that
-names a room on a connection the app's rooms share, with its presence
-frames and room tokens (`Trystero:<app>:<room>`), and the password
-handshake, `+__trystero_pw+` (<<trystero-design-phase-1>>).
+randomness only around the calls whose output it decides, and keeping the
+WebCrypto signatures of its previous output that 0.27.0 still verifies; the
+`protocol` and `signaling` tests hold, against the values Trystero 0.27.0
+writes for the oracle lane, a Nostr event's id, the JSON texts and the
+signals 0.27.0 refuses (<<trystero-testing>>).
 
 [#trystero-protocol-crypto]
 === Topics, ids, room keys and sealing
@@ -56,10 +52,8 @@ writes them, `café` and an emoji among the vectors.
   `0-9A-Za-z[b % 62]` of each byte below 248, skipping the others, until `n`
   characters: peer ids of 20, user ids of 22, offer ids of 12, nonces of 8,
   subscription ids of 64. `uuid_v4` is RFC 9562's version 4 over 16 random
-  bytes. `derive_peer_id` and `derive_user_id`, the low 20 and 22 base62
-  digits of the SHA-256 of `trystero:pid:v1:<compact key>` and
-  `trystero:uid:v1:<compact key>`, are there for Phase 2's keys; Phase 1
-  draws a peer id with `gen_id` (<<trystero-design-phase-1>>)
+  bytes. A peer's id and a user's are derived from a key
+  (<<trystero-protocol-identities>>)
 
 | Base64url
 | RFC 4648's URL alphabet without padding; `from_base64url` accepts a text
@@ -74,7 +68,7 @@ writes them, `café` and an emoji among the vectors.
 | a PBKDF2-HMAC-SHA-256 master of the password's UTF-8, 600,000 iterations,
   32 bytes, under the salt SHA-256 of
   `["trystero:pbkdf2-master:v3",<app>,<room>]`, derived off the room's
-  thread (<<trystero-design-phase-1>>); then HKDF-SHA-256 with 32 zero bytes
+  thread (<<trystero-design-port>>); then HKDF-SHA-256 with 32 zero bytes
   of salt to the AES key, info `trystero:room-aes:v3`, and the HMAC key,
   info `trystero:room-hmac:v3`
 
@@ -83,8 +77,8 @@ writes them, `café` and an emoji among the vectors.
   `["trystero:ov-auth:v3",<app>,<room>,<peer id>,<seq>]`; verification
   refuses a token that is not strict base64url of 32 bytes, or a `seq` past
   2^53^ - 1, and compares the MACs in constant time
-  (`webcpp::crypto::equal`). Phase 1 computes and verifies it, and sends
-  none: 0.27.0 uses it for `scale()`, which Phase 3 ports
+  (`webcpp::crypto::equal`). The port computes and verifies it, and sends
+  none: 0.27.0 uses it for `scale()`, which is not ported
 
 | Sealed text
 | AES-256-GCM with a 12-byte IV drawn from the backend's randomness and the
@@ -95,6 +89,47 @@ writes them, `café` and an emoji among the vectors.
 | A signal's AAD
 | `<type>\|<peer id>\|<offer id>`: `offer`, `answer` or `candidate`, the
   sender, and the offer the signal belongs to
+|===
+
+[#trystero-protocol-identities]
+=== Identities
+
+Every key of 0.27.0's identities is ECDSA P-256 (`identity.ts`), and so is
+every signature, over the SHA-256 of what it signs: 64 bytes, r then s, the
+form WebCrypto writes, always written with a low S and refused with a high
+one (`protocol/ecdsa.hpp`), sent as base64url.
+
+[cols="1,3",options="header"]
+|===
+| Value | What it is
+
+| Compact key
+| A public key as `base64url(x) + "." + base64url(y)`, 87 characters;
+  `parse_compact_public_key` refuses another length, a misplaced `.`, a
+  half that is not strict base64url of 32 bytes, and a point not on the
+  curve
+
+| Peer id
+| `derive_peer_id`: the low 20 base62 digits of the SHA-256 of
+  `trystero:pid:v1:<compact key>`, over the app's endpoint key, which the
+  app makes when it is made; it is the app's `selfId` in every room
+
+| User id
+| `derive_user_id`: the low 22 base62 digits of the SHA-256 of
+  `trystero:uid:v1:<compact key>`, over the user's key
+
+| A user key's text
+| `trystero_uk_` and the base64url of the JSON `{"d":..,"x":..,"y":..}`,
+  the private scalar and the point, each the base64url of 32 bytes, which
+  `export_user_identity` writes; `import_user_identity` also reads the JSON
+  of a private P-256 JWK, and accepts a key only when it signs the bytes of
+  `trystero:identity-self-test:v1` with a signature its point verifies, as
+  `importUserIdentity` does. The text holds the secret key
+
+| A user's proof of an endpoint
+| `protocol::user_proof_payload`, 0.27.0's `userEndpointProofPayload`,
+  which its core neither sends nor checks; kept for the plugins that may
+  (design D21)
 |===
 
 [#trystero-protocol-discovery]
@@ -175,9 +210,70 @@ room's AES key, derived from the immutable `app_config::password`, or
 without one when it is empty, with the AAD of their type, their sender and
 their offer id, and opened in the call (<<trystero-protocol-crypto>>).
 Candidates follow their offer or answer, trickled. A negotiation ends when
-the data channel opens: the app adopts the connection, and signals from a
-bound peer are ignored. A live connection is reused for another room only
-after the peer advertised that room's token itself on the connection.
+the data channel opens: the room's link to that peer takes the connection
+and its channel, which no other room uses, and the handshake starts on it.
+A signal 0.27.0's `parseSignalEnvelope` refuses is ignored
+(<<trystero-protocol-bounds>>).
+
+[#trystero-protocol-handshake]
+=== The handshake
+
+Every frame of a room travels bare on its connection to the peer: an action
+frame of the wire below, with no envelope, as 0.27.0's `sendFrame` writes
+it. Before it delivers any other, a room runs 0.27.0's identity handshake
+with the peer (`handshake.ts`), whose messages are payloads of the internal
+action `@_hsdata`, JSON texts of at most 64 KiB:
+
+The initiator is the side whose id is lower in UTF-16 order, as 0.27.0
+compares its strings:
+
+[cols="1,2,8",options="header"]
+|===
+| Step | Sender | What it is
+
+| 1
+| The initiator
+| `{"__trystero_id":1,"n":..,"dtls":[..],` `"uid":..,"pk":..,"uk":..}`: its
+  nonce, a version 4 UUID drawn for the run; the DTLS fingerprints of its
+  description; its user id; its compact endpoint and user keys
+
+| 2
+| The responder
+| The same members of its own, then `"ps":..,"us":..`: its endpoint's and
+  its user's signatures of the transcript
+
+| 3
+| The initiator
+| `{"__trystero_id":3,"ps":..,"us":..}`, once step 2 verified: its own two
+  signatures of the transcript
+|===
+
+The transcript is the JSON array
+`["trystero:id-hs:v2",<app>,<room>,<initiator>,<responder>,<initiator nonce>,<responder nonce>,[<initiator dtls>],[<responder dtls>],<initiator user>,<responder user>]`,
+as `JSON.stringify` writes it, so that the signatures bind the app, the
+room, both peers, both runs and both users to this connection. A
+description's fingerprints are the values of its `a=fingerprint:` lines,
+trimmed, lowercased, deduplicated and sorted (`dtls_fingerprints`), read
+from the last local description the signaling set and the last remote one
+it applied. Each side checks that a step's `pk` derives the peer's id, that
+its `uk` derives its `uid`, that the fingerprints it claims are those of
+the description this side applied, and that both signatures verify, through
+the app's key records and verified signatures (design D18). A step of
+another shape, a nonce shorter than 16 UTF-16 code units, or a signature
+that is not strict base64url fails as "peer identity verification failed".
+
+Once its steps passed, each side sends `@_hsready`: an empty text, or, from
+a room with `max_users` that cannot take the peer's user,
+`{"ok":false,"err":"room full"}`; a Trystero JS peer with roles may send
+`{"ok":false,"err":"peer banned"}`, with a reason. The peer joins once both
+sides sent an empty one: the ready frame goes before the join is reported,
+so that a send in `on_peer_join` follows it on the wire. A handshake fails
+after 10 s ("handshake timed out after 10000ms"), at a 17th message the
+handshake has not read ("too many pending handshake messages"), or for a
+step's reason, and its room reports `handshake_failed` with that reason,
+without 0.27.0's `Trystero:` prefix, then tells the peer to leave. While a
+peer is pending, only its `@_hsdata`, `@_hsready` and `@_leave` are read;
+its other frames are not delivered.
 
 [#trystero-protocol-json]
 === JSON texts
@@ -196,7 +292,7 @@ before reading it, as it drops a malformed one:
 
 | a relay's text | 68,608 bytes | an event that carries the longest signal, with 2 KiB for its other fields
 | a signal | 66,560 bytes | a sealed offer or answer of 64 KiB with the longest ids, and 1 KiB to spare
-| a handshake message | 1,024 bytes | ten times Trystero's longest, 99 bytes
+| a handshake message | 65,536 bytes | 0.27.0's own bound of an `@_hsdata` payload, `maxPayloadBytes`
 | a remote candidate | 4,096 bytes | the bound of a sealed candidate, which its opened JSON never passes
 |===
 
@@ -239,74 +335,23 @@ A text the protocol writes is a fixed shape of a few strings and numbers,
 appended field by field, its strings quoted by `webcpp::document::quote`, the
 bytes `JSON.stringify` writes. A string that is not UTF-8 cannot be quoted, and
 the writer returns that error: a program gives no string that is ever
-written, the peer id being drawn, and a local candidate whose text is not
+written, the peer id being derived, and a local candidate whose text is not
 UTF-8, which no browser's is, is not sent.
 
 [#trystero-protocol-channel]
 === The data channel
 
-Every message is a room frame: `1`, the length of the room token (16 bits,
-big-endian), the token, the hexadecimal SHA-256 of `Trystero:<app>:<room>`,
-then an action frame. A presence frame, `2`, present or not, the token's
-length and the token, announces or withdraws the room. The envelope, its
-presence and the routing below are 0.26.0's shared connection, which the
-branch keeps until Phase 2 (<<trystero-design-phase-1>>): 0.27.0 sends its
-action frames bare, on a connection of one room.
-
-Presence advertises every room of the app on each connection. It records
-which rooms the remote peer joined and binds matching local rooms; a
-withdrawal detaches only that room. The connection routes by token:
-
-[cols="2,3",options="header"]
-|===
-| Frame | What happens
-
-| An envelope that does not decode
-| The connection ends for every room.
-
-| `presence(1, T)`, new token
-| Record it; a 65th distinct token ends the connection. Bind the matching
-  local room when its binding conditions permit.
-
-| `presence(1, T)`, known token
-| Bind the matching unbound local room when permitted.
-
-| `presence(0, T)`
-| Forget the token and its kept frames, and end its binding as a departure.
-
-| Room frame, token bound
-| Deliver it to that room's action wire.
-
-| Room frame after the higher id's own kick, before it sends presence
-| Drop it: it belongs to the ended binding.
-
-| Room frame for another room of the app, not bound to this connection
-| Keep it, at most 64 frames per connection, all expiring 10 s after the
-  first, and record its token as the peer's advertisement, below 64 tokens.
-  Bind when no backoff runs.
-
-| Room frame for any other token
-| Drop it silently; keep the connection.
-|===
-
-A room frame is the peer's own advertisement of its room, as its presence
-is: only the peer writes to its connection. Trystero sends a room's presence
-once per connection, from the open of the channel, and Chrome can drop what a
-page sends on an answering channel as it opens (its log says "Send failed
-INVALID_STATE"): a room waiting for that presence alone would never bind the
-peer, whose frames of the room keep coming.
-
-On binding, kept frames arrive before later frames; a kept `@_leave`
-discards itself and everything kept before it for that token. There is no
-buffer for a bound room awaiting its handler: delivery is installed in the
-same call that makes its binding.
-
-Waiting sends take turns by binding on each channel drain, preserving each
-binding's waiter order and the 10 s stall bound. Chunked transfers send one
-chunk per drain, giving waiting sends from other rooms a turn. Inline sends
-at a buffered amount of at most 64 KiB go straight to the channel: they have
-no trystero rate bound, so a flood of pings can delay every room's traffic
-to that peer, and that peer only.
+Every message on a room's channel is an action frame, bare, as 0.27.0's
+`peer-transport.ts` writes it: no envelope names the room, since the
+connection is the room's alone. Before the room binds the peer, once the
+channel opens, its link keeps at most 64 frames of at most 17 KiB, for at
+most 10 s, as 0.27.0's `peer.ts` keeps them; one more, a longer one, or the
+deadline passed ends the link. Once bound, a frame of more than 64 KiB ends
+it. A connection whose state becomes `failed` or `closed` ends its link at
+once, and one that is `disconnected` after 5 s unless it comes back. A frame
+or a chunk is handed to the channel only while it buffers at most 64 KiB,
+waiting at most 10 s for it to drain; inline sends have no rate bound of
+trystero's.
 
 Action frames are 0.27.0's action wire, version 3 (`action-wire.ts`), as the
 frames the recorder captured from it show: an inline frame carries the
@@ -321,8 +366,8 @@ it receives either. Integers and
 float64 values are big-endian, as JavaScript's `DataView` writes them. An
 offer's size is a float64 that must be a whole number from 1 to 2^53^ - 1,
 JavaScript's `Number.MAX_SAFE_INTEGER` (`protocol::max_offer_size`), as
-Trystero checks it: any other makes the frame malformed, and the room kicks
-its sender, as Trystero does. The size is read in 64 bits on every target,
+Trystero checks it: any other makes the frame malformed, and the room
+reports `peer_error` and tells its sender to leave, as Trystero does. The size is read in 64 bits on every target,
 so a 32-bit one too compares the whole size with `max_receive_bytes`, and
 refuses a transfer beyond it as Trystero does.
 
@@ -354,8 +399,8 @@ run the room:
 |===
 | Action | What it carries
 
-| `@_hsdata` | 0.26.0's password handshake, kept until Phase 2's signed handshake takes the action: the lower id sends a challenge, and the other answers with the hexadecimal SHA-256 of `<challenge>:<password>:<app>:<room>`
-| `@_hsready` | the sender's side of the handshake passed; a peer joins when both sides sent it
+| `@_hsdata` | a step of the identity handshake, a JSON text of at most 64 KiB (<<trystero-protocol-handshake>>)
+| `@_hsready` | the sender's side of the handshake passed, an empty text, or its refusal of the receiver, `{"ok":false,"err":"room full"}` or `{"ok":false,"err":"peer banned"}` with a reason; a peer joins when both sides sent an empty one
 | `@_ping` | a ping, a request of the internal action `@_ping` with an empty text, answered through `@_response` with an empty text
 | `@_leave` | the sender leaves the room
 | `@_response` | the answer to a request: a request is a message of its action whose metadata is `{"r":<id>,"m":<metadata>}`, and its answer a message of `@_response` whose metadata is `{"r":<id>}`, or `{"r":<id>,"e":<reason>}` for a refusal, its reason cut at 512 UTF-16 code units, as 0.27.0's
@@ -385,7 +430,7 @@ what each costs a room.
   once. A negotiation is idle when it holds no connection: the one idle
   longest gives its place, and of those idle as long, as every negotiation
   is at one instant of a page's coarse clock, the one the room took first.
-  A signal opens in the call that reads it (<<trystero-design-phase-1>>), so
+  A signal opens in the call that reads it (<<trystero-design-port>>), so
   no offer waits, unopened, for its place.
 * A negotiation answers one offer of its peer at a time, as Trystero answers
   one at a time: while it answers one, another offer in that name is
@@ -416,35 +461,29 @@ what each costs a room.
 |===
 | Bound | Scope | Value and consequence
 
-| Joined rooms
-| App
-| 64, counting farewells until withdrawal; `join` returns `error::too_many_rooms` beyond it.
-
-| Advertised room tokens
+| Frames before the room binds a peer
 | Connection
-| 64 distinct tokens; a 65th ends the connection.
+| 64, each at most 17 KiB, for 10 s after the first, as 0.27.0's `peer.ts`;
+  one more, a longer one, or the time passed ends the connection.
 
-| Kept frames for unbound local rooms
+| A frame once bound
 | Connection
-| 64, at most 64 x 16,515 bytes; expire together 10 s after the first.
-  Other tokens retain nothing.
-
-| Room frame and token
-| Connection
-| 16,515 bytes, token 1 to 128 bytes; an invalid envelope ends the connection.
-
-| No bindings
-| Connection
-| `idle_timeout` after a departure, 123,333 ms by default, 0 closes immediately;
-  closed at once if its last binding was kicked.
+| 64 KiB, as 0.27.0; a longer one ends the connection.
 
 | Handshake
 | Room and peer
-| 10 s, as 0.27.0, which has no option for it; failure kicks that binding only.
+| 10 s, as 0.27.0, which has no option for it, and 16 messages it has not
+  read; failure ends that peer only.
 
-| Earlier challenges
-| Room and peer
-| Last 8 since the last completed handshake; a correct answer to any passes.
+| Users
+| Room
+| `room_options::max_users`, none by default; a peer of a new user is
+  refused past it, a peer of a user present is admitted.
+
+| Key records and verified signatures
+| App
+| 4,096 records, and 8,192 signatures of payloads of at most 4,096 bytes,
+  2 MiB in all, as 0.27.0's caches; the least recently used out.
 
 | Action frames before a listener
 | Action and peer
@@ -456,35 +495,10 @@ what each costs a room.
   1024 queued messages per action once it is awaited.
 |===
 
-After a kick or the peer's `@_leave`, a live connection is rebound one step
-after that binding ended. The initial step is the handshake's 10 s plus
-1 s, 11 s, doubling at each
-further end to 5 minutes. Only a completed handshake or the connection's
-end resets it. After its own kicks the lower id refuses bindings until its
-backoff ends, ignores signals and keeps frames; the higher id drops frames
-until it next sends presence and accepts the lower id's presence at once.
-The room sends presence again on reuse or scheduled rebinding, making the
-other side bind without a relay response. Announcements restart only when
-no live connection remains. A forged announcement never binds a peer that
-has not advertised that token itself.
-
-A connection counts against its negotiating room's 64-per-57-s window even
-after the app adopts it; presence and reuse make no connections. Fresh ids
-that connect and depart keep at most `64 x ceil(idle_timeout / 57 s)` idle
-connections per room, 192 by default, within the backend's own bound.
-Leaving a room with many peers retains no more connections than the app
-already held. Kept frames and tokens cost at most about 1 MiB and 8 KiB
-per connection; each of at most 64 bound rooms retains its own peer bounds.
-A flood spends its room's queues, transfers and reservations; routing never
-holds one room's frame for another room.
-
-With the lower id an invalid room response proof causes at most six kicks and reports in
-the first ten minutes, then one per 5 minutes. The higher id can be rebound
-by a lower-id peer at that peer's pace, but reports at most one handshake
-timeout per 10 s, and does not verify a response proof.
-Malformed challenges are rejected by their receiver and can also report
-`wrong_password`; their report rate follows the malicious peer's repeated
-bindings, rather than the timeout bound.
+Each room negotiates its own connection to each peer, as 0.27.0's rooms
+do: an app whose rooms meet one peer in three rooms holds three connections
+to it, each counted in its room's window of 64 connections in 57 s, and
+each closed as its room leaves or the peer goes.
 
 [#trystero-protocol-replay]
 === Replayed offers and answers
@@ -506,29 +520,27 @@ as a peer's offer or answer.
 [#trystero-protocol-limitations]
 === What remains
 
-On the branch, the shared connection keeps Trystero JS 0.26.0's wire inside
-a room's connection (<<trystero-design-phase-1>>), and what follows is about
-it and about the signaling. Each {cpp} app is one password domain: it copies one password at construction, and all its rooms use it.
-The initial sealed signaling authenticates that password before the data
-channel is adopted. Later room binding reuses this authenticated connection.
+Each {cpp} app is one password domain: it copies one password at
+construction, and all its rooms use it. A room's signals are sealed under
+keys derived from that password, so a peer of another password opens none
+of them and never connects, as in 0.27.0, which has no password challenge.
 There are no per-room overrides, and different passwords require separate
-apps with distinct self ids. This protects admission to the {cpp} app's
-rooms without changing the room handshake on the wire.
+apps with distinct self ids.
 
-*A watcher not connected to the app, without the key, can keep two peers apart.* A sealed offer or
-answer the room neither made nor acted on still opens and is acted on: the
-AAD names its sender and its offer, not its receiver. Such
-texts are not scarce: every peer seals a fresh offer for any id announced
-above its own, and announcements need no key. So anyone who reads and
-publishes on the relays, without the key, can keep any two peers of a room
-apart from their first meeting for as long as it keeps at it, each attempt
-costing the other peer a connection of its window. A watcher not connected to the app cannot read or alter
-anything the peers exchange, join the room, or touch peers already joined; a
-joined peer that drops is a new peer again. The room refuses only what it
-made or already acted on. Only a wire that also seals the receiver's id
-closes this, which Trystero would have to share; in 0.27.0 the signed
-handshake that follows the connection is what keeps such a peer out of the
-room, which Phase 2 ports.
+*A watcher not connected to the app, without the key, can keep two peers
+apart.* A sealed offer or answer the room neither made nor acted on still
+opens and is acted on: the AAD names its sender and its offer, not its
+receiver. Such texts are not scarce: every peer seals a fresh offer for any
+id announced above its own, and announcements need no key. So anyone who
+reads and publishes on the relays, without the key, can keep any two peers
+of a room apart from their first meeting for as long as it keeps at it, each
+attempt costing the other peer a connection of its window. It cannot read
+or alter anything the peers exchange, join the room, or touch peers already
+joined: the signed handshake that follows each connection admits only the
+peer whose key derives the id it connected as, over the fingerprints of
+that connection. A joined peer that drops is a new peer again. The room
+refuses only what it made or already acted on. Only a wire that also seals
+the receiver's id closes this, which Trystero would have to share.
 
 *A flooder can delay new peers.* Joined peers, memory and connections stay
 safe under a flood, but a flooder who keeps sending new ids takes each place,
@@ -539,49 +551,9 @@ with the same id, and is kept out the same way: the room has no
 renegotiation that would keep its place. Closing it needs announcements that
 prove the room key, a wire change Trystero would have to share.
 
-*A passwordless app's rooms are open to its connected peers.* Presence
-gives a peer connected through any room the token of every room of that
-app. Relay events reveal their topics in the clear, and announcements
-reveal the app's peer id. The token alone binds the existing connection,
-and the empty app password goes straight to `@_hsready`, so that peer can
-join another room without knowing its id. A watcher not connected to the
-app still needs the room id to derive its topics and signaling key.
-Protected rooms belong to another app with a password and a distinct self
-id. Its presence, tokens and connections never reach the passwordless app.
-
-*The upstream one-way handshake remains.* The responder to a room
-challenge answers and passes its side; only the lower id verifies the
-password proof. A Trystero JS page that itself mixes different passwords
-on one app's shared connection can therefore admit a peer to its own
-higher-id room without that room's password, and can expose a challenge
-response for offline guessing. The {cpp} app-domain boundary does not
-repair such a JS page. Configure all rooms of one JS app with one password,
-and use separate page contexts for different password domains. The wire
-has not gained bilateral room proofs.
-
-*A domain member can send an invalid room proof.* A peer already
-connected to a protected {cpp} app knows its domain password from the
-initial sealed negotiation. It can nevertheless answer a later room's
-challenge incorrectly or send malformed handshake data. The room kicks
-that binding and applies the documented backoff; only the lower id checks
-and reports a wrong response. These checks isolate faulty peers within an
-authenticated domain, rather than admitting another password domain.
-
 *One identity links the app's rooms.* Each room announces the same
-`peerId` in clear, and connected peers see it across shared rooms. Relay
-observers and peers can link those rooms to one program. Separate apps
-provide separate identities and connections for rooms that must remain
-unlinked. A forged announcement in a connected peer's name binds nothing:
-only the peer itself, on its encrypted connection, can advertise the token.
-It causes no report or rebinding count against that innocent peer.
-
-*Two transient cases remain with a Trystero JS lower id.* If it binds by
-reuse during the higher {cpp} id's dropping window, its challenge is
-dropped and its handshake can time out once. With the default 10 s timeout
-the next rebinding joins by at most 43 s after the first kick plus one-way
-delay, with no false password error on either side. If a JS page's timer
-that expires a stale answer runs later than the 1 s margin before presence
-arrives, JS can flush the old answer into a new handshake and report a
-false password error. One-minute timer lag can repeat this at the 11, 22
-and 44 s steps, at most three times, before the 88 s step exceeds that lag.
-The {cpp} side reports nothing false in either case.
+`peerId` in clear, and its handshake presents the same endpoint and user
+keys, so relay observers and peers can link the rooms of one app to one
+program, as 0.27.0 links the rooms of one page. Separate apps provide
+separate identities for rooms that must remain unlinked; apps given one
+`user_identity` are one user's endpoints, by design.

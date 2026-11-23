@@ -13,13 +13,8 @@ Nostr strategy, the signaling, the action wire with its request actions, and
 the room's API with its listeners, users and errors. Where it keeps a
 feature, it keeps Trystero's wire and its defaults; where it bounds what a
 peer or a relay can make a room hold, it says so in
-<<trystero-protocol-bounds>>, since Trystero JS bounds none of it. Phase 1 of
-the port keeps two parts of 0.26.0 that 0.27.0 replaced with ECDSA P-256:
-the connection an app's rooms share, with its presence frames and password
-handshake, and a peer id drawn at random (<<trystero-design-phase-1>>);
-<<trystero-differences-shared>> compares the first with 0.26.0's, since
-0.27.0 has none. These features of Trystero are not ported, each for its
-reason:
+<<trystero-protocol-bounds>>, since Trystero JS bounds none of it. These
+features of Trystero are not ported, each for its reason:
 
 [cols="2,3",options="header"]
 |===
@@ -43,12 +38,15 @@ reason:
 
 | `makeState`, `makeUserState`, `roles`, `scale` and the plugins of `use`,
   with `ready`
-| Phase 3, a change of its own each, after the port merges.
+| Each a change of its own, on the roadmap (<<trystero-roadmap>>): signed
+  records and shared state, roles and moderation, and `scale()`'s relayed
+  peers. A room ignores a ban it receives from an active peer, and reports
+  one a pending peer sends as `banned`.
 
 | `requestMany`; a send's and a request's `onProgress` and `signal`; a
   listener's `signal`
-| Not ported yet; a listener's subscription replaces its `signal`
-  (<<trystero-usage-listeners>>).
+| Not ported yet (<<trystero-roadmap>>); a listener's subscription replaces
+  its `signal` (<<trystero-usage-listeners>>).
 
 | Passive rooms, `passive: true`
 | Not ported yet: a room always announces itself.
@@ -78,9 +76,17 @@ has nothing of it to run beside its twin.
 |===
 | Behaviour | Trystero JS | Here | Why
 
-| Scope of the peer id | the page: one peer id for each app id, from an endpoint identity the page creates once and caches, and a user id from the user's key | an `app` object: its peer id, from an endpoint key it draws, and its user's id from the identity its configuration gives, else a new one | no static state; several peers in one process
+| Scope of the peer id | the page: one peer id for each app id, from an endpoint identity the page creates once and caches, and a user id from the user's key | an `app` object: its peer id, from an endpoint key it makes, and its user's id from the identity its configuration gives, else a new one | no static state; several peers in one process (design D17)
 
-| Passwords across rooms | configured per room | one immutable `app_config::password` for every room, separate apps and peer ids for different passwords | the shared connection's sealed negotiation authenticates one password domain before any of its rooms reuse it
+| A room's own identity | `joinRoom` takes an `identity` of its own, which overrides the page's for that room | the identity is the app's, `app_config::identity`, for every room of it; a program that presents two users makes two apps | the app holds one user's keys, which its key records and caches serve; two users are two endpoints (design D17)
+
+| Passwords across rooms | configured per room | one immutable `app_config::password` for every room, separate apps and peer ids for different passwords | 0.1.0's ruling, kept by design D6: a room's keys are cached by room id alone, and one app is one password domain
+
+| An ECDSA P-256 signature | WebCrypto's, with a random nonce: signing one text twice gives two signatures | BearSSL's, with RFC 6979's nonce: signing one text twice gives one signature | both verify alike, low S, so no peer can tell; webcpp::crypto's P-256 is synchronous and needs no randomness to sign (design D18)
+
+| A signature, a compact key or a user key's text that is not strict base64url: padded, with a non-canonical last character | read by `Uint8Array.fromBase64`, which accepts it; a handshake signature with a character outside the alphabet fails with the `SyntaxError` of its decoding as its reason | refused: a handshake step fails as "peer identity verification failed", an import as `invalid_user_identity` | a JS peer writes only the canonical text, so only a forged one differs; one reading of each text, as for sealed texts and room auth tokens (design D18)
+
+| A user key's text whose JSON holds invalid UTF-8 in a member 0.27.0 ignores | decoded with `TextDecoder`, which replaces each invalid sequence by U+FFFD, then parsed: the key imports | refused as `invalid_user_identity` | webcpp::document's strings are UTF-8, and the export never writes such a member
 
 | Relay sockets and the Nostr key | one socket per relay URL for the page, shared by the rooms that name it; a signing key per room | a socket per room and relay; a signing key per room | invisible to peers; sockets shared through the app in a later change
 
@@ -98,7 +104,7 @@ has nothing of it to run beside its twin.
 
 | Relay connectivity | `setRelayConnectivity`, for the whole page; `'auto'` follows the page's `online`, `offline` and `visibilitychange`, reconnecting when the page becomes visible and is not offline; a value outside the three throws | `app::set_relay_connectivity`, per app; `automatic` follows `online` and `offline` alone, and natively is online; a value outside the enum, which only a cast makes, is taken as online | a process may hold several independent apps (design D13), and the design names `online` and `offline` alone
 
-| A send to a target that has not joined | warns on the console and resolves | completes with `error::not_connected` | an operation that fails says so with its error code
+| A send to a target that has not joined | rejects with "Trystero: no active peer with id <id>" | completes with `error::not_connected`, whose message is the fixed "no active peer with this id" | an error code's message is its category's text, which names no peer
 
 | `onReceive` and `onRequest` | may answer with a promise: at most 128 receive decisions pending, 8 of one peer, and 64 concurrent requests of one peer; a gate set after an offer arrived is asked at the offer's next drain | answer at once, during the frame's processing, so none of those bounds has a counterpart; a gate set after an offer arrived is not asked of it | a callable that answers at once is the {cpp} form of a decision the frame waits for; an asynchronous one is a later change
 
@@ -113,61 +119,22 @@ has nothing of it to run beside its twin.
 | The hint of `peer_connect_failed` without TURN, and `turnConfigured` | "configure TURN via turnConfig or rtcConfig.iceServers"; a TURN server of the raw configuration counts | "configure TURN via app_config::ice_servers"; only a TURN server the app kept counts | the port's option is `ice_servers`, and a server it dropped as unusable is none
 
 | `relay-failed` | reported once per room, when every relay's first connection failed before one opened, or when no relay's first announcement succeeded and the others failed to open; its message is the cause's, falling back to "all signaling relays failed" | the same two conditions, once per room, a skipped announcement (relay not open or cooling down) counting as no failure as in 0.27.0; the message is the failure's text, the constant when a relay did not open | none
+
 | An announcement the socket cannot queue | `client.send` is a silent no-op on a socket that is not open, so a dropped write is no failure; only signing or JSON failures fail an announcement | `backend::websocket::send` returns whether it queued the text, and a refused text fails the announcement (a queue overflow on a socket the room sees open) | a connection that cannot take the text is a relay that cannot carry the announcement, and the port has no other way to see it
 
 | A Nostr event a relay repeats, or that several relays carry | acted on each time | acted on once among the 4096 newest event ids, when its id is checked to be its own, the SHA-256 of its NIP-01 serialization; an event with any other id is acted on each time and its id never kept | every relay of the room carries each event; an id taken unchecked would let a relay hide a genuine event behind a forged one it sends first under the same id, or fill the room's resource with the ids kept
 
-| A relay's text, a signal or a handshake message past its bound | parsed with `JSON.parse` whatever its length, under the relay's own limit | dropped before it is read: 68,608 bytes for a relay's text, 66,560 for a signal, 1,024 for a handshake message (<<trystero-protocol-json>>) | the bounds are those of the fields Trystero sends, so no text a Trystero peer writes is refused; a longer one would cost the room its length to read
+| A relay's text or a signal past its bound | a relay's text parsed with `JSON.parse` whatever its length, under the relay's own limit; a signal parsed up to 128 Ki characters (`maxSignalMessageChars`) | dropped before it is read: 68,608 bytes for a relay's text, 66,560 for a signal (<<trystero-protocol-json>>) | the bounds are those of the fields Trystero sends, a sealed offer of 64 Ki characters and the longest ids, so no signal a Trystero peer writes is refused; a longer one holds members Trystero never writes, or sealed text that is not ASCII and never opens
 
 | A protocol text of thousands of values | parsed | refused once its image passes twice its bound and 64 KiB | no Trystero message holds more than a few dozen values, and a document's value takes some 200 bytes of image
 
-| A protocol text nested deeper than 16 | parsed | dropped as a malformed one is | no Trystero message nests deeper than 4, a relay's event and its tags, and each level of a parse is a level of recursion, which a hostile relay would otherwise take to 256
+| A protocol text nested deeper than 16, a relay's event, a signal or a step of the handshake | parsed | dropped as a malformed one is; a step of the handshake fails as "peer identity verification failed" | no Trystero message nests deeper than 4, a relay's event and its tags, and each level of a parse is a level of recursion, which a hostile peer or relay would otherwise take to 256
 
 | A JSON payload's number that a double cannot hold: an integer past 2^53^, a decimal of more digits, one past a double's range | sent as the nearest double, and one past a double's range as `null`: a JavaScript number is a double | sent exact, as webcpp::document holds it; a Trystero JS peer reads the nearest double, or `Infinity` | webcpp::document keeps every number exact, and writes each one a double holds as JavaScript does
 
 | A JSON payload nested deeper than 256 | delivered: `JSON.parse` takes it | not delivered | webcpp::document's default, a bounded depth
 
 | A JSON payload whose document passes the room's `room_options::max_json_document_bytes`, 64 MiB by default: some 350,000 values of one character | delivered: `JSON.parse` has no bound but the page's memory | not delivered (<<trystero-differences-json-refused>>) | each value of a document is a node of 192 bytes of image, 96 times its text at most, so a program bounds what a peer's JSON may take of its room's resource; every payload within the bound is delivered
-|===
-
-[#trystero-differences-shared]
-=== The connection an app's rooms share, kept from 0.26.0
-
-0.27.0 negotiates one connection per room and remote peer, and admits a
-peer by a handshake that both sides sign; it has none of what follows. On
-the branch an app's rooms still share 0.26.0's connection to each remote
-peer, until Phase 2's first task reads 0.27.0's connection model and
-retires it (design D9), so these rows compare that sharing with 0.26.0's
-`shared-peer.ts`, whose frames the branch still writes inside a room's
-connection.
-
-[cols="2,3,3,3",options="header"]
-|===
-| Behaviour | Trystero JS 0.26.0 | Here | Why
-
-| A peer kicked from a room, or that kicked us, over a live connection | bound again by its next signal or presence | bound again at a rebinding time, 11 s doubling to 5 min; the lower id refuses it meanwhile and keeps its frames | a peer sending invalid room proofs would otherwise loop reports and announcements without end; one refusing side cannot alternate with another
-
-| Reuse over a live connection | binds on any signal of that peer id | binds only a peer that advertised the room's token itself, and by reuse only on their first meeting over that connection | a forged announcement must not bind an innocent peer
-
-| A room frame before the peer's presence for the room | kept until the room binds by presence or by reuse | also taken as the peer's advertisement of the room, which binds it | a forged announcement cannot reuse, so a presence that Chrome dropped as the page's channel opened would otherwise leave the room unbound for good; only the peer writes its connection's frames
-
-| Announcements after a peer leaves | restarted after every leave | restarted only when no live connection to that peer remains | over a live connection, rebinding goes through the connection
-
-| Presence after binding | sent when a room registers | also sent again when a room binds by reuse or at its rebinding time | it makes the other side bind at once
-
-| An answer to an earlier challenge | checked against the current challenge only | accepted when it is correct for any of the last 8 challenges sent since the last completed handshake | a late answer of an ended binding is honest and proves the password; failing it reports a false error
-
-| Frames after the higher id's own kick | kept for the next binding | dropped until the higher id sends presence | they belong to the ended binding; flushed into the next one, they would answer or be answered in its place
-
-| A connection whose last room was kicked | idle 123,333 ms | closed at once | a bound: a failed peer holds no connection
-
-| `idle_timeout` | test-only (`_test_only_sharedPeerIdleMs`) | a configuration member, Trystero's default | tests and programs that close sooner
-
-| Frames waiting for a bound room's handler | 64, 10 s, then the connection drops | no such state | a binding's delivery is set when it is made
-
-| Renegotiation and media over a shared connection | routed through a control room, streams owned per room; a connection with any media is destroyed when its last room goes | not ported | media is on the roadmap (<<trystero-roadmap>>)
-
-| Duplicate connections | the first registered wins at each side and the other is closed at once; crossed, both lose and meet again | the first registered wins at each side; the other is held, unused, until the peer shows which it keeps: closed once the peer sends on the first, or after 2 s (higher id) or 10 s (lower id) when the peer does neither; it replaces the first when the peer closes the first, or, for the higher id, when the peer sends on it | libdatachannel ends an association with a stream reset and a SHUTDOWN, its ABORT a moment later, where a browser's ABORT follows its reset at once: closing at once the connection a Trystero JS peer kept, as it starts sending on it, made Chrome fail those sends and Trystero JS report a peer error. Following the peer's choice closes no connection the peer uses, keeps a crossed pair's rooms on the connection the peer kept, and still agrees with Trystero's rule
 |===
 
 Each difference a program can show has one, `example/diff_<topic>.cpp`,
@@ -198,14 +165,13 @@ page, with its reason in `test/oracle/twins/without-twin.txt`.
 Trystero JS:: Each `joinRoom` takes its own password, so one page joins a
 lobby with one password and a kitchen with another, and a peer that joins
 both meets the page as one peer, its one peer id, over a connection of each
-room; 0.26.0 carried both rooms' password handshakes over one connection.
+room.
 trystero:: A password is an app's, `app_config::password`, the same for every
 room of the app and never changed: rooms of different passwords are rooms of
 separate apps, each with its own self id and connections, so the other peer
 meets two peers.
-Why:: The sealed negotiation that makes a shared connection authenticates
-one password before any room of the app reuses it (0.1.0's ruling, kept by
-design D6, so that a room's keys are cached by room id alone).
+Why:: One app is one password domain (0.1.0's ruling, kept by design D6, so
+that a room's keys are cached by room id alone).
 
 [source]
 ----
@@ -218,7 +184,7 @@ include::{examples}/diff_passwords.cpp[tag=example,indent=0]
 include::{twins}/diff_passwords.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_passwords.expected[]
@@ -252,7 +218,7 @@ include::{examples}/diff_relay_sockets.cpp[tag=example,indent=0]
 include::{twins}/diff_relay_sockets.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_relay_sockets.expected[]
@@ -270,12 +236,12 @@ include::{examples}/diff_relay_sockets.expected[]
 Trystero JS:: `getPeers` returns an object that maps each active peer's id to
 its `PeerInfo`: its user's id, whether it is direct, its hops, its roles and
 its `connection`, an `RTCPeerConnection` of the class given as
-`rtcPolyfill` when one is given. 0.26.0 mapped each id to its connection.
+`rtcPolyfill` when one is given.
 trystero:: `peers()` maps each active peer's id to its `peer_info`, the same
 members without the connection.
 Why:: A connection is the backend's, webcpp::webrtc's over a page's object in
-the browser and over libdatachannel's natively, shared by the app's rooms,
-and the room does not hand it out.
+the browser and over libdatachannel's natively, and the room does not hand
+it out (design D11).
 
 [source]
 ----
@@ -288,7 +254,7 @@ include::{examples}/diff_peers.cpp[tag=example,indent=0]
 include::{twins}/diff_peers.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_peers.expected[]
@@ -301,15 +267,16 @@ include::{examples}/diff_peers.expected[]
 ----
 
 [#trystero-differences-send]
-==== A send to a peer that has not joined fails
+==== A send to a peer that has not joined fails with a fixed message
 
-Trystero JS:: The send warns on the console, "no peer with id ... found",
-and resolves.
-trystero:: `async_send` completes with `error::not_connected`, whose message
-is 0.27.0's "no active peer with this id". With several targets, the send
-still goes to the others, and completes with the first failure.
-Why:: An operation that fails says so with its error code, which a program
-can act on, and a console's warning is not.
+Trystero JS:: The send rejects with an error whose message names the
+target, "Trystero: no active peer with id" and its id.
+trystero:: `async_send` fails too: it completes with `error::not_connected`,
+whose message is the category's fixed "no active peer with this id". With
+several targets, the send still goes to the others, and completes with the
+first failure.
+Why:: An error code's message is a text of its category, which names no
+peer: the program knows the targets it gave.
 
 [source]
 ----
@@ -322,7 +289,7 @@ include::{examples}/diff_send_to_absent_peer.cpp[tag=example,indent=0]
 include::{twins}/diff_send_to_absent_peer.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_send_to_absent_peer.expected[]
@@ -360,7 +327,7 @@ include::{examples}/diff_json_numbers.cpp[tag=example,indent=0]
 include::{twins}/diff_json_numbers.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_json_numbers.expected[]
@@ -415,7 +382,7 @@ include::{examples}/diff_json_refused.cpp[tag=example,indent=0]
 include::{twins}/diff_json_refused.mjs[lines=7..]
 ----
 
-.Trystero JS 0.26.0 printed
+.Trystero JS 0.27.0 printed
 [listing]
 ----
 include::{twins}/diff_json_refused.expected[]
@@ -430,15 +397,21 @@ include::{examples}/diff_json_refused.expected[]
 [#trystero-differences-unshown]
 === The differences no program shows
 
-These rows of <<trystero-differences-behaviour>> and
-<<trystero-differences-shared>> have no program, each for its reason.
+These rows of <<trystero-differences-behaviour>> have no program, each for
+its reason.
 
 [cols="2,5",options="header"]
 |===
 | Behaviour | Why no program shows it
 
-| Scope of the peer id
-| Both sides draw their peer ids, so a program and its twin print ids that no two runs share, and neither API lets a program name one: what differs is which object holds an id and its connections, which the `app_impl` and `shared` tests hold over the memory relays.
+| Scope of the peer id; a room's own identity
+| Both sides derive their peer and user ids from keys made on each run, so a program and its twin print ids that no two runs share: what differs is which object holds an identity, which the `app_impl` and `room` tests hold over the memory relays, and the interop's `imported_identities` and `one_user_two_cpp_peers` scenarios against Trystero 0.27.0 pages.
+
+| An ECDSA P-256 signature
+| Only the relay and the peer see a signature, and each verifies the other's alike; the `crypto_layer` test signs the vectors' texts and checks them against 0.27.0's own verification, and the interop's `js_verifies_cpp_signatures` has 0.27.0 verify the {cpp} peer's.
+
+| A signature, a compact key or a user key's text that is not strict base64url; a user key's text holding invalid UTF-8
+| A JS peer and `exportUserIdentity` write only the canonical text, in UTF-8, so only a forged one shows it. The `crypto_layer` and `room` tests refuse such texts, a forged handshake step among them.
 
 | Listener tokens, `getSelf`, the order of `getPeers` and `getUsers`, `onReceive` and `onRequest`, a refused request, a redefined action
 | What differs is the form of the API, a token, a value at once, a map, a callable that answers at once, an error code, which a program and its twin write each in its own language; the `subscription`, `room` and `user_table` tests hold the {cpp} side over the memory relays.
@@ -446,48 +419,18 @@ These rows of <<trystero-differences-behaviour>> and
 | A plaintext that is not UTF-8; an `@_response` that answers no request; a JSON metadata holding a lone surrogate
 | Only a peer that means harm, or one that writes a text no Trystero peer writes, sends one. The `crypto_layer` test refuses such a plaintext, and the `room` test reads a refusal's reason that ends in a lone surrogate.
 
-| Relay connectivity; `relay-failed`
+| Relay connectivity; `relay-failed`; an announcement the socket cannot queue
 | What differs is a page's event, `visibilitychange`, which no native program and twin receive, and an announcement every relay refuses, which no local relay of the lanes refuses; the `room` and `platform_page_connectivity` tests hold the {cpp} side.
 
 | The hint of `peer_connect_failed`
 | A connection that fails after its descriptions were exchanged, which the loopback of the lanes never fails; the `room` test fails one over the memory relays.
 
-| A peer kicked from a room, or that kicked us, over a live connection; frames after the higher id's own kick; a connection whose last room was kicked
-| A kick follows a room proof that fails over a live connection, and two {cpp} apps never send one: an app has one password for every room, and apps of different passwords share no connection. A Trystero JS 0.26.0 page that mixed passwords did, so the interop lane's wrong room proofs showed trystero's side, against a page and not a twin (<<trystero-testing-lanes>>), and the `shared` test holds the rest over the memory relays.
-
-| Reuse over a live connection
-| Only a forged announcement shows it: a third party that publishes, in a peer's name, a room token that peer never advertised, which neither API publishes. The `shared` test forges one over the memory relays.
-
-| A room frame before the peer's presence for the room
-| Both APIs advertise a room before its first frame on a connection, so only a presence lost on the way shows it: Chrome drops it, rarely, when a page sends as its answering channel opens, and the interop lane's delayed-open scenario met it; the `connection` and `shared` tests drop it over the memory relays.
-
-| Announcements after a peer leaves
-| What differs is what a room publishes to its relays after a peer leaves it while their connection stays, which neither API reports: the peers see the same joins and leaves.
-
-| Presence after binding
-| A frame on the connection, which neither API reports; what it changes is how soon the other side binds, a time that no two runs print alike.
-
-| An answer to an earlier challenge
-| It needs a handshake answer that arrives after a newer challenge, a race between two bindings that no program sets up on a real network; the `shared` test holds it over the memory relays, whose frames it holds and releases.
-
 | Relay sockets and the Nostr key: the key
 | Which key signs a room's events only the relay sees; neither a room nor a peer reports it. The sockets are shown (<<trystero-differences-relay-sockets>>).
-
-| `idle_timeout`
-| Not a behaviour: both keep an idle connection 123,333 ms, and Trystero JS 0.26.0 took the same setting under its test-only name, so a program and its twin would agree.
-
-| Frames waiting for a bound room's handler
-| A state Trystero JS 0.26.0 passed through between a binding and its room's data handler, which its rooms set as they bound; no program reaches it through the API.
-
-| Renegotiation and media over a shared connection
-| Not ported: trystero has nothing of them to run.
-
-| Duplicate connections
-| Only two connections whose channels open within a millisecond of each other, from two rooms meeting the peer at once, make a pair that is crossed, which no program sets up on demand: the interop lane's two-room scenarios met one now and then, and the `app_impl` and `shared` tests hold each outcome over the memory relays.
 
 | A Nostr event a relay repeats, or that several relays carry
 | What an event changes when it comes twice is the signaling's work, offers and answers made again, which neither API reports: a program sees one join either way, and over honest relays an event's id is always its own. The `protocol` and `room` tests hold the dedup, forged ids included.
 
-| A relay's text, a signal or a handshake message past its bound; a protocol text of thousands of values, or nested deeper than 16
-| No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` and `signaling` tests hold the bounds.
+| A relay's text or a signal past its bound; a protocol text of thousands of values, or nested deeper than 16
+| No Trystero peer writes such a text, so only a relay or a peer that means harm sends one, and what changes is whether the room reads it, which neither API reports. The `protocol` and `signaling` tests hold the bounds, and the oracle's `signal_envelopes` show 0.27.0 refusing what it refuses.
 |===

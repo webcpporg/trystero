@@ -8,7 +8,7 @@
 == Quick start
 
 The quick start is one native program with two peers in it, `alice` and
-`bob`: each is an app of its own, which draws its own id, and both join the
+`bob`: each is an app of its own, with an id of its own, and both join the
 room `lobby` of the app `webcpp-trystero-quick-start`. alice greets
 bob when he joins, bob answers, each prints what it received, and both
 leave, which ends the program. In the browser the same rooms run in a page,
@@ -18,8 +18,9 @@ as the chat example shows (<<trystero-quick-start-browser>>).
 [#trystero-quick-start-native]
 === Two peers in one program
 
-An app is one peer: its id among the peers, 20 random characters it draws
-when it is made, as 0.27.0 has no custom id, its relays and its STUN
+An app is one peer: its id among the peers, 20 base62 characters derived
+from the P-256 endpoint key it makes when it is made, as 0.27.0 derives it
+and has no custom id, its user, ephemeral here, its relays and its STUN
 servers. Each peer prints what it receives after the other's name, so that
 what the program prints is the same on every run. It meets over the relay whose URL is in the environment,
 `TRYSTERO_RELAY_URL`, which the lane `relayed` starts on 127.0.0.1, and
@@ -39,8 +40,8 @@ room, and makes in each room the action `chat`, whose messages are
 `std::string`. alice greets each peer that joins, once its handshake
 completes, with a message to that peer alone, and prints what she receives,
 after bob's name, then leaves. bob's part is a coroutine. `run`
-returns once no work is left: each room closes its relays as it leaves, and
-each connection closes as soon as no room uses it:
+returns once no work is left: each room closes its relays and its
+connections as it leaves:
 
 [source]
 ----
@@ -64,8 +65,8 @@ The program prints bob's line, then alice's:
 include::{examples}/quick_start.expected[]
 ----
 
-Its twin on Trystero JS prints the same two lines. Trystero draws one
-`selfId` per page, so bob is a second page there:
+Its twin on Trystero JS prints the same two lines. Trystero keeps one
+endpoint identity per app id and page, so bob is a second page there:
 
 [source,javascript]
 ----

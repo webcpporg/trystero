@@ -36,8 +36,8 @@ namespace trystero = webcpp::trystero;
 namespace {
 
 // tag::config[]
-/** What one peer's app is made with: the relay `relay` names, or the public ones. Each app draws
- * its own id, 20 random characters. */
+/** What one peer's app is made with: the relay `relay` names, or the public ones. Each app makes
+ * its own endpoint key, whose public key derives its id. */
 trystero::app_config config_for(const char* relay) {
     trystero::app_config config;
     config.app_id = "webcpp-trystero-quick-start";
@@ -63,7 +63,7 @@ asio::awaitable<void> answer(trystero::room& lobby, trystero::action<std::string
     if (ec) {
         co_return;
     }
-    // The sender's id is drawn on each run: its name prints the same every time.
+    // The sender's id derives from a key made on each run: its name prints the same every time.
     std::cout << "alice: " << text << '\n';
     auto [failed] = co_await chat.async_send("hello back", {.targets = {info.from}, .metadata = {}},
                                              asio::as_tuple(asio::use_awaitable));

@@ -9,7 +9,7 @@
     "port-of": {
         "name": "Trystero",
         "language": "JavaScript",
-        "version": "0.26.0",
+        "version": "0.27.0",
         "url": "https://github.com/dmotz/trystero",
         "licence": "MIT"
     }

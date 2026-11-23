@@ -133,7 +133,9 @@ struct room_options {
     std::uint64_t max_json_document_bytes = webcpp::document::parse_options().max_document_bytes;
     /**
      * The most users the room holds, its own user included, Trystero's `maxUsers`; empty means no
-     * bound. `app::join` refuses 0 and a value above @ref max_users_limit with
+     * bound.
+     *
+     * `app::join` refuses 0 and a value above @ref max_users_limit with
      * `error::invalid_max_users`, as 0.27.0's `joinRoom` throws on a value that is not a positive
      * safe integer.
      *

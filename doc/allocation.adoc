@@ -19,18 +19,19 @@ own state.
   receives the app's state, configuration copy including its password, the
   P-256 endpoint key, held in that state, and the self id it derives, the
   ephemeral user identity the app makes when its configuration gives none,
-  registry, shared
-  connections, advertised tokens, kept frames, drain order and presence
-  frames, and the keys its rooms derive from its password, with the cache
-  that keeps them and each derivation's copy of the password, its salt and
-  its master (<<trystero-design-phase-1>>). Peer connections, data channels
-  and received frames use it even while a room negotiates them. The logger, sink and every sentence of the
-  app and its rooms use this resource too. It must be non-null, checked by
-  `BOOST_ASSERT` at app construction.
+  the registry of its rooms, the key records and verified signatures of
+  peers and users (design D18), and the keys its rooms derive from its
+  password, with the cache that keeps them and each derivation's copy of
+  the password, its salt and its master (<<trystero-design-port>>). The
+  logger, sink and every sentence of the app and its rooms use this
+  resource too. It must be non-null, checked by `BOOST_ASSERT` at app
+  construction.
 * `room_options::memory`, the app's resource when null, receives the room's
-  state, bindings and their drain waiters, negotiation records, rebinding
-  counts and backoffs, sealed texts, relays, actions, queues, outgoing
-  frames, transfers, the documents of the JSON texts it reads, and handlers.
+  state, negotiation records, its peer connections, data channels and the
+  frames received on them, each peer's link and handshake, sealed texts,
+  relays, actions, queues, outgoing frames, transfers, the documents of the
+  JSON texts it reads, and handlers: no connection outlives its room, as in
+  0.27.0 (design D9).
   The room's signing key, webcpp::crypto's secp256k1 key pair, made at the
   room's first event, makes its signing context there, its one allocation
   (`secp256k1_context_preallocated_create`).
@@ -40,17 +41,14 @@ own state.
   runtime. It must be non-null, and outlive the backend and every connection
   of its runtime. What the backend makes for an app or a room is in the
   resource given with that call instead (<<trystero-allocation-asio>>).
-* Adoption replaces negotiation handlers with the app's; ending a
-  negotiation clears the room's handlers. Detachment fails and frees a
-  binding's drain waiters and removes its registrations before returning.
-  After a room ends, the app retains no allocation in that room's resource.
-* A received frame starts in the app's resource. A `pmr_bytes` payload
-  moves from its message buffer when that buffer and the room use the same
-  resource; otherwise it is copied once into the room's resource. A chunked
+* Ending a link fails and frees its drain waiters before returning. After
+  a room ends, the app retains no allocation in that room's resource.
+* A received frame is in the room's resource. A `pmr_bytes` payload moves
+  from its message buffer, an inline one taken out of its frame; a chunked
   transfer assembles its buffer in the room's resource. Received
   `std::pmr::string` text is always copied once into the room's resource.
   A JSON text is parsed into a `webcpp::document::pmr::document` of the
-  room's resource, a remote candidate into one of the app's, and a JSON
+  room's resource, a remote candidate too, and a JSON
   payload received as a `webcpp::document::pmr::document` into one of the
   room's resource: the document's image, which holds every value, strings
   included, and the working state of the parse that made it.
@@ -136,15 +134,15 @@ over `std::pmr::polymorphic_allocator`: `std::pmr::string` (and `peer_id`),
 `std::pmr::vector` (and `backend::bytes`, `protocol::bytes` and
 `pmr_bytes`), `std::pmr::deque`, `std::pmr::map` and `std::pmr::set`, and
 `boost::unordered_flat_set` (the event ids a strategy remembers),
-`boost::circular_buffer` (the construction window, the recent challenges)
-and `boost::circular_buffer_space_optimized` (the replay cache), built over
+`boost::circular_buffer` (the construction window) and
+`boost::circular_buffer_space_optimized` (the replay cache), built over
 their owner's resource; `app_config`, `room_options`, `send_options`,
 `message_info` and `backend::ice_server` hold them too. Two types stay the
 user's choice of `std::allocator`: `trystero::bytes`, a
 `std::vector<std::uint8_t>`, and `trystero::payload`, a variant of
 `std::string`, `webcpp::document::document` and `bytes`. A received
-`bytes`, or the binary of a `payload`, is a copy of the frame, which starts
-in the app's resource; a received `webcpp::document::document` is in the
+`bytes`, or the binary of a `payload`, is a copy of the frame, which is in
+the room's resource; a received `webcpp::document::document` is in the
 standard allocator, its image and the working state of its parse, as
 document's `document` is. `webcpp::document::pmr::document` is document's
 own allocator-aware type, over `std::pmr::polymorphic_allocator<std::byte>`,
@@ -204,12 +202,12 @@ executor of their `io_context`.
 
 *The backends.* Each method of `backend::factory` that makes an object takes
 a `std::pmr::memory_resource*` as its last parameter. Peer connections,
-data channels and received frames use the app's resource; relay sockets and
-room timers use the room's; a password's derivation, which makes no object,
+data channels, received frames, relay sockets and room timers use the
+room's resource; a password's derivation, which makes no object,
 allocates its operation with its completion's allocator, the app's. Objects and their handlers allocate
 through that supplied resource. The backend's WebRTC
 (<<trystero-design-backend-webrtc>>) gives webcpp::webrtc's connections and
-channels a `std::pmr::polymorphic_allocator` on the app's resource, which
+channels a `std::pmr::polymorphic_allocator` on the room's resource, which
 their state, their queues, their texts and their operations use: each
 operation's handler is bound to it. The platform backend's relays are one
 session of webcpp::beast's on both targets, made in the room's resource with
@@ -234,8 +232,7 @@ what reads or writes it: the parser's state, the path and the pending key
 and text of the value being read, the tree's record of each change, and the
 writer's stack, each freed before the call that made it returns. trystero
 reads each text with `webcpp::document::parse(text, options, allocator)`
-into a document of the room's resource, of the app's for a remote
-candidate: its image starts at 4 KiB and grows in place, twice as large
+into a document of the room's resource: its image starts at 4 KiB and grows in place, twice as large
 each time, up to twice the caller's bound and 64 KiB for a protocol text,
 and for a JSON payload up to 96 times its length and 64 KiB, which every
 valid payload fits, or the room's `room_options::max_json_document_bytes`,
@@ -396,16 +393,18 @@ is kept, by its address, in a table of a fixed size until it is freed.
   `io_context` is drained. From the first construction to the drain, while
   the rooms and the relay read and write their JSON texts, neither
   `operator new` nor the C library sees an allocation but, natively,
-  OpenSSL's, which the test counts apart: 16, two for each seal and each
-  open of the rooms' signals. Once the rooms are
+  OpenSSL's, which the test counts apart: what this OpenSSL's cipher
+  contexts take for one seal and one open, measured first, for each signal
+  the rooms seal and open. Once the rooms are
   destroyed their resources still have memory out, the operations they left
   pending, and none once the `io_context` has drained.
 * Two apps with two rooms each exchange binary payloads, one room using the
-  app's resource and one its own. Size-specific counters prove one payload
-  copy into the distinct room resource, and no extra copy when resources
-  match. From construction through the drain neither `operator new` nor the
-  C library sees an allocation but, natively, OpenSSL's 32, counted apart,
-  and every resource ends with nothing out.
+  app's resource and one its own. Each room's connections and the frames
+  received on them are in its own resource, so in either room the payload
+  is moved into the value, and the app's resource sees nothing of the room
+  with its own. From construction through the drain neither `operator new`
+  nor the C library sees an allocation but, natively, OpenSSL's, counted
+  apart, and every resource ends with nothing out.
 
 The counting resources also count a return of memory they never gave, a
 `std::pmr` object freed through the wrong resource, which must be none.

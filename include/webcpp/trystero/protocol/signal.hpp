@@ -33,13 +33,17 @@ inline constexpr std::size_t max_offer_id_chars = 64;
 
 /**
  * The longest sealed offer or answer a signal may carry, in UTF-16 code units as JavaScript counts
- * a string's length: 0.27.0's `maxSignalSdpChars`. A sealed text is ASCII, one byte a unit.
+ * a string's length: 0.27.0's `maxSignalSdpChars`.
+ *
+ * A sealed text is ASCII, one byte a unit.
  */
 inline constexpr std::size_t max_sealed_description_chars = std::size_t{64} * 1024;
 
 /**
  * The longest sealed candidate a signal may carry, in UTF-16 code units as JavaScript counts a
- * string's length: 0.27.0's `maxSignalCandidateChars`. A sealed text is ASCII, one byte a unit.
+ * string's length: 0.27.0's `maxSignalCandidateChars`.
+ *
+ * A sealed text is ASCII, one byte a unit.
  *
  * It holds a candidate's JSON of up to 3044 bytes, sealed by @ref seal; 0.27.0 sends a longer one
  * as it is, and its receivers, as a room, ignore the signal.
