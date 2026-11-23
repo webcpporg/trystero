@@ -449,6 +449,13 @@ const joinedBy = async (pages, of) => {
 // reportDecryptErr): one, and one more for each 60 s since `since`, however slow the machine is.
 const reportsAllowed = since => 1 + Math.floor((Date.now() - since) / 60_000)
 
+// The library's offer_ttl, read from its source: an unanswered offer holds its connection that long, and the room may
+// make another max_connections_per_window connections and offer to another max_unconnected_peers peers once it passed.
+const offerTtl = Number(/offer_ttl = std::chrono::milliseconds\(([\d']+)\)/.exec(
+    readFileSync(join(here, '../../../include/webcpp/trystero/detail/signaling.hpp'), 'utf8'))[1].replaceAll("'", ''))
+// How many windows of offer_ttl a run that began at `since` spans, at most: one, and one more for each offer_ttl.
+const windowsSince = since => 1 + Math.floor((Date.now() - since) / offerTtl)
+
 // 1. Each side sees the other's peer and user ids (the C++ peer's app::self_id and app::user_id, the page's
 // getSelf()), and text, JSON and binary messages go both ways: with either side offering, as in 0.27.0 the lower id
 // offers, so the C++ peer's id is put below the page's, then above it (its key, `keyAround`), and the local relay
@@ -681,12 +688,12 @@ const forgedUserSignature = cppKind => scenario('a_forged_user_signature', cppKi
     if (!(await until(async () => (await reports()) > 0))) return 'the C++ peer did not report handshake_failed for the forger'
     if (count(await forger.events(), 'signed') < 2) return 'the forger signed nothing after its startup check'
     if ((await joinedBy([cpp], f)).length) return 'the C++ peer joined the forger'
+    const reported = await reports()
     const log = await cpp.log()
     const runs = new Set([
         ...[...log.matchAll(new RegExp(`sending offer (\\S+) to ${f.self}`, 'g'))].map(m => m[1]),
         ...[...log.matchAll(new RegExp(`offer (\\S+) from ${f.self}`, 'g'))].map(m => m[1]),
     ]).size
-    const reported = await reports()
     if (reported > runs) return `the C++ peer reported handshake_failed ${reported} times for ${runs} connections`
     return (await joinedBy([cpp], f)).length ? 'the C++ peer joined the forger' : null
 })
@@ -806,7 +813,8 @@ const malformedCandidateScenario = cppKind => scenario('a_malformed_candidate', 
 // announcements on the room's topic from ids above its own, which the C++ peer offers to. The C++ peer handles every
 // one (its log names each id, or its refusal); reports each offer it cannot open as decrypt-failed at most once per
 // peer and stage (0.27.0's reportDecryptErr); offers to at most max_unconnected_peers (32) of the announcing ids, makes
-// at most max_connections_per_window (64) connections in the flood (counted as the platform counts them: cpp.html's
+// at most max_connections_per_window (64) connections in the flood (all three bounds times the offer_ttl windows the
+// run spans, one on a normal run), and every offer of the flood is reported (counted as the platform counts them: cpp.html's
 // RTCPeerConnections, the native backend's made-connection events), and goes on with the page: no peer leaves, and a
 // chat message after the flood is echoed. The page offers to the announcing ids too, as a 0.27.0 peer does.
 const floodCount = 300
@@ -861,9 +869,10 @@ const floodScenario = cppKind => scenario('a_flood_of_signals_from_fresh_ids', c
     const facts = `the C++ peer offered to ${offered.size} of ${floodCount} announcing ids, made ${made} connections ` +
         `in the flood, and reported decrypt-failed for ${reports.size} of ${floodCount} offering ids`
     console.log(`  ${facts}`)
-    if (offered.size > unconnectedBound) return `${facts}; it offered to more than ${unconnectedBound}`
-    if (made > connectionBound) return `${facts}; more than ${connectionBound} connections`
-    if (reports.size === 0) return `${facts}; no offer of the flood was reported`
+    const windows = windowsSince(since)
+    if (offered.size > unconnectedBound * windows) return `${facts}; it offered to more than ${unconnectedBound * windows}`
+    if (made > connectionBound * windows) return `${facts}; more than ${connectionBound * windows} connections`
+    if (reports.size !== floodCount) return `${facts}; not every offer of the flood was reported`
     const allowed = reportsAllowed(since)
     const often = [...reports].filter(([, n]) => n > allowed)
     if (often.length) return `${facts}; reported more than ${allowed} times: ${JSON.stringify(often)}`
