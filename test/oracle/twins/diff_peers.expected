@@ -1,2 +1,2 @@
 peers: 1
-the joined peer's entry: its RTCPeerConnection
+the joined peer's entry: its user id, with its RTCPeerConnection

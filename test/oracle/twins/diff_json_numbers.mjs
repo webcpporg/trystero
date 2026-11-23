@@ -17,7 +17,7 @@ const config = {
 // The other peer, another page, which posts what it receives for this page to print.
 const other = openPage(async ({joinRoom, RTCPeerConnection, data, post, next}) => {
     const room = joinRoom({...data, rtcPolyfill: RTCPeerConnection}, 'lobby')
-    room.makeAction('payload').onMessage = received => post(received)
+    room.makeAction('payload').onMessage(received => post(received))
     await next()
     await room.leave()
 }, config)
@@ -30,7 +30,7 @@ const numbers = ['9007199254740993', '0.1000000000000000000000000000000001', '1e
 const text = `[${numbers.join(',')}]`
 // This page sends the payload its JSON text makes, once it meets the other peer.
 const payload = room.makeAction('payload')
-await new Promise(joined => (room.onPeerJoin = joined))
+await new Promise(joined => room.onPeerJoin(joined))
 await payload.send(JSON.parse(text))
 // What the other peer receives, number by number.
 const received = await other.next()

@@ -14,9 +14,13 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/clock.hpp>
+#include <webcpp/trystero/identity.hpp>
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
@@ -42,11 +46,12 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 // The rooms' shared test helpers: a memory network with two relays, an app over them and a join
 // that must succeed, a watcher of a room's relay traffic, a flood of announcements, the virtual
-// clock's own waits, and a JSON document to send. A case of room_test.cpp, connection_test.cpp or
-// shared_test.cpp includes this header for them.
+// clock's own waits, and a JSON document to send. A case of room_test.cpp includes this header for
+// them.
 namespace webcpp::trystero::test {
 
 using namespace std::chrono_literals;
@@ -55,21 +60,130 @@ constexpr const char* relay_a = "wss://relay-a.test";
 constexpr const char* relay_b = "wss://relay-b.test";
 constexpr const char* app_id = "webcpp-trystero-tests";
 
-/** An app of the tests' app id over the two memory relays, with `self_id`; with
+/** The scalar of the endpoint key a test names by `label`: the SHA-256 of the label, a valid
+ * P-256 scalar for every label the tests use. */
+inline std::array<std::uint8_t, 32> endpoint_scalar(std::string_view label) {
+    return protocol::sha256(label);
+}
+
+/** The peer id an app whose endpoint key is named `label` derives. */
+inline std::string peer_id_of(std::string_view label) {
+    const auto scalar = endpoint_scalar(label);
+    const auto key =
+        trystero::detail::make_endpoint_identity(scalar, std::pmr::get_default_resource());
+    webcpp::test::require(BOOST_TEST(key.has_value()));
+    return std::string(key->peer_id);
+}
+
+/** A peer id a signal may carry, 20 base62 characters as 0.27.0 requires
+ * (protocol::is_signal_peer_id): `stem`, then '0's, then `number`, so that the ids of a stem differ
+ * and keep its first characters, which order them among the tests' apps. */
+inline std::string signal_id(std::string_view stem, std::size_t number) {
+    const auto digits = std::to_string(number);
+    webcpp::test::require(BOOST_TEST_LE(stem.size() + digits.size(), protocol::peer_id_size));
+    std::string id(stem);
+    id.append(protocol::peer_id_size - stem.size() - digits.size(), '0');
+    id += digits;
+    webcpp::test::require(BOOST_TEST(protocol::is_signal_peer_id(id)));
+    return id;
+}
+
+/** A peer id a signal may carry, `stem` and '0's to 20 base62 characters. */
+inline std::string signal_id(std::string_view stem) {
+    webcpp::test::require(BOOST_TEST_LE(stem.size(), protocol::peer_id_size));
+    std::string id(stem);
+    id.append(protocol::peer_id_size - stem.size(), '0');
+    webcpp::test::require(BOOST_TEST(protocol::is_signal_peer_id(id)));
+    return id;
+}
+
+/** `n` labels, `prefix` and a number each, ordered by the peer ids they derive, lowest first: a
+ * test that needs one peer to initiate, the lower id, names its apps with them. */
+inline std::vector<std::string> ordered_labels(std::size_t n, std::string_view prefix = "peer") {
+    std::vector<std::pair<std::string, std::string>> by_id;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::string label(prefix);
+        label += '-';
+        label += std::to_string(i);
+        by_id.emplace_back(peer_id_of(label), std::move(label));
+    }
+    std::ranges::sort(by_id);
+    std::vector<std::string> out;
+    out.reserve(by_id.size());
+    for (auto& [id, label] : by_id) {
+        out.push_back(std::move(label));
+    }
+    return out;
+}
+
+/** A label, `prefix` and a number, whose peer id is below `id` (`below`) or above it: a test whose
+ * peer must offer to, or be offered by, peers of given ids names its app with it. */
+inline std::string label_beside(std::string_view id, bool below, std::string_view prefix = "side") {
+    for (std::size_t i = 0;; ++i) {
+        std::string label(prefix);
+        label += '-';
+        label += std::to_string(i);
+        const auto derived = peer_id_of(label);
+        if (below ? derived < id : derived > id) {
+            return label;
+        }
+    }
+}
+
+/** What an app of the tests is made with: its configuration, and the label of its endpoint key,
+ * so that its peer id is known. */
+struct app_setup : trystero::app_config {
+    /** The label of the app's endpoint key (@ref endpoint_scalar); empty draws a key. */
+    std::pmr::string label;
+};
+
+/** The configuration of a setup, without its label: for a test that names its keys itself. */
+inline trystero::app_config config_of(app_setup setup) {
+    return std::move(static_cast<trystero::app_config&>(setup));
+}
+
+/** An app of the tests' app id over the two memory relays, its endpoint key named `label`; with
  * WEBCPP_TEST_TRYSTERO_VERBOSE in the environment, its log goes to the standard error. */
-inline trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
-    trystero::app_config c;
+inline app_setup app_config(std::string_view label, std::string_view password = {}) {
+    app_setup c;
     c.app_id = app_id;
     c.relay_urls = {relay_a, relay_b};
-    c.self_id = self_id;
+    c.label = label;
     c.password = password;
     if (std::getenv("WEBCPP_TEST_TRYSTERO_VERBOSE") != nullptr) {
-        c.log = [id = std::pmr::string(self_id)](std::string_view category, std::string_view text) {
+        c.log = [id = std::pmr::string(label)](std::string_view category, std::string_view text) {
             std::cerr << "  [" << id << "] " << category << ": " << text << "\n";
         };
     }
     return c;
 }
+
+/** A `trystero::app` whose endpoint key is named `label`, through the detail seam the library
+ * keeps for its own tests, since 0.27.0 has no custom endpoint key; an empty label draws one. */
+inline trystero::app make_app_with(std::string_view label, trystero::app::executor_type ex,
+                                   backend::factory& factory, trystero::app_config config) {
+    if (label.empty()) {
+        return {std::move(ex), factory, std::move(config)};
+    }
+    return trystero::detail::app_access::make(std::move(ex), factory, std::move(config),
+                                              endpoint_scalar(label));
+}
+
+/** An app of the tests: a `trystero::app` whose endpoint key is named by its setup's label. */
+class app : public trystero::app {
+public:
+    /** Makes the app of `setup` over `factory`; an empty label draws a key, as an app draws it. */
+    app(trystero::app::executor_type ex, backend::factory& factory, app_setup setup)
+        : trystero::app(make(std::move(ex), factory, std::move(setup))) {}
+
+private:
+    static trystero::app make(trystero::app::executor_type ex, backend::factory& factory,
+                              app_setup setup) {
+        const std::pmr::string label = std::move(setup.label);
+        return make_app_with(label, std::move(ex), factory,
+                             std::move(static_cast<trystero::app_config&>(setup)));
+    }
+};
 
 /** The owned document of a JSON text, as an action of JSON sends it; a text that does not parse
  * ends the test. */
@@ -87,9 +201,14 @@ inline trystero::room join(trystero::app& a, std::string_view room_id,
     return std::move(*r);
 }
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. What must not happen within a time is waited for on
+ * the virtual clock. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 /** Runs the io_context until `done` holds or `limit` passes; whether `done` held. */
 inline bool run_until(webcpp::asio::io_context& io, const std::function<bool()>& done,
-                      std::chrono::milliseconds limit = 10s) {
+                      std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(20ms);  // lint-run: the memory relays and the rooms' timers post to it
@@ -113,13 +232,13 @@ struct fixture {
 };
 
 /** Runs until `done` holds, for at most `limit`: of the virtual clock when the fixture has one,
- * moving it from timer to timer, else of the wall clock. On the virtual clock it fires at most
- * `max_steps` timers, and fails the case by name past them: a timer re-armed without delay would
- * otherwise hold the clock still forever. */
+ * moving it from timer to timer, else of the wall clock, where it is at least `hang_guard`. On the
+ * virtual clock it fires at most `max_steps` timers, and fails the case by name past them: a timer
+ * re-armed without delay would otherwise hold the clock still forever. */
 inline bool run_until(fixture& f, const std::function<bool()>& done,
                       std::chrono::milliseconds limit = std::chrono::seconds(10)) {
     if (!f.net.virtual_clock) {
-        return run_until(f.io, done, limit);
+        return run_until(f.io, done, std::max(limit, hang_guard));
     }
     const auto end = f.net.steady_now() + limit;
     for (std::size_t steps = 0; !done(); ++steps) {
@@ -210,44 +329,51 @@ public:
     /** Publishes a signal on a topic, in any peer's name; with a nonce, as an event of its own. */
     void publish(std::string_view topic, const protocol::signal_message& m,
                  std::string_view nonce = {}) {
-        const std::array<std::uint8_t, 32> aux{};
-        socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic,
-                                                     protocol::write_signal(m, nonce), aux));
+        socket_->send(signed_event(topic, protocol::write_signal(m, nonce)));
     }
 
-    /** `plain` sealed under the room key of `room`, with no password, as the memory sealer seals.
-     */
-    static std::string sealed(std::string_view room, std::string_view plain) {
-        const auto key = protocol::seal_key("", app_id, room);
-        return std::string(protocol::format_sealed(
-            std::span(key).first(16),
-            std::span(reinterpret_cast<const std::uint8_t*>(plain.data()), plain.size())));
+    /** `plain` sealed under the room key of `room`, with no password, as `peer`'s signal of
+     * `type` for the offer `offer_id`, as a room seals it, under an IV of its own. */
+    static std::string sealed(std::string_view room, std::string_view plain, std::string_view peer,
+                              std::string_view offer_id, std::string_view type = "offer") {
+        static std::uint64_t seals = 0;
+        std::array<std::uint8_t, protocol::gcm_iv_size> iv{};
+        const auto n = ++seals;
+        for (std::size_t i = 0; i < sizeof(n); ++i) {
+            iv.at(i) = static_cast<std::uint8_t>(n >> (8 * i));
+        }
+        const auto key = protocol::room_aes_key_without_password(app_id, room);
+        const auto aad = protocol::signal_aad(type, peer, offer_id);
+        auto text = protocol::seal(key, iv, plain, std::string_view(aad));
+        webcpp::test::require(BOOST_TEST(text.has_value()));
+        return std::string(*text);
     }
 
     /** Announces one id `times` times. */
     void announce_as(std::string_view id, std::size_t times) {
-        const std::array<std::uint8_t, 32> aux{};
         for (std::size_t i = 0; i < times; ++i) {
             const auto nonce = std::to_string(next_++);
-            const auto content = protocol::write_signal({.peer_id = id}, nonce);
-            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
-                                                         content, aux));
+            socket_->send(signed_event(topic_, protocol::write_signal({.peer_id = id}, nonce)));
         }
     }
 
-    /** Announces `count` ids, each `prefix` and a number. */
+    /** Announces `count` ids, each `prefix` and a number (@ref signal_id). */
     void announce(std::size_t count, std::string_view prefix) {
-        const std::array<std::uint8_t, 32> aux{};
         for (std::size_t i = 0; i < count; ++i) {
-            std::pmr::string id(prefix);
-            id += std::to_string(next_++);
-            const auto content = protocol::write_signal({.peer_id = id});
-            socket_->send(protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic_,
-                                                         content, aux));
+            const auto id = signal_id(prefix, next_++);
+            socket_->send(signed_event(topic_, protocol::write_signal({.peer_id = id})));
         }
     }
 
 private:
+    /** The client message of an event of `content` on `topic`, signed with the flooder's key. */
+    std::pmr::string signed_event(std::string_view topic, std::string_view content) {
+        auto message =
+            protocol::nostr::event_message(*signer_, detail::unix_now(f_.net), topic, content);
+        webcpp::test::require(BOOST_TEST(message.has_value()));
+        return std::move(*message);
+    }
+
     fixture& f_;
     std::pmr::string topic_;
     std::shared_ptr<backend::websocket> socket_;

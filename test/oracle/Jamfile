@@ -4,11 +4,14 @@
 # accompanying file LICENSE_1_0.txt or copy at
 # https://www.boost.org/LICENSE_1_0.txt)
 
-# The oracle of trystero: Trystero 0.26.0 itself, pinned by package.json and
-# package-lock.json, run by Node. It computes the protocol's values that the
-# protocol test must reproduce, runs the twins of the examples, and meets the
-# C++ peers in the interop tests. werift, pinned beside it, is the WebRTC the
-# twins give Trystero JS in Node, as its README says to.
+# The oracle of trystero: Trystero 0.27.0 itself, the published packages
+# pinned by package.json and package-lock.json, run by Node. It computes the
+# protocol's values that the protocol and signaling tests must reproduce
+# (fixtures/oracle), proves that the published packages compute the vectors
+# the pinned source recorded (fixtures/expected/trystero-0.27.0.json), runs the
+# twins of the examples, and meets the C++ peers in the interop tests. werift,
+# pinned beside it, is the WebRTC the twins give Trystero JS in Node, as its
+# README says to.
 
 import webcpp ;
 
@@ -22,18 +25,24 @@ path-constant ORACLE : . ;
 # tag::oracle[]
 webcpp.original node --conditions=development ;
 webcpp.twins ../../example : twins : .mjs : $(ORACLE)/run_twin.mjs ;
-webcpp.cases protocol : oracle.mjs : ../fixtures/cases : ../fixtures/expected ;
-webcpp.lane oracle : twins cases-protocol ;
+webcpp.cases protocol : oracle.mjs : ../fixtures/cases : ../fixtures/oracle ;
+# The recorder of the vectors over the published packages, with the fixture as
+# its previous output, writes the fixture again byte for byte (design D19):
+# vectors.py runs record_0_27.mjs --dist; update-generated is the fixture's
+# only writer here, and keeps its signatures as the recorder does.
+webcpp.generated vectors : vectors.py
+  : ../fixtures/expected/trystero-0.27.0.json : ../fixtures/expected/trystero-0.27.0.json ;
+webcpp.lane oracle : twins cases-protocol generated-vectors ;
 # end::oracle[]
 
-# Trystero JS meets each C++ peer over a relay of its own on 127.0.0.1: the
-# browser's peer in headless Chrome, and the native peer as a process, both
-# over the platform backend. The native peer is built with the standard
-# libraries' own checks, so that a completion that touches a container its
-# socket cleared fails at once. Each driver has
-# 2400 s for its bounded scenarios and Chrome's start, including the
-# wrong-password observation windows and transient-handshake recovery. The
-# scenarios report their peer events on failure before this outer bound.
+# Trystero 0.27.0 meets each C++ peer over a relay of its own on 127.0.0.1:
+# the browser's peer in headless Chrome, and the native peer as a process,
+# both over the platform backend (interop/run.mjs names the scenarios). The
+# native peer is built with the standard libraries' own checks, so that a
+# completion that touches a container its socket cleared fails at once. Each
+# driver has 2400 s for its scenarios and Chrome's start; each wait of a
+# scenario is bounded far below that, and a scenario that fails reports its
+# peers' events before this outer bound.
 # tag::interop[]
 webcpp.drive interop_browser : interop/peer.cpp
   : <library>/webcpp/trystero//platform <linkflags>-sENVIRONMENT=web

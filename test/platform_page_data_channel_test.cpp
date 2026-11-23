@@ -5,15 +5,15 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests the platform backend's data channels in a page, webcpp::webrtc's, under node, over plain
-// objects in
-// place of the page's RTCPeerConnection and RTCDataChannel: what a peer can send that is no frame
-// is dropped. A text message "1e300" once threw a RangeError out of `new Uint8Array`, and
-// "300000000" made a 300 MB frame: webcpp::webrtc delivers a text as the few bytes it holds, which
-// the channel drops; a binary message larger than any room frame is dropped too. Only the frame
-// sent last reaches the handler, and nothing larger than the largest message sent is allocated.
+// objects in place of the page's RTCPeerConnection and RTCDataChannel: what a peer can send that
+// is no frame closes the channel, as 0.27.0's failData closes it, and reaches no handler. A text
+// message "1e300" once threw a RangeError out of `new Uint8Array`, and "300000000" made a 300 MB
+// frame: webcpp::webrtc delivers a text as the few bytes it holds, which closes the channel; so
+// does a binary message larger than any frame, a wide chunk's 64 KiB. A frame of 3 bytes reaches
+// the handler, and nothing larger than the largest message sent is allocated.
 //
-// main runs the io_context under a work guard, which the verdict releases when the last frame
-// arrives; a frame that does not come within 10 s fails by name.
+// Each case runs its io_context under a work guard, which the verdict releases when the frame
+// arrives or the channel closes; a verdict that does not come within 10 s fails by name.
 
 #include <webcpp/trystero/platform/backend.hpp>
 
@@ -69,6 +69,7 @@ struct state {
     std::shared_ptr<trystero::backend::data_channel> wrapper;
     std::size_t messages = 0;
     std::size_t last_size = 0;
+    std::size_t closes = 0;
 };
 
 /** Delivers `data` to the channel's `onmessage` from a timer, as the page delivers a message. */
@@ -78,12 +79,52 @@ void deliver(const val& data) {
     val::global("setTimeout")(val::global("lastChannel")["onmessage"], val(0), event);
 }
 
+/** Makes a channel, hands it `data` as the page's only message, and runs until the frame arrives
+ * or the channel closes. */
+void receive_one(state& s, const val& data) {
+    s.connection = s.backend.make_peer_connection({}, &s.memory);
+    webcpp::test::require(BOOST_TEST(s.connection != nullptr));
+    s.wrapper = s.connection->create_data_channel("data");
+    webcpp::test::require(BOOST_TEST(s.wrapper != nullptr));
+    s.wrapper->set_handlers({
+        .open = {},
+        .message =
+            [&s](const trystero::backend::bytes& frame) {
+                ++s.messages;
+                s.last_size = frame.size();
+                s.guard.reset();
+                s.io.stop();
+            },
+        .close =
+            [&s] {
+                ++s.closes;
+                s.guard.reset();
+                s.io.stop();
+            },
+        .buffered_amount_low = {},
+    });
+    deliver(data);
+    s.io.run_for(10s);  // lint-run: the case's event loop, held by its work guard until the verdict
+    if (s.messages + s.closes == 0) {
+        BOOST_ERROR("the message neither arrived nor closed the channel");
+    }
+}
+
+/** What is no frame closes the channel, and reaches no handler. */
+void no_frame_closes_the_channel(const val& data) {
+    state s;
+    receive_one(s, data);
+    BOOST_TEST_EQ(s.messages, 0U);
+    BOOST_TEST_EQ(s.closes, 1U);
+    BOOST_TEST(!s.wrapper->is_open());
+    BOOST_TEST_LE(s.memory.largest, std::size_t{70'000});
+}
+
 }  // namespace
 
 int main() {
-    state s;
-    // A connection whose channel is open from the start, and which the test reaches as
-    // lastChannel.
+    // A connection whose channel is open from the start, which the test reaches as lastChannel,
+    // and whose close is reported after it, as a page's is.
     EM_ASM({
         globalThis.RTCPeerConnection = class {
             constructor() {
@@ -98,42 +139,29 @@ int main() {
                 channel.readyState = 'open';
                 channel.bufferedAmount = 0;
                 channel.send = function(){};
-                channel.close = function(){};
+                // clang-format off
+                channel.close = function() {
+                    if (channel.readyState != 'closed') {
+                        channel.readyState = 'closed';
+                        setTimeout(function() { if (channel.onclose) channel.onclose(); }, 0);
+                    }
+                };
+                // clang-format on
                 globalThis.lastChannel = channel;
                 return channel;
             }
             close() {}
         };
     });
-    s.connection = s.backend.make_peer_connection({}, &s.memory);
-    webcpp::test::require(BOOST_TEST(s.connection != nullptr));
-    s.wrapper = s.connection->create_data_channel("data");
-    webcpp::test::require(BOOST_TEST(s.wrapper != nullptr));
-    s.wrapper->set_handlers({
-        .open = {},
-        .message =
-            [&s](const trystero::backend::bytes& frame) {
-                ++s.messages;
-                s.last_size = frame.size();
-                s.guard.reset();
-                s.io.stop();
-            },
-        .close = {},
-        .buffered_amount_low = {},
-    });
-
-    deliver(val("1e300"));
-    deliver(val("300000000"));
-    deliver(val::global("ArrayBuffer").new_(val(20'000)));
-    deliver(val::global("ArrayBuffer").new_(val(3)));
-
-    s.io.run_for(10s);  // lint-run: the test's event loop, held by its work guard until the verdict
-    if (s.messages == 0) {
-        BOOST_ERROR("the frame sent last never arrived");
+    no_frame_closes_the_channel(val("1e300"));
+    no_frame_closes_the_channel(val("300000000"));
+    no_frame_closes_the_channel(val::global("ArrayBuffer").new_(val(70'000)));
+    {
+        state s;
+        receive_one(s, val::global("ArrayBuffer").new_(val(3)));
+        BOOST_TEST_EQ(s.messages, 1U);
+        BOOST_TEST_EQ(s.last_size, 3U);
+        BOOST_TEST_EQ(s.closes, 0U);
     }
-    // The first frame to arrive is the last one sent: the run stopped there.
-    BOOST_TEST_EQ(s.messages, 1U);
-    BOOST_TEST_EQ(s.last_size, 3U);
-    BOOST_TEST_LE(s.memory.largest, std::size_t{20'000});
     return webcpp::test::exit_status(boost::report_errors());
 }

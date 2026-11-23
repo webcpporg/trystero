@@ -8,8 +8,8 @@ import {joinRoom} from 'trystero'
 import {RTCPeerConnection} from 'werift'
 import {openPage} from '../page.mjs'
 
-// Trystero draws one selfId per page, so bob is another page, and each peer prints the other's
-// name where the C++ program prints the ids it gave its apps. The peers meet on this machine
+// Trystero has one peer id per app and page, so bob is another page, and each peer prints the
+// other's name where the C++ program prints the ids it gave its apps. The peers meet on this machine
 // alone: no ICE server, werift's WebRTC for Node.
 const config = {
     appId: 'webcpp-trystero-quick-start',
@@ -23,7 +23,7 @@ const bob = openPage(async ({joinRoom, RTCPeerConnection, data, post}) => {
     const room = joinRoom({...data, rtcPolyfill: RTCPeerConnection}, 'lobby')
     const chat = room.makeAction('chat')
     const [text, {peerId}] = await new Promise(received => {
-        chat.onMessage = (...message) => received(message)
+        chat.onMessage((...message) => received(message))
     })
     post(`alice: ${text}`)
     await chat.send('hello back', {target: peerId})
@@ -33,9 +33,9 @@ const bob = openPage(async ({joinRoom, RTCPeerConnection, data, post}) => {
 // alice greets each peer that joins, prints the answer, and leaves.
 const room = joinRoom({...config, rtcPolyfill: RTCPeerConnection}, 'lobby')
 const chat = room.makeAction('chat')
-room.onPeerJoin = peerId => chat.send('hello', {target: peerId})
+room.onPeerJoin(({peerId}) => chat.send('hello', {target: peerId}))
 const answer = new Promise(received => {
-    chat.onMessage = text => received(text)
+    chat.onMessage(text => received(text))
 })
 console.log(await bob.next())
 console.log(`bob: ${await answer}`)

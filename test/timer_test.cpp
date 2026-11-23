@@ -71,7 +71,7 @@ void both_expired(asio::io_context& io, trystero::detail::timer& first,
                   trystero::detail::timer& second, std::size_t& second_fired, Then then) {
     first.start(0ms, then);
     second.start(0ms, [&second_fired] { ++second_fired; });
-    io.run_for(100ms);  // lint-run: the timers' expiries are the events under test
+    io.run();  // lint-run: ends when both waits have completed, whatever the load
     io.restart();
 }
 
@@ -82,7 +82,7 @@ void an_uncancelled_wait_fires_once() {
     const std::size_t made = memory.allocations;
     std::size_t fired = 0;
     timer->start(1ms, [&] { ++fired; });
-    io.run_for(100ms);  // lint-run: the wait expires
+    io.run();  // lint-run: ends when the wait has completed
     BOOST_TEST_EQ(fired, 1U);
     // The wait was allocated in the timer's resource, and given back once it completed.
     BOOST_TEST_GT(memory.allocations, made);
@@ -117,7 +117,7 @@ void a_restarted_timer_fires_only_its_new_wait() {
     std::size_t fired = 0;
     std::size_t restarted = 0;
     both_expired(io, *first, *second, fired, [&] { second->start(10ms, [&] { ++restarted; }); });
-    io.run_for(100ms);  // lint-run: the restarted wait expires
+    io.run();  // lint-run: ends when the restarted wait has completed
     BOOST_TEST_EQ(fired, 0U);
     BOOST_TEST_EQ(restarted, 1U);
 }

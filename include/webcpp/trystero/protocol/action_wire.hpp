@@ -9,14 +9,16 @@
 
 #include <webcpp/trystero/config.hpp>
 
-#include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/text.hpp>
 
 #include <boost/assert.hpp>
 #include <boost/endian/conversion.hpp>
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory_resource>
@@ -29,7 +31,7 @@
 namespace webcpp::trystero::protocol {
 
 /**
- * The format of an action's payload, the high four bits of a frame's second byte: how Trystero's
+ * The format of an action's payload, bits 4 and 5 of a frame's second byte: how Trystero's
  * `decodePayload` reads it.
  *
  * @see "The protocol", in the guide.
@@ -45,20 +47,23 @@ enum class payload_format : std::uint8_t {
 
 /**
  * The kind of an action frame, the low four bits of its second byte, in Trystero's action wire,
- * version 2.
+ * version 3 (0.27.0's `action-wire.ts`).
  *
  * A payload that fits one frame travels inline; a larger one is offered, accepted by the receiver,
  * then sent in chunks. Integers and float64 values are big-endian, as `DataView` writes them.
  *
  * | Frame              | Bytes                                                                    |
- * | inline (kind 0)    | 2, kind or format << 4, name (32 bytes, NUL padded), metadata length     |
+ * | inline (kind 0)    | 3, kind or format << 4, name (32 bytes, NUL padded), metadata length     |
  * |                    | (uint16), metadata, payload                                              |
- * | offer (kind 1)     | the inline header, transfer id (uint32), payload size (float64),         |
- * |                    | metadata                                                                 |
- * | chunk (kind 2)     | 2, 2, transfer id (uint32), offset (float64), bytes                      |
- * | accepted (kind 3)  | 2, 3, transfer id (uint32)                                               |
- * | rejected (kind 4)  | 2, 4, transfer id (uint32), reason (UTF-8, at most 200 bytes)            |
- * | cancelled (kind 5) | 2, 5, transfer id (uint32)                                               |
+ * | offer (kind 1)     | the inline header, with @ref wide_bulk_flag in the second byte when its  |
+ * |                    | chunks are wide; transfer id (uint32), payload size (float64), metadata  |
+ * | chunk (kind 2)     | 3, 2, transfer id (uint32), offset (float64), bytes                      |
+ * | accepted (kind 3)  | 3, 3, transfer id (uint32)                                               |
+ * | rejected (kind 4)  | 3, 4, transfer id (uint32), reason (UTF-8, at most 200 bytes)            |
+ * | cancelled (kind 5) | 3, 5, transfer id (uint32)                                               |
+ *
+ * Every frame but a chunk is at most @ref max_action_frame_bytes; a chunk of a wide transfer is at
+ * most @ref max_bulk_frame_bytes, one of any other at most @ref max_action_frame_bytes.
  *
  * @see "The protocol", in the guide.
  */
@@ -77,8 +82,41 @@ enum class frame_kind : std::uint8_t {
     cancelled = 5,
 };
 
-/** The version of the action wire, every frame's first byte, Trystero's `version`. */
-inline constexpr std::uint8_t action_wire_version = 2;
+/** The version of the action wire, every frame's first byte, Trystero's `actionWireVersion`. */
+inline constexpr std::uint8_t action_wire_version = 3;
+/**
+ * The flag of an offer whose chunks are wide, up to @ref max_bulk_frame_bytes each, in its second
+ * byte above the format, Trystero's `wideBulkFlag`.
+ *
+ * Trystero sets it when the connection's SCTP
+ * takes messages of @ref max_bulk_frame_bytes; no other frame may carry it.
+ */
+inline constexpr std::uint8_t wide_bulk_flag = 64;
+/** The chunks a transfer's offer announces: @ref chunk_size or, under @ref wide_bulk_flag,
+ * @ref wide_chunk_size bytes each but the last. */
+enum class chunk_width : std::uint8_t {
+    /** Chunks of @ref chunk_size, as every transport takes. */
+    narrow,
+    /** Chunks of @ref wide_chunk_size, for a connection whose SCTP takes 64 KiB messages. */
+    wide,
+};
+/** The largest action frame, Trystero's `maxActionFrameBytes`: 16 KiB. */
+inline constexpr std::size_t max_action_frame_bytes = std::size_t{16} * 1024;
+/** The largest chunk frame of a wide transfer, Trystero's `maxBulkFrameBytes`: 64 KiB. */
+inline constexpr std::size_t max_bulk_frame_bytes = std::size_t{64} * 1024;
+/** The longest header an overlay puts around an action frame, Trystero's
+ * `maxOverlayHeaderBytes`. */
+inline constexpr std::size_t max_overlay_header_bytes = 1024;
+/** The longest message a peer's channel takes before its room binds it, an action frame and its
+ * overlay's header, Trystero's `maxRoomFrameBytes`: 17 KiB. */
+inline constexpr std::size_t max_room_frame_bytes =
+    max_action_frame_bytes + max_overlay_header_bytes;
+/** The most messages a peer's channel keeps before its room binds it, Trystero's
+ * `maxQueuedDataFrames`. */
+inline constexpr std::size_t max_queued_data_frames = 64;
+/** How long after its first kept message a peer's channel waits for its room, Trystero's
+ * `pendingDataTimeoutMs`. */
+inline constexpr std::chrono::milliseconds pending_data_timeout{10'000};
 /** The size of an inline frame's header, Trystero's `inlineHeaderSize`. */
 inline constexpr std::size_t inline_header_size = 36;
 /** The size of an offer's header, Trystero's `offerHeaderSize`. */
@@ -87,14 +125,34 @@ inline constexpr std::size_t offer_header_size = 48;
 inline constexpr std::size_t control_header_size = 6;
 /** The size of a chunk's header, Trystero's `chunkHeaderSize`. */
 inline constexpr std::size_t chunk_header_size = 14;
-/** The most payload bytes one chunk carries, Trystero's `chunkSize`. */
+/** The payload bytes each chunk but the last carries, Trystero's `minChunkSize`. */
 inline constexpr std::size_t chunk_size = max_action_frame_bytes - chunk_header_size;
+/** The payload bytes each chunk but the last of a wide transfer carries, `maxChunkSize`. */
+inline constexpr std::size_t wide_chunk_size = max_bulk_frame_bytes - chunk_header_size;
 /** The longest action name, in UTF-8 bytes. */
 inline constexpr std::size_t max_action_name_bytes = 32;
 /** The longest reason a rejected frame carries, in UTF-8 bytes. */
 inline constexpr std::size_t max_reject_reason_bytes = 200;
 /** The largest size an offer may announce, JavaScript's `Number.MAX_SAFE_INTEGER`, 2^53 - 1. */
 inline constexpr std::uint64_t max_offer_size = 9007199254740991;
+/** The most transfers a receiver keeps pending across its peers, `maxPendingTransfers`. */
+inline constexpr std::size_t max_pending_transfers = 1024;
+/** The most transfers a receiver keeps pending of one peer, Trystero's `maxPendingPerPeer`. */
+inline constexpr std::size_t max_pending_transfers_per_peer = 64;
+/** The most receive decisions a receiver awaits across its peers, Trystero's `maxDecisions`. */
+inline constexpr std::size_t max_receive_decisions = 128;
+/** The most receive decisions a receiver awaits of one peer, `maxDecisionsPerPeer`. */
+inline constexpr std::size_t max_receive_decisions_per_peer = 8;
+/** The most messages of one action and peer kept until the action can take them,
+ * `maxPreListenerMessages`; a newer one drops the oldest. */
+inline constexpr std::size_t max_pre_listener_messages = 32;
+/**
+ * The most bytes a channel may buffer for a control frame to be sent on it,
+ * `maxControlBufferedBytes`: 1 MiB.
+ *
+ * Above it the peer is dropped.
+ */
+inline constexpr std::size_t max_control_buffered_bytes = std::size_t{1024} * 1024;
 
 namespace detail {
 
@@ -163,12 +221,14 @@ namespace detail {
 
 /** Appends the header an inline frame and an offer share: version, kind and format, name. */
 inline void append_header(bytes& out, frame_kind kind, std::string_view name, payload_format format,
-                          std::string_view metadata, std::size_t header_size) {
+                          std::string_view metadata, std::size_t header_size,
+                          chunk_width width = chunk_width::narrow) {
     const auto at = out.size();
     out.resize(at + header_size, 0);
     out[at] = action_wire_version;
     out[at + 1] = static_cast<std::uint8_t>(static_cast<std::uint8_t>(kind) |
-                                            (static_cast<std::uint32_t>(format) << 4U));
+                                            (static_cast<std::uint32_t>(format) << 4U) |
+                                            (width == chunk_width::wide ? wide_bulk_flag : 0U));
     std::memcpy(out.data() + at + 2, name.data(), name.size());
     set_u16(out, at + 34, static_cast<std::uint16_t>(metadata.size()));
 }
@@ -212,13 +272,15 @@ inline void append_inline(bytes& out, std::string_view name, payload_format form
  * @param metadata JSON text, or empty.
  * @param id The transfer's id.
  * @param size The payload's size in bytes.
+ * @param width The chunks' width: @ref wide_chunk_size each but the last when wide.
  * @pre `valid_action_name(name)`, and the metadata fits one frame after the offer's header.
  */
 inline void append_offer(bytes& out, std::string_view name, payload_format format,
-                         std::string_view metadata, std::uint32_t id, std::size_t size) {
+                         std::string_view metadata, std::uint32_t id, std::size_t size,
+                         chunk_width width = chunk_width::narrow) {
     out.reserve(out.size() + offer_header_size + metadata.size());
     const auto at = out.size();
-    detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size);
+    detail::append_header(out, frame_kind::offer, name, format, metadata, offer_header_size, width);
     detail::set_u32(out, at + 36, id);
     detail::set_f64(out, at + 40, static_cast<double>(size));
     out.insert(out.end(), metadata.begin(), metadata.end());
@@ -230,7 +292,8 @@ inline void append_offer(bytes& out, std::string_view name, payload_format forma
  * @param out The buffer to append to.
  * @param id The transfer's id.
  * @param offset Where `data` starts in the payload.
- * @param data At most @ref chunk_size bytes of the payload.
+ * @param data At most @ref chunk_size bytes of the payload, or @ref wide_chunk_size in a wide
+ * transfer.
  */
 inline void append_chunk(bytes& out, std::uint32_t id, std::size_t offset,
                          std::span<const std::uint8_t> data) {
@@ -303,14 +366,16 @@ inline bytes encode_inline(std::string_view name, payload_format format, std::st
  * @param metadata JSON text, or empty.
  * @param id The transfer's id.
  * @param size The payload's size in bytes.
+ * @param width The chunks' width.
  * @param memory The resource the frame is allocated in.
  * @return The frame, as @ref append_offer writes it.
  */
 inline bytes encode_offer(std::string_view name, payload_format format, std::string_view metadata,
                           std::uint32_t id, std::size_t size,
+                          chunk_width width = chunk_width::narrow,
                           std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
     bytes out(memory);
-    append_offer(out, name, format, metadata, id, size);
+    append_offer(out, name, format, metadata, id, size, width);
     return out;
 }
 
@@ -319,7 +384,8 @@ inline bytes encode_offer(std::string_view name, payload_format format, std::str
  *
  * @param id The transfer's id.
  * @param offset Where `data` starts in the payload.
- * @param data At most @ref chunk_size bytes of the payload.
+ * @param data At most @ref chunk_size bytes of the payload, or @ref wide_chunk_size in a wide
+ * transfer.
  * @param memory The resource the frame is allocated in.
  * @return The frame, as @ref append_chunk writes it.
  */
@@ -389,6 +455,8 @@ struct proposal {
     std::string_view metadata;
     /** The transfer's id; offers only. */
     std::uint32_t id = 0;
+    /** Whether the transfer's chunks are wide, the offer's @ref wide_bulk_flag; offers only. */
+    bool wide = false;
     /**
      * The payload's size; for an inline frame, the bytes that follow the metadata.
      *
@@ -425,7 +493,7 @@ using decoded_action = std::variant<proposal, chunk, control_message>;
 
 /** Why a frame cannot be decoded; Trystero drops the peer for any of these. */
 enum class wire_error {
-    /** Too short, too long, or a kind or a format that does not exist. */
+    /** Too short, too long, a kind or a format that does not exist, or a flag where none may be. */
     invalid_frame,
     /** A version other than @ref action_wire_version. */
     incompatible_version,
@@ -484,7 +552,7 @@ inline decode_result decode_control(std::span<const std::uint8_t> bytes_in, fram
 
 /** Decodes a proposal, a payload inline or the offer of a transfer, of the kind given. */
 inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, frame_kind kind,
-                                     payload_format format) {
+                                     payload_format format, bool wide) {
     decode_result result;
     const bool is_inline = kind == frame_kind::inline_payload;
     const std::size_t header_size = is_inline ? inline_header_size : offer_header_size;
@@ -516,6 +584,7 @@ inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, fra
         }
         p.id = get_u32(bytes_in, 36);
         p.size = static_cast<std::uint64_t>(size);
+        p.wide = wide;
     }
     p.metadata = std::string_view(reinterpret_cast<const char*>(bytes_in.data() + header_size),
                                   metadata_size);
@@ -533,25 +602,30 @@ inline decode_result decode_proposal(std::span<const std::uint8_t> bytes_in, fra
  */
 inline decode_result decode_action(std::span<const std::uint8_t> bytes_in) {
     decode_result result;
-    if (bytes_in.size() < 2 || bytes_in.size() > max_action_frame_bytes) {
+    if (bytes_in.size() < 2 || bytes_in.size() > max_bulk_frame_bytes) {
         return result;
     }
     if (bytes_in[0] != action_wire_version) {
         result.error = wire_error::incompatible_version;
         return result;
     }
-    const auto kind = static_cast<std::uint8_t>(bytes_in[1] & 15U);
-    const auto format = static_cast<std::uint8_t>(bytes_in[1] >> 4U);
+    const std::uint32_t kind_byte = bytes_in[1];
+    const auto kind = static_cast<std::uint8_t>(kind_byte & 15U);
+    const auto format = static_cast<std::uint8_t>((kind_byte >> 4U) & 3U);
+    const auto flags = static_cast<std::uint8_t>(kind_byte >> 6U);
+    constexpr auto offer = static_cast<std::uint8_t>(frame_kind::offer);
     if (kind > static_cast<std::uint8_t>(frame_kind::cancelled) ||
         format > static_cast<std::uint8_t>(payload_format::binary) ||
-        (kind > static_cast<std::uint8_t>(frame_kind::offer) && format != 0)) {
+        flags > (kind == offer ? 1U : 0U) || (kind > offer && format != 0) ||
+        (kind != static_cast<std::uint8_t>(frame_kind::chunk) &&
+         bytes_in.size() > max_action_frame_bytes)) {
         return result;
     }
     if (kind >= static_cast<std::uint8_t>(frame_kind::chunk)) {
         return detail::decode_control(bytes_in, static_cast<frame_kind>(kind));
     }
     return detail::decode_proposal(bytes_in, static_cast<frame_kind>(kind),
-                                   static_cast<payload_format>(format));
+                                   static_cast<payload_format>(format), flags == 1);
 }
 
 }  // namespace webcpp::trystero::protocol

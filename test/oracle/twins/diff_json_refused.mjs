@@ -28,7 +28,7 @@ const payloads = [
 const other = openPage(async ({joinRoom, RTCPeerConnection, data: {config, texts}, next}) => {
     const room = joinRoom({...config, rtcPolyfill: RTCPeerConnection}, 'lobby')
     const payload = room.makeAction('payload')
-    await new Promise(joined => (room.onPeerJoin = joined))
+    await new Promise(joined => room.onPeerJoin(joined))
     for (const text of texts) await payload.send(JSON.parse(text))
     await next()
     await room.leave()
@@ -40,10 +40,10 @@ const room = joinRoom({...config, rtcPolyfill: RTCPeerConnection}, 'lobby')
 const payload = room.makeAction('payload')
 const delivered = []
 await new Promise(last => {
-    payload.onMessage = ([label]) => {
+    payload.onMessage(([label]) => {
         delivered.push(label)
         if (label === payloads.at(-1)[0]) last()
-    }
+    })
 })
 for (const [label] of payloads) {
     console.log(`the payload ${label}: ${delivered.includes(label) ? 'delivered' : 'not delivered'}`)

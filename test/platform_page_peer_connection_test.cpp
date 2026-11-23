@@ -9,7 +9,8 @@
 // throws, as for a server it cannot use or with as many connections as the browser allows), the
 // backend makes none and says so with a null connection, which the room reports, rather than
 // letting the exception through; a connection whose `createDataChannel` throws, as a closed one's
-// does, opens no channel.
+// does, opens no channel. A connection's largest message is its SCTP transport's, unknown while it
+// has none (max_message_size_is_the_transports).
 //
 // The page holds at most `runtime_options::max_peer_connections` of them, 256 by default, the cap
 // of the backend's webcpp::webrtc runtime, counted by webcpp::webrtc's census of the page from
@@ -40,8 +41,10 @@
 
 #include <chrono>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <vector>
 
 namespace asio = webcpp::asio;
@@ -95,6 +98,33 @@ void look_for_release(state& s) {
     s.io.stop();
 }
 
+/** The `sctp` of the page's last connection, the stand-in's: `null`, or a transport whose
+ * `maxMessageSize` is `size`. */
+void set_sctp(std::optional<double> size) {
+    if (size) {
+        EM_ASM({ globalThis.lastConnection.sctp = {maxMessageSize : $0}; }, *size);
+    } else {
+        EM_ASM({ globalThis.lastConnection.sctp = null; });
+    }
+}
+
+// The connection's largest message is the page's own `sctp.maxMessageSize`, as webcpp::webrtc's
+// max_message_size() reads it, within webcpp::webrtc's 256 KiB: nothing while the connection has
+// no SCTP transport, then what the transport says, at most 256 KiB for a larger size or none.
+void max_message_size_is_the_transports(const trystero::backend::peer_connection& pc) {
+    BOOST_TEST(!pc.max_message_size().has_value());
+    set_sctp(16384);
+    BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(16384));
+    set_sctp(65536);
+    BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(65536));
+    set_sctp(1073741823);
+    BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(262144));
+    set_sctp(std::numeric_limits<double>::infinity());
+    BOOST_TEST(pc.max_message_size() == std::optional<std::size_t>(262144));
+    set_sctp(std::nullopt);
+    BOOST_TEST(!pc.max_message_size().has_value());
+}
+
 }  // namespace
 
 int main() {
@@ -113,7 +143,8 @@ int main() {
     BOOST_TEST(s.backend.make_peer_connection({}, memory) == nullptr);
     BOOST_TEST_EQ(held(), 0);
 
-    // One that is made, whose createDataChannel throws, as a closed connection's does.
+    // One that is made, whose createDataChannel throws, as a closed connection's does, and whose
+    // SCTP transport is the test's to set.
     EM_ASM({
         globalThis.RTCPeerConnection = class {
             constructor() {
@@ -121,6 +152,8 @@ int main() {
                 this.iceConnectionState = 'new';
                 this.localDescription = null;
                 this.remoteDescription = null;
+                this.sctp = null;
+                globalThis.lastConnection = this;
             }
             createDataChannel() { throw new DOMException('closed', 'InvalidStateError'); }
             close() {}
@@ -130,6 +163,7 @@ int main() {
         const auto pc = s.backend.make_peer_connection({}, memory);
         if (BOOST_TEST(pc != nullptr)) {
             BOOST_TEST(pc->create_data_channel("data") == nullptr);
+            max_message_size_is_the_transports(*pc);
             pc->close();
         }
     }

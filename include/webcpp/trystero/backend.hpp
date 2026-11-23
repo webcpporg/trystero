@@ -13,11 +13,12 @@
 
 #include <boost/system/error_code.hpp>
 
-#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,22 +35,23 @@
  * them there first.
  *
  * Every handler runs after the call that caused it has returned, never inside it: a completion
- * (`done`) of a `peer_connection` or a `sealer`, and a `websocket`'s `close` when no socket can be
- * made, are posted even when their result is known at once. The room calls these operations from
- * inside handlers whose state a completion run there would change under them.
+ * (`done`) of a `peer_connection` or of `factory::derive_password_master`, and a `websocket`'s
+ * `close` when no socket can be made, are posted even when their result is known at once. The
+ * room calls these operations from inside handlers whose state a completion run there would
+ * change under them.
  *
  * Text crosses this interface as `std::string_view`, valid for the duration of the call or of the
  * handler: a backend reads what it is given before returning, and a handler copies what it keeps.
  * The one exception is a data channel message, handed over by value: the receiver keeps the frame,
  * and taking ownership of it is what spares a copy.
  *
- * Tip: every method that makes an object takes a memory resource last, the app's for a peer
- * connection and the room's for the rest, and the backend allocates the object, its handlers and
- * what it hands to the room (a frame, a text) through it, on the room's executor only.
+ * Tip: every method that makes an object takes a memory resource last, the room's for every object
+ * it makes, and the backend allocates the object, its handlers and what it hands to the room (a
+ * frame, a text) through it, on the room's executor only.
  */
 namespace webcpp::trystero::backend {
 
-/** A data channel frame in a memory resource: a received one in the app's, as its connection. */
+/** A data channel frame in a memory resource: a received one in the room's, as its connection. */
 using bytes = std::pmr::vector<std::uint8_t>;
 
 /** The error code every completion of a backend reports, empty on success. */
@@ -118,11 +120,17 @@ public:
     virtual ~websocket() = default;
 
     /**
-     * Sends a text message; one sent before the connection opens or after it closes is dropped.
+     * Sends a text message; one sent before the connection opens, while it closes or after it
+     * closed is dropped, and so is one the connection cannot queue.
      *
      * @param text The message, read during the call.
+     * @return Whether the message was taken to be written; false when it was dropped. This is the
+     * port's own notion: 0.27.0's `client.send` is a silent no-op on a socket that is not open, so
+     * there a dropped write is no failure, and only a signing or JSON failure fails an
+     * announcement. A room counts an announcement whose text the connection could not take, which
+     * on a socket the room sees open is a queue overflow, as a failed one.
      */
-    virtual void send(std::string_view text) = 0;
+    virtual bool send(std::string_view text) = 0;
 
     /** Closes the connection, which the handler `close` reports. */
     virtual void close() = 0;
@@ -139,7 +147,7 @@ public:
     struct handlers {
         /** The channel opened. */
         handler<void()> open;
-        /** A binary message arrived, handed over in the app's resource. */
+        /** A binary message arrived, handed over in the connection's resource, the room's. */
         handler<void(bytes)> message;
         /** The channel closed; called once. */
         handler<void()> close;
@@ -171,7 +179,10 @@ public:
     [[nodiscard]] virtual bool is_open() const = 0;
 
     /**
-     * Sends a binary message; one sent while the channel is not open is dropped.
+     * Sends a binary message; one sent while the channel is not open is dropped, and one the
+     * platform refuses while it is open (larger than the connection's `max_message_size`, or past
+     * what the channel buffers) closes the channel, which the handler `close` reports, so that a
+     * frame is never lost while the channel goes on.
      *
      * @param frame The message, read during the call.
      */
@@ -277,41 +288,17 @@ public:
      */
     [[nodiscard]] virtual bool has_remote_description() const = 0;
 
+    /**
+     * The largest message the connection's SCTP transport takes, its `sctp.maxMessageSize`, which
+     * decides whether a transfer's chunks go wide (`detail::channel_link::max_bulk_frame_bytes`).
+     *
+     * @return The size in bytes once the peer's limit is known (natively once a remote description
+     * is applied, in a page once the connection has an SCTP transport); nothing before.
+     */
+    [[nodiscard]] virtual std::optional<std::size_t> max_message_size() const = 0;
+
     /** Closes the connection and its channels. */
     virtual void close() = 0;
-};
-
-/**
- * AES-GCM under one room key, in Trystero's sealed text form (protocol/signal.hpp), what Trystero's
- * `encrypt` and `decrypt` do with `crypto.subtle`.
- *
- * @see "The protocol", in the guide.
- */
-class sealer {
-public:
-    /** Destroys the sealer. */
-    virtual ~sealer() = default;
-
-    /**
-     * Seals a text under a fresh random IV.
-     *
-     * @param plaintext The text, read during the call.
-     * @param done Called with the sealed text, a view valid for the call, or with
-     * `error::backend_failure` and an empty view.
-     */
-    virtual void seal(std::string_view plaintext,
-                      handler<void(error_code, std::string_view sealed)> done) = 0;
-
-    /**
-     * Opens a sealed text.
-     *
-     * @param sealed The sealed text, read during the call.
-     * @param done Called with the plaintext, a view valid for the call, or with an error and an
-     * empty view: `trystero::error::wrong_password` when the text was sealed under another key or
-     * is not a sealed text.
-     */
-    virtual void open(std::string_view sealed,
-                      handler<void(error_code, std::string_view plaintext)> done) = 0;
 };
 
 /**
@@ -319,8 +306,8 @@ public:
  * browser, one per application natively, one per test.
  *
  * Each object it makes is allocated, with its handlers and what it hands to the room, in the memory
- * resource it is given, the app's for a peer connection and the room's for the rest: that resource
- * must outlive the object and every operation the object leaves pending.
+ * resource it is given, the room's for every object it makes: that resource must outlive the object
+ * and every operation the object leaves pending.
  *
  * @see "Allocation", in the guide.
  */
@@ -345,8 +332,8 @@ public:
      * Makes a peer connection that gathers its candidates through `servers`.
      *
      * @param servers The STUN and TURN servers, read during the call.
-     * @param memory The app's resource, which the connection, its channels, its handlers and its
-     * texts are allocated in, as the app owns the connection once a room adopted it.
+     * @param memory The room's resource, which the connection, its channels, its handlers and its
+     * texts are allocated in, as the room owns the connection: it ends with the room or the peer.
      * @return The connection, or null when the platform refuses to make one: the room then
      * reports the negotiation with that peer as failed, through `room::on_error`.
      */
@@ -362,15 +349,20 @@ public:
     virtual std::shared_ptr<timer> make_timer(std::pmr::memory_resource* memory) = 0;
 
     /**
-     * Makes a sealer under a room's key.
+     * Derives a room's PBKDF2 master from its password: PBKDF2-HMAC-SHA-256 of `password` with
+     * `salt` and `protocol::pbkdf2_iterations` iterations, 32 bytes, what 0.27.0's
+     * `deriveBits` gives, off the room's thread, since 600,000 iterations would stall it.
      *
-     * @param key The raw AES-256 key, as `protocol::seal_key` derives it.
-     * @param memory The room's resource, which the sealer, its texts and its completions are
-     * allocated in.
-     * @return The sealer.
+     * @param password The password, in UTF-8; the caller's until `done` runs.
+     * @param salt The salt, `protocol::pbkdf2_salt`; the caller's until `done` runs.
+     * @param out Where the master is written; the caller's until `done` runs, zeroed on error.
+     * @param done Called on the room's executor once the master is written, or with
+     * `error::backend_failure`; what the derivation allocates goes through its allocator.
      */
-    virtual std::shared_ptr<sealer> make_sealer(std::array<std::uint8_t, 32> key,
-                                                std::pmr::memory_resource* memory) = 0;
+    virtual void derive_password_master(std::span<const std::uint8_t> password,
+                                        std::span<const std::uint8_t, 32> salt,
+                                        std::span<std::uint8_t, 32> out,
+                                        handler<void(boost::system::error_code)> done) = 0;
 
     /**
      * Fills `out` with bytes from a cryptographically secure source: they become secret keys and
@@ -396,6 +388,26 @@ public:
      * @return The current time.
      */
     virtual std::chrono::steady_clock::time_point steady_now() = 0;  // lint-world: a type only
+
+    /**
+     * Watches the page's connectivity, its `online` and `offline` events, which an app's relays
+     * follow while they are `relay_connectivity::automatic`, as 0.27.0's relay manager listens to
+     * them.
+     *
+     * This default watches nothing, as natively, where no such event exists: the app's relays then
+     * stay online.
+     *
+     * @param changed Called on the app's executor after each event, never inside it: `true` after
+     * an `online` event, `false` after an `offline` one; never once the watch is destroyed.
+     * @param memory The app's resource, which the watch and `changed` are allocated in.
+     * @return The watch, whose destruction ends it; null when the platform has no such events.
+     */
+    virtual std::shared_ptr<void> watch_connectivity(handler<void(bool online)> changed,
+                                                     std::pmr::memory_resource* memory) {
+        (void)changed;
+        (void)memory;
+        return nullptr;
+    }
 };
 
 }  // namespace webcpp::trystero::backend

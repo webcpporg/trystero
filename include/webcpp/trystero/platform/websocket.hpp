@@ -390,24 +390,25 @@ public:
     /**
      * Queues a text to write, when open and not closing; one write is in flight at a time. A text
      * that would take the queue beyond `websocket_limits::max_queued_bytes` drops the connection.
+     * Whether the text was queued.
      */
-    void send(std::string_view text) {
+    bool send(std::string_view text) {
         if (!open_ || closing_) {
-            return;
+            return false;
         }
         if (queued_bytes_ + text.size() > limits_.max_queued_bytes) {
             // The relay stopped reading: no close frame could reach it, so the socket is closed,
             // the read fails, and end() reports the close.
             closing_ = true;
             webcpp::beast::get_lowest_layer(ws_).close();
-            return;
+            return false;
         }
         queued_bytes_ += text.size();
         queue_.emplace_back(text);  // a write outlives the call, so the text is copied once, here
-        if (std::exchange(writing_, true)) {
-            return;
+        if (!std::exchange(writing_, true)) {
+            write_next();
         }
-        write_next();
+        return true;
     }
 
     /** Closes with a WebSocket close frame, or drops a connection still being made. */
@@ -742,8 +743,8 @@ public:
     /** Abandons the session. */
     ~websocket_handle() override { session_->abandon(); }
 
-    /** Sends a text through the session. */
-    void send(std::string_view text) override { session_->send(text); }
+    /** Sends a text through the session; whether it was queued. */
+    bool send(std::string_view text) override { return session_->send(text); }
 
     /** Closes the session. */
     void close() override { session_->close(); }

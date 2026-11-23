@@ -13,11 +13,21 @@
 :attribute-missing: warn
 
 trystero is a header-only port of https://github.com/dmotz/trystero[Trystero]
-0.26.0's serverless WebRTC rooms for {cpp}20, one of the libraries of
+0.27.0's serverless WebRTC rooms for {cpp}20, one of the libraries of
 https://github.com/webcpporg/webcpp[webcpp]. Peers find each other over
 public Nostr relays and exchange messages directly, over WebRTC data
-channels. The wire is Trystero's: a room joined from {cpp} and the same room
-joined from Trystero's JavaScript are one room.
+channels. The wire is Trystero's: a room joined from {cpp} and the same
+room joined from Trystero's JavaScript are one room.
+
+trystero speaks Trystero 0.27.0 (upstream commit `8d3f57e`): its topics,
+room keys, sealing, ids, relays and action wire, each value proven against
+vectors recorded from 0.27.0's own code (<<trystero-protocol>>); its
+identities and its handshake, signed with ECDSA P-256; and its room API:
+listeners that return a subscription, users, `max_users`, room errors and
+the relays' connectivity. Its rooms meet Trystero 0.27.0's, which the
+interop lane proves in headless Chrome (<<trystero-testing-lanes>>).
+Programs of trystero's earlier versions, the port of Trystero 0.26.0, move
+as <<trystero-usage-migration>> says.
 
 This page teaches trystero section by section: what a room is, how a program
 joins one in the browser and natively, how its actions carry messages, where
@@ -55,7 +65,7 @@ include::testing.adoc[]
 Every name trystero declares, in the namespace `webcpp::trystero` and those
 nested in it, from the Doc Comments of its headers: each class, function,
 type and enumerator with its declaration, what it does, what it asks of its
-caller and how it fails, and the part of Trystero 0.26.0 it ports. The other
+caller and how it fails, and the part of Trystero 0.27.0 it ports. The other
 sections teach the library; this one is where a name is looked up.
 
 include::{reference}[leveloffset=+1]

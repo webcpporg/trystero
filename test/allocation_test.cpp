@@ -8,13 +8,17 @@
 // they make goes through the resources of their configurations: the counting
 // resources see them, and the global operator new, replaced here, sees none,
 // nor do the C library's allocation functions where the platform lets a
-// program count them (doc: #trystero-allocation).
+// program count them (doc: #trystero-allocation), but natively OpenSSL's:
+// webcpp::crypto's AES-256-GCM is OpenSSL's there, whose cipher context each
+// seal and open of a signal allocates, outside the rooms' resources, counted
+// apart.
 
 #include <webcpp/trystero.hpp>
 
 #include "cases.hpp"
 #include "require.hpp"
 #include "support/memory_backend.hpp"
+#include "support/rooms.hpp"
 
 #include <webcpp/asio/bind_allocator.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -22,6 +26,7 @@
 #include <webcpp/asio/steady_timer.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -49,6 +54,9 @@
 #include <malloc.h>
 #else
 #include <pthread.h>
+#endif
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+#include <openssl/crypto.h>
 #endif
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 #include <emscripten/em_asm.h>
@@ -93,6 +101,15 @@ bool live_overflow = false;
 // counts nothing: that allocation is operator new's, counted once.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 bool inside_operator_new = false;
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+// Set while OpenSSL takes its memory from the C library (openssl_malloc), which then counts
+// nothing: natively each seal and open of a signal allocates OpenSSL's cipher context, outside the
+// rooms' resources, which openssl_allocations counts apart.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+bool inside_openssl = false;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t openssl_allocations = 0;
+#endif
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
 // Set, from JavaScript, while Asyncify allocates the unwind data of a call that suspends, on
 // emscripten under Asyncify: webcpp::asio's run family suspends there, and that allocation is the
@@ -175,6 +192,11 @@ void __libc_free(void* pointer);
 namespace {
 
 void* counted(void* pointer) {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    if (inside_openssl) {
+        return pointer;
+    }
+#endif
     if (on_counted_thread() && counting && !inside_operator_new) {
 #ifdef WEBCPP_TARGET_EMSCRIPTEN
         ++(inside_runtime != 0 ? runtime_allocations : c_allocations);
@@ -310,7 +332,7 @@ constexpr std::uint32_t malloc_log_allocate = 2;
 void count_c_allocation(std::uint32_t type, std::uintptr_t /*zone*/, std::uintptr_t /*size*/,
                         std::uintptr_t /*other*/, std::uintptr_t /*result*/,
                         std::uint32_t /*frames*/) {
-    if (on_counted_thread() && counting && !inside_operator_new &&
+    if (on_counted_thread() && counting && !inside_operator_new && !inside_openssl &&
         (type & malloc_log_allocate) != 0) {
         ++c_allocations;
     }
@@ -496,10 +518,15 @@ private:
 /** How long each run of the io_context the test drives lasts. */
 constexpr std::chrono::milliseconds slice = 10ms;
 
-/** Runs io in slices of 10 ms until done holds, for 5 s at most. */
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
+/** Runs io in slices of 10 ms until done holds, for `hang_guard` of the wall clock at most. */
 template <class Predicate>
 bool run_until(webcpp::asio::io_context& io, Predicate done) {
-    for (auto ran = 0ms; ran < 5s && !done(); ran += slice) {
+    const auto end = std::chrono::steady_clock::now() + hang_guard;
+    while (!done() && std::chrono::steady_clock::now() < end) {
         io.restart();
         io.run_for(slice);  // lint-run: the memory relays post to it
     }
@@ -601,6 +628,22 @@ void free_planted() {
     planted = nullptr;
 }
 
+/** The endpoint scalars of two apps, `low` of the lower peer id: the tests' apps a and z, whose
+ * order tells which offers. */
+struct endpoints {
+    std::array<std::uint8_t, 32> low;
+    std::array<std::uint8_t, 32> high;
+};
+
+/** Two endpoint scalars in the order of their peer ids, made before a counting window opens. */
+endpoints ordered_endpoints() {
+    const auto labels = trystero::test::ordered_labels(2);
+    return {
+        .low = trystero::test::endpoint_scalar(labels[0]),
+        .high = trystero::test::endpoint_scalar(labels[1]),
+    };
+}
+
 /**
  * Two rooms exchange two payloads that make builds; the second is counted, and the global counts
  * seen in its window returned. With `planting`, the receiving handler plants allocations outside
@@ -617,20 +660,21 @@ seen exchange_through_the_rooms_resources(Make make, bool planting = false) {
     // derives Trystero's public relays, which it refuses.
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
-    trystero::app a_app(io.get_executor(), network,
-                        {
-                            .app_id = "allocation",
-                            .self_id = "AAAAAAAAAAAAAAAAAAAA",
-                            .relay_urls = {std::pmr::string(relay)},
-                            .memory = &a_memory,
-                        });
-    trystero::app z_app(io.get_executor(), network,
-                        {
-                            .app_id = "allocation",
-                            .self_id = "zzzzzzzzzzzzzzzzzzzz",
-                            .relay_urls = {std::pmr::string(relay)},
-                            .memory = &z_memory,
-                        });
+    const auto ends = ordered_endpoints();
+    auto a_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                    {
+                                                        .app_id = "allocation",
+                                                        .relay_urls = {std::pmr::string(relay)},
+                                                        .memory = &a_memory,
+                                                    },
+                                                    ends.low);
+    auto z_app = trystero::detail::app_access::make(io.get_executor(), network,
+                                                    {
+                                                        .app_id = "allocation",
+                                                        .relay_urls = {std::pmr::string(relay)},
+                                                        .memory = &z_memory,
+                                                    },
+                                                    ends.high);
     auto a = join(a_app, "room");
     auto z = join(z_app, "room");
     std::size_t received = 0;
@@ -734,14 +778,15 @@ void reading_a_text_allocates_through_its_resource() {
     secret.fill(7);
     const auto key = tp::nostr::signer::from_secret(secret, &memory);
     webcpp::test::require(BOOST_TEST(key.has_value()));
-    const std::array<std::uint8_t, 32> aux{};
     const std::pmr::string sealed(1100, 'A', &memory);
     const auto signal = tp::write_signal(
         {.peer_id = "AAAAAAAAAAAAAAAAAAAA", .offer_id = "BBBBBBBBBBBBBBBBBBBB", .offer = sealed},
         {}, &memory);
-    const auto message = tp::nostr::event_message(
-        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal, aux,
+    const auto signed_message = tp::nostr::event_message(
+        *key, std::chrono::sys_seconds(std::chrono::seconds(1'759'700'000)), "topic", signal,
         &memory);
+    webcpp::test::require(BOOST_TEST(signed_message.has_value()));
+    const auto& message = *signed_message;
     // A relay's text of that event: `["EVENT","<subscription>",<event>]`.
     const std::string_view written = message;
     std::pmr::string relayed(R"(["EVENT","CCCCCCCCCCCCCCCCCCCC",)", &memory);
@@ -749,9 +794,6 @@ void reading_a_text_allocates_through_its_resource() {
     relayed += ']';
     const std::pmr::string ok(
         R"(["OK","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",true,""])",
-        &memory);
-    const std::pmr::string handshake(
-        R"({"__trystero_pw":"response","h":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})",
         &memory);
     const std::pmr::string candidate(
         R"({"candidate":"candidate:1 1 UDP 2122317823 192.168.1.10 54321 typ host","sdpMid":"0","sdpMLineIndex":0,"usernameFragment":"abcd"})",
@@ -764,12 +806,11 @@ void reading_a_text_allocates_through_its_resource() {
     };
 
     constexpr std::size_t relay_bound = tp::nostr::max_parsed_relay_text_bytes;
-    const std::array<text, 5> texts{
+    const std::array<text, 4> texts{
         text{.what = "relay event", .json = relayed, .bound = relay_bound},
         text{.what = "relay OK", .json = ok, .bound = relay_bound},
         text{.what = "signal", .json = signal, .bound = tp::max_parsed_signal_bytes},
-        text{.what = "handshake", .json = handshake, .bound = tp::max_handshake_bytes},
-        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_bytes},
+        text{.what = "candidate", .json = candidate, .bound = tp::max_sealed_candidate_chars},
     };
     for (const text& t : texts) {
         const std::size_t outstanding = memory.outstanding;
@@ -797,11 +838,12 @@ void reading_a_text_allocates_through_its_resource() {
     BOOST_TEST_EQ(memory.foreign, 0U);
 }
 
-/** Runs io for about `duration`, whatever happens, in slices of 10 ms. */
-void run_for(webcpp::asio::io_context& io, std::chrono::milliseconds duration) {
-    for (auto ran = 0ms; ran + slice <= duration; ran += slice) {
+/** Runs the ready work of io until there is none: every frame of the memory relays is a posted
+ * handler, so what is left when this returns is only what waits on a timer. */
+void drain(webcpp::asio::io_context& io) {
+    io.restart();
+    while (io.poll() > 0) {
         io.restart();
-        io.run_for(slice);  // lint-run: the memory relays post to it
     }
 }
 
@@ -820,16 +862,15 @@ void warm(webcpp::asio::io_context& io) {
         timer->cancel();
     }
     webcpp::asio::post(io, [] {});
-    run_for(io, 20ms);
+    drain(io);
 }
 
 // tag::config[]
 /** An app's configuration, every part of it in `memory`, made before the window. */
-trystero::app_config app_config_in(counting_resource& memory, std::string_view self_id,
-                                   std::string_view relay, std::size_t& lines) {
+trystero::app_config app_config_in(counting_resource& memory, std::string_view relay,
+                                   std::size_t& lines) {
     return trystero::app_config{
         .app_id = std::pmr::string("allocation", &memory),
-        .self_id = std::pmr::string(self_id, &memory),
         .password = std::pmr::string("a password", &memory),
         .relay_urls =
             std::pmr::vector<std::pmr::string>({std::pmr::string(relay, &memory)}, &memory),
@@ -851,6 +892,60 @@ trystero::room_options options_in(counting_resource& memory) {
 
 // end::config[]
 
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+// What OpenSSL allocates for one seal and one open of a signal, measured in this process by
+// start_counting_openssl.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
+std::size_t openssl_allocations_per_seal_and_open = 0;
+
+/** Seals a signal and opens it, in `memory`, as a room does; true when both succeed. */
+bool seal_and_open(std::pmr::memory_resource* memory) {
+    const webcpp::crypto::secret<32> key;
+    const std::array<std::uint8_t, tp::gcm_iv_size> iv{};
+    const std::string_view aad = "offer|AAAAAAAAAAAAAAAAAAAA|ZZZZZZZZZZZZZZZZZZZZ";
+    const auto sealed = tp::seal(key, iv, "v=0", aad, memory);
+    return sealed && tp::open(key, *sealed, aad, memory);
+}
+#endif
+
+/**
+ * Starts OpenSSL's count over, for the case that follows, and natively measures what OpenSSL
+ * allocates for one seal and one open (after one of each, which warms it), so that the case's
+ * count is checked against this OpenSSL's own, whatever its cipher contexts allocate.
+ */
+void start_counting_openssl() {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    std::array<std::byte, 4096> buffer{};
+    std::pmr::monotonic_buffer_resource memory(buffer.data(), buffer.size(),
+                                               std::pmr::null_memory_resource());
+    BOOST_TEST(seal_and_open(&memory));
+    const auto globals = global_allocations;
+    const auto cs = c_allocations;
+    const bool was_counting = counting;
+    openssl_allocations = 0;
+    counting = true;
+    BOOST_TEST(seal_and_open(&memory));
+    counting = was_counting;
+    BOOST_TEST_EQ(global_allocations, globals);
+    BOOST_TEST_EQ(c_allocations, cs);
+    openssl_allocations_per_seal_and_open = openssl_allocations;
+    openssl_allocations = 0;
+#endif
+}
+
+/**
+ * Natively, that OpenSSL allocated since start_counting_openssl, counted apart: webcpp::crypto's
+ * AES-256-GCM is OpenSSL's there, whose cipher contexts the rooms' seals and opens make, outside
+ * their resources: what start_counting_openssl measured for a seal and an open, times `pairs`, how
+ * many signals the case seals, each opened once, and nothing else. On emscripten the cipher is
+ * BearSSL's, which allocates nothing, and the C library's count holds that.
+ */
+void expect_openssl_allocations([[maybe_unused]] std::size_t pairs) {
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    BOOST_TEST_EQ(openssl_allocations, pairs * openssl_allocations_per_seal_and_open);
+#endif
+}
+
 /**
  * Two apps, each with a log and a relay of its own, are made one after the other
  * and join a room with a password, whose two sides exchange a payload that travels
@@ -868,6 +963,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     constexpr std::string_view relay = "wss://relay.test";
     network.relay(relay);
     warm(io);
+    const auto ends = ordered_endpoints();
     std::size_t a_lines = 0;
     std::size_t z_lines = 0;
     std::size_t files = 0;
@@ -881,6 +977,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         return std::pmr::polymorphic_allocator<>(&memory);
     };
     // end::allocator[]
+    start_counting_openssl();
     counting = true;
     {
         // z is subscribed and announcing before a arrives, so that z, whose id is
@@ -889,15 +986,15 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
         // moved-from object behind: MSVC's debug standard library keeps, in a moved-from
         // std::pmr::string or vector, 16 bytes of its resource for the container's debug
         // proxy, which the test would count as the app's until the end of the function.
-        trystero::app z_app(io.get_executor(), network,
-                            app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", relay, z_lines));
+        auto z_app = trystero::detail::app_access::make(
+            io.get_executor(), network, app_config_in(z_memory, relay, z_lines), ends.high);
         auto z = join(z_app, "room", options_in(z_memory));
-        run_for(io, 100ms);
+        drain(io);
         {
-            trystero::app a_app(io.get_executor(), network,
-                                app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", relay, a_lines));
+            auto a_app = trystero::detail::app_access::make(
+                io.get_executor(), network, app_config_in(a_memory, relay, a_lines), ends.low);
             auto a = join(a_app, "room", options_in(a_memory));
-            a.on_peer_leave([&left](std::string_view /*peer*/) { ++left; });
+            a.on_peer_leave([&left](const trystero::peer_event&) { ++left; });
             z.make_action<trystero::pmr_bytes>("file").on_message(
                 [&files](const trystero::pmr_bytes& data, const trystero::message_info& /*info*/) {
                     files += data.size() == 100'000 ? 1 : 0;
@@ -934,7 +1031,7 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     //     }
     //     io.run();  // lint-run: the program's I/O; or destroy io: pending operations free
     const std::size_t left_behind = a_memory.outstanding + z_memory.outstanding;
-    run_for(io, 300ms);
+    drain(io);
     counting = false;
     BOOST_TEST_GT(left_behind, 0U);
     BOOST_TEST_EQ(a_memory.outstanding, 0U);
@@ -950,6 +1047,8 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
+    // Two rooms: each seals its offer or answer and a candidate, and opens the other's two.
+    expect_openssl_allocations(4U);
     BOOST_TEST_GT(network_memory.allocations, 0U);
     global_allocations = 0;
     c_allocations = 0;
@@ -958,9 +1057,9 @@ void a_room_allocates_through_its_resource_from_join_to_destruction() {
 /**
  * Two apps, each with two rooms, one room in the app's resource and one in a resource of its own,
  * exchange binary payloads: from construction until the io_context drains, neither operator new nor
- * the C library sees an allocation. A payload received by the room with its own resource is copied
- * into that resource once, the received frame staying the app's; by the room in the app's resource,
- * the payload taken out of the frame is moved into the value (doc: #trystero-allocation).
+ * the C library sees an allocation. Each room's connections are in its own resource, the frames
+ * received on them too: in either room the payload taken out of the frame is moved into the value,
+ * and the app's resource sees nothing of the room with its own (doc: #trystero-allocation).
  */
 void rooms_of_one_app_allocate_through_their_resources() {
     counting_resource network_memory;
@@ -973,13 +1072,14 @@ void rooms_of_one_app_allocate_through_their_resources() {
         // Construct configurations in their resources before the counting window. They, and the
         // payloads, are destroyed before the resources are checked: a moved-from object may still
         // hold memory of its resource (MSVC's debug containers keep an iterator proxy).
-        auto a_config = app_config_in(a_memory, "AAAAAAAAAAAAAAAAAAAA", "wss://relay.test", lines);
-        auto z_config = app_config_in(z_memory, "zzzzzzzzzzzzzzzzzzzz", "wss://relay.test", lines);
+        auto a_config = app_config_in(a_memory, "wss://relay.test", lines);
+        auto z_config = app_config_in(z_memory, "wss://relay.test", lines);
         const auto a_own = options_in(a_room_memory);
         const auto z_own = options_in(z_room_memory);
         // An inline payload of a size no other allocation has: its frame is at most 256 bytes
         // longer.
         constexpr std::size_t payload_size = 12'345;
+        const auto ends = ordered_endpoints();
         const trystero::pmr_bytes to_shared(payload_size, std::uint8_t{1}, &a_memory);
         const trystero::pmr_bytes to_own(payload_size, std::uint8_t{2}, &a_room_memory);
         {
@@ -987,10 +1087,13 @@ void rooms_of_one_app_allocate_through_their_resources() {
             trystero::test::memory_network network{io, 1, &network_memory};
             network.relay("wss://relay.test");
             warm(io);
+            start_counting_openssl();
             counting = true;
             {
-                trystero::app a(io.get_executor(), network, std::move(a_config));
-                trystero::app z(io.get_executor(), network, std::move(z_config));
+                auto a = trystero::detail::app_access::make(io.get_executor(), network,
+                                                            std::move(a_config), ends.low);
+                auto z = trystero::detail::app_access::make(io.get_executor(), network,
+                                                            std::move(z_config), ends.high);
                 auto a1 = join(a, "shared", options_in(a_memory));
                 auto a2 = join(a, "own", a_own);
                 auto z1 = join(z, "shared", options_in(z_memory));
@@ -1019,9 +1122,10 @@ void rooms_of_one_app_allocate_through_their_resources() {
                     webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_room_memory),
                                                  [](boost::system::error_code) {}));
                 BOOST_TEST(run_until(io, [&] { return got == 1; }));
-                BOOST_TEST_EQ(z_room_memory.sized, 1U);  // copied once, out of the frame
-                BOOST_TEST_EQ(z_memory.sized, 1U);       // the received frame, and nothing more
-                z_memory.sized = 0;
+                // The frame, and the payload taken out and moved on, both in the room's resource,
+                // as its connection is since each room has its own; nothing in the app's.
+                BOOST_TEST_EQ(z_room_memory.sized, 2U);
+                BOOST_TEST_EQ(z_memory.sized, 0U);
                 a1.make_action<trystero::pmr_bytes>("b").async_send(
                     trystero::pmr_bytes(to_shared, &a_memory),
                     webcpp::asio::bind_allocator(std::pmr::polymorphic_allocator<>(&a_memory),
@@ -1029,7 +1133,7 @@ void rooms_of_one_app_allocate_through_their_resources() {
                 BOOST_TEST(run_until(io, [&] { return got == 2; }));
                 BOOST_TEST_EQ(z_memory.sized, 2U);  // the frame, the payload taken out and moved on
             }
-            run_for(io, 300ms);  // the io_context runs out of the rooms' work
+            drain(io);  // the io_context runs out of the rooms' work
         }
         counting = false;
     }
@@ -1038,6 +1142,8 @@ void rooms_of_one_app_allocate_through_their_resources() {
     BOOST_TEST_EQ(live_count, 0U);
     BOOST_TEST(!live_overflow);
     BOOST_TEST_EQ(c_allocations, 0U);
+    // Four rooms, two pairs of the above.
+    expect_openssl_allocations(8U);
     for (const auto* m : {&a_memory, &a_room_memory, &z_memory, &z_room_memory}) {
         BOOST_TEST_EQ(m->outstanding, 0U);
         BOOST_TEST_EQ(m->foreign, 0U);
@@ -1113,9 +1219,44 @@ void mark_the_runtime_allocations() {
 
 }  // namespace
 
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+namespace {
+
+/** OpenSSL's allocation functions: the C library's, counted apart (inside_openssl). */
+void* openssl_malloc(std::size_t size, const char* /*file*/, int /*line*/) {
+    inside_openssl = true;
+    void* const pointer = std::malloc(size);  // NOLINT(cppcoreguidelines-no-malloc)
+    inside_openssl = false;
+    if (on_counted_thread() && counting) {
+        ++openssl_allocations;
+    }
+    return pointer;
+}
+
+void* openssl_realloc(void* pointer, std::size_t size, const char* /*file*/, int /*line*/) {
+    inside_openssl = true;
+    void* const moved = std::realloc(pointer, size);  // NOLINT(cppcoreguidelines-no-malloc)
+    inside_openssl = false;
+    if (on_counted_thread() && counting) {
+        ++openssl_allocations;
+    }
+    return moved;
+}
+
+void openssl_free(void* pointer, const char* /*file*/, int /*line*/) {
+    std::free(pointer);  // NOLINT(cppcoreguidelines-no-malloc)
+}
+
+}  // namespace
+#endif
+
 int main() {
     count_this_thread();
     mark_the_runtime_allocations();
+#ifndef WEBCPP_TARGET_EMSCRIPTEN
+    // Before OpenSSL's first allocation, which a later call could not replace.
+    BOOST_TEST_EQ(CRYPTO_set_mem_functions(&openssl_malloc, &openssl_realloc, &openssl_free), 1);
+#endif
 #if defined(WEBCPP_TEST_TRYSTERO_COUNTS_C_ALLOCATIONS) && defined(__APPLE__) && \
     !defined(WEBCPP_TARGET_EMSCRIPTEN)
     malloc_logger = &count_c_allocation;

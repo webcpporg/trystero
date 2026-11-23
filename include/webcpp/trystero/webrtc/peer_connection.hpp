@@ -100,8 +100,8 @@ inline webcpp::document::result<std::pmr::string> candidate_json(
  * disconnected, connected (or ICE completed), connecting (or ICE checking), and new.
  *
  * Tip: the connection, its channels, its handlers, its operations and the texts it hands to the
- * app are in the app's resource; what the platform holds (libdatachannel's objects, or the page's)
- * is the platform's.
+ * room are in the room's resource; what the platform holds (libdatachannel's objects, or the
+ * page's) is the platform's.
  *
  * @see "The backend's WebRTC", in the guide.
  */
@@ -146,9 +146,7 @@ public:
      * @param ex The executor every handler of the connection runs on.
      * @param servers The STUN and TURN servers it gathers through, read during the call.
      * @param bind_address The local address it binds to, natively; empty for every interface.
-     * @param factory The backend, which makes its channels' timers, and which outlives every
-     * operation of the connection.
-     * @param memory The app's resource: the connection, its channels, its handlers and its texts
+     * @param memory The room's resource: the connection, its channels, its handlers and its texts
      * are allocated in it.
      * @return The connection, or webcpp::webrtc's error: `too_many_peer_connections` past the
      * runtime's cap, `syntax_error` for an ICE server URL the platform cannot parse,
@@ -158,7 +156,7 @@ public:
     [[nodiscard]] static boost::system::result<std::shared_ptr<peer_connection>> make(
         std::shared_ptr<::webcpp::webrtc::runtime> runtime, const executor_type& ex,
         std::span<const backend::ice_server> servers, std::string_view bind_address,
-        backend::factory& factory, std::pmr::memory_resource* memory) {
+        std::pmr::memory_resource* memory) {
         // NOLINTEND(performance-unnecessary-value-param)
         auto made = make_connection(*runtime, ex, servers, bind_address, memory);
         if (!made) {
@@ -166,7 +164,7 @@ public:
         }
         auto self = std::allocate_shared<peer_connection>(std::pmr::polymorphic_allocator<>(memory),
                                                           private_tag{}, std::move(runtime),
-                                                          std::move(*made), factory, memory);
+                                                          std::move(*made), memory);
         self->start();
         return self;
     }
@@ -220,13 +218,11 @@ public:
      *
      * @param runtime The runtime that counts the connection.
      * @param pc webcpp::webrtc's connection.
-     * @param factory The backend, which makes its channels' timers.
      * @param memory The resource its handlers and its texts are allocated in.
      */
     peer_connection(private_tag /*tag*/, std::shared_ptr<::webcpp::webrtc::runtime> runtime,
-                    connection_type pc, backend::factory& factory,
-                    std::pmr::memory_resource* memory)
-        : runtime_(std::move(runtime)), factory_(factory), memory_(memory), pc_(std::move(pc)) {}
+                    connection_type pc, std::pmr::memory_resource* memory)
+        : runtime_(std::move(runtime)), memory_(memory), pc_(std::move(pc)) {}
 
     /** Not copyable: its operations reach it by its address. */
     peer_connection(const peer_connection&) = delete;
@@ -261,7 +257,7 @@ public:
         if (!made) {
             return nullptr;
         }
-        return data_channel::make(runtime_, std::move(*made), factory_, memory_);
+        return data_channel::make(runtime_, std::move(*made), memory_);
     }
 
     /**
@@ -310,16 +306,16 @@ public:
      * Adds a remote ICE candidate; the empty candidate that ends the remote gathering adds none.
      *
      * @param candidate_json The JSON of an `RTCIceCandidateInit`, read during the call, at most
-     * `protocol::max_sealed_candidate_bytes`, the bound of a sealed candidate, which its opened
-     * JSON never passes.
+     * `protocol::max_sealed_candidate_chars` bytes, the bound of a sealed candidate, an ASCII text
+     * whose opened JSON is shorter.
      * @param done Called on the executor once it is added, or with `error::backend_failure` when
      * the JSON has no candidate or the platform refuses it.
      */
     void add_ice_candidate(std::string_view candidate_json,
                            handler<void(backend::error_code)> done) override {
-        // The document lives in the app's resource for the call: the platform copies the views.
+        // The document lives in the room's resource for the call: the platform copies the views.
         const auto document = webcpp::document::parse(
-            candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_bytes),
+            candidate_json, protocol::json::protocol_limits(protocol::max_sealed_candidate_chars),
             std::pmr::polymorphic_allocator<std::byte>(memory_));
         const protocol::json::const_value object =
             document.has_value() ? document->root() : protocol::json::const_value();
@@ -355,6 +351,21 @@ public:
      */
     [[nodiscard]] bool has_remote_description() const override {
         return pc_.has_remote_description();
+    }
+
+    /**
+     * The largest message a channel of the connection sends, as webcpp::webrtc's
+     * `max_message_size()` reads it from the transport: natively libdatachannel's
+     * `rtcGetRemoteMaxMessageSize`, in a page the browser's `sctp.maxMessageSize`, each bounded by
+     * webcpp::webrtc's `options::max_message_size`.
+     *
+     * It is the limit the channels' sends check.
+     *
+     * @return The size; nothing before the peer's limit is known (natively before a remote
+     * description is applied, in a page while the connection has no SCTP transport).
+     */
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override {
+        return pc_.max_message_size();
     }
 
     /** Closes the connection and its channels, as the W3C's `close()`: no state is reported. */
@@ -469,7 +480,7 @@ private:
     }
 
     void on_channel(data_channel::channel_type channel) {
-        auto wrapped = data_channel::make(runtime_, std::move(channel), factory_, memory_);
+        auto wrapped = data_channel::make(runtime_, std::move(channel), memory_);
         if (const auto h = h_; h && h->data_channel) {
             h->data_channel(std::move(wrapped));
         }
@@ -505,7 +516,6 @@ private:
 
     // The runtime outlives the connection, which goes first.
     std::shared_ptr<::webcpp::webrtc::runtime> runtime_;
-    backend::factory& factory_;
     std::pmr::memory_resource* memory_;
     std::shared_ptr<handlers> h_;
     state state_ = state::new_;

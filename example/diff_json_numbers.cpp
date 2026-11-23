@@ -51,8 +51,6 @@ int main() {
         c.app_id = "webcpp-trystero-differences";
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when both leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     trystero::app other_app(io.get_executor(), backend, config());
@@ -84,7 +82,7 @@ int main() {
     text += ']';
     // This room sends the payload its JSON text makes, once it meets the other peer.
     auto payload = room.make_action<wd::document>("payload");
-    room.on_peer_join([&](std::string_view) {
+    room.on_peer_join([&](const trystero::peer_event&) {
         wd::result<wd::document> value = wd::parse(text);
         if (!value) {
             std::cerr << "not parsed: " << value.error().message() << '\n';

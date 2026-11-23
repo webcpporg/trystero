@@ -16,20 +16,26 @@
 
 | Protocol
 | `protocol/*.hpp`
-| pure functions over bytes and text: no I/O, no platform
+| pure functions over bytes and text: no I/O, no platform; among them the
+  crypto layer, the topics, ids, room keys and sealing of 0.27.0, its
+  identities and the messages and transcript of its handshake, over
+  webcpp::hash and webcpp::crypto (<<trystero-design-port>>)
 
 | Backend interface
 | `backend.hpp`
-| the WebSocket, peer connection, data channel, timer and AES-GCM sealer a
-  platform provides
+| the WebSocket, peer connection, data channel, timer, clocks, randomness and
+  the PBKDF2 of a room's password a platform provides
 
 | App
-| `app.hpp`, `detail/app_impl.hpp`, `detail/connection.hpp`
-| one identity, the room registry, shared connections and their routing
+| `app.hpp`, `identity.hpp`, `detail/app_impl.hpp`,
+  `detail/identity_cache.hpp`, `detail/room_keys_cache.hpp`
+| the endpoint key and the user identity, the room registry, the rooms'
+  keys, and the key records and verified signatures of peers and users
 
 | Room
 | `room.hpp`, `detail/*.hpp`
-| the Nostr strategy, signaling, bindings, action wire and room API
+| the Nostr strategy, the signaling, each peer's link and handshake, the
+  users, the action wire and the room API
 
 | Backend's WebRTC
 | `webrtc/*.hpp`
@@ -39,9 +45,10 @@
 | Platform backend
 | `platform/*.hpp`
 | webcpp::webrtc, webcpp::beast (natively Boost.Beast, in a page its
-  `WebSocket`), Boost.URL, webcpp::asio's timers, and per target the sealer
-  and the randomness: OpenSSL natively, Web Crypto and
-  `crypto.getRandomValues` in a page; and, in a page, `page_call` and `js_string`
+  `WebSocket`), Boost.URL, webcpp::asio's timers, webcpp::crypto's
+  `random_device` for randomness, and webcpp::hash's `async_pbkdf2` for a
+  room's password, natively on a thread of the backend's own and in a page
+  through Web Crypto; and, in a page, `page_call` and `js_string`
 |===
 
 Everything above the backend interface is the core, which builds on both
@@ -54,8 +61,133 @@ Asio is webcpp::asio: natively Boost.Asio itself, on emscripten the backend
 webcpp::asio ships, whose `io_context` webcpp::webrtc's browser objects
 deliver their events to.
 
-[#trystero-design-sharing]
-=== Connections shared by the rooms of an app
+[#trystero-design-port]
+=== The port to Trystero 0.27.0
+
+The port follows the change `trystero-0-27` (proposals), whose design
+numbers its decisions D1 to D23; the library is what they built.
+
+*The backend has no sealer (D4, D5).* Hashing, the derivation of a room's
+keys from their master, sealing and opening, room authentication and ids are
+synchronous functions of `protocol/` (`topics.hpp`, `ids.hpp`,
+`room_keys.hpp`, `seal.hpp`), over webcpp's default backends: a signal of a
+few kilobytes seals in microseconds with OpenSSL natively and BearSSL on
+emscripten, so the room seals and opens in the call, as Trystero awaits
+`encrypt` and `decrypt` in turn. What stays asynchronous is the one costly
+step, the PBKDF2 of a room's password, 600,000 iterations of HMAC-SHA-256,
+some 0.2 s natively and several seconds in WebAssembly, which never runs on
+a room's thread: `factory::derive_password_master` completes on the room's
+executor after the call returns. The platform backend runs it natively with
+`webcpp::hash::async_pbkdf2` on a one-thread `webcpp::asio::thread_pool` it
+makes at the first call and joins when it is destroyed, and in a page with
+`async_pbkdf2` over `backends::webcrypto`, the page's `crypto.subtle`, on the
+backend's executor. A work executor in `app_config` was set aside: every
+native program would fill an option for a cost paid once a room.
+
+*A room's keys, their cache and their failure (D6).* A room without a
+password keys AES with the SHA-256 of `["trystero:room-aes:v3",<app>,<room>]`,
+as `JSON.stringify` writes it. With one, the app derives a PBKDF2 master
+under the salt SHA-256 of `["trystero:pbkdf2-master:v3",<app>,<room>]`, then
+HKDF-SHA-256 to the AES key (`trystero:room-aes:v3`) and to the HMAC key
+(`trystero:room-hmac:v3`), wipes the master, and keeps the keys of at most 64
+rooms, the least recently used out, as 0.27.0's `derivedRoomKeysCache`
+(`detail::room_keys_cache`); a derivation that fails is forgotten, so that a
+later join derives again, and is reported as `error::backend_failure`, since
+0.27.0 has no room error for it. The password stays the app's (0.1.0's
+ruling), so the cache is keyed by room id. A room announces nothing before
+its key exists: `join` returns at once, and the room starts once the
+derivation completes. The keys are held in `webcpp::crypto::secret<32>`,
+and every other buffer of a secret is wiped by trystero's
+`detail::wipe` before it is released: the password's three copies, the
+app's, the cache's and each derivation's, among them (test
+`the_password_is_wiped_before_it_is_freed`; the caller's
+`app_config::password` is the program's). webcpp::crypto has no public wipe
+of a buffer of a size known only at run time, so `detail::wipe` stays
+trystero's until it has one (<<trystero-roadmap>>).
+
+*Dependencies (D7).* `parts` links webcpp::hash and webcpp::crypto
+(`/webcpp/crypto//crypto`, `gcm-default`, `p256-default` and
+`secp256k1-default`): libsecp256k1 and BearSSL arrive through
+webcpp::crypto, libsecp256k1 with the same feature
+`webcpp-secp256k1-tables`, and trystero includes no header of either.
+OpenSSL stays natively for TLS and for libdatachannel, and is the AES-GCM of
+webcpp::crypto's native default, but trystero's own code calls none of it.
+What webcpp::crypto and webcpp::hash allocate outside a room's resource is
+listed in <<trystero-allocation-outside>>.
+
+*One connection per room and remote peer (D9).* 0.27.0 removed 0.26.0's
+`shared-peer.ts`: each room makes its own offers and answers, keeps one
+connected peer per remote id, writes its action frames bare on the channel,
+and binds its handshake to that connection's DTLS fingerprints and to its
+app and room. So does the port: the app keeps its identity, its relays'
+configuration and its rooms' keys; each room its own connections, in the
+room's resource (<<trystero-design-ownership>>). trystero 0.1.0's sharing,
+its presence frames, room tokens, rebinding, idle connections, its 64-room
+bound and its password handshake are gone with it: a JS peer's connection
+belongs to one room, and another room's frames on it would be read as this
+room's. A connection is bounded as `peer.ts` bounds it: 64 frames of at
+most 17 KiB kept for 10 s before the room takes them, then frames of at
+most 64 KiB.
+
+*Identity belongs to the app (D15, D17).* 0.27.0 caches one endpoint
+identity per app id and page, and resolves a user identity per app and page
+unless a room's configuration gives one. The port keeps both in the `app`:
+one endpoint key pair, whose compact key derives `self_id()`, and one user
+identity, `app_config::identity` or an ephemeral one made with the app. A
+`user_identity` is a copyable handle to an immutable key, so that several
+apps, of one process or several, are one user's endpoints;
+`create_user_identity`, `import_user_identity` and `export_user_identity`
+are 0.27.0's, with its `trystero_uk_` text and its JSON key form. There is
+no `'local'` persistence: 0.27.0 keeps that one in IndexedDB, and a {cpp}
+program keeps an identity where it wants with the exported text. A program
+that wants two users in one room makes two apps, where 0.27.0 also takes an
+identity per room (<<trystero-differences-behaviour>>). An identity that
+cannot be made, on a system without a generator, leaves the app without
+one, and each room it joins reports `identity_failed`, then ends, as
+0.27.0's rooms fail their setup.
+
+*Signatures are synchronous and deterministic (D18).* ECDSA P-256 is
+webcpp::crypto's, over BearSSL on every target, synchronous like the rest of
+the crypto layer, behind one seam of trystero's, `protocol/ecdsa.hpp`.
+Signing normalizes to low S, and verification refuses a high S before it
+verifies, as 0.27.0 does. BearSSL's nonces are RFC 6979's, so the port's
+signatures are deterministic where WebCrypto's are random; both verify
+alike, so the wire cannot tell. The key records (4,096) and the verified
+signatures (8,192 entries, 2 MiB, payloads of at most 4,096 bytes) are
+0.27.0's caches and bounds, kept per app rather than per page
+(`detail::identity_cache`). Signatures, compact keys and the user key's text
+are read as strict base64url, where 0.27.0's `Uint8Array.fromBase64` is
+loose: a JS peer always writes the canonical form, so only a forged text can
+tell, and it is refused.
+
+*The handshake reads its fingerprints from the descriptions the signaling
+handled (D20).* 0.27.0 reads the `a=fingerprint:` lines of its connection's
+local and remote descriptions. The port's signaling hands its room the last
+local description it set and the last remote one it applied, and the room
+reads them with `protocol::dtls_fingerprints`; the backend is unchanged. The
+memory backend writes a fingerprint line of its own into each description.
+
+*The user-proof is protocol code only (D21).* 0.27.0's `identity.ts`
+defines a user's proof of an endpoint, which its core neither sends nor
+checks: the handshake's dual signatures bind the user key to the endpoint.
+The port keeps its payload, `protocol::user_proof_payload`, proven by the
+vectors, for the plugins that may use it.
+
+*Wide chunks follow the connection's largest message (D22).* 0.27.0 sends
+64 KiB chunks to a peer whose connection's `sctp.maxMessageSize` is at least
+65,536. `backend::peer_connection::max_message_size()` reports it, the
+platform backend from webcpp::webrtc's `max_message_size()`, the limit its
+channels' sends check, and the action wire offers wide transfers on such a
+connection.
+
+*The error list is 0.27.0's (D23).* `wrong_password`,
+`handshake_timed_out` and `too_many_rooms` named what 0.27.0 no longer has,
+the password handshake, its timeout as a code of its own, and the 64-room
+bound: they are gone, and the values after them moved.
+`invalid_user_identity` and `invalid_max_users` name what 0.27.0 throws.
+
+[#trystero-design-ownership]
+=== Who owns what
 
 [cols="1,3,2,1",options="header"]
 |===
@@ -67,19 +199,9 @@ deliver their events to.
 | None
 
 | `detail::app_impl`
-| Configuration and immutable password, self id, logger, room registry by token and id, connections and user count
-| While any shared reference lives; its last user closes its connections
+| Configuration and immutable password, endpoint key and self id, user identity, logger, room registry by id, the rooms' keys, key records and verified signatures, and the user count
+| While any shared reference lives
 | App's
-
-| `detail::connection`
-| One peer's connection and channel, advertised tokens, kept frames, idle timer and plain pointers to bindings and their drain order
-| From adoption until its end
-| App's
-
-| `detail::binding`
-| One room's use of a connection: a weak reference, drain waiters and delivery to its room
-| Until detachment, owned by its room's peer state
-| Room's
 
 | `room`
 | A reference to `detail::room_impl`
@@ -87,25 +209,32 @@ deliver their events to.
 | None
 
 | `detail::room_impl`
-| Signaling, strategy, actions, peers, bindings, handlers, rebinding counts, backoffs and a shared reference to the app
+| The strategy, the signaling, each peer's link and handshake, users, actions, handlers and a shared reference to the app
 | Until its state and pending operations end
 | Room's, the app's by default
+
+| `detail::signaling`
+| Each negotiation: its peer connection and data channel until a link takes them
+| Until the negotiation ends or the room closes
+| Room's
+
+| `detail::peer_link`
+| One remote peer's connection and channel, once negotiated, and the frames kept before the room binds it
+| Until the peer goes or the room ends
+| Room's
 |===
 
-* A room holds the app strongly; the app reaches rooms weakly. A binding
-  holds its connection weakly, and the connection holds plain pointers to
-  bindings. Detachment removes those pointers and every drain registration
-  before returning. Ending a room removes its registry entry, so the app
-  keeps no allocation of that room's resource after it ends, and no cycle
-  keeps the objects alive.
-* Sharing is scoped by the `app` the user constructs, with no registry
+* A room holds the app strongly; the app reaches rooms weakly, through its
+  registry, which a room leaves in every way it ends. Ending a room removes
+  its registry entry, so the app keeps no allocation of that room's
+  resource after it ends, and no cycle keeps the objects alive.
+* Each app is scoped by the `app` the user constructs, with no registry
   outside it and no static state keyed by the backend. Two apps with the
   same application id in one process are two peers. Each app has one
   immutable password. Different passwords use separate apps with distinct
-  self ids, so their connections, tokens and presence are never reused.
-* The action wire continues to write its room token and send through a
-  `channel_link`. The binding implements that link: each room keeps its
-  own actions, transfers, queues and bounds.
+  self ids.
+* A link's handlers name it weakly, so that a link the room let go reaches
+  nothing; no other room ever uses a room's connection.
 
 [#trystero-design-backend]
 === Why abstract classes for the backend
@@ -126,9 +255,11 @@ refactor (2026-11-14), since webcpp::asio, webcpp::beast and webcpp::webrtc
 give both targets one interface, where everything but WebRTC was written
 twice. The abstract classes stay, for the memory relays, which run whole
 rooms on both targets where node has no WebRTC, and for the interop's native
-peer, which wraps the platform backend. Only the sealer and the source of
-randomness are chosen per target, by `WEBCPP_TARGET_EMSCRIPTEN`, until
-webcpp::crypto exists (<<trystero-platform>>).
+peer, which wraps the platform backend. Only the PBKDF2 of a room's
+password is chosen per target, by `WEBCPP_TARGET_EMSCRIPTEN`: natively on a
+thread of the backend's own, in a page through Web Crypto
+(<<trystero-design-port>>); randomness is webcpp::crypto's
+`random_device` on both (<<trystero-platform>>).
 
 [#trystero-design-webrtc]
 === Why webcpp::webrtc
@@ -152,7 +283,7 @@ The platform backend makes its peer connections and data channels the same
 way on both targets, in `<webcpp/trystero/webrtc/peer_connection.hpp>` and
 `data_channel.hpp`: `webrtc::peer_connection` and `webrtc::data_channel` hold
 webcpp::webrtc's `basic_peer_connection` and `basic_data_channel` over a
-`std::pmr::polymorphic_allocator` on the app's resource, keep a wait of each
+`std::pmr::polymorphic_allocator` on the room's resource, keep a wait of each
 kind pending on them, re-armed on the executor, and report what each
 completes with through the backend interface. What is trystero's, and stays
 in them, over webcpp::webrtc:
@@ -163,27 +294,41 @@ in them, over webcpp::webrtc:
   checking), and new.
 * The candidates. A local candidate leaves as the JSON of an
   `RTCIceCandidateInit`, the form Trystero JS adds with `addIceCandidate`; a
-  remote one is read from that JSON, at most 16 KiB of it. Natively it
+  remote one is read from that JSON, at most 4,096 bytes of it. Natively it
   carries `sdpMid` and an `sdpMLineIndex` of 0, and no user name fragment, as
   libdatachannel gives none; a candidate whose text is not UTF-8, which JSON
   cannot carry, is not reported.
 * The frames. A channel reads every message as it comes, with
-  `async_receive`, into a vector of the app's resource, which the message
+  `async_receive`, into a vector of the room's resource, which the message
   handler then owns. A text message, as a peer can send, or a binary one
   larger than any room frame, is dropped there, on the executor: neither can
   be a frame. What reaches the executor is bounded by webcpp::webrtc: a
   message is at most `max_message_size`, 256 KiB, which natively
   libdatachannel cuts a longer one to, and past which in the browser, or past
-  16 MiB of unread messages, the channel closes. A binary payload moves when
-  its message buffer and the room use the same resource, and is copied once
-  otherwise; chunked transfers assemble their buffer in the room's resource.
-* The frames no room has read. Valid binary frames that arrive before the
-  message handler is installed wait in a FIFO in the app's resource. The
-  queue holds at most 64 frames for at most 10 seconds from its first frame,
-  Trystero's pending-data bounds. Overflow or expiry closes the channel;
-  closing or destroying it discards the pending frames. The backend's timer
-  invalidates an expiry already queued when the queue drains or closes.
-  Installing a receiver posts delivery on the executor with the app's
+  16 MiB of unread messages, the channel closes. A binary payload moves
+  from its message buffer when the action's type is `pmr_bytes`; chunked
+  transfers assemble their buffer in the room's resource.
+  A frame the channel refuses to send, larger than the connection's
+  `max_message_size` (webcpp::webrtc's, the transport's limit) or past what
+  it buffers, closes the channel: a transfer then ends with the peer rather
+  than wait on a chunk that was never sent.
+* The frames no room has read. The open event and a first message reach
+  the executor in either order, and the room's link installs its handler
+  from the open event: valid binary frames that arrive before it wait in a
+  FIFO in the room's resource, under the bounds the link puts on a peer's
+  frames before its room binds it, 0.27.0's: at most 64 frames of at most
+  17 KiB each. One more, or a longer one, closes the channel; closing or
+  destroying it discards the pending frames. The queue has no time bound of
+  its own: the link's 10 seconds start as it takes the frames, and a channel
+  no link takes is one the signaling closes. The signaling holds each channel
+  on a side of a negotiation, the offer's or the answer's, and every way a
+  side ends (its expiry, its connection's failure, the peer's leaving, the
+  other side's channel opening first, the room's close) clears the
+  channel's handlers, closes its connection, which closes the channel, and
+  lets go of it; an entry it drops otherwise holds no connection. A channel
+  waits, with at most 64 x 17 KiB (about 1.1 MiB) of frames, for at most its
+  side's lifetime. Installing a receiver posts
+  delivery on the executor with the room's
   allocator. It never calls the receiver inline, and delivery checks the
   current handler and channel before each frame, so a handler may replace
   itself or close the channel. A message already read ahead of that delivery
@@ -241,9 +386,13 @@ The asynchronous operations are the exception, for the reason
 [#trystero-design-dependencies]
 === Dependencies
 
-trystero builds on webcpp::asio, and its platform backend on webcpp::webrtc
-and webcpp::beast. `/webcpp/trystero//trystero` is the rooms alone: it brings
-`/webcpp/asio//asio`, which links embind on emscripten, and on no target
+trystero builds on webcpp::asio, webcpp::hash and webcpp::crypto, and its
+platform backend on webcpp::webrtc and webcpp::beast.
+`/webcpp/trystero//trystero` is the rooms alone: it brings
+`/webcpp/asio//asio`, which links embind on emscripten,
+`/webcpp/hash//hash`, and `/webcpp/crypto//crypto` with its defaults for
+AES-256-GCM (`gcm-default`), P-256 (`p256-default`, over BearSSL) and
+secp256k1 (`secp256k1-default`, over libsecp256k1), and on no target
 webcpp::webrtc. A program names `/webcpp/trystero//platform` on both
 targets, which adds the backend to the rooms: `/webcpp/webrtc//webrtc` and
 `/webcpp//boost_url` on both; natively webcpp::webrtc's libdatachannel,

@@ -24,7 +24,6 @@
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -33,7 +32,6 @@
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -41,6 +39,7 @@
 #include <iostream>
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -73,18 +72,14 @@ public:
     [[nodiscard]] bool is_open() const override { return channel_->is_open(); }
 
     void send(std::span<const std::uint8_t> frame) override {
-        const auto envelope = protocol::decode_envelope(frame);
-        if (envelope && envelope->type == protocol::envelope::kind::room) {
-            const auto decoded = protocol::decode_action(envelope->payload);
-            const auto* const p =
-                decoded.frame ? std::get_if<protocol::proposal>(&*decoded.frame) : nullptr;
-            if (p != nullptr && p->kind == protocol::frame_kind::inline_payload &&
-                p->format == protocol::payload_format::text && p->name == action_name) {
-                const auto action = protocol::encode_inline(p->name, protocol::payload_format::json,
-                                                            p->metadata, p->payload, memory_);
-                channel_->send(protocol::room_frame(envelope->token, action, memory_));
-                return;
-            }
+        const auto decoded = protocol::decode_action(frame);
+        const auto* const p =
+            decoded.frame ? std::get_if<protocol::proposal>(&*decoded.frame) : nullptr;
+        if (p != nullptr && p->kind == protocol::frame_kind::inline_payload &&
+            p->format == protocol::payload_format::text && p->name == action_name) {
+            channel_->send(protocol::encode_inline(p->name, protocol::payload_format::json,
+                                                   p->metadata, p->payload, memory_));
+            return;
         }
         channel_->send(frame);
     }
@@ -152,6 +147,10 @@ public:
         return connection_->has_remote_description();
     }
 
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override {
+        return connection_->max_message_size();
+    }
+
     void close() override { connection_->close(); }
 
 private:
@@ -190,9 +189,11 @@ public:
         return backend_.make_timer(memory);
     }
 
-    std::shared_ptr<trystero::backend::sealer> make_sealer(
-        std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) override {
-        return backend_.make_sealer(key, memory);
+    void derive_password_master(std::span<const std::uint8_t> password,
+                                std::span<const std::uint8_t, 32> salt,
+                                std::span<std::uint8_t, 32> out,
+                                trystero::handler<void(boost::system::error_code)> done) override {
+        backend_.derive_password_master(password, salt, out, std::move(done));
     }
 
     void random(std::span<std::uint8_t> out) override { backend_.random(out); }
@@ -222,8 +223,6 @@ int main() {
         c.app_id = "webcpp-trystero-differences";
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when both leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     // The other peer, as a Trystero JS page would be: its app's backend marks the text payloads of
@@ -278,7 +277,7 @@ int main() {
     // The other peer sends each payload's text once it meets this room. An inline frame leaves at
     // once, so they leave in the order of the sends, as a Trystero JS page awaits each.
     auto sending = other->make_action<std::string>(action_name);
-    other->on_peer_join([&](std::string_view) {
+    other->on_peer_join([&](const trystero::peer_event&) {
         for (const auto& [label, value] : payloads) {
             sending.async_send("[\"" + std::string(label) + "\"," + value + "]",
                                [](boost::system::error_code) {});

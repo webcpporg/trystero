@@ -14,9 +14,12 @@
 #include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/handler.hpp>
 #include <webcpp/trystero/protocol/action_wire.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
@@ -60,6 +63,11 @@ struct incoming {  // NOLINT(bugprone-exception-escape)
     range payload_at = {};
     /** Where the metadata, JSON text or empty, is in the buffer. */
     range metadata_at = {};
+    /**
+     * Whether several listeners read the message: each then copies what it takes, leaving the
+     * message whole for the next.
+     */
+    bool shared = false;
 
     /** The action's name, a view into the buffer. */
     [[nodiscard]] std::string_view name() const { return text(name_at); }
@@ -89,6 +97,16 @@ private:
     }
 };
 
+/** What a room's receive gate, Trystero's `onReceive`, says of a message it is asked about. */
+enum class admission {
+    /** The action has no gate: the message is received unasked. */
+    open,
+    /** The gate took the message. */
+    admitted,
+    /** The gate refused the message: an inline one is dropped, an offer rejected. */
+    refused,
+};
+
 /** A payload to send: the bytes, and what keeps them alive while a transfer is in flight. */
 struct payload_ref {
     /** The payload's bytes. */
@@ -97,16 +115,20 @@ struct payload_ref {
     std::shared_ptr<const void> owner;
 };
 
-/** What the wire sends through: a room's use of a peer's connection, a `detail::binding`. */
+/** What the wire sends through: a room's connection to a peer, a `detail::peer_link`. */
 class channel_link {
 public:
-    /** Sends a room frame; false when the channel is no longer open. */
-    virtual bool send(std::span<const std::uint8_t> room_frame) = 0;
+    /** Sends an action frame as it is; false when the channel is no longer open. */
+    virtual bool send(std::span<const std::uint8_t> frame) = 0;
     /** The bytes the channel buffers, not yet sent; 0 once it ended. */
     [[nodiscard]] virtual std::size_t buffered_amount() const = 0;
     /** Calls `done(true)` once the channel's buffer is below Trystero's threshold, `done(false)` if
      * it closes first. */
     virtual void wait_drained(handler<void(bool)> done) = 0;
+    /** The largest frame a transfer's chunk may fill, 0.27.0's `maxBulkFrameBytes` getter
+     * (`peer-transport.ts`): `protocol::max_bulk_frame_bytes` when the connection's SCTP takes
+     * messages of that size, else `protocol::max_action_frame_bytes`. */
+    [[nodiscard]] virtual std::size_t max_bulk_frame_bytes() const = 0;
 
 protected:
     channel_link() = default;
@@ -117,19 +139,47 @@ protected:
 
 /**
  * Sends and receives a room's actions over Trystero's action wire (protocol/action_wire.hpp), after
- * its action wire manager and action receiver. Every frame it sends is a room frame: it writes the
- * room envelope's header and the action frame into one buffer, once per send, shared by every
- * target.
+ * its action wire manager and action receiver. Every frame it sends is an action frame, written
+ * bare on the room's channel as 0.27.0's `sendFrame` writes it: once per send, into one buffer
+ * shared by every target.
  *
  * | Rule                     | Value                                                              |
  * | inline                   | when header, metadata and payload fit 16 KiB                       |
  * | larger payloads          | offer, wait for "accepted" (120 s), then chunks in order, each     |
  * |                          | sent only while the channel buffers at most 64 KiB (10 s at most   |
- * |                          | per wait)                                                          |
+ * |                          | per wait); wide when the link takes 64 KiB frames (see below)      |
  * | receiving                | one transfer per peer at a time, accepted only for an action with  |
- * |                          | a receiver, at most `max_receive_bytes` reserved across peers      |
- * | frames before a receiver | kept (64 per peer, 120 s) until the action gets one                |
+ * |                          | a listener, at most `max_receive_bytes` reserved across peers;     |
+ * |                          | 1024 pending transfers, 64 per peer; chunks wide or not, as the    |
+ * |                          | offer says, in any order, each once                                |
+ * | an action not made       | an inline frame is dropped, an offer rejected at once as an        |
+ * |                          | "unregistered action"                                              |
+ * | a payload past its bound | `max_receive_bytes`, or the action's own `max_payload` when lower: |
+ * |                          | an inline frame is dropped, an offer rejected, as "payload exceeds |
+ * |                          | receiver size limit"                                               |
+ * | frames before a listener | of an action made: kept, 32 per action and peer (a newer one drops |
+ * |                          | the oldest), for 10 s, until the action gets one                   |
+ * | the receive gate         | asked of an inline frame and of an offer as it arrives, and of a   |
+ * |                          | kept frame it was not asked of before it is delivered; a refusal   |
+ * |                          | drops the frame, or rejects the offer "payload rejected by         |
+ * |                          | receiver"                                                          |
+ * | progress                 | after each chunk but the last, the share received                  |
+ * | control frames           | sent only while the channel buffers at most 1 MiB, else the peer   |
+ * |                          | is dropped                                                         |
  * | protocol violations      | the peer is dropped                                                |
+ *
+ * As 0.27.0's `sendBulk`, a transfer is offered wide, its offer flagged and each chunk but the last
+ * filling a 64 KiB frame, when its link's `channel_link::max_bulk_frame_bytes` is
+ * `protocol::max_bulk_frame_bytes` as the offer is sent, and narrow, in 16 KiB frames, otherwise;
+ * transfers are received wide or narrow, as their offer says.
+ *
+ * Frames of an action the room has not made are not kept, as Trystero keeps none: a page that makes
+ * an action after it joined misses what came before. An action listens while it has a message
+ * listener or a request listener, and from its first `async_receive` on; its frames wait
+ * meanwhile.
+ *
+ * The receive gate runs during the frame's processing, as Trystero's does, and may end the peer or
+ * the room: the wire looks the peer up again after it.
  */
 class action_wire : public std::enable_shared_from_this<action_wire> {
 public:
@@ -138,7 +188,7 @@ public:
         /** The peer's channel, gone once the peer is. */
         std::weak_ptr<channel_link> target;
 
-        /** Sends a room frame; false when the channel is gone or no longer open. */
+        /** Sends an action frame; false when the channel is gone or no longer open. */
         [[nodiscard]] bool send(std::span<const std::uint8_t> frame) const {
             const auto t = target.lock();
             return t && t->send(frame);
@@ -148,6 +198,13 @@ public:
         [[nodiscard]] std::size_t buffered_amount() const {
             const auto t = target.lock();
             return t ? t->buffered_amount() : std::size_t{0};
+        }
+
+        /** The largest frame a chunk may fill; `protocol::max_action_frame_bytes` when the
+         * channel is gone. */
+        [[nodiscard]] std::size_t max_bulk_frame_bytes() const {
+            const auto t = target.lock();
+            return t ? t->max_bulk_frame_bytes() : protocol::max_action_frame_bytes;
         }
 
         /** Calls `done(true)` once the channel drained, `done(false)` if it is gone or closes. */
@@ -168,20 +225,46 @@ public:
         handler<std::pmr::vector<std::string_view>(bool include_pending)> peers;
         /** Whether a peer's message of an action may be received now: the handshake gate. */
         handler<bool(std::string_view peer, std::string_view name)> may_receive;
-        /** Whether an action has a receiver in the room: it was made, or it is internal. */
-        handler<bool(std::string_view name)> has_receiver;
+        /** Whether the room has an action: it was made, or it is internal; Trystero's registered
+         * actions. */
+        handler<bool(std::string_view name)> has_action;
+        /** Whether an action the room has listens to its messages now, Trystero's receiver. */
+        handler<bool(std::string_view name)> has_listener;
         /** Hands a received message to the room. */
         handler<void(incoming&&)> deliver;
-        /** Drops a peer that broke the protocol, with the reason. */
+        /** Drops a peer that broke the protocol, with the reason, 0.27.0's `onPeerError`. */
         handler<void(std::string_view peer, std::string_view reason)> fail_peer;
+        /** Whether a message of an action the room has is one it expects from the peer now, with
+         * its metadata, 0.27.0's `receiveScope`: an answer must answer a request of the room's.
+         * An inline message it does not expect is dropped, an offer rejected with "unexpected
+         * response"; empty, every message is expected. */
+        handler<bool(std::string_view peer, std::string_view name, std::string_view metadata)>
+            expects = nullptr;
+        /** Asks the receive gate of an action the room has about a message, with its payload's
+         * size and its metadata; empty, every message is received unasked. */
+        handler<admission(std::string_view peer, std::string_view name, std::size_t size,
+                          std::string_view metadata)>
+            admit = nullptr;
+        /** The wire refused a message of an action the room has, with the reason, Trystero's
+         * `onReject`: the gate's refusal, a size or a count over its bound, a transfer timed out.
+         */
+        handler<void(std::string_view peer, std::string_view name, std::string_view metadata,
+                     std::string_view reason)>
+            rejected = nullptr;
+        /** A transfer's share received, below 1, after each of its chunks but the last. */
+        handler<void(std::string_view peer, std::string_view name, std::string_view metadata,
+                     double share)>
+            progress = nullptr;
+        /** The longest payload of an action, 0.27.0's `maxPayloadBytes`, below the room's
+         * `max_receive_bytes`; empty, every action has the room's. */
+        handler<std::size_t(std::string_view name)> max_payload = nullptr;
     };
 
     /** Every allocation goes through `memory`. */
-    action_wire(backend::factory& factory, std::string_view room_token,
-                std::size_t max_receive_bytes, callbacks cb, std::pmr::memory_resource* memory)
+    action_wire(backend::factory& factory, std::size_t max_receive_bytes, callbacks cb,
+                std::pmr::memory_resource* memory)
         : factory_(factory),
           memory_(memory),
-          token_(room_token, memory),
           max_receive_bytes_(max_receive_bytes),
           cb_(std::move(cb)),
           outgoing_(memory),
@@ -215,16 +298,15 @@ public:
         const auto state =
             std::allocate_shared<fan_out>(allocator(), chosen.size(), std::move(done));
         if (protocol::fits_inline(metadata.size(), payload.data.size())) {
-            auto frame = protocol::begin_room_frame(
-                token_, protocol::inline_header_size + metadata.size() + payload.data.size(),
-                memory_);
+            auto frame =
+                begin_frame(protocol::inline_header_size + metadata.size() + payload.data.size());
             protocol::append_inline(frame, name, format, metadata, payload.data);
             const std::shared_ptr<const backend::bytes> shared =
                 std::allocate_shared<backend::bytes>(allocator(), std::move(frame));
             for (const auto peer : chosen) {
                 auto l = cb_.find_link(peer, include_pending);
                 if (!l) {
-                    state->complete(make_error_code(error::no_such_peer));
+                    state->complete(make_error_code(error::not_connected));
                     continue;
                 }
                 send_when_drained(
@@ -243,20 +325,18 @@ public:
         for (const auto peer : chosen) {
             auto l = cb_.find_link(peer, include_pending);
             if (!l) {
-                state->complete(make_error_code(error::no_such_peer));
+                state->complete(make_error_code(error::not_connected));
                 continue;
             }
             send_bulk(peer, *l, name, format, metadata, payload, state);
         }
     }
 
-    /** One action frame from a peer: `action` is a view into `frame`, which the message keeps if it
-     * is delivered. */
-    void handle(std::string_view peer, backend::bytes&& frame,
-                std::span<const std::uint8_t> action) {
-        const auto decoded = protocol::decode_action(action);
+    /** One action frame from a peer, which the message keeps if it is delivered. */
+    void handle(std::string_view peer, backend::bytes&& frame) {
+        const auto decoded = protocol::decode_action(frame);
         if (!decoded.frame) {
-            cb_.fail_peer(peer, "invalid action frame");
+            cb_.fail_peer(peer, violation(decoded.error));
             return;
         }
         if (const auto* p = std::get_if<protocol::proposal>(&*decoded.frame)) {
@@ -275,8 +355,8 @@ public:
         }
     }
 
-    /** An action got a receiver: deliver what waited for it and accept its transfers. */
-    void receiver_added() { drain(); }
+    /** An action got a listener: deliver what waited for it and accept its transfers. */
+    void listener_added() { drain(); }
 
     /** Fails a peer's transfers with `reason` and forgets what it sent, once it is gone. */
     void clear_peer(std::string_view peer, boost::system::error_code reason) {
@@ -293,6 +373,7 @@ public:
                     reserved_bytes_ -= b.size;
                 }
             }
+            pending_transfers_ -= it->second.bulk.size();
             incoming_.erase(it);
         }
         drain();
@@ -302,9 +383,14 @@ private:
     using pmr_allocator = std::pmr::polymorphic_allocator<>;
     using done_handler = handler<void(boost::system::error_code)>;
 
+    /** Trystero's `transferTimeoutMs`. */
     static constexpr auto transfer_timeout = std::chrono::milliseconds(120'000);
+    /** Trystero's `backpressureWaitTimeoutMs`. */
     static constexpr auto drain_timeout = std::chrono::milliseconds(10'000);
-    static constexpr std::size_t max_pending_per_peer = 64;
+    /** Trystero's `pendingDataTimeoutMs`: how long a message waits for its action's receiver. */
+    static constexpr auto pending_data_timeout = std::chrono::milliseconds(10'000);
+    /** Trystero's `sizeLimitMsg`: why a payload past its action's bound is refused. */
+    static constexpr std::string_view size_limit_reason = "payload exceeds receiver size limit";
 
     /** Completes a send once every target finished, with the first error. */
     struct fan_out {
@@ -339,13 +425,20 @@ private:
     };
 
     struct bulk_in {
-        explicit bulk_in(pmr_allocator a) : name(a), metadata(a), data(a) {}
+        explicit bulk_in(pmr_allocator a) : name(a), metadata(a), data(a), seen(a) {}
 
         std::pmr::string name;
         protocol::payload_format format = protocol::payload_format::binary;
         std::pmr::string metadata;
         std::size_t size = 0;
+        /** The payload bytes of each chunk but the last, as the offer's wide flag says. */
+        std::size_t chunk = protocol::chunk_size;
+        /** The payload, then its metadata and name, once the first chunk arrived. */
         backend::bytes data;
+        /** A bit per chunk, set once it arrived. */
+        std::pmr::vector<std::uint8_t> seen;
+        /** The payload bytes arrived. */
+        std::size_t received = 0;
         bool receiving = false;
         std::shared_ptr<backend::timer> timer;
     };
@@ -356,19 +449,60 @@ private:
     struct waiting_inline {  // NOLINT(bugprone-exception-escape)
         incoming message;
         time_point arrived{};
+        /** Whether the receive gate took it as it arrived. */
+        bool admitted = false;
     };
 
     struct peer_in {
         explicit peer_in(pmr_allocator a) : bulk(a), waiting(a) {}
 
         std::pmr::map<std::uint32_t, bulk_in> bulk;
+        /** The inline messages that wait for their action's receiver, oldest first. */
         std::pmr::deque<waiting_inline> waiting;
         std::optional<std::uint32_t> active;
-
-        [[nodiscard]] std::size_t count() const { return bulk.size() + waiting.size(); }
     };
 
     pmr_allocator allocator() const { return {memory_}; }
+
+    /** Why a frame that cannot be decoded drops its peer, in 0.27.0's words (`handleData`). */
+    static std::string_view violation(protocol::wire_error error) {
+        switch (error) {
+            case protocol::wire_error::incompatible_version:
+                return "incompatible action protocol version";
+            case protocol::wire_error::invalid_control: return "invalid action control";
+            case protocol::wire_error::invalid_header: return "invalid action header";
+            case protocol::wire_error::invalid_proposal: return "invalid action proposal";
+            case protocol::wire_error::invalid_frame: break;
+        }
+        return "invalid action frame";
+    }
+
+    /** Whether the room expects a message of an action it has from `peer`, 0.27.0's
+     * `receiveScope`. */
+    bool expected(std::string_view peer, std::string_view name, std::string_view metadata) {
+        return !cb_.expects || cb_.expects(peer, name, metadata);
+    }
+
+    /** Asks the receive gate about a message; open without one. */
+    admission gate(std::string_view peer, std::string_view name, std::size_t size,
+                   std::string_view metadata) {
+        return cb_.admit ? cb_.admit(peer, name, size, metadata) : admission::open;
+    }
+
+    /** The longest payload of an action, 0.27.0's `payloadLimit`: the room's bound, or the
+     * action's own when it is lower. */
+    std::size_t payload_limit(std::string_view name) {
+        return cb_.max_payload ? std::min(max_receive_bytes_, cb_.max_payload(name))
+                               : max_receive_bytes_;
+    }
+
+    /** Tells the room a message of an action it has was refused. */
+    void refused(std::string_view peer, std::string_view name, std::string_view metadata,
+                 std::string_view reason) {
+        if (cb_.rejected) {
+            cb_.rejected(peer, name, metadata, reason);
+        }
+    }
 
     /** `f` as a handler of the room's resource. */
     template <class Signature, class F>
@@ -406,10 +540,18 @@ private:
         }));
     }
 
+    /** An empty frame in the wire's resource, with room reserved for `size` bytes, which the
+     * caller then writes once. */
+    [[nodiscard]] backend::bytes begin_frame(std::size_t size) const {
+        backend::bytes out(memory_);
+        out.reserve(size);
+        return out;
+    }
+
     std::shared_ptr<const backend::bytes> control_frame(void (*append)(backend::bytes&,
                                                                        std::uint32_t),
                                                         std::uint32_t id) {
-        auto frame = protocol::begin_room_frame(token_, protocol::control_header_size, memory_);
+        auto frame = begin_frame(protocol::control_header_size);
         append(frame, id);
         return std::allocate_shared<backend::bytes>(allocator(), std::move(frame));
     }
@@ -418,9 +560,12 @@ private:
                    protocol::payload_format format, std::string_view metadata,
                    const payload_ref& payload, const std::shared_ptr<fan_out>& state) {
         const std::uint32_t id = next_id_++;
-        auto offer = protocol::begin_room_frame(
-            token_, protocol::offer_header_size + metadata.size(), memory_);
-        protocol::append_offer(offer, name, format, metadata, id, payload.data.size());
+        // 0.27.0 reads the transport's size once per transfer, as it offers it.
+        const bool wide = l.max_bulk_frame_bytes() >= protocol::max_bulk_frame_bytes;
+        const std::size_t chunk = wide ? protocol::wide_chunk_size : protocol::chunk_size;
+        auto offer = begin_frame(protocol::offer_header_size + metadata.size());
+        protocol::append_offer(offer, name, format, metadata, id, payload.data.size(),
+                               wide ? protocol::chunk_width::wide : protocol::chunk_width::narrow);
         std::pmr::string peer(peer_view, memory_);  // the transfer's handlers outlive this call
         auto& transfers = outgoing_[peer];
         const auto transfer = std::allocate_shared<outgoing_transfer>(allocator());
@@ -436,21 +581,7 @@ private:
                     return;
                 }
                 if (const auto self = weak.lock()) {
-                    if (const auto it = self->outgoing_.find(peer); it != self->outgoing_.end()) {
-                        it->second.erase(id);
-                        if (it->second.empty()) {
-                            self->outgoing_.erase(it);
-                        }
-                    }
-                    // The receiver may hold a reservation for this transfer: tell it, as Trystero
-                    // does. A channel that refuses the frame is closing, which frees it anyway.
-                    if (ec && ec != make_error_code(error::transfer_rejected) &&
-                        ec != make_error_code(error::peer_disconnected)) {
-                        if (auto l = self->cb_.find_link(peer, true)) {
-                            static_cast<void>(
-                                l->send(*self->control_frame(protocol::append_cancelled, id)));
-                        }
-                    }
+                    self->end_outgoing(peer, id, ec);
                 }
                 state->complete(ec);
             });
@@ -460,15 +591,15 @@ private:
         transfer->timer->start(transfer_timeout, bind<void()>([finish] {
                                    (*finish)(make_error_code(error::transfer_timed_out));
                                }));
-        transfer->accepted =
-            bind<void()>([weak, l, id, payload, finish, transfer_weak = std::weak_ptr(transfer)] {
+        transfer->accepted = bind<void()>(
+            [weak, l, id, chunk, payload, finish, transfer_weak = std::weak_ptr(transfer)] {
                 const auto self = weak.lock();
                 const auto t = transfer_weak.lock();
                 if (!self || !t) {
                     return;
                 }
                 t->timer->cancel();
-                self->send_chunks(l, id, payload, 0, finish);
+                self->send_chunks(l, id, chunk, payload, 0, finish);
             });
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(offer)),
@@ -479,37 +610,61 @@ private:
             }));
     }
 
-    void send_chunks(const link& l, std::uint32_t id, const payload_ref& payload,
+    /** Forgets the outgoing transfer `id` to `peer`, settled with `ec`; one that failed but for a
+     * refusal or a departure is cancelled to the peer. */
+    void end_outgoing(const std::pmr::string& peer, std::uint32_t id,
+                      boost::system::error_code ec) {
+        if (const auto it = outgoing_.find(peer); it != outgoing_.end()) {
+            it->second.erase(id);
+            if (it->second.empty()) {
+                outgoing_.erase(it);
+            }
+        }
+        // The receiver may hold a reservation for this transfer: tell it, as Trystero does. A
+        // channel that refuses the frame is closing, which frees it anyway.
+        if (ec && ec != make_error_code(error::transfer_rejected) &&
+            ec != make_error_code(error::peer_disconnected)) {
+            if (auto l = cb_.find_link(peer, true);
+                l && l->buffered_amount() <= protocol::max_control_buffered_bytes) {
+                static_cast<void>(l->send(*control_frame(protocol::append_cancelled, id)));
+            }
+        }
+    }
+
+    /** Sends the chunks of transfer `id` from `offset` on, each of `chunk` payload bytes but the
+     * last, one per drain. */
+    void send_chunks(const link& l, std::uint32_t id, std::size_t chunk, const payload_ref& payload,
                      std::size_t offset, const std::shared_ptr<done_handler>& finish) {
         if (offset >= payload.data.size()) {
             (*finish)({});
             return;
         }
-        const auto length = std::min(protocol::chunk_size, payload.data.size() - offset);
-        auto frame =
-            protocol::begin_room_frame(token_, protocol::chunk_header_size + length, memory_);
+        const auto length = std::min(chunk, payload.data.size() - offset);
+        auto frame = begin_frame(protocol::chunk_header_size + length);
         protocol::append_chunk(frame, id, offset, payload.data.subspan(offset, length));
         const auto weak = weak_from_this();
         send_when_drained(
             l, std::allocate_shared<backend::bytes>(allocator(), std::move(frame)),
-            bind<void(boost::system::error_code)>(
-                [weak, l, id, payload, offset, length, finish](boost::system::error_code ec) {
-                    if (ec) {
-                        (*finish)(ec);
-                        return;
-                    }
-                    const auto self = weak.lock();
-                    if (!self) {
-                        (*finish)(make_error_code(error::room_left));
-                        return;
-                    }
-                    self->send_chunks(l, id, payload, offset + length, finish);
-                }));
+            bind<void(boost::system::error_code)>([weak, l, id, chunk, payload, offset, length,
+                                                   finish](boost::system::error_code ec) {
+                if (ec) {
+                    (*finish)(ec);
+                    return;
+                }
+                const auto self = weak.lock();
+                if (!self) {
+                    (*finish)(make_error_code(error::room_left));
+                    return;
+                }
+                self->send_chunks(l, id, chunk, payload, offset + length, finish);
+            }));
     }
 
+    /** Sends a control frame, as Trystero's `sendControlFrame`: a channel that buffers more than
+     * 1 MiB, or refuses it, drops the peer. */
     void control(std::string_view peer, const backend::bytes& frame) {
         if (auto l = cb_.find_link(peer, true)) {
-            if (!l->send(frame)) {
+            if (l->buffered_amount() > protocol::max_control_buffered_bytes || !l->send(frame)) {
                 cb_.fail_peer(peer, "unable to send action control");
             }
         }
@@ -557,15 +712,49 @@ private:
             .payload_at = {.offset = offset_of(p.payload.data()), .size = p.payload.size()},
             .metadata_at = {.offset = offset_of(p.metadata.data()), .size = p.metadata.size()},
         };
-        if (cb_.has_receiver(p.name)) {
+        if (!cb_.has_action(p.name)) {
+            return;  // as Trystero drops a frame of an unregistered action
+        }
+        if (!expected(peer, p.name, p.metadata)) {
+            return;  // as 0.27.0's resolveAdmission drops an inline message out of scope
+        }
+        if (p.payload.size() > payload_limit(p.name)) {
+            refused(peer, p.name, p.metadata, size_limit_reason);
+            return;
+        }
+        const auto verdict = gate(peer, p.name, p.payload.size(), p.metadata);
+        if (verdict == admission::refused) {
+            refused(peer, p.name, p.metadata, "payload rejected by receiver");
+            return;
+        }
+        if (verdict == admission::admitted && !cb_.may_receive(peer, p.name)) {
+            return;  // the gate ended the peer, or the room
+        }
+        if (cb_.has_listener(p.name)) {
             cb_.deliver(std::move(message));
             return;
         }
         auto& in = incoming_for(peer);
-        if (in.count() >= max_pending_per_peer) {
-            return;
+        const auto now = steady_now(factory_);
+        while (!in.waiting.empty() && now - in.waiting.front().arrived > pending_data_timeout) {
+            in.waiting.pop_front();
         }
-        in.waiting.push_back({.message = std::move(message), .arrived = steady_now(factory_)});
+        // As Trystero's pre-listener ring: a newer message of a full action drops its oldest.
+        std::size_t same_action = 0;
+        auto oldest = in.waiting.end();
+        for (auto w = in.waiting.begin(); w != in.waiting.end(); ++w) {
+            if (w->message.name() == p.name && same_action++ == 0) {
+                oldest = w;
+            }
+        }
+        if (same_action >= protocol::max_pre_listener_messages) {
+            in.waiting.erase(oldest);
+        }
+        in.waiting.push_back({
+            .message = std::move(message),
+            .arrived = now,
+            .admitted = verdict == admission::admitted,
+        });
     }
 
     peer_in& incoming_for(std::string_view peer) {
@@ -577,30 +766,57 @@ private:
     }
 
     void on_offer(std::string_view peer, const protocol::proposal& p) {
-        auto& in = incoming_for(peer);
-        if (in.bulk.contains(p.id)) {
+        if (const auto it = incoming_.find(peer);
+            it != incoming_.end() && it->second.bulk.contains(p.id)) {
             cb_.fail_peer(peer, "duplicate action offer");
             return;
         }
-        const auto reject = [&](std::string_view reason) {
-            auto frame = protocol::begin_room_frame(
-                token_, protocol::control_header_size + reason.size(), memory_);
+        // Each rejection returns at once: a control frame that cannot go drops the peer. The room
+        // hears of the rejections of an action it has.
+        const auto reject = [&](std::string_view reason, bool registered = true) {
+            auto frame = begin_frame(protocol::control_header_size + reason.size());
             protocol::append_rejected(frame, p.id, reason);
+            if (registered) {
+                refused(peer, p.name, p.metadata, reason);
+            }
             control(peer, frame);
         };
-        if (p.size > max_receive_bytes_) {
-            reject("payload exceeds receiver size limit");
+        if (!cb_.has_action(p.name)) {
+            reject("unregistered action", false);
             return;
         }
-        if (in.count() >= max_pending_per_peer) {
+        if (!expected(peer, p.name, p.metadata)) {
+            reject("unexpected response", false);
+            return;
+        }
+        if (p.size > payload_limit(p.name)) {
+            reject(size_limit_reason);
+            return;
+        }
+        if (const auto it = incoming_.find(peer);
+            pending_transfers_ >= protocol::max_pending_transfers ||
+            (it != incoming_.end() &&
+             it->second.bulk.size() >= protocol::max_pending_transfers_per_peer)) {
             reject("too many pending transfers");
             return;
         }
+        // The gate, as Trystero asks it once the offer is pending; its code may end the peer.
+        const auto verdict = gate(peer, p.name, static_cast<std::size_t>(p.size), p.metadata);
+        if (verdict == admission::refused) {
+            reject("payload rejected by receiver");
+            return;
+        }
+        if (verdict == admission::admitted && !cb_.may_receive(peer, p.name)) {
+            return;
+        }
+        auto& in = incoming_for(peer);
         auto& b = in.bulk.try_emplace(p.id, allocator()).first->second;
+        ++pending_transfers_;
         b.name = p.name;
         b.format = p.format;
         b.metadata = p.metadata;
-        b.size = static_cast<std::size_t>(p.size);  // within max_receive_bytes_, checked above
+        b.size = static_cast<std::size_t>(p.size);  // within payload_limit, checked above
+        b.chunk = p.wide ? protocol::wide_chunk_size : protocol::chunk_size;
         b.timer = factory_.make_timer(memory_);
         arm(peer, p.id, b);
         drain();
@@ -623,10 +839,13 @@ private:
                            if (b == it->second.bulk.end()) {
                                return;
                            }
+                           // What the room hears of the rejection outlives the transfer's state.
+                           const std::pmr::string name(b->second.name, self->memory_);
+                           const std::pmr::string metadata(b->second.metadata, self->memory_);
                            self->release_bulk(it->second, b);
-                           auto frame = protocol::begin_room_frame(
-                               self->token_, protocol::control_header_size + 32, self->memory_);
+                           auto frame = self->begin_frame(protocol::control_header_size + 32);
                            protocol::append_rejected(frame, id, "action transfer timed out");
+                           self->refused(peer, name, metadata, "action transfer timed out");
                            self->control(peer, frame);
                            self->drain();
                        }));
@@ -642,26 +861,48 @@ private:
             return;  // cancelled or expired transfers cannot resurrect
         }
         auto& t = b->second;
-        if (!t.receiving || c.offset != static_cast<double>(t.data.size()) || c.data.empty() ||
-            c.data.size() != std::min(protocol::chunk_size, t.size - t.data.size())) {
-            cb_.fail_peer(peer, "invalid action chunk offset or length");
+        // As Trystero checks a chunk: a whole offset within the payload, at a chunk's start, and
+        // the length of that chunk. The offset is a float64: compared as one, before it is cast.
+        if (!t.receiving || !(c.offset >= 0) || !(c.offset < static_cast<double>(t.size)) ||
+            std::floor(c.offset) != c.offset) {
+            cb_.fail_peer(peer, "invalid action chunk");
+            return;
+        }
+        const auto offset = static_cast<std::size_t>(c.offset);
+        const auto index = offset / t.chunk;
+        if (offset % t.chunk != 0 || c.data.empty() ||
+            c.data.size() != std::min(t.chunk, t.size - offset)) {
+            cb_.fail_peer(peer, "invalid action chunk");
             return;
         }
         // Room for the payload, then its metadata and name, so the delivered message is this one
         // buffer.
-        if (t.data.empty()) {
-            t.data.reserve(t.size + t.metadata.size() + t.name.size());
+        if (t.seen.empty()) {
+            t.data.resize(t.size + t.metadata.size() + t.name.size());
+            t.seen.resize((((t.size + t.chunk - 1) / t.chunk) + 7) / 8);
         }
-        t.data.insert(t.data.end(), c.data.begin(), c.data.end());
+        const auto bit = static_cast<std::uint8_t>(1U << (index % 8));
+        if ((t.seen[index / 8] & bit) != 0) {
+            cb_.fail_peer(peer, "invalid action chunk");
+            return;
+        }
+        t.seen[index / 8] |= bit;
+        std::ranges::copy(c.data, t.data.begin() + static_cast<std::ptrdiff_t>(offset));
+        t.received += c.data.size();
         arm(peer, c.id, t);
-        if (t.data.size() < t.size) {
+        if (t.received < t.size) {
+            if (cb_.progress) {
+                cb_.progress(peer, t.name, t.metadata,
+                             static_cast<double>(t.received) / static_cast<double>(t.size));
+            }
             return;
         }
         const incoming::range payload_at{.offset = 0, .size = t.size};
         const incoming::range metadata_at{.offset = t.size, .size = t.metadata.size()};
         const incoming::range name_at{.offset = t.size + t.metadata.size(), .size = t.name.size()};
-        t.data.insert(t.data.end(), t.metadata.begin(), t.metadata.end());
-        t.data.insert(t.data.end(), t.name.begin(), t.name.end());
+        std::ranges::copy(t.metadata,
+                          t.data.begin() + static_cast<std::ptrdiff_t>(metadata_at.offset));
+        std::ranges::copy(t.name, t.data.begin() + static_cast<std::ptrdiff_t>(name_at.offset));
         incoming message{
             .peer = std::pmr::string(peer, memory_),
             .format = t.format,
@@ -683,50 +924,97 @@ private:
             in.active.reset();
         }
         in.bulk.erase(b);
+        --pending_transfers_;
     }
 
-    /** Delivers inline frames whose action now has a receiver, and accepts the next transfer of
-     * each idle peer. */
+    /** Delivers inline frames whose action now has a listener, and accepts the next transfer of
+     * each idle peer. It changes the peers' state first, and delivers and sends after: a delivery
+     * or a control frame that cannot go may drop a peer, whose removal clears it from `incoming_`
+     * and drains again. */
     void drain() {
         const auto now = steady_now(factory_);
-        std::pmr::vector<incoming> ready(memory_);
+        std::pmr::vector<waiting_inline> ready(memory_);
+        std::pmr::vector<std::pair<std::pmr::string, std::uint32_t>> accepted(memory_);
         for (auto& [peer, in] : incoming_) {
-            std::pmr::deque<waiting_inline> still_waiting(memory_);
-            for (auto& w : in.waiting) {
-                if (cb_.has_receiver(w.message.name())) {
-                    ready.push_back(std::move(w.message));
-                } else if (now - w.arrived < transfer_timeout) {
-                    still_waiting.push_back(std::move(w));
-                }
-            }
-            in.waiting = std::move(still_waiting);
-            if (in.active) {
-                continue;
-            }
-            for (auto& [id, b] : in.bulk) {
-                if (b.receiving || !cb_.has_receiver(b.name) ||
-                    reserved_bytes_ + b.size > max_receive_bytes_) {
-                    continue;
-                }
-                b.receiving = true;
-                reserved_bytes_ += b.size;
-                in.active = id;
-                control(peer, *control_frame(protocol::append_accepted, id));
-                break;
+            take_ready_inline(in, now, ready);
+            if (!in.active) {
+                accept_next_transfer(peer, in, accepted);
             }
         }
-        for (auto& m : ready) {
-            cb_.deliver(std::move(m));
+        for (auto& w : ready) {
+            deliver_ready(w);
+        }
+        for (const auto& [peer, id] : accepted) {
+            // A delivery or an earlier acceptance may have dropped this peer.
+            if (const auto it = incoming_.find(peer);
+                it != incoming_.end() && it->second.active == id) {
+                control(peer, *control_frame(protocol::append_accepted, id));
+            }
+        }
+    }
+
+    /** Moves a peer's inline frames whose action now has a listener to `ready`, and drops those
+     * that waited past `pending_data_timeout`, as Trystero's sweep drops them, even if their
+     * action is here. */
+    void take_ready_inline(peer_in& in, time_point now, std::pmr::vector<waiting_inline>& ready) {
+        std::pmr::deque<waiting_inline> still_waiting(memory_);
+        for (auto& w : in.waiting) {
+            if (now - w.arrived > pending_data_timeout) {
+                continue;
+            }
+            if (cb_.has_listener(w.message.name())) {
+                ready.push_back(std::move(w));
+            } else {
+                still_waiting.push_back(std::move(w));
+            }
+        }
+        in.waiting = std::move(still_waiting);
+    }
+
+    /** Marks the first of an idle peer's transfers that has a listener and fits the receive
+     * budget as receiving, and records it in `accepted`, the peer's id copied into the room's
+     * resource. */
+    void accept_next_transfer(
+        const std::pmr::string& peer, peer_in& in,
+        std::pmr::vector<std::pair<std::pmr::string, std::uint32_t>>& accepted) {
+        for (auto& [id, b] : in.bulk) {
+            if (b.receiving || !cb_.has_listener(b.name) ||
+                reserved_bytes_ + b.size > max_receive_bytes_) {
+                continue;
+            }
+            b.receiving = true;
+            reserved_bytes_ += b.size;
+            in.active = id;
+            accepted.emplace_back(peer, id);
+            return;
+        }
+    }
+
+    /** Delivers an inline frame whose action now has a listener. A frame kept before its action
+     * had a gate is asked now, as Trystero asks it when it flushes; the gate's code, or a
+     * delivery, may have ended its peer. */
+    void deliver_ready(waiting_inline& w) {
+        if (!w.admitted) {
+            const auto& m = w.message;
+            const auto verdict = gate(m.peer, m.name(), m.payload().size(), m.metadata());
+            if (verdict == admission::refused) {
+                refused(m.peer, m.name(), m.metadata(), "payload rejected by receiver");
+                return;
+            }
+        }
+        if (cb_.may_receive(w.message.peer, w.message.name())) {
+            cb_.deliver(std::move(w.message));
         }
     }
 
     backend::factory& factory_;
     std::pmr::memory_resource* memory_;
-    std::pmr::string token_;
     std::size_t max_receive_bytes_;
     callbacks cb_;
     std::uint32_t next_id_ = 0;
     std::size_t reserved_bytes_ = 0;
+    /** The offers kept across peers, against `protocol::max_pending_transfers`. */
+    std::size_t pending_transfers_ = 0;
     std::pmr::map<std::pmr::string,
                   std::pmr::map<std::uint32_t, std::shared_ptr<outgoing_transfer>>, std::less<>>
         outgoing_;

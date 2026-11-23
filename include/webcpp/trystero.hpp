@@ -21,7 +21,10 @@
 #include <webcpp/trystero/app.hpp>
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/error.hpp>
+#include <webcpp/trystero/identity.hpp>
 #include <webcpp/trystero/options.hpp>
 #include <webcpp/trystero/room.hpp>
+#include <webcpp/trystero/room_error.hpp>
+#include <webcpp/trystero/subscription.hpp>
 
 #endif

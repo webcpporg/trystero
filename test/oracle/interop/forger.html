@@ -5,15 +5,11 @@ Distributed under the Boost Software License, Version 1.0. (See
 accompanying file LICENSE_1_0.txt or copy at
 https://www.boost.org/LICENSE_1_0.txt)
 
-A watcher of the interop test, which run.mjs opens in headless Chrome: it holds no room key, and with `mode=garbage`
-(the default) answers every offer the C++ peer (`target`) publishes with a forged answer in the name of the peer the
-offer is for. With `mode=replay` it forges nothing: it records the first sealed answer and the first sealed offer each
-peer sends the C++ peer, and resends them in that peer's name later, an answer with each new offer of the C++ peer to
-that peer, an offer as soon as that peer announces itself or is asked to offer. With `mode=reflect` it sends the
-target its own sealed texts back: each offer the target publishes to a peer comes back at once as that peer's answer;
-with `decoy`, an id it announces above the target, the target's sealed offer to the decoy comes back as an offer in the
-name of each other peer that announces itself. What anyone who reads the relays can do: the topics are public, a peer
-id proves nothing, and a sealed offer or answer names neither its offer nor a peer.
+A Trystero 0.27.0 peer of the interop test that claims a user it cannot sign for: it joins with a custom
+identity (0.27.0's UserIdentity object) whose sign() signs 0.27.0's startup check with the user's key, so that
+joinRoom takes it, and every later payload, the handshake's user proof among them, with another key. A peer that
+verifies the proof refuses it. Same URL parameters as js.html (app, room, password, relays); its events are
+joined {self, user}, signed {count} for each signature made, peer-join {peer, user} and error {code, error, peer}.
 -->
 <!doctype html>
 <html lang="en">
@@ -34,94 +30,36 @@ id proves nothing, and a sealed offer or answer names neither its offer nor a pe
 <body>
 <pre id="log"></pre>
 <script type="module">
-import {createEvent} from '@trystero-p2p/nostr'
-import {sha1} from '@trystero-p2p/core'
+import {createUserIdentity, joinRoom} from 'trystero'
 
 window.events = []
-const record = (kind, fields = {}) => window.events.push({kind, ...fields})
+const record = (kind, fields = {}) => window.events.push({...fields, kind})
 const params = new URLSearchParams(location.search)
-const target = params.get('target')
-const replay = params.get('mode') === 'replay'
-const reflect = params.get('mode') === 'reflect'
-const decoy = params.get('decoy')
-// mode=reflect with a decoy: the target's sealed offer to the decoy, once it sent one.
-let decoyOffer = null
-// What each peer sent the target, sealed, recorded once: peer id -> text.
-const answers = new Map()
-const offers = new Map()
-const root = ['Trystero', params.get('app'), params.get('room')].join('@')
-const rootTopic = await sha1(root)
-const targetTopic = await sha1(`${root}@${target}`)
-// The peer each peer topic belongs to, learnt from the announcements on the room's topic.
-const owners = new Map()
-const socket = new WebSocket(params.get('relays').split(',')[0])
-socket.onopen = () => {
-    // Every event the relay forwards: a watcher needs no topic of its own.
-    socket.send(JSON.stringify(['REQ', 'all', {}]))
-    record('watching')
-    const announce = async id => socket.send(await createEvent(rootTopic, JSON.stringify({peerId: id})))
-    if (reflect && decoy) {
-        announce(decoy)
-        setInterval(() => announce(decoy), 3000)
-    }
+const param = name => params.get(name) ?? ''
+
+const claimed = await createUserIdentity()
+const other = await createUserIdentity()
+let count = 0
+const identity = {
+    userId: claimed.userId,
+    signPubJwk: claimed.signPubJwk,
+    sign: payload => {
+        record('signed', {count: ++count})
+        return (count === 1 ? claimed : other).sign(payload)
+    },
 }
-socket.onmessage = async message => {
-    const [type, , event] = JSON.parse(message.data)
-    if (type !== 'EVENT') return
-    const topic = event.tags.find(t => t[0] === 'x')?.[1]
-    let content
-    try {
-        content = JSON.parse(event.content)
-    } catch {
-        return
-    }
-    const publish = async (signal, kind, fields) => {
-        socket.send(await createEvent(targetTopic, JSON.stringify(signal)))
-        record(kind, fields)
-    }
-    const announcement = !content.offer && !content.answer && !content.candidate
-    if (reflect) {
-        if (topic === rootTopic && content.peerId && content.peerId !== target) {
-            owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
-        }
-        if (decoy && !decoyOffer && content.peerId === target && content.offer && topic === await sha1(`${root}@${decoy}`)) {
-            decoyOffer = content.offer
-            record('recorded', {what: 'decoy-offer'})
-        } else if (!decoy && content.peerId === target && content.offer && owners.has(topic)) {
-            const victim = owners.get(topic)
-            await publish({peerId: victim, offerId: content.offerId, answer: content.offer}, 'reflected', {what: 'answer', victim})
-        } else if (decoyOffer && topic === rootTopic && announcement && ![target, decoy].includes(content.peerId)) {
-            const victim = content.peerId
-            await publish({peerId: victim, offerId: genOfferId(), offer: decoyOffer}, 'reflected', {what: 'offer', victim})
-        }
-        return
-    }
-    if (topic === rootTopic && content.peerId && content.peerId !== target) {
-        owners.set(await sha1(`${root}@${content.peerId}`), content.peerId)
-        const offer = replay && announcement && offers.get(content.peerId)
-        if (offer) await publish({peerId: content.peerId, offerId: genOfferId(), offer}, 'replayed', {what: 'offer'})
-    } else if (replay && topic === targetTopic && content.peerId !== target) {
-        for (const [what, recorded] of [['answer', answers], ['offer', offers]]) {
-            if (content[what] && !recorded.has(content.peerId)) {
-                recorded.set(content.peerId, content[what])
-                record('recorded', {what, peer: content.peerId})
-            }
-        }
-    } else if (content.peerId === target && owners.has(topic)) {
-        const victim = owners.get(topic)
-        if (!replay && content.offer) {
-            const forged = {peerId: victim, offerId: content.offerId, answer: 'not a sealed answer'}
-            await publish(forged, 'forged', {victim, offerId: content.offerId})
-        } else if (replay && content.offer && answers.has(victim)) {
-            const replayed = {peerId: victim, offerId: content.offerId, answer: answers.get(victim)}
-            await publish(replayed, 'replayed', {what: 'answer'})
-        } else if (replay && announcement && offers.has(victim)) {
-            await publish({peerId: victim, offerId: genOfferId(), offer: offers.get(victim)}, 'replayed', {what: 'offer'})
-        }
-    }
-}
-// A fresh offer id of Trystero's length, as a resender would make one.
-const genOfferId = () => Math.random().toString(36).slice(2, 14).padEnd(12, '0')
+const room = joinRoom({
+    appId: param('app'),
+    identity,
+    rtcConfig: {iceServers: []},
+    ...(param('password') ? {password: param('password')} : {}),
+    ...(param('relays') ? {relayConfig: {urls: param('relays').split(',')}} : {}),
+}, param('room'))
+room.onError(e => record('error', {code: e.code, error: e.message, peer: e.peerId ?? ''}))
+room.onPeerJoin(({peerId: peer, userId: user}) => record('peer-join', {peer, user}))
+const self = await room.getSelf()
+record('joined', {self: self.peerId, user: self.userId})
+window.leave = () => room.leave().then(() => record('left', {error: ''}))
 </script>
 </body>
 </html>

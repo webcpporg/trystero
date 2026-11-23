@@ -65,8 +65,8 @@ namespace {
 struct page {
     test::fixture f;
     asio::executor_work_guard<asio::io_context::executor_type> guard{f.io.get_executor()};
-    std::optional<trystero::app> a_app;
-    std::optional<trystero::app> z_app;
+    std::optional<trystero::test::app> a_app;
+    std::optional<trystero::test::app> z_app;
     std::optional<trystero::room> a;
     std::optional<trystero::room> z;
     std::optional<trystero::action<std::string>> chat_a;
@@ -117,8 +117,8 @@ void join(page& p) {
     p.z.emplace(test::join(*p.z_app, "lobby"));
     p.chat_a.emplace(p.a->make_action<std::string>("chat"));
     p.chat_z.emplace(p.z->make_action<std::string>("chat"));
-    p.a->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
-    p.z->on_peer_join([&p](std::string_view /*peer*/) { met(p); });
+    p.a->on_peer_join([&p](const trystero::peer_event&) { met(p); });
+    p.z->on_peer_join([&p](const trystero::peer_event&) { met(p); });
     p.chat_z->on_message([&p](std::string text, const trystero::message_info& /*info*/) {
         p.received.push_back(std::move(text));
         if (p.received.size() == 2) {

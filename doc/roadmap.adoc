@@ -11,14 +11,24 @@
 What trystero does not port yet, and what it does not build itself yet
 (<<trystero-differences>> gives each feature left out with its reason):
 
-. *Media.* Audio and video tracks and streams, and Trystero's `@_stream`,
-`@_track` and `@_signal` actions with renegotiation. In the browser they are
+. *Media.* Audio and video tracks and streams, and Trystero's `@_stream` and
+`@_signal` actions with renegotiation. In the browser they are
 the page's `MediaStreamTrack` objects. Natively they would be libdatachannel's
 RTP tracks, whose encoding, decoding and capture are the application's. What
 that needs was measured: libdatachannel keeps only weak references to
 tracks, answers with every codec offered unless the answer is pruned, and
 echoes the offerer's `msid` into the answer. Media will be an interface of
 webcpp::webrtc's, which the backends' WebRTC is.
-. *Trystero's other features.* Request actions (`kind: 'request'`),
-decisions on incoming transfers and their progress, the application's own
-handshake, passive rooms, and the other strategies, among them MQTT and BitTorrent trackers.
+. *Trystero 0.27.0's plugins.* Each a change of its own, on an
+interoperable library: signed records and shared state, `makeState` and
+`makeUserState`; roles and moderation, `roles` with its bans and role
+certificates; and `scale`, with its relayed peers and their pairwise keys.
+. *Trystero's other features.* `requestMany`, the progress and the
+cancelling of sends and requests, the receive and request decisions
+answered later, with 0.27.0's bounds on those pending (128 receive
+decisions, 8 of one peer, 64 concurrent requests of one peer), passive
+rooms, and the other strategies, among them MQTT and BitTorrent trackers.
+. *What webcpp::crypto does not provide yet.* A public wipe of a buffer of a
+size known only at run time: trystero wipes the password's copies and the
+buffers of an import with its own `detail::wipe` until webcpp::crypto has
+one.

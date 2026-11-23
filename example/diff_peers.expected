@@ -1,2 +1,2 @@
 peers: 1
-the joined peer's entry: its id
+the joined peer's entry: its user id, without a connection

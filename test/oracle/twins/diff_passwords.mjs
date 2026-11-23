@@ -27,7 +27,7 @@ const other = openPage(async ({joinRoom, RTCPeerConnection, data, next}) => {
 const lobby = joinRoom({...config, password: 'one', rtcPolyfill: RTCPeerConnection}, 'lobby')
 const kitchen = joinRoom({...config, password: 'two', rtcPolyfill: RTCPeerConnection}, 'kitchen')
 // What the two rooms meet.
-const met = room => new Promise(joined => (room.onPeerJoin = joined))
+const met = room => new Promise(joined => room.onPeerJoin(({peerId}) => joined(peerId)))
 const [inLobby, inKitchen] = await Promise.all([met(lobby), met(kitchen)])
 console.log('the lobby, with the password "one": joined')
 console.log('the kitchen, with the password "two": joined')

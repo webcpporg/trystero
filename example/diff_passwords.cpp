@@ -6,10 +6,11 @@
 
 // A difference from Trystero (doc: #trystero-differences-behaviour): passwords across rooms.
 // Trystero JS takes a password with each room, so that one page holds rooms of different
-// passwords, over one connection to a peer it meets in several. A password here is an app's, the
-// same for every room of the app and never changed, since the sealed negotiation that makes a
-// connection authenticates that password before any room of the app reuses the connection: rooms
-// of different passwords are rooms of separate apps, each with its own self id. This program joins
+// passwords, each room with its own connection to a peer it meets in several, which the sealed
+// negotiation of that room authenticates: 0.27.0 has no password challenge on the connection. A
+// password here is an app's, the same for every room of the app and never changed, the app's room
+// keys derived from it: rooms of different passwords are rooms of separate apps, each with its own
+// self id. This program joins
 // a lobby with one password and a kitchen with another, as another peer of the same program does,
 // and compares the peers its two rooms meet. Its twin is test/oracle/twins/diff_passwords.mjs.
 // Both meet over the relay whose URL is in the environment, TRYSTERO_RELAY_URL, which their lanes
@@ -48,8 +49,6 @@ int main() {
         c.password = password;
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when all leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     // The other peer, as another page would be, with the same passwords for the same rooms.
@@ -81,11 +80,11 @@ int main() {
     std::array<std::string, 2> met;
     std::size_t meetings = 0;
     for (std::size_t i = 0; i < rooms.size(); ++i) {
-        rooms[i]->on_peer_join([&, i](std::string_view peer) {
+        rooms[i]->on_peer_join([&, i](const trystero::peer_event& joined) {
             if (!met[i].empty()) {
                 return;
             }
-            met[i] = peer;
+            met[i] = joined.peer_id;
             if (++meetings < met.size()) {
                 return;
             }

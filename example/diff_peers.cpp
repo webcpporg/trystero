@@ -5,8 +5,9 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // A difference from Trystero (doc: #trystero-differences): what a room lists of its peers.
-// Trystero's getPeers maps each joined peer's id to its RTCPeerConnection; room::peers lists the
-// ids, since a connection is the backend's and the room does not hand it out. Two apps of one
+// Trystero's getPeers maps each joined peer's id to its user id, its RTCPeerConnection and the rest
+// of its PeerInfo; room::peers maps it to its user id and the rest without the connection, since a
+// connection is the backend's and the room does not hand it out. Two apps of one
 // program meet in a room, as two pages would. Its twin is test/oracle/twins/diff_peers.mjs. Both
 // meet over the relay whose URL is in the environment, TRYSTERO_RELAY_URL, which their lanes start
 // on 127.0.0.1.
@@ -41,8 +42,6 @@ int main() {
         c.app_id = "webcpp-trystero-differences";
         c.relay_urls = {relay};
         c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-        // The connection closes once no room uses it, so that the program ends when both leave.
-        c.idle_timeout = std::chrono::milliseconds{0};
         return c;
     };
     trystero::app other_app(io.get_executor(), backend, config());
@@ -59,11 +58,14 @@ int main() {
         other->async_leave([](boost::system::error_code) {});
     };
     // tag::example[]
-    room.on_peer_join([&](std::string_view peer_id) {
+    room.on_peer_join([&](const trystero::peer_event& joined) {
         const auto peers = room.peers();
+        const auto entry = peers.find(joined.peer_id);
         std::cout << "peers: " << peers.size() << '\n'
                   << "the joined peer's entry: "
-                  << (peers.size() == 1 && peers.front() == peer_id ? "its id" : "not its id")
+                  << (entry != peers.end() && entry->second.user_id == joined.user_id
+                          ? "its user id, without a connection"
+                          : "not its own")
                   << '\n';
         leave();
     });

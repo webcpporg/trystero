@@ -2,12 +2,12 @@
   "name": "webcpp-trystero-tests",
   "private": true,
   "type": "module",
-  "description": "The JavaScript side of the tests: Trystero JS 0.26 as the oracle, as the twins of the examples and as the interop peer, werift as its WebRTC in Node, and a local Nostr relay.",
+  "description": "The JavaScript side of the tests: Trystero JS 0.27.0 as the oracle, as the twins of the examples and as the interop peer, werift as its WebRTC in Node, and a local Nostr relay.",
   "devDependencies": {
     "@noble/secp256k1": "3.2.0",
-    "@trystero-p2p/core": "0.26.0",
-    "@trystero-p2p/nostr": "0.26.0",
-    "trystero": "0.26.0",
+    "@trystero-p2p/core": "0.27.0",
+    "@trystero-p2p/nostr": "0.27.0",
+    "trystero": "0.27.0",
     "werift": "0.24.4",
     "ws": "8.22.0"
   }

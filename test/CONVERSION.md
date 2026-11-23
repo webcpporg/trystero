@@ -19,10 +19,11 @@ new one checks it, so that the conversion can be reviewed assertion by assertion
 | `test/unit/native_peer_connection_test.cpp` | `test/native_peer_connection_test.cpp` | `native_peer_connection` | native |
 | `test/unit/native_room_test.cpp` | `test/native_room_test.cpp` | `native_room` | native |
 
-The fixture `test/unit/fixtures/expected.json`, which the original's oracle writes from Trystero
-JS 0.26, is now `test/fixtures/expected/expected.json`, byte for byte. `protocol` and
-`native_sealer` receive its path as their one argument (`<testing.input-file>`), as the old
-`run` rule passed it.
+The fixture `test/unit/fixtures/expected.json`, which the original's oracle wrote from Trystero
+JS 0.26, became `test/fixtures/expected/expected.json`, byte for byte, and is now
+`test/fixtures/oracle/expected.json`, which the oracle writes from Trystero JS 0.27.0.
+`protocol` and `native_sealer` receive its path as their one argument (`<testing.input-file>`),
+as the old `run` rule passed it.
 
 `native_peer_connection` and `native_room` declare `<exception-handling>on`: they need
 `native::peer_connection` and `native::backend`, which exist only with exceptions, since

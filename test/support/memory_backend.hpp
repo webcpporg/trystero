@@ -13,8 +13,14 @@
 #include <webcpp/trystero/protocol/json.hpp>
 #include <webcpp/trystero/protocol/nostr.hpp>
 #include <webcpp/trystero/protocol/relays.hpp>
+#include <webcpp/trystero/protocol/room_keys.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
+
+#include <webcpp/hash/hmac.hpp>
+#include <webcpp/hash/pbkdf2.hpp>
+#include <webcpp/trystero/detail/wipe.hpp>
 
 #include <webcpp/asio/bind_allocator.hpp>
 #include <webcpp/asio/io_context.hpp>
@@ -45,15 +51,15 @@
 /**
  * A backend in memory, for running whole rooms in one process: Nostr relays that forward ephemeral
  * events to matching subscriptions, peer connections that pair through their descriptions, data
- * channels that deliver in order, and a sealer that only opens what was sealed under the same key.
- * Every event is posted to the io_context, never delivered from inside the call that caused it, as
- * in a browser.
+ * channels that deliver in order, and a password's PBKDF2 computed at once, in the call, and
+ * completed through a post. Every event is posted to the io_context, never delivered from inside
+ * the call that caused it, as in a browser.
  *
  * Tip: what a room makes, and what a room receives, is allocated in that room's resource, which
  * each factory method is given; the network's own state (its relays, their subscriptions, its
  * record of the connections) is in the resource the network is constructed with, and changes only
  * when a room joins, connects or leaves. The state of the hooks a test drives (held frames,
- * deferred opens, held sealer opens, a buffering channel's queue, the virtual clock) is in the
+ * deferred opens, held derivations, a buffering channel's queue, the virtual clock) is in the
  * default resource and is made only when the test sets the hook.
  */
 namespace webcpp::trystero::test {
@@ -180,7 +186,7 @@ public:
     };
 
     explicit memory_relay(std::pmr::memory_resource* memory)
-        : memory_(memory), subscriptions_(memory) {}
+        : published(memory), requests(memory), memory_(memory), subscriptions_(memory) {}
 
     void receive(const std::shared_ptr<memory_websocket>& from, std::string_view text);
 
@@ -194,16 +200,41 @@ public:
     /** Closes every connection that has a subscription, as a relay that goes away does. */
     void close_all();
 
+    /** How many subscriptions the relay holds, of every socket. */
+    [[nodiscard]] std::size_t subscription_count() const { return subscriptions_.size(); }
+
     std::size_t events_seen = 0;
     /** How many texts went through the relay: each text it received from a socket, and each text
      * a socket of it handed to its room. A test that measures a window of a room's life reads it
      * to know whether relay traffic, which parses JSON at both ends, happened in that window. */
     std::size_t texts = 0;
+    /** Whether a socket of the relay drops each EVENT it is sent, its `send` returning false, as
+     * a connection whose writes fail; memory_network::fail_publish sets it. */
+    bool fail_events = false;
     /** Answers this many EVENTs with "rate-limited:", to exercise the strategy's backoff. */
     std::size_t rate_limit_next = 0;
     /** Closes each connection right after its subscription, as a relay does after a text longer
      * than a room reads. */
     bool close_after_subscribe = false;
+    /** Whether to keep, for each event the relay takes, its topic and its signer's public key in
+     * `published`; off, the relay allocates nothing for it. */
+    bool record_published = false;
+
+    /** An event the relay took: its topic and the public key that signed it. */
+    struct published_event {
+        std::pmr::string topic;
+        std::pmr::string pubkey;
+    };
+
+    /** The events taken while `record_published` is on, in order, in the relay's resource. */
+    std::pmr::vector<published_event> published;
+
+    /** Whether to keep the text of each REQ the relay takes in `requests`; off, the relay
+     * allocates nothing for it. */
+    bool record_requests = false;
+
+    /** The REQs taken while `record_requests` is on, in order, in the relay's resource. */
+    std::pmr::vector<std::pmr::string> requests;
 
 private:
     using key = std::pair<const memory_websocket*, std::pmr::string>;
@@ -237,15 +268,17 @@ public:
         });
     }
 
-    void send(std::string_view text) override {
-        if (!open_) {
-            return;
+    bool send(std::string_view text) override {
+        if (!open_ ||
+            (relay_ != nullptr && relay_->fail_events && text.starts_with(R"(["EVENT")"))) {
+            return false;
         }
         post_in(io_, memory_, [self = shared_from_this(), text = std::pmr::string(text, memory_)] {
             if (self->open_ && self->relay_) {
                 self->relay_->receive(self, text);
             }
         });
+        return true;
     }
 
     /** Delivers a text the relay made in this socket's resource; the relay counts it in its
@@ -338,6 +371,9 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
     }
     const std::string_view type = protocol::json::text_of(message.at(0));
     if (type == "REQ" && message.size() >= 3) {
+        if (record_requests) {
+            requests.emplace_back(text);
+        }
         subscriptions_.insert_or_assign(
             key{from.get(), std::pmr::string(protocol::json::text_of(message.at(1)), memory_)},
             subscription_of(from, message.at(2), memory_));
@@ -370,6 +406,12 @@ inline void memory_relay::receive(const std::shared_ptr<memory_websocket>& from,
         }
         // The event's first tag, ["x", <topic>].
         const std::string_view topic = protocol::json::text_of(event["tags"].at(0).at(1));
+        if (record_published) {
+            published.push_back({
+                .topic = std::pmr::string(topic, memory_),
+                .pubkey = std::pmr::string(protocol::json::text_of(event["pubkey"]), memory_),
+            });
+        }
         for (auto& [subscribed, s] : subscriptions_) {
             const auto socket = s.socket.lock();
             if (!socket || !s.kinds.contains(*kind) || !s.topics.contains(topic)) {
@@ -528,8 +570,56 @@ private:
     bool draining_ = false;
 };
 
-/** Peer connections pair through their descriptions: "mem:<id>" names the connection that wrote it.
+/**
+ * The description a memory connection writes: `mem:<id>`, which names it, then a DTLS fingerprint
+ * line, `a=fingerprint:sha-256 <F>`, `F` the 32 bytes of the SHA-256 of `mem-fingerprint:<id>` in
+ * uppercase hexadecimal pairs joined by `:`, as a browser writes its certificate's.
+ *
+ * @param id The connection's id.
+ * @param memory The resource of the text.
+ * @return The description, its lines ended by CRLF.
  */
+inline std::pmr::string memory_description(std::size_t id, std::pmr::memory_resource* memory) {
+    std::pmr::string label("mem-fingerprint:", memory);
+    protocol::json::append_integer(label, static_cast<std::int64_t>(id));
+    const auto digest = protocol::sha256(label);
+    std::pmr::string sdp("mem:", memory);
+    protocol::json::append_integer(sdp, static_cast<std::int64_t>(id));
+    sdp += "\r\na=fingerprint:sha-256 ";
+    constexpr std::string_view digits = "0123456789ABCDEF";
+    for (std::size_t i = 0; i < digest.size(); ++i) {
+        if (i != 0) {
+            sdp += ':';
+        }
+        sdp += digits[digest[i] >> 4U];
+        sdp += digits[digest[i] & 0x0fU];
+    }
+    sdp += "\r\n";
+    return sdp;
+}
+
+/**
+ * The id of the connection that wrote a description: the number of its first line, `mem:<id>`.
+ *
+ * @param sdp The description.
+ * @return The id; nothing when the first line is not `mem:` and a number.
+ */
+inline std::optional<std::size_t> memory_description_id(std::string_view sdp) {
+    const auto first_line = sdp.substr(0, sdp.find_first_of("\r\n"));
+    if (!first_line.starts_with("mem:")) {
+        return std::nullopt;
+    }
+    std::size_t id = 0;
+    const auto* const end = first_line.data() + first_line.size();
+    const auto [at, ec] = std::from_chars(first_line.data() + 4, end, id);
+    if (ec != std::errc{} || at != end) {
+        return std::nullopt;
+    }
+    return id;
+}
+
+/** Peer connections pair through their descriptions, which @ref memory_description writes; the
+ * first line, `mem:<id>`, names the connection that wrote it. */
 class memory_peer_connection : public backend::peer_connection,
                                public std::enable_shared_from_this<memory_peer_connection> {
 public:
@@ -567,8 +657,7 @@ public:
                 return;
             }
             self->local_set_ = true;
-            std::pmr::string sdp("mem:", self->memory_);
-            protocol::json::append_integer(sdp, static_cast<std::int64_t>(self->id_));
+            const auto sdp = memory_description(self->id_, self->memory_);
             done({}, self->remote_id_ ? "answer" : "offer", sdp);
             post_in(self->io_, self->memory_, [self] {
                 if (self->closed_ || !self->h_.ice_candidate) {
@@ -588,12 +677,8 @@ public:
         post_in(io_, memory_,
                 [self = shared_from_this(), sdp = std::pmr::string(sdp_view, memory_),
                  done = std::move(done)]() mutable {
-                    std::size_t remote = 0;
-                    const bool ours =
-                        sdp.starts_with("mem:") &&
-                        std::from_chars(sdp.data() + 4, sdp.data() + sdp.size(), remote).ec ==
-                            std::errc{};
-                    if (self->closed_ || !ours) {
+                    const auto remote = memory_description_id(sdp);
+                    if (self->closed_ || !remote) {
                         done(make_error_code(error::backend_failure));
                         return;
                     }
@@ -610,6 +695,10 @@ public:
     }
 
     bool has_remote_description() const override { return remote_id_.has_value(); }
+
+    /** The network's `max_message_size` once a remote description is applied, as a browser's
+     * `sctp` appears with it; nothing before. */
+    [[nodiscard]] std::optional<std::size_t> max_message_size() const override;
 
     void close() override {
         if (closed_) {
@@ -709,10 +798,46 @@ public:
         auto socket = std::allocate_shared<memory_websocket>(
             std::pmr::polymorphic_allocator<>(memory), io_, relay, std::move(h), memory);
         socket->open();
+        ++websocket_connects;
         return socket;
     }
 
+    /** How many WebSockets were asked for, of every relay, reachable or not. */
+    std::size_t websocket_connects = 0;
+
+    /** When true, the network has a page's `online` and `offline` events, which
+     * page_connectivity() fires; false, as natively, it watches nothing. */
+    bool page_events = false;
+
+    /** A watch while `page_events` holds, its handler kept in `memory`; else none. */
+    std::shared_ptr<void> watch_connectivity(handler<void(bool online)> changed,
+                                             std::pmr::memory_resource* memory) override {
+        if (!page_events) {
+            return nullptr;
+        }
+        auto watch = std::allocate_shared<handler<void(bool)>>(
+            std::pmr::polymorphic_allocator<>(memory), std::move(changed));
+        watches_.push_back(watch);
+        return watch;
+    }
+
+    /** Fires the page's `online` (`online` true) or `offline` event: each watch not destroyed is
+     * called after it, posted, as a page's listener posts. */
+    void page_connectivity(bool online) {
+        for (const auto& w : watches_) {
+            webcpp::asio::post(io_, [w, online] {
+                if (const auto watch = w.lock()) {
+                    (*watch)(online);
+                }
+            });
+        }
+    }
+
     void make_unreachable(std::string_view url) { unreachable_.emplace(url); }
+
+    /** Makes every write of an event to the relay at `url` fail from now on: its sockets drop each
+     * EVENT, their `send` returning false, as a connection whose writes fail. */
+    void fail_publish(std::string_view url) { relay(url).fail_events = true; }
 
     std::shared_ptr<backend::peer_connection> make_peer_connection(
         std::span<const backend::ice_server> servers, std::pmr::memory_resource* memory) override {
@@ -752,13 +877,40 @@ public:
                                                   std::weak_ptr<virtual_clock_state>(clock_));
     }
 
-    std::shared_ptr<backend::sealer> make_sealer(std::array<std::uint8_t, 32> key,
-                                                 std::pmr::memory_resource* memory) override;
+    /**
+     * PBKDF2-HMAC-SHA-256 of `password` with `salt` and @ref pbkdf2_iterations iterations, computed
+     * in the call with webcpp::hash; `done` posted, or held while @ref derive_delay is set.
+     */
+    void derive_password_master(std::span<const std::uint8_t> password,
+                                std::span<const std::uint8_t, 32> salt,
+                                std::span<std::uint8_t, 32> out,
+                                handler<void(boost::system::error_code)> done) override {
+        ++derivations;
+        boost::system::error_code ec;
+        if (fail_derivations > 0) {
+            --fail_derivations;
+            ec = make_error_code(error::backend_failure);
+        } else if (!webcpp::hash::pbkdf2<webcpp::hash::hmac_sha2_256>(out, password, salt,
+                                                                      pbkdf2_iterations)) {
+            ec = make_error_code(error::backend_failure);
+        }
+        if (ec) {
+            webcpp::trystero::detail::wipe(out.data(), out.size());
+        }
+        if (derive_delay) {
+            held_derivations_.push_back({.ec = ec, .done = std::move(done)});
+            return;
+        }
+        complete_derivation(ec, std::move(done));
+    }
 
     void random(std::span<std::uint8_t> out) override {
         random_bytes += out.size();
         for (auto& b : out) {
             b = static_cast<std::uint8_t>(random_());
+        }
+        if (on_random) {
+            on_random(out);
         }
     }
 
@@ -794,6 +946,43 @@ public:
     std::size_t peak_connections = 0;
     /** How many random bytes were drawn. */
     std::size_t random_bytes = 0;
+    /** Called with every draw of random bytes once it is made: a test checks that a value came
+     * from the backend's randomness. */
+    std::function<void(std::span<const std::uint8_t>)> on_random;
+    /** How many derivations of a password's master were asked for. */
+    std::size_t derivations = 0;
+    /** How many of the next derivations to fail, with `error::backend_failure`. */
+    std::size_t fail_derivations = 0;
+    /**
+     * The iterations of the network's PBKDF2. Its rooms meet only each other, so that the count
+     * need not be 0.27.0's 600,000, which takes seconds in a debug build: the platform backend's
+     * is (`protocol::pbkdf2_iterations`), and crypto_layer proves its master against the vectors.
+     */
+    std::uint64_t pbkdf2_iterations = 1'000;
+    /** When true, every derivation's completion waits until release_derivations(), as a page's
+     * WebCrypto takes its time. */
+    bool derive_delay = false;
+
+    /** Completes the derivations held, in the order they were asked for. */
+    void release_derivations() {
+        for (auto& held : std::exchange(held_derivations_, {})) {
+            complete_derivation(held.ec, std::move(held.done));
+        }
+    }
+
+    /** How many derivations wait to be released. */
+    [[nodiscard]] std::size_t held_derivations() const { return held_derivations_.size(); }
+
+    /** What every connection's `max_message_size()` says once it has a remote description:
+     * Chrome's 256 KiB by default, which takes wide chunks; a test sets less, or nothing, for a
+     * transport that takes only narrow ones. */
+    std::optional<std::size_t> max_message_size = std::size_t{256} * 1024;
+
+    /** The longest frame a channel sends, when set: a longer one is refused and closes the
+     * sending channel, as the platform's channel closes on a send its transport refuses. A test
+     * sets it below `max_message_size` for a transport that refuses what it announced. */
+    std::optional<std::size_t> send_limit;
+
     /** How many of the next peer connections to refuse, as a browser at its limit does. */
     std::size_t refuse_peer_connections = 0;
     /** Whether to record the URL of every ICE server a peer connection is made with. */
@@ -822,15 +1011,6 @@ public:
     void open(std::size_t pc);
     /** Delivers `frame` on the channel of `pc`, as if its other end had sent it. */
     void inject(std::size_t pc, std::span<const std::uint8_t> frame);
-    /** When true, every sealer's opens wait until release_sealer_opens(), as Web Crypto's take
-     * their time in a page while the relays' texts keep coming. */
-    bool hold_sealer_opens = false;
-    /** Completes the sealer opens held, in the order they were asked for. */
-    void release_sealer_opens();
-
-    /** How many sealer opens wait to be released. */
-    [[nodiscard]] std::size_t held_sealer_opens() const { return held_sealer_opens_.size(); }
-
     /** Reports `failed` on `pc`, then closes its channel. */
     void fail(std::size_t pc);
     /** Reports `disconnected` on `pc`; its channel stays open. */
@@ -870,7 +1050,6 @@ public:
 private:
     friend class memory_data_channel;
     friend class memory_peer_connection;
-    friend class memory_sealer;
 
     /** A frame held by the filter, and every frame its sending end sent after it. */
     struct held_frame {
@@ -878,14 +1057,19 @@ private:
         std::vector<std::uint8_t> bytes;
     };
 
-    /** A sealer's open held by `hold_sealer_opens`: its result, made when it was asked for, and
-     * what it completes, in the resource of the room that asked. */
-    struct held_open {
-        std::pmr::memory_resource* memory;
-        bool ours;
-        std::pmr::string plain;
-        handler<void(backend::error_code, std::string_view)> done;
+    /** A derivation held by `derive_delay`: its result, made when it was asked for, and what it
+     * completes. */
+    struct held_derivation {
+        boost::system::error_code ec;
+        handler<void(boost::system::error_code)> done;
     };
+
+    /** Posts a derivation's completion, allocated as its handler's allocator says. */
+    void complete_derivation(boost::system::error_code ec,
+                             handler<void(boost::system::error_code)> done) {
+        auto* const memory = done.get_allocator().resource();
+        post_in(io_, memory, [ec, done = std::move(done)]() mutable { done(ec); });
+    }
 
     /** Holds, drops or delivers `frame`, as the filter and the frames held before it say. */
     void route(std::size_t from, std::size_t to, std::span<const std::uint8_t> frame);
@@ -905,14 +1089,19 @@ private:
     std::size_t next_pc_ = 0;
     std::map<std::size_t, std::deque<held_frame>> held_;                  // by the receiving end
     std::map<std::size_t, std::weak_ptr<memory_data_channel>> deferred_;  // ends waiting for open()
-    std::deque<held_open> held_sealer_opens_;
+    std::deque<held_derivation> held_derivations_;
     std::shared_ptr<virtual_clock_state> clock_;
+    std::vector<std::weak_ptr<handler<void(bool)>>> watches_;  // made by watch_connectivity
 };
 
 inline memory_peer_connection::~memory_peer_connection() {
     if (const auto registry = registry_.lock()) {
         registry->erase(id_);
     }
+}
+
+inline std::optional<std::size_t> memory_peer_connection::max_message_size() const {
+    return remote_id_ ? net_.max_message_size : std::nullopt;
 }
 
 inline void memory_peer_connection::try_connect() {
@@ -976,6 +1165,10 @@ inline void memory_data_channel::bind_to(memory_network& net, std::size_t pc) {
 inline void memory_data_channel::send(std::span<const std::uint8_t> frame) {
     const auto remote = remote_.lock();
     if (!open_ || !remote || registry_.expired()) {
+        return;
+    }
+    if (net_->send_limit && frame.size() > *net_->send_limit) {
+        close();
         return;
     }
     bytes_sent += frame.size();
@@ -1206,75 +1399,6 @@ inline bool memory_network::advance(std::chrono::milliseconds by) {
 
 inline std::size_t memory_network::scheduled() const {
     return clock_ ? clock_->due.size() : 0;
-}
-
-/** Seals as "<iv>$<base64(plaintext)>" whose IV is the key's first 16 bytes: only the same key
- * opens it. */
-class memory_sealer : public backend::sealer {
-public:
-    memory_sealer(memory_network& net, std::array<std::uint8_t, 32> key,
-                  std::pmr::memory_resource* memory)
-        : net_(net), io_(net.io()), key_(key), memory_(memory) {}
-
-    /** Posts the completion of an open whose result is known: `plain` when the text was `ours`. */
-    static void complete(webcpp::asio::io_context& io, std::pmr::memory_resource* memory, bool ours,
-                         std::pmr::string plain,
-                         handler<void(backend::error_code, std::string_view)> done) {
-        post_in(io, memory, [ours, plain = std::move(plain), done = std::move(done)]() mutable {
-            done(ours ? backend::error_code{} : make_error_code(error::wrong_password), plain);
-        });
-    }
-
-    void seal(std::string_view plaintext,
-              handler<void(backend::error_code, std::string_view)> done) override {
-        auto text = protocol::format_sealed(
-            std::span(key_).first(16),
-            std::span(reinterpret_cast<const std::uint8_t*>(plaintext.data()), plaintext.size()),
-            memory_);
-        post_in(io_, memory_,
-                [text = std::move(text), done = std::move(done)]() mutable { done({}, text); });
-    }
-
-    void open(std::string_view sealed,
-              handler<void(backend::error_code, std::string_view)> done) override {
-        const auto parts = protocol::parse_sealed(sealed, memory_);
-        const auto iv = std::span(key_).first(16);
-        const bool ours =
-            parts && std::equal(parts->iv.begin(), parts->iv.end(), iv.begin(), iv.end());
-        std::pmr::string plain(memory_);
-        if (ours) {
-            plain.assign(parts->ciphertext.begin(), parts->ciphertext.end());
-        }
-        if (net_.hold_sealer_opens) {
-            net_.held_sealer_opens_.push_back({
-                .memory = memory_,
-                .ours = ours,
-                .plain = std::move(plain),
-                .done = std::move(done),
-            });
-            return;
-        }
-        complete(io_, memory_, ours, std::move(plain), std::move(done));
-    }
-
-private:
-    memory_network& net_;
-    webcpp::asio::io_context& io_;
-    std::array<std::uint8_t, 32> key_;
-    std::pmr::memory_resource* memory_;
-};
-
-inline std::shared_ptr<backend::sealer> memory_network::make_sealer(
-    std::array<std::uint8_t, 32> key, std::pmr::memory_resource* memory) {
-    return std::allocate_shared<memory_sealer>(std::pmr::polymorphic_allocator<>(memory), *this,
-                                               key, memory);
-}
-
-inline void memory_network::release_sealer_opens() {
-    for (auto& held : std::exchange(held_sealer_opens_, {})) {
-        memory_sealer::complete(io_, held.memory, held.ours, std::move(held.plain),
-                                std::move(held.done));
-    }
 }
 
 }  // namespace webcpp::trystero::test

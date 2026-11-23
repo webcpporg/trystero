@@ -1,18 +1,28 @@
 # trystero
 
 trystero is a header-only port of [Trystero](https://github.com/dmotz/trystero)
-0.26.0's serverless WebRTC rooms for C++20, one of the libraries of
+0.27.0's serverless WebRTC rooms for C++20, one of the libraries of
 [webcpp](https://github.com/webcpporg/webcpp). Peers find each other over
 public Nostr relays and exchange messages directly, over WebRTC data channels.
 The wire is Trystero's: a room joined from C++ and the same room joined from
 Trystero's JavaScript are one room.
+
+trystero speaks Trystero 0.27.0 (upstream commit `8d3f57e`): its topics, room
+keys, sealing, ids, relays and action wire, each value proven against vectors
+recorded from 0.27.0's own code; its identities, signed with ECDSA P-256, and
+its handshake; and its room API, with listeners that return a subscription,
+users, `max_users`, room errors, request actions and the relays'
+connectivity. Its rooms meet Trystero 0.27.0's: the interop lane meets 0.27.0
+pages in headless Chrome with the browser's peer and the native one. Programs
+of trystero 0.1.0, the port of Trystero 0.26.0, move as
+[Moving from trystero 0.1.0](#moving-from-trystero-010) says.
 
 A room runs on two targets, native and emscripten, through one platform
 backend:
 
 | Header | Target | What it holds |
 | --- | --- | --- |
-| `<webcpp/trystero/platform/backend.hpp>` | native and emscripten | `platform::backend`: webcpp::webrtc for WebRTC, natively over libdatachannel and in a page over its `RTCPeerConnection`; webcpp::beast for the relays' WebSockets, natively Boost.Beast's and in a page its `WebSocket`, their URLs read with Boost.URL; webcpp::asio's timers; and per target the sealer and the randomness, natively OpenSSL's AES-GCM and `RAND_bytes`, in a page `crypto.subtle` and `getentropy` |
+| `<webcpp/trystero/platform/backend.hpp>` | native and emscripten | `platform::backend`: webcpp::webrtc for WebRTC, natively over libdatachannel and in a page over its `RTCPeerConnection`; webcpp::beast for the relays' WebSockets, natively Boost.Beast's and in a page its `WebSocket`, their URLs read with Boost.URL; webcpp::asio's timers; webcpp::crypto's `random_device` for randomness; and the PBKDF2 of a room's password, webcpp::hash's, natively on a thread of its own and in a page through `crypto.subtle` |
 | `<webcpp/trystero/platform/page.hpp>` | emscripten | `platform::page_call` and `platform::js_string`, what a page's program uses beside the backend |
 
 `<webcpp/trystero.hpp>` is the rooms themselves, which build on both targets
@@ -23,68 +33,107 @@ connection and data channel on both targets, and trystero's Asio is
 natively: a program runs its `io_context` from `main` on both targets, in
 the browser under a work guard, where `run` suspends into the page's event
 loop and the page's calls into C++ only post to it. Every name is in the
-namespace `webcpp::trystero`. Messages, binary data and pings are ported;
-audio and video tracks are not yet.
+namespace `webcpp::trystero`. Messages, binary data, requests and pings are
+ported; audio and video tracks are not yet. A room seals and opens its
+signals in the call, with webcpp::crypto's AES-256-GCM, and hashes with
+webcpp::hash: the backend has no sealer of its own.
 
 trystero raises no exception of its own: an operation that can fail completes
 with an error code. Every part of it, the platform backend included, compiles
 and works without exceptions: webcpp::webrtc calls libdatachannel's C API,
 where none crosses.
 
-An `app` represents this program in one application: one peer id and one
-connection per remote peer, shared by its rooms, with one immutable password
-for the app. Different passwords use separate apps with distinct self ids.
-Construct it with the
-executor, backend and moved `app_config`, then call `join` and test its
-`boost::system::result<room>`. The standalone room constructor and
-`room_config` are removed: shared configuration, including the password,
-moves to `app_config`; handshake timeout and receive limit move to
-`room_options`. Rooms have no password override. A new password requires a
-new app. Two peers
-in one process use two apps; rooms that must not be linked use one app each.
+An `app` represents this program in one application: one P-256 endpoint key,
+made with the app, whose public key derives its peer id; one user, the
+`user_identity` its configuration gives or an ephemeral one it makes; and one
+immutable password, from which each room derives its keys off the room's
+thread. Each room negotiates its own connection to each remote peer, as a
+room of 0.27.0 does, and admits a peer once 0.27.0's handshake verified its
+endpoint and its user, both signed over the connection's DTLS fingerprints.
+Different passwords use separate apps with distinct peer ids. Construct it
+with the executor, backend and moved `app_config`, then call `join` and test
+its `boost::system::result<room>`. 0.27.0 removed the custom peer id and the
+handshake timeout: `app_config` has no `self_id`, and `room_options` no
+`handshake_timeout`; `room_options::max_users` bounds a room's users. A
+room's `on_*` functions add listeners and return a `subscription`;
+`on_error` reports a `room_error` with 0.27.0's code; a send to a target not
+connected completes with `error::not_connected`. `create_user_identity`,
+`export_user_identity` and `import_user_identity` make, keep and read again
+a user, 0.27.0's text included: nothing is kept for the program, which
+stores the exported text where it wants. Rooms have no password override. A
+new password requires a new app. Two peers in one process use two apps;
+rooms that must not be linked use one app each.
 
-`app_config::memory` receives the app's state, shared connections, received
-frames and every log sentence. `room_options::memory` receives a room's
-state, bindings, actions, relays, handlers and JSON; null uses the app's
-resource. A received owning binary payload moves when its message buffer
-and room resources match, and is copied once otherwise; received pmr text
-is always copied once. Completion handlers use their own associated allocator,
+`app_config::memory` receives the app's state, its identities and the key
+records and signatures it verified, the rooms' keys and every log sentence.
+`room_options::memory` receives a room's state, its connections and the
+frames received on them, actions, relays, handlers and JSON; null uses the
+app's resource. A received `pmr_bytes` payload moves out of its frame;
+received pmr text is always copied once. Completion handlers use their own associated allocator,
 which `webcpp::asio::bind_allocator` sets. The app's resource must outlive
 its handle, all its rooms, retained values and pending operations; each
 room's resource must outlive its values and operations too. Declare both
 before the io_context and drain or destroy it first; in a browser keep them
 for the page's life. Pools suit long-lived apps and rooms. webcpp::webrtc's
-connections and channels use the app's resource; libdatachannel, OpenSSL
-and the browser retain their own internal allocations.
+connections and channels use the room's resource; libdatachannel, OpenSSL,
+natively the cipher context of each seal and open and the PBKDF2 thread, and
+the browser retain their own internal allocations.
 
-A passwordless app's rooms are open to peers already connected through any
-of its rooms: presence reveals their tokens. A protected app uses a separate
-identity and connection; the initial sealed signaling authenticates its
-password before its rooms can share that connection. The Trystero JS 0.26.0
-wire remains unchanged, including its one-way room handshake: a JS page
-that mixes room passwords still exposes its own rooms. Configure each JS
-app with one password too. A peer that knows a C++ app's password can still
-send a wrong room proof, reported by the lower id only.
+An app's password, `app_config::password`, seals the signals of each of its
+rooms, as a Trystero JS room's password seals its own: a peer of another
+password reads none of them, and the room reports its sealed offer or answer
+as `decrypt_failed`. Each room negotiates its own connections with
+Trystero 0.27.0's signed handshake, as a Trystero JS room does.
+
+## Moving from trystero 0.1.0
+
+trystero 0.1.0 ported Trystero 0.26.0; its rooms meet only Trystero 0.27.0's
+now, as 0.27.0's meet no 0.26.0 room. A program moves as Trystero's own
+programs move from 0.26.0 to 0.27.0:
+
+- `app_config::self_id` and `room_options::handshake_timeout` are gone: the
+  app derives its id from its endpoint key (`app::self_id()`,
+  `room::self()`), and a peer has 10 s for its handshake.
+- `app_config::idle_timeout`, `app::max_rooms` and `error::too_many_rooms`
+  are gone with the connection an app's rooms shared: each room has its own.
+- `error::wrong_password` and `error::handshake_timed_out` are gone with
+  0.26.0's password handshake: another password is `decrypt_failed`, a failed
+  handshake `handshake_failed`. The values of `error` after them moved, so a
+  program compares codes with the enumerators.
+- Each `on_*` adds a listener and returns a `subscription`; a join listener
+  takes a `peer_event`, an error listener a `room_error`; `peers()` maps each
+  peer's id to its `peer_info`, and `users()` lists the users.
+- A send to a target that has not joined completes with
+  `error::not_connected`, where it was `error::no_such_peer`.
+- A peer's user is the one its handshake verified: `app_config::identity`
+  gives the app's, and `export_user_identity` and `import_user_identity` keep
+  one across runs. `room_options::max_users` bounds a room's users.
+- A backend of a program's own returns from `backend::websocket::send`
+  whether the socket queued the text.
+
+The page's "Moving from trystero 0.1.0" lists each change with its
+counterpart.
 
 ## Building inside the superproject
 
 trystero is developed inside the webcpp superproject, as a Boost library is
-developed inside Boost. It builds on webcpp::asio, webcpp::webrtc and, for
-the relays, webcpp::beast, three libraries of the superproject; its
-TLS and WebRTC dependencies are built from pinned sources, and so is
-libsecp256k1:
+developed inside Boost. It builds on webcpp::asio, webcpp::hash,
+webcpp::crypto, webcpp::webrtc and, for the relays, webcpp::beast, five
+libraries of the superproject; its TLS and WebRTC dependencies are built from
+pinned sources, and so are webcpp::crypto's libsecp256k1 and BearSSL:
 
 | Library | Needed by | Found where |
 | --- | --- | --- |
-| libsecp256k1 0.8.0, with its `schnorrsig` and `extrakeys` modules | every room: it signs the Nostr events peers meet through | `/third_party//secp256k1`, from `third_party/libs/secp256k1` |
+| webcpp::hash | every room: the SHA-256 of its topics and keys, HMAC, HKDF, and the PBKDF2 of a password's master | `/webcpp/hash//hash` |
+| webcpp::crypto | every room: the AES-256-GCM of its signals (natively OpenSSL's, on emscripten BearSSL's), its randomness, its secrets, the ECDSA P-256 of its identities and handshakes, BearSSL's on every target, and the BIP-340 signatures of its Nostr events, over libsecp256k1 0.8.0 with its `schnorrsig` and `extrakeys` modules | `/webcpp/crypto//crypto`, `//gcm-default`, `//p256-default` and `//secp256k1-default`; libsecp256k1 from `third_party/libs/secp256k1`, BearSSL from `third_party/libs/bearssl` |
 | webcpp::asio | every room | `/webcpp/asio//asio` |
 | webcpp::webrtc | the platform backend's WebRTC | `/webcpp/webrtc//webrtc` |
 | webcpp::beast | the platform backend's relays: their WebSockets, and natively their TLS | natively `/webcpp/beast//tls`, Boost.Beast over the source-built OpenSSL; in a page `/webcpp/beast//browser`, over the page's `WebSocket` |
 | Boost.URL | the platform backend's relays: their URLs | `/webcpp//boost_url`, built from Boost's sources once per variant |
 | libdatachannel 0.24.6 | the platform backend natively, through webcpp::webrtc | `/webcpp/third_party//libdatachannel`, from pinned source submodules |
-| OpenSSL 3.5.9 | the platform backend natively: TLS, AES-GCM and randomness | `/webcpp/third_party//openssl`, also used by Asio and Beast |
+| OpenSSL 3.5.9 | natively: the platform backend's WebRTC and TLS, and webcpp::crypto's AES-GCM | `/webcpp/third_party//openssl`, also used by Asio and Beast |
 
-The tables of libsecp256k1 follow `webcpp-secp256k1-tables`: `auto` is window 15 and
+The tables of libsecp256k1, which webcpp::crypto links, follow `webcpp-secp256k1-tables`: `auto` is window 15 and
 comb 11x6 natively (a larger program, faster signing and verification) and window 2 and
 comb 2x5 on emscripten (the same signing, verification a little slower than window 4, a
 smaller program). A program that wants otherwise asks for `<webcpp-secp256k1-tables>small`
@@ -101,8 +150,8 @@ backend through `/webcpp/trystero//platform`, on both targets, as the
 examples' Jamfiles do.
 The target adds `/webcpp/trystero//trystero`, the rooms alone: trystero's
 headers, Boost's, webcpp::asio, which links embind on emscripten,
-libsecp256k1 and webcpp::document with Boost.JSON's and Boost.Charconv's
-definitions, compiled once per variant. Beside
+webcpp::hash, webcpp::crypto with libsecp256k1, and webcpp::document with
+Boost.JSON's and Boost.Charconv's definitions, compiled once per variant. Beside
 them it adds webcpp::webrtc and Boost.URL on both targets; natively
 libdatachannel and OpenSSL, through webcpp::webrtc, webcpp::beast's `//tls`
 and webcpp::asio's `//tls`, whose embedded authorities a program may trust in
@@ -125,13 +174,13 @@ The quick start and the programs of the differences run in the lane
 `relayed`, each over a Nostr relay of its own on 127.0.0.1, whose URL
 `example/run_over_relay.mjs` gives the program in `TRYSTERO_RELAY_URL`; each
 passes when it ends by itself having printed its `.expected`. Each has its
-twin, the same program on Trystero JS, under `test/oracle/twins/`. The chat
-needs a browser, so the build links its program and never runs it.
+twin, the same program on Trystero JS 0.27.0, under `test/oracle/twins/`.
+The chat needs a browser, so the build links its program and never runs it.
 
 The quick start, whole: two apps of one program, `alice` and `bob`, each a
-peer with the id the program gives it, join the room `lobby` of the app
+peer with an id of its own, join the room `lobby` of the app
 `webcpp-trystero-quick-start`; alice greets bob when he joins, bob answers
-from a coroutine, each prints what it received, after its sender's id, and
+from a coroutine, each prints what it received, after the other's name, and
 both leave, which ends the program. Without `TRYSTERO_RELAY_URL` it meets
 over Trystero's public relays and STUN servers, as a program that names
 none does.
@@ -152,20 +201,17 @@ none does.
 #include <cstdlib>
 #include <iostream>
 #include <string>
-#include <string_view>
 
 namespace asio = boost::asio;
 namespace trystero = webcpp::trystero;
 
 namespace {
 
-/** What one peer's app is made with: its id, and the relay `relay` names, or the public ones. */
-trystero::app_config config_for(std::string_view self_id, const char* relay) {
+/** What one peer's app is made with: the relay `relay` names, or the public ones. Each app makes
+ * its own endpoint key, whose public key derives its id. */
+trystero::app_config config_for(const char* relay) {
     trystero::app_config config;
     config.app_id = "webcpp-trystero-quick-start";
-    // An id of the program's own, where an app would draw 20 random characters, so that what each
-    // peer prints of the other is the same on every run.
-    config.self_id = self_id;
     if (relay != nullptr) {
         // The peers stay on this machine: the relay given, and a STUN server where nothing answers
         // in place of Trystero's public ones, beside a backend bound to the loopback.
@@ -174,20 +220,20 @@ trystero::app_config config_for(std::string_view self_id, const char* relay) {
     }
     // Without a relay, both lists stay empty: Trystero's defaults, as a user's program has them,
     // the public relays its app id selects and Trystero's public STUN servers.
-    // A connection closes as soon as no room uses it, so that the program ends once both leave.
-    config.idle_timeout = std::chrono::milliseconds{0};
     return config;
 }
 
 
-/** bob's part: waits for a message, prints it, answers its sender, and leaves the room. */
+/** bob's part: waits for a message, prints it after alice's name, answers its sender, and leaves
+ * the room. */
 asio::awaitable<void> answer(trystero::room& lobby, trystero::action<std::string>& chat) {
     // as_tuple hands the error over as a value: a room left first ends the wait without throwing.
     auto [ec, text, info] = co_await chat.async_receive(asio::as_tuple(asio::use_awaitable));
     if (ec) {
         co_return;
     }
-    std::cout << info.from << ": " << text << '\n';
+    // The sender's id derives from a key made on each run: its name prints the same every time.
+    std::cout << "alice: " << text << '\n';
     auto [failed] = co_await chat.async_send("hello back", {.targets = {info.from}, .metadata = {}},
                                              asio::as_tuple(asio::use_awaitable));
     if (failed) {
@@ -210,9 +256,9 @@ int main() {
     }
     trystero::platform::backend backend(io.get_executor(), local);
 
-    // Two apps, two peers, each with its own id, in the same room.
-    trystero::app alice(io.get_executor(), backend, config_for("alice", relay));
-    trystero::app bob(io.get_executor(), backend, config_for("bob", relay));
+    // Two apps, two peers, each with an id of its own, in the same room.
+    trystero::app alice(io.get_executor(), backend, config_for(relay));
+    trystero::app bob(io.get_executor(), backend, config_for(relay));
     auto alice_lobby = alice.join("lobby");
     auto bob_lobby = bob.join("lobby");
     if (!alice_lobby || !bob_lobby) {
@@ -223,16 +269,17 @@ int main() {
     auto bob_chat = bob_lobby->make_action<std::string>("chat");
 
     // alice greets each peer once its handshake completes, prints the answer, and leaves.
-    alice_lobby->on_peer_join([&](std::string_view peer) {
-        alice_chat.async_send("hello", {.targets = {trystero::peer_id(peer)}, .metadata = {}},
+    alice_lobby->on_peer_join([&](const trystero::peer_event& joined) {
+        alice_chat.async_send("hello",
+                              {.targets = {trystero::peer_id(joined.peer_id)}, .metadata = {}},
                               [](boost::system::error_code ec) {
                                   if (ec) {
                                       std::cerr << "not delivered: " << ec.message() << '\n';
                                   }
                               });
     });
-    alice_chat.on_message([&](const std::string& text, const trystero::message_info& info) {
-        std::cout << info.from << ": " << text << '\n';
+    alice_chat.on_message([&](const std::string& text, const trystero::message_info& /*info*/) {
+        std::cout << "bob: " << text << '\n';
         alice_lobby->async_leave([](boost::system::error_code) {});
     });
     asio::co_spawn(io, answer(*bob_lobby, bob_chat), asio::detached);
@@ -307,7 +354,7 @@ The recursive checkout already includes pinned OpenSSL, libdatachannel,
 libjuice, usrsctp, plog and libsrtp sources. For an existing checkout:
 
 ```sh
-git -C webcpp submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel third_party/libs/secp256k1
+git -C webcpp submodule update --init --recursive third_party/libs/openssl third_party/libs/libdatachannel third_party/libs/secp256k1 third_party/libs/bearssl
 ```
 
 B2 builds them with the selected compiler, runtime and C++ ABI when the
@@ -378,21 +425,21 @@ page's app, `webcpp-trystero-chat`, and room, `lobby`. Within a few seconds
 each tab shows the other's id, its first six characters, "joined", and
 counts it as a peer; what you send from one tab appears in the other, under
 the sender's id. Every tab that joins the same app and room joins the same
-chat, and so does any Trystero JS page.
+chat, and so does any Trystero JS 0.27.0 page.
 
-A native peer and a page meet too: the lane `interop` of `test/oracle`
-meets the native peer, and the browser's, with Trystero JS pages in headless
-Chrome (The tests, below).
+A native peer and a page meet too. The lane `interop` of `test/oracle` meets
+the native peer, and the browser's, with Trystero JS pages in headless Chrome
+(The tests, below).
 
 ### When something goes wrong
 
 - **b2 prints `node: bad option: --experimental-wasm-threads`** when it
   configures the emscripten toolset: b2's toolset probes node with a flag that
   recent Node removed. It is harmless.
-- **The page loads but never joins**: it must be opened at `localhost` (or
-  `127.0.0.1`), not at a network address or from a file. The browser gives
-  the cryptography the room needs only to secure pages, and `localhost` counts
-  as one.
+- **The page loads but never joins a room with a password**: it must be
+  opened at `localhost` (or `127.0.0.1`), not at a network address or from a
+  file. The browser gives the PBKDF2 a password room needs only to secure
+  pages, and `localhost` counts as one.
 - **No peer appears**: both sides must use exactly the same app and room. The
   peers meet over public relays, so a network that blocks WebSockets to them
   keeps them apart.
@@ -409,8 +456,14 @@ when a program defines `WEBCPP_NO_EXCEPTIONS`.
 `test/support/memory_backend.hpp` is a backend in memory, whose relays,
 peer connections and data channels run whole rooms in one process.
 
+`crypto_layer` checks the protocol of 0.27.0 against
+`test/fixtures/expected/trystero-0.27.0.json`, the vectors
+`test/oracle/record_0_27.mjs` records from 0.27.0's own code
+(`node test/oracle/record_0_27.mjs <checkout>`, against a checkout of
+`8d3f57e`).
+
 Two lanes of trystero's own, declared in `test/oracle/Jamfile`, check it
-against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
+against Trystero itself, pinned at 0.27.0 by `test/oracle/package.json` and
 `package-lock.json`, with Node:
 
     b2 libs/trystero/test/oracle//oracle
@@ -419,7 +472,7 @@ against Trystero itself, pinned at 0.26.0 by `test/oracle/package.json` and
 
 `oracle` runs Trystero's own functions over the inputs of
 `test/fixtures/cases/protocol.json` and checks that they still write
-`test/fixtures/expected/expected.json`, the values the protocol tests
+`test/fixtures/oracle/expected.json`, the values the protocol tests
 reproduce; `b2 libs/trystero/test/oracle//update-expected` writes it again.
 `interop` meets each C++ peer, the native one and the browser's, with
 Trystero JS peers in headless Chrome, over a Nostr relay of its own on
@@ -429,23 +482,28 @@ Playwright's `chrome-headless-shell`.
 
 ## What derives from Trystero
 
-trystero ports Trystero 0.26.0, Copyright (c) 2021 Dan Motzenbecker,
+trystero ports Trystero 0.27.0, Copyright (c) 2021 Dan Motzenbecker,
 distributed under the MIT License. These parts of this repository derive from
 Trystero:
 
 - the wire protocol, ported from Trystero's code into
   `include/webcpp/trystero`: the Nostr strategy's topics, events and signals,
-  the room's handshake and its password check, and the action wire;
-- its constants: the topic prefixes, the id alphabet and lengths, the
-  announcement cadence, the event kinds and the backpressure threshold;
+  the room keys, their derivation and the sealing of signals, the
+  identities, their keys, ids and texts, the room's signed handshake and its
+  ready frames, and the action wire with its requests;
+- its constants: the domain tags, the topic prefixes, the id alphabet and
+  lengths, the announcement cadence, the event kinds, the relay health and
+  the backpressure threshold;
 - its message layouts: the signals, the action frames and their envelope;
+- its room API: listeners and their options, users, room errors and their
+  codes, and the relays' connectivity;
 - its default relays (`protocol/relays.hpp`), with their order and the
   shuffle that derives an app's relays from its id, and its default STUN
   servers.
 
 Trystero's MIT licence and its copyright notice are in
 [LICENSE-TRYSTERO.txt](LICENSE-TRYSTERO.txt), exactly as Trystero 0.26.0
-ships them. That adds no licence to trystero's own code, which is under the
+and 0.27.0 ship them. That adds no licence to trystero's own code, which is under the
 Boost Software License alone.
 
 ## Documentation

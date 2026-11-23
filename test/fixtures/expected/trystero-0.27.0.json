@@ -1,0 +1,2080 @@
+{
+ "trystero": "0.27.0",
+ "recorded_with": "node v26.13.0",
+ "domain_tags": [
+  {
+   "name": "room-aes",
+   "version": 3,
+   "tag": "trystero:room-aes:v3"
+  },
+  {
+   "name": "room-hmac",
+   "version": 3,
+   "tag": "trystero:room-hmac:v3"
+  },
+  {
+   "name": "pbkdf2-master",
+   "version": 3,
+   "tag": "trystero:pbkdf2-master:v3"
+  },
+  {
+   "name": "ov-auth",
+   "version": 3,
+   "tag": "trystero:ov-auth:v3"
+  },
+  {
+   "name": "e2e-salt",
+   "version": 2,
+   "tag": "trystero:e2e-salt:v2"
+  },
+  {
+   "name": "e2e-info",
+   "version": 2,
+   "tag": "trystero:e2e-info:v2"
+  },
+  {
+   "name": "pid",
+   "version": 1,
+   "tag": "trystero:pid:v1"
+  },
+  {
+   "name": "uid",
+   "version": 1,
+   "tag": "trystero:uid:v1"
+  },
+  {
+   "name": "user-proof",
+   "version": 3,
+   "tag": "trystero:user-proof:v3"
+  },
+  {
+   "name": "id-hs",
+   "version": 2,
+   "tag": "trystero:id-hs:v2"
+  },
+  {
+   "name": "identity-self-test",
+   "version": 1,
+   "tag": "trystero:identity-self-test:v1"
+  }
+ ],
+ "hash_topic": [
+  {
+   "text": "",
+   "topic": "47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"
+  },
+  {
+   "text": "lobby",
+   "topic": "S13Adue5wSKzyJEhqXEPxztJDUjh_zZhVXkZF15QVjM"
+  },
+  {
+   "text": "Trystero",
+   "topic": "KLfz8SY4qeunN-XyEUfFRFEjynHbPWsxK2cGRSaalcE"
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "topic": "EPOSMWej0eSk-IKnPAPZOgCqRnomHYt9zEpqgHdxook"
+  },
+  {
+   "text": "café 😀",
+   "topic": "BDdk33c6x87qYXXhSYiT5u4z55iFKIQXzB11y6YJSCc"
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "topic": "qiDCPjIBg0BQZ54diJQbmm_tBVfJpwXLLDFeLmP9SG0"
+  }
+ ],
+ "topic_path": [
+  {
+   "parts": [
+    "Trystero",
+    "example.com/app",
+    "lobby"
+   ],
+   "path": "[\"Trystero\",\"example.com/app\",\"lobby\"]"
+  },
+  {
+   "parts": [
+    "Trystero",
+    "a\"b\\c",
+    "café"
+   ],
+   "path": "[\"Trystero\",\"a\\\"b\\\\c\",\"café\"]"
+  },
+  {
+   "parts": [
+    "[\"Trystero\",\"app\",\"room\"]",
+    "peer0123456789abcdef"
+   ],
+   "path": "[\"[\\\"Trystero\\\",\\\"app\\\",\\\"room\\\"]\",\"peer0123456789abcdef\"]"
+  }
+ ],
+ "room_topics": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "peer_id": "T5sdTwb84yyey80e4qjv",
+   "root_text": "[\"Trystero\",\"example.com/app\",\"lobby\"]",
+   "root_topic": "Ez_9ACs-onxWTTRRn7pFD2rqRce5y0HrAay9k2X7Ip0",
+   "peer_text": "[\"[\\\"Trystero\\\",\\\"example.com/app\\\",\\\"lobby\\\"]\",\"T5sdTwb84yyey80e4qjv\"]",
+   "peer_topic": "j0YMUkrR_ecDTTcdbXvJV9GW8StO2JaSN1Do2CyT75w",
+   "root_kind": 26501
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "root_text": "[\"Trystero\",\"webcpp-trystero-quick-start\",\"café\"]",
+   "root_topic": "SpLDMeLr8p_xce0guAVzHESuo1H9xb1FiYJ5i31PwIU",
+   "peer_text": "[\"[\\\"Trystero\\\",\\\"webcpp-trystero-quick-start\\\",\\\"café\\\"]\",\"AbCdEfGhIjKlMnOpQrSt\"]",
+   "peer_topic": "dT5cAPs12Eo2XtHySSAvPbypWnlE8AI4MHdOPWU4H1I",
+   "root_kind": 26084
+  }
+ ],
+ "base64url": [
+  {
+   "bytes": "",
+   "text": ""
+  },
+  {
+   "bytes": "00",
+   "text": "AA"
+  },
+  {
+   "bytes": "fffe",
+   "text": "__4"
+  },
+  {
+   "bytes": "010203",
+   "text": "AQID"
+  },
+  {
+   "bytes": "fbffbf",
+   "text": "-_-_"
+  },
+  {
+   "bytes": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+   "text": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8g"
+  }
+ ],
+ "hash32": [
+  {
+   "text": "",
+   "value": 2872998923
+  },
+  {
+   "text": "lobby",
+   "value": 1937637236
+  },
+  {
+   "text": "Trystero",
+   "value": 2975451718
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "value": 777894491
+  },
+  {
+   "text": "café 😀",
+   "value": 622887659
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "value": 3644158961
+  }
+ ],
+ "str_to_num": [
+  {
+   "text": "",
+   "limit": 10000,
+   "value": 8923
+  },
+  {
+   "text": "lobby",
+   "limit": 10000,
+   "value": 7236
+  },
+  {
+   "text": "Trystero",
+   "limit": 10000,
+   "value": 1718
+  },
+  {
+   "text": "[\"Trystero\",\"app\",\"room\"]",
+   "limit": 10000,
+   "value": 4491
+  },
+  {
+   "text": "café 😀",
+   "limit": 10000,
+   "value": 7659
+  },
+  {
+   "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "limit": 10000,
+   "value": 8961
+  }
+ ],
+ "shuffle": [
+  {
+   "app": "example.com/app",
+   "seed": 3213600185,
+   "order": [
+    24,
+    4,
+    9,
+    29,
+    12,
+    3,
+    11,
+    17,
+    2,
+    13,
+    10,
+    0,
+    27,
+    1,
+    15,
+    6,
+    22,
+    23,
+    21,
+    14,
+    16,
+    8,
+    5,
+    19,
+    7,
+    28,
+    26,
+    20,
+    25,
+    18
+   ]
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "seed": 507786972,
+   "order": [
+    6,
+    24,
+    18,
+    12,
+    11,
+    10,
+    9,
+    7,
+    4,
+    28,
+    22,
+    14,
+    8,
+    0,
+    5,
+    19,
+    20,
+    29,
+    2,
+    16,
+    13,
+    26,
+    27,
+    23,
+    1,
+    21,
+    3,
+    25,
+    15,
+    17
+   ]
+  },
+  {
+   "app": "",
+   "seed": 2872998923,
+   "order": [
+    27,
+    15,
+    20,
+    22,
+    14,
+    28,
+    3,
+    18,
+    24,
+    23,
+    29,
+    10,
+    25,
+    9,
+    5,
+    11,
+    7,
+    19,
+    8,
+    16,
+    2,
+    1,
+    13,
+    21,
+    6,
+    4,
+    17,
+    0,
+    26,
+    12
+   ]
+  },
+  {
+   "app": "café",
+   "seed": 3746663762,
+   "order": [
+    2,
+    23,
+    0,
+    9,
+    14,
+    11,
+    15,
+    28,
+    10,
+    29,
+    21,
+    3,
+    27,
+    8,
+    6,
+    16,
+    18,
+    25,
+    1,
+    22,
+    26,
+    20,
+    24,
+    5,
+    4,
+    12,
+    19,
+    13,
+    17,
+    7
+   ]
+  }
+ ],
+ "topic_to_kind": [
+  {
+   "topic": "",
+   "kind": 26261
+  },
+  {
+   "topic": "lobby",
+   "kind": 24083
+  },
+  {
+   "topic": "Trystero",
+   "kind": 24407
+  },
+  {
+   "topic": "[\"Trystero\",\"app\",\"room\"]",
+   "kind": 26553
+  },
+  {
+   "topic": "café 😀",
+   "kind": 26241
+  },
+  {
+   "topic": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "kind": 20693
+  }
+ ],
+ "gen_id": [
+  {
+   "n": 8,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAE"
+  },
+  {
+   "n": 12,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZ"
+  },
+  {
+   "n": 20,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z"
+  },
+  {
+   "n": 22,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z0z"
+  },
+  {
+   "n": 64,
+   "random_cycle": "00013d3e7bf7f8f9ff0ac8642122232425262728",
+   "id": "01z0zzAEcXYZabcde01z0zzAEcXYZabcde01z0zzAEcXYZabcde01z0zzAEcXYZa"
+  }
+ ],
+ "identity_ids": [
+  {
+   "compact_pub": "WKn-ZIGevcwGIyyrzFoZNBdQq79v3jZ8Nl3S1Jvxm7I.HdKAMKoHOpFkK-nMlm9JN6qzGlcrJ8nd5I4L8ss1V40",
+   "pid_digest": "99af88cf2e624ba696ab443d9c64d155c43311ee20a6add847336f00969b6a4f",
+   "uid_digest": "284b4d8b3e4b1613b005cbc7f734432d87f185d6b86bea9a1077a6ed36d52415",
+   "peer_id": "T5sdTwb84yyey80e4qjv",
+   "user_id": "2Ag9nxCt2tqpTCQ2x1bNyf"
+  }
+ ],
+ "room_key_no_password": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "preimage": "[\"trystero:room-aes:v3\",\"example.com/app\",\"lobby\"]",
+   "key": "b03810047a4001c5c48b2a81106f3649447465c05eca736b56c02f94facf207a"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "preimage": "[\"trystero:room-aes:v3\",\"webcpp-trystero-quick-start\",\"café\"]",
+   "key": "4d371f0aab945ec4316b6f040d2008484ecc853f21c4af9aa760a5f099340241"
+  }
+ ],
+ "room_keys_password": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "salt": "6c5d7a340e7fb5f0e2be6c42e4a8608da6e462638e82ba39f15ff69ead1313f7",
+   "master": "0a9daa6bbfe5e7a974b8ab2030704abcd09c0451a3e189a4bf5cda230e8fa8a7",
+   "aes_key": "4ae994c98ce84eb65c425d575f6041fd4b2d746e9aeadf55e8f5dec459b63f05",
+   "hmac_key": "fec04ff31caf38cf34185134d1073aaf4ed427f030574f42620f527f9aea3b53",
+   "probe_sealed": "AAECAwQFBgcICQoLGRjC2fdNlRMsEdzU_EXZAqj5nGES"
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "päss wörd",
+   "salt": "6c5d7a340e7fb5f0e2be6c42e4a8608da6e462638e82ba39f15ff69ead1313f7",
+   "master": "7b7cc66397463c41cd90ae25a3cbc14f3cc36fc5720c0d18634881d0d0456fc3",
+   "aes_key": "7cb04dde0775f7d1510aa484f6e852251cf574b83f35e641c3282dc03e16e48e",
+   "hmac_key": "f1d2a20f580624e4de679bb145476e2ff23cb29c15915ef9bec82ae1f123ff20",
+   "probe_sealed": "AAECAwQFBgcICQoLxIfa5stgfSD9cMjAlr4aNDVnEyQk"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "salt": "7f62b7322788b421ec9f0a971fe8ca8f63b64328ddc496060cdbd1882b63d19f",
+   "master": "54f135ffd28ed3bc7089e3eea636f68c73e59e22fa6c1c885ba65154754fe15d",
+   "aes_key": "4175388a1c6ac3c97f3c78339c61323d90d8d90663964549d955d432b295d98a",
+   "hmac_key": "434268e92183bc6011f9003e660c4683b7d727a5ad690ae3009a563ce9c0d834",
+   "probe_sealed": "AAECAwQFBgcICQoLuzWCXwmcKKap6O2D9GLhZLhD4hR_"
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "päss wörd",
+   "salt": "7f62b7322788b421ec9f0a971fe8ca8f63b64328ddc496060cdbd1882b63d19f",
+   "master": "a01a75529a965885396180a2b765bcd577deb86c876e4f1f719c5673de65ea44",
+   "aes_key": "ca1d05568590c9dc5ba781844b836a6409af2a0776424d8b15421611ad39bb53",
+   "hmac_key": "37c9eb6d6473988d727964d8cfafb80e8acff634df7762b9b28ad768c1c70cb3",
+   "probe_sealed": "AAECAwQFBgcICQoLDylLYiH6u5rKzfH259JrM6gIa9WU"
+  }
+ ],
+ "room_auth": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "peer_id": "@topology",
+   "seq": 0,
+   "payload": "[\"trystero:ov-auth:v3\",\"example.com/app\",\"lobby\",\"@topology\",0]",
+   "token": "2NJHPBHFvtay1mqxqeYGpGBT0NhRgaIvzZ9E-qfyuJI",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "seq": 7,
+   "payload": "[\"trystero:ov-auth:v3\",\"example.com/app\",\"lobby\",\"AbCdEfGhIjKlMnOpQrSt\",7]",
+   "token": "ZVSE0m_rYBRZpncsk78FJryImX5vT6j7fumci7tZIek",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "peer_id": "@topology",
+   "seq": 0,
+   "payload": "[\"trystero:ov-auth:v3\",\"webcpp-trystero-quick-start\",\"café\",\"@topology\",0]",
+   "token": "T5-424RfPUNhHrePJh6wn_hz7qkujtgFMf8vpn42eb0",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "seq": 7,
+   "payload": "[\"trystero:ov-auth:v3\",\"webcpp-trystero-quick-start\",\"café\",\"AbCdEfGhIjKlMnOpQrSt\",7]",
+   "token": "BYwedXMyzF97paMCoMfwkE2UUat1CafFc4Jvc-Hea3s",
+   "verifies": true,
+   "wrong_seq_verifies": false
+  }
+ ],
+ "seal": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLGc_6jhLrcbNj8hjzhPUqZg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLPHygQYpNoS7kXhQ0XeG6eg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLUeV4DjL1H_cMk-fvBvO1Re-y3nO7Ne-JJIVUU3PfsMhbgaUH0KbUBLB8Pxk60EQ",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLUeV4DjL1H_cMk-fvBvO1Re-y3nO7Ne-JJIVUU3PfsCMnrjZs721Qbi0h3xljAcY",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0Ioexh2NTJekXSRKgHeQyk4I",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________x9ehIHdByjLZoxc2AHDg_Q",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________4mT77-_nGq9eDxvx2WRw4Q",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________2zK42CrSR5fpZl3tcbvbFls_oetjUwCxMJLNojXULbykNyYg2kK4jAUNGUPoG3k",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________2zK42CrSR5fpZl3tcbvbFls_oetjUwCxMJLNojXULVfYGLVL5Yk85phQ-UOxyvs",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________zm7uFomdiiVR1wCLHrBKy25hdYx9kwsBb48",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________zm7uFomdiiVR1-yZs1TG4DJJmCUsPXSTOiU",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLU7rlzvmNe5NDby7HWNMYjw",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLp5uLDAohzG2vycYFeAI54g",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLH1edtphfX1Sibsj2gu6gxXecH_vhL_4MGdXQ8Ond0lAnscgR97CMUrU9QG7Y6cM",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLH1edtphfX1Sibsj2gu6gxXecH_vhL_4MGdXQ8Ond0s6d3v9lvAOof7aT5pPEdko",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLCgvLeDsQkuYa3_btujkE61AA_JWS0ZPMt9s",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLCgvLeDsQkuYa3-1BkjfzBucxRacy2JGUNjo",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________ZLRVu8Pz-WGqEDp9yQjAWQ",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________kJU7eTBfTp9GttK_6dnhNA",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________lXPjrb_hjUvTU0PvtNpTDbmWUvFRogTyC8A7ZR_p9koJP0Zpi7xsN6u-g9JggVg",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________lXPjrb_hjUvTU0PvtNpTDbmWUvFRogTyC8A7ZR_p9tSzUHEdwA9IGqgQJS98HtE",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________gC-1YxyuQPlr4nyf6xfmF4hlvzA_KkBP0nE",
+   "opened_equal": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________gC-1YxyuQPlr4mczwxkR-j9UBgKfI0IXU5A",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLj0jjmghtRCOnPJZpqsMD2Q",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLpZ7jQZsODIcTq-DFSG2ZcA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLJANGWduDCr8olDIuVhrLZrq4Qv7semA5FQaEtq00-iRfHxw8x3y68O_kjSAHpu0",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLJANGWduDCr8olDIuVhrLZrq4Qv7semA5FQaEtq00-kGyltqViFxLmwhetU3FQDQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLMV8Ql3jMxw2QJV8SOBjnrAY6XECmtHiJe2g",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLMV8Ql3jMxw2QJZOasbdFmJ-6dhb34-bjkvQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________wAiHUcFAhvnNn_0MqWT3xQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________6t6HilIjzl15CIugS8ptbA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________SX-C8cB81taRVv3VfCBW578hzFY9ZGK1Ol9iu0TILXBipXwRUoDRzfcfeCpEs6k",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________SX-C8cB81taRVv3VfCBW578hzFY9ZGK1Ol9iu0TILRWPLLq4HaAgphClQEeGVXA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________XCPUP2MzG2Qp58dCQBqtu9e70g1sJqG39bk",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________XCPUP2MzG2Qp5wvKybUPj047-Fs9cT_dHCU",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLK5_ohRzzZRSOfSQ_C-agZw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLNXW7Kdeex04S-E4Le8VLAQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLvXrdMGYS3zvIh2u26fdDBhsrBFed56pW6SKXV9GHcL_uixOIh3fuJft3j9QAbRc",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLvXrdMGYS3zvIh2u26fdDBhsrBFed56pW6SKXV9GHcPTqw0ToHbW3fiJoN7YDn4c",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "AAECAwQFBgcICQoLqCaL_sVdEolwNsS94x6gm-4mo8h2XJ4M0VI",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "000102030405060708090a0b",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "AAECAwQFBgcICQoLqCaL_sVdEolwNnOkYmH_uFkYtYo1mIDId2Q",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": null,
+   "sealed": "________________zY4lFp8CCCx-uNu8ttQbBQ",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________02R2ulRvqnbiPbGIxvfwYw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": null,
+   "sealed": "________________h-y5jK4U0I1a2muOyB4XWE9fkh5G3_rtXeOu79ZMHeXfgaGNwCWmLqpylLfUC1A",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________h-y5jK4U0I1a2muOyB4XWE9fkh5G3_rtXeOu79ZMHa7byfbtWuf_dXNtLNXX-cA",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": null,
+   "sealed": "________________krDvQg1bHT_ia-IrSqhCVHZWu8e2Lz-tlTw",
+   "opened_equal": true
+  },
+  {
+   "app": "webcpp-trystero-quick-start",
+   "room": "café",
+   "password": "hunter2",
+   "iv": "ffffffffffffffffffffffff",
+   "plaintext": "café 😀",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab",
+   "sealed": "________________krDvQg1bHT_ia1Uyy9cdd8ForYX16yFpMwo",
+   "opened_equal": true
+  }
+ ],
+ "open_refused": [
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "not base64!",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLku",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig=",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "AAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxiA",
+   "refused": true
+  },
+  {
+   "app": "example.com/app",
+   "room": "lobby",
+   "password": "",
+   "sealed": "BAECAwQFBgcICQoLRLkuwJG60kW0ImujKoffDrU_pLvxs5ugxig",
+   "refused": true
+  }
+ ],
+ "signal_aad": [
+  {
+   "type": "offer",
+   "peer_id": "AbCdEfGhIjKlMnOpQrSt",
+   "offer_id": "0123456789ab",
+   "aad": "offer|AbCdEfGhIjKlMnOpQrSt|0123456789ab"
+  },
+  {
+   "type": "answer",
+   "peer_id": "x",
+   "offer_id": "y",
+   "aad": "answer|x|y"
+  }
+ ],
+ "action_frames": [
+  {
+   "case": "text",
+   "action": "chat",
+   "format": 0,
+   "metadata": null,
+   "payload_text": "hello, café",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "hex": "03006368617400000000000000000000000000000000000000000000000000000000000068656c6c6f2c20636166c3a9"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "json",
+   "action": "json",
+   "format": 1,
+   "metadata": null,
+   "payload_text": "{\"n\":1,\"list\":[true,null,\"x\"]}",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "hex": "03106a736f6e0000000000000000000000000000000000000000000000000000000000007b226e223a312c226c697374223a5b747275652c6e756c6c2c2278225d7d"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "binary",
+   "action": "bin",
+   "format": 2,
+   "metadata": null,
+   "payload_hex": "00010203040506070809",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 46,
+     "hex": "032062696e0000000000000000000000000000000000000000000000000000000000000000010203040506070809"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "metadata",
+   "action": "chat",
+   "format": 0,
+   "metadata": "{\"a\":1}",
+   "payload_text": "hi",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 45,
+     "hex": "0300636861740000000000000000000000000000000000000000000000000000000000077b2261223a317d6869"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "bulk",
+   "action": "file",
+   "format": 2,
+   "metadata": "{\"name\":\"big.bin\"}",
+   "payload_size": 204800,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c650000000000000000000000000000000000000000000000000000000000120000000041090000000000007b226e616d65223a226269672e62696e227d"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "6c243b9f165ea104ddf836b0f2afa49a144fd823ca4fe2c6bc9fb3a0d33532d7"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040cff90000000000",
+     "sha256": "1e35919dfaa348b7d73dfd0ebac70968b275742d11ca5a83806d2756b1136e7e"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040dff90000000000",
+     "sha256": "06a46e6b3baeb5e2cdc9befbcbb358e09c4b0a9bb41187e84072c1a56efae2d1"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040e7fac000000000",
+     "sha256": "fe71da8c0b320218c2668f3148eb914054bd0036012a578287e5c98aff518777"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040eff90000000000",
+     "sha256": "6fe28af7e9e2aed6c27ba118bd71169a8fe13e2d82233c21ed78240e60f86e5f"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040f3fba000000000",
+     "sha256": "33ce5c4ab83c93a9217f6f12226a8a41adac9f0d56d4fde4f30b65207bd2028c"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040f7fac000000000",
+     "sha256": "3816c7ebae0828e2edb81a0852db1edbd008a12f387d84143c01a5f733184a84"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040fbf9e000000000",
+     "sha256": "d38dbacfb1e191f3a694236a79c2a55ffbe0638c9f13f2c34d128daa7f8b8a73"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "03020000000040fff90000000000",
+     "sha256": "cd290e22efacc8ef21d1dc5915bdf7fbecf590a29641177bc4f73334c66006e2"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004101fc1000000000",
+     "sha256": "71cf9ff89b10340e20111791467df9056241658498da1e56e15e6d219d836b12"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004103fba000000000",
+     "sha256": "0de88995f2916480ac8e98b6c73cf304b53eb4283c6aa878fa82d4ac7dad7bbc"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000004105fb3000000000",
+     "sha256": "3ceb883b35f71d9526a71ba9e0b8a0f69622783e14d8a59fc51c83ec1d506aec"
+    },
+    {
+     "from": "A",
+     "size": 8374,
+     "transfer_id": 0,
+     "head": "0302000000004107fac000000000",
+     "sha256": "1d0504952ba84c434f8d3dd7c8726f4a1c5b8717f2ed4ecb871e4e8e4b4f8616"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "bulk_wide",
+   "action": "file",
+   "format": 2,
+   "metadata": "{\"name\":\"big.bin\"}",
+   "payload_size": 204800,
+   "wide": true,
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "036166696c650000000000000000000000000000000000000000000000000000000000120000000041090000000000007b226e616d65223a226269672e62696e227d"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "08c4d25d142279a04f2230a4d58c4960fe80a7aafbdf1fa35165a93ca79c9436"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "03020000000040effe4000000000",
+     "sha256": "4be38fbee0a587e6eb6057c7db3e052dc2209e0e3d2a7790fdc536aa89cf604d"
+    },
+    {
+     "from": "A",
+     "size": 65536,
+     "transfer_id": 0,
+     "head": "03020000000040fffe4000000000",
+     "sha256": "de7250e6ca73c65fd70b192f7b0e1702b62cbbd87222c2b349f3b2ae17578958"
+    },
+    {
+     "from": "A",
+     "size": 8248,
+     "transfer_id": 0,
+     "head": "0302000000004107feb000000000",
+     "sha256": "16206adfc7c0ccb7139c8564814bd983e6a2d4c25771412f40553162ab2f30dd"
+    }
+   ],
+   "delivered": true,
+   "send_error": null
+  },
+  {
+   "case": "declined",
+   "action": "file",
+   "format": 2,
+   "metadata": null,
+   "payload_size": 20000,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c650000000000000000000000000000000000000000000000000000000000000000000040d3880000000000"
+    },
+    {
+     "from": "B",
+     "size": 34,
+     "transfer_id": 0,
+     "hex": "0304000000007061796c6f61642072656a6563746564206279207265636569766572"
+    }
+   ],
+   "delivered": false,
+   "send_error": "Trystero: payload rejected by receiver"
+  },
+  {
+   "case": "cancelled",
+   "action": "file",
+   "format": 2,
+   "metadata": null,
+   "payload_size": 204800,
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 48,
+     "transfer_id": 0,
+     "is_offer": true,
+     "hex": "032166696c65000000000000000000000000000000000000000000000000000000000000000000004109000000000000"
+    },
+    {
+     "from": "B",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030300000000"
+    },
+    {
+     "from": "A",
+     "size": 16384,
+     "transfer_id": 0,
+     "head": "0302000000000000000000000000",
+     "sha256": "6c243b9f165ea104ddf836b0f2afa49a144fd823ca4fe2c6bc9fb3a0d33532d7"
+    },
+    {
+     "from": "A",
+     "size": 6,
+     "transfer_id": 0,
+     "hex": "030500000000"
+    }
+   ],
+   "delivered": false,
+   "send_error": "Trystero: operation aborted"
+  },
+  {
+   "case": "request",
+   "action": "ask",
+   "format": 0,
+   "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"m\":{\"x\":1}}",
+   "payload_text": "ping",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 96,
+     "hex": "030061736b000000000000000000000000000000000000000000000000000000000000387b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c226d223a7b2278223a317d7d70696e67"
+    },
+    {
+     "from": "B",
+     "size": 89,
+     "hex": "0300405f726573706f6e736500000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d706f6e673a70696e67"
+    }
+   ],
+   "response": "pong:ping",
+   "send_error": null,
+   "answer": {
+    "action": "@_response",
+    "format": 0,
+    "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\"}",
+    "payload_text": "pong:ping"
+   }
+  },
+  {
+   "case": "request_failed",
+   "action": "ask",
+   "format": 0,
+   "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"m\":{\"x\":1}}",
+   "payload_text": "ping",
+   "wide": false,
+   "frames": [
+    {
+     "from": "A",
+     "size": 96,
+     "hex": "030061736b000000000000000000000000000000000000000000000000000000000000387b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c226d223a7b2278223a317d7d70696e67"
+    },
+    {
+     "from": "B",
+     "size": 100,
+     "hex": "0310405f726573706f6e736500000000000000000000000000000000000000000000003c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666222c2265223a226e6f20616e73776572227d6e756c6c"
+    }
+   ],
+   "response": null,
+   "send_error": "Trystero: no answer",
+   "answer": {
+    "action": "@_response",
+    "format": 1,
+    "metadata": "{\"r\":\"0b1c2d3e-4f50-4617-8899-aabbccddeeff\",\"e\":\"no answer\"}",
+    "payload_text": "null"
+   }
+  }
+ ],
+ "signatures": {
+  "a high-S endpoint signature:a:endpoint": "qUfkdmwIYOsSSUqR54nbxlm4TVfh8eng8edl1sypdIo7BrdKk3GQZfy9Cot4URLwdG6IPX9Oi0hPYP3dyS1scA",
+  "a high-S endpoint signature:a:user": "M7glmr-vE4YbYZ2sK7GHKof2daOTPBbGv_tJB-7JUcpeFigIoebjU5ttShwNyzY2JgZhPwhH_knIPnkA4GgvnQ",
+  "a high-S endpoint signature:b:endpoint": "r3L3zOoMemI-F7b06SrooCiQxh9RJnfdPC3Nh7fXUul43HjYcm0rwYwGZCP8jpMlCeyfzj2874xkPTRabCyR6A",
+  "a high-S endpoint signature:b:user": "_I0E-_dTqVt3HjkAE4nm4Wq_Bhls3fjpg-slG-G74AZB3VDaCPFv9fzDpRjt5KKrErVyQo8mfzzgyuTZKy6suw",
+  "a user signature of another key:b:endpoint": "CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg",
+  "a user signature of another key:b:user": "5mWZZscqEKToj1Y2ykbCy2VCP4GFxCKfrtOXRq6hkD8paEPiUwT8RE4IcZmQUfXVdx3R5_w8qDDVlieHzzt4VQ",
+  "an endpoint key of another peer id:b:endpoint": "tzg9WR33ggX2DqIPk2uS-bAvw5j9upFklbElHURcMMBV-5E6gVnTCLLIzt6Z9-WtxeHW5nsOl3g7BpWAJRA7ZA",
+  "an endpoint key of another peer id:b:user": "PAd0ECqTGhpEPxDDCL9ysveQj-5MlpQV_DBn02VQ0wEfLZ97DwPwk0elfp5hZgZXqykfrDTz9xam_j7tpyENuw",
+  "user_proof": "yKjEX7A1gfPylw5b0nVJqwA0Oz8gxERTU47YIPgtaIQxt0Ry8fY0CZYjpSwrd3dR3Q_4HrgdVCWNG5sPUDO7TQ",
+  "verified:a:endpoint": "saWD2e3IzdwI1XLYaJNydv0RHMBBbNIszXFYyx3alJUO2fog_yBKkpd19aC-TzVr7uIPSlhVW-KabBAeflypJw",
+  "verified:a:user": "kCivJlKg135n4UPn5zVLVFMPFzcKvcgrt0sdfamwNhwdhpuw_09dBGvqPz-L9BXwhRG0aVyi73WF4ihyN6QYkQ",
+  "verified:b:endpoint": "xoj5UqGMR8duyQzQBdES01oYfZTskbPsMJ2NRidRBNg9tKFneusIazxZZQk9fwL1vQk1E2-nl4coiRIfGFQ8CQ",
+  "verified:b:user": "IqTv3MG9H2buDNJN7YeTdja-LjAVwF_2BZL8adRyS3orYNMxn6xTh8cPm1BipNUx7HmATAKjEwhS9rVvHITV0A"
+ },
+ "p256_keys": [
+  {
+   "label": "endpoint-a",
+   "d": "uYTVzeHv6cts2IzXz7UkD2Q9bBcmHKZpPFZ1eNcoUdk",
+   "uncompressed": "049208dd7b3b924dc1707732cf2068f38a43e43754486db546641189291fec37076e18016d13fd4a05f94a4d70b1ccbf6b92c7024b7a3d3e2f6af5f5bd21e4fd77",
+   "compact": "kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc",
+   "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+   "user_id": "ynY5geuP51wDNIjKq1xkDh"
+  },
+  {
+   "label": "user-a",
+   "d": "tZPnmQ9fFvgPg4d4vNFgEq98uEmgMtL3J4aEB9wYXus",
+   "uncompressed": "048ef6630e180f22011d6300ce42c09bd3c10492006728f34b2726a90a5364e3e9417b714bdd2e6abb84bb90989ebfab80385264d0f21e3fc34238d62467263e9b",
+   "compact": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "peer_id": "1uTF5q1EXmKMmm1jRF82",
+   "user_id": "8Qc8kjJP0X70oY14zVW6rM"
+  },
+  {
+   "label": "endpoint-b",
+   "d": "VZc6ctCgUCX-BEpJSZK32uUTs81zGlZj1PdqgxO-50Q",
+   "uncompressed": "04d97653a7ae3e3c5c106c035b8ecb9bcc8e53cbb40b0370984b7d5f04857a00f0ecdf620983aa9cd814834443dd17b4ffbe18514e67f7d907fb916f5d2579bc18",
+   "compact": "2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg",
+   "peer_id": "izta8zhsZH7HVcLteLNl",
+   "user_id": "dOStHaQPEAKBivzjmTuiML"
+  },
+  {
+   "label": "user-b",
+   "d": "pbbWpBUNjtwncadIiWH_ELxOVWyS8jYKa8xdUk0PWjs",
+   "uncompressed": "0459ac6fd68e871bf153021478db213068d63b8bf62fa07e4e10ff9194834756448d8fce88850eb4f01e7599152dd2d7ca5bf0dced2f5d13e2fce9e9119b29cc2c",
+   "compact": "Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw",
+   "peer_id": "qhFA33xYMserGVDmcM8S",
+   "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+  },
+  {
+   "label": "user-export",
+   "d": "5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw",
+   "uncompressed": "046959c6d6054b15792dbed030b0b52820f640ed1962bb4bf3182f414c4def8f209094952e94ded7652938a98e0af0407d2043ae1ae2415c109e141c83444db82d",
+   "compact": "aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA.kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0",
+   "peer_id": "WYwjb2NLbczwLb6k5chL",
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  }
+ ],
+ "compact_keys": [
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": true,
+   "record": true
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPp",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPpsA",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k_QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-=.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+   "text_valid": false,
+   "record": false
+  },
+  {
+   "text": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+   "text_valid": true,
+   "record": false
+  }
+ ],
+ "user_identity": {
+  "label": "user-export",
+  "jwk": {
+   "d": "5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw",
+   "x": "aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA",
+   "y": "kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0"
+  },
+  "user_id": "Gawjnehj72iKv8sp1tHMwI",
+  "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+  "json": "{\"d\":\"5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw\",\"x\":\"aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA\",\"y\":\"kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0\"}"
+ },
+ "user_identity_imports": [
+  {
+   "case": "the exported text",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "the text with spaces around it",
+   "text": "  trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ\n",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "the JSON text",
+   "text": "{\"kty\":\"EC\",\"crv\":\"P-256\",\"d\":\"5khreCrQOZlmNMIhJJlJAVHk4x1uILg85U8e1TSTKrw\",\"x\":\"aVnG1gVLFXktvtAwsLUoIPZA7Rliu0vzGC9BTE3vjyA\",\"y\":\"kJSVLpTe12UpOKmOCvBAfSBDrhriQVwQnhQcg0RNuC0\"}",
+   "accepted": true,
+   "user_id": "Gawjnehj72iKv8sp1tHMwI"
+  },
+  {
+   "case": "another prefix",
+   "text": "trystero_pk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "the payload padded",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ=",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d of another key",
+   "text": "trystero_uk_eyJkIjoidFpQbm1ROWZGdmdQZzRkNHZORmdFcTk4dUVtZ010TDNKNGFFQjl3WVh1cyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d zero",
+   "text": "trystero_uk_eyJkIjoiQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQSIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d the group order",
+   "text": "trystero_uk_eyJkIjoiX19fX193QUFBQURfX19fX19fX19fN3ptLXEybkY1NkU4N25Ld3Z4akpWRSIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIiwieSI6ImtKU1ZMcFRlMTJVcE9LbU9DdkJBZlNCRHJocmlRVndRbmhRY2cwUk51QzAifQ",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "d of 31 bytes",
+   "text": "trystero_uk_eyJkIjoiU0d0NEt0QTVtV1kwd2lFa21Va0JVZVRqSFc0Z3VEemxUeDdWTkpNcXZBIiwieCI6ImFWbkcxZ1ZMRlhrdHZ0QXdzTFVvSVBaQTdSbGl1MHZ6R0M5QlRFM3ZqeUEiLCJ5Ijoia0pTVkxwVGUxMlVwT0ttT0N2QkFmU0JEcmhyaVFWd1FuaFFjZzBSTnVDMCJ9",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "crv P-384",
+   "text": "trystero_uk_eyJjcnYiOiJQLTM4NCIsImQiOiI1a2hyZUNyUU9abG1OTUloSkpsSkFWSGs0eDF1SUxnODVVOGUxVFNUS3J3IiwieCI6ImFWbkcxZ1ZMRlhrdHZ0QXdzTFVvSVBaQTdSbGl1MHZ6R0M5QlRFM3ZqeUEiLCJ5Ijoia0pTVkxwVGUxMlVwT0ttT0N2QkFmU0JEcmhyaVFWd1FuaFFjZzBSTnVDMCJ9",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "no y",
+   "text": "trystero_uk_eyJkIjoiNWtocmVDclFPWmxtTk1JaEpKbEpBVkhrNHgxdUlMZzg1VThlMVRTVEtydyIsIngiOiJhVm5HMWdWTEZYa3R2dEF3c0xVb0lQWkE3UmxpdTB2ekdDOUJURTN2anlBIn0",
+   "accepted": false,
+   "user_id": null
+  },
+  {
+   "case": "empty",
+   "text": "",
+   "accepted": false,
+   "user_id": null
+  }
+ ],
+ "user_proof": {
+  "app": "example.com/app",
+  "room": "lobby",
+  "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+  "peer_compact": "kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc",
+  "seq": 7,
+  "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+  "user_compact": "jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps",
+  "payload": "[\"trystero:user-proof:v3\",\"example.com/app\",\"lobby\",\"m7oEQitmWEQ4WW5aqhKp\",\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",7]",
+  "digest": "6891b6751ffa4d90b10e41cc7daf42e6c1a129e31ae2a2870448a40a331b521a",
+  "proof": "yKjEX7A1gfPylw5b0nVJqwA0Oz8gxERTU47YIPgtaIQxt0Ry8fY0CZYjpSwrd3dR3Q_4HrgdVCWNG5sPUDO7TQ",
+  "verifies": true,
+  "other_seq_verifies": false
+ },
+ "low_s": [
+  {
+   "case": "signed",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": true,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": true
+  },
+  {
+   "case": "its high form",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d6884ce48bb8c0e09cbf769dc5ad3d48888addfd7028eeefa4a5f669e2fb3ac2f6a04",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d688431b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  },
+  {
+   "case": "s = (n - 1) / 2",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "is_low_s": true,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "verifies": false
+  },
+  {
+   "case": "s = (n + 1) / 2",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a9",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68847fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8",
+   "verifies": false
+  },
+  {
+   "case": "s = n - 1",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d6884ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632550",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000001",
+   "verifies": false
+  },
+  {
+   "case": "s = 0",
+   "signature": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000000",
+   "is_low_s": false,
+   "normalized": "c8a8c45fb03581f3f2970e5bd27549ab00343b3f20c44453538ed820f82d68840000000000000000000000000000000000000000000000000000000000000000",
+   "verifies": false
+  },
+  {
+   "case": "r = 0",
+   "signature": "000000000000000000000000000000000000000000000000000000000000000031b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": false,
+   "normalized": "000000000000000000000000000000000000000000000000000000000000000031b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  },
+  {
+   "case": "r = n",
+   "signature": "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255131b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "is_low_s": false,
+   "normalized": "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc63255131b74472f1f634099623a52c2b777751dd0ff81eb81d54258d1b9b0f5033bb4d",
+   "verifies": false
+  }
+ ],
+ "handshake": [
+  {
+   "case": "verified",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"xoj5UqGMR8duyQzQBdES01oYfZTskbPsMJ2NRidRBNg9tKFneusIazxZZQk9fwL1vQk1E2-nl4coiRIfGFQ8CQ\",\"us\":\"IqTv3MG9H2buDNJN7YeTdja-LjAVwF_2BZL8adRyS3orYNMxn6xTh8cPm1BipNUx7HmATAKjEwhS9rVvHITV0A\"}"
+    },
+    {
+     "from": "A",
+     "step": 3,
+     "json": "{\"__trystero_id\":3,\"ps\":\"saWD2e3IzdwI1XLYaJNydv0RHMBBbNIszXFYyx3alJUO2fog_yBKkpd19aC-TzVr7uIPSlhVW-KabBAeflypJw\",\"us\":\"kCivJlKg135n4UPn5zVLVFMPFzcKvcgrt0sdfamwNhwdhpuw_09dBGvqPz-L9BXwhRG0aVyi73WF4ihyN6QYkQ\"}"
+    }
+   ],
+   "initiator_error": null,
+   "responder_error": null,
+   "verified": {
+    "A": {
+     "peer_id": "izta8zhsZH7HVcLteLNl",
+     "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+    },
+    "B": {
+     "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+     "user_id": "8Qc8kjJP0X70oY14zVW6rM"
+    }
+   },
+   "transcript": "[\"trystero:id-hs:v2\",\"example.com/app\",\"lobby\",\"m7oEQitmWEQ4WW5aqhKp\",\"izta8zhsZH7HVcLteLNl\",\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"c0ffee00-1234-4abc-8def-0123456789ab\",[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"8Qc8kjJP0X70oY14zVW6rM\",\"8oysJYYlxgfcFBn7jJOcpc\"]",
+   "transcript_digest": "db7fc1e8a4ad703cefe61f11f03886b3b616172c20a5c2a216a2462a4c24edd5",
+   "transcript_verified": {
+    "step2_endpoint": true,
+    "step2_user": true
+   }
+  },
+  {
+   "case": "another remote fingerprint",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2B:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: DTLS fingerprint mismatch",
+   "verified": {}
+  },
+  {
+   "case": "a user id of another key",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {}
+  },
+  {
+   "case": "an endpoint key of another peer id",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"tzg9WR33ggX2DqIPk2uS-bAvw5j9upFklbElHURcMMBV-5E6gVnTCLLIzt6Z9-WtxeHW5nsOl3g7BpWAJRA7ZA\",\"us\":\"PAd0ECqTGhpEPxDDCL9ysveQj-5MlpQV_DBn02VQ0wEfLZ97DwPwk0elfp5hZgZXqykfrDTz9xam_j7tpyENuw\"}"
+    }
+   ],
+   "initiator_error": "Trystero: peer identity verification failed",
+   "responder_error": "waits",
+   "verified": {}
+  },
+  {
+   "case": "a short nonce",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"0123456789abcde\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    }
+   ],
+   "initiator_error": "waits",
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {}
+  },
+  {
+   "case": "a user signature of another key",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg\",\"us\":\"CXNVYawWseUv7GMyVOaoYnTVVOUJ9H7iwpFDPLRw9Conm6EYqntGA9GiGqYLH2-DJnD_yDI-U2-kgW6hl4ZoNg\"}"
+    }
+   ],
+   "initiator_error": "Trystero: peer identity verification failed",
+   "responder_error": "waits",
+   "verified": {}
+  },
+  {
+   "case": "a high-S endpoint signature",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [
+    {
+     "from": "A",
+     "step": 1,
+     "json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}"
+    },
+    {
+     "from": "B",
+     "step": 2,
+     "json": "{\"__trystero_id\":2,\"n\":\"c0ffee00-1234-4abc-8def-0123456789ab\",\"dtls\":[\"sha-256 0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9:0a:1b:2c:3d:4e:5f:60:71:82:93:a4:b5:c6:d7:e8:f9\"],\"uid\":\"8oysJYYlxgfcFBn7jJOcpc\",\"pk\":\"2XZTp64-PFwQbANbjsubzI5Ty7QLA3CYS31fBIV6APA.7N9iCYOqnNgUg0RD3Re0_74YUU5n99kH-5FvXSV5vBg\",\"uk\":\"Waxv1o6HG_FTAhR42yEwaNY7i_YvoH5OEP-RlINHVkQ.jY_OiIUOtPAedZkVLdLXylvw3O0vXRPi_OnpEZspzCw\",\"ps\":\"r3L3zOoMemI-F7b06SrooCiQxh9RJnfdPC3Nh7fXUul43HjYcm0rwYwGZCP8jpMlCeyfzj2874xkPTRabCyR6A\",\"us\":\"_I0E-_dTqVt3HjkAE4nm4Wq_Bhls3fjpg-slG-G74AZB3VDaCPFv9fzDpRjt5KKrErVyQo8mfzzgyuTZKy6suw\"}"
+    },
+    {
+     "from": "A",
+     "step": 3,
+     "json": "{\"__trystero_id\":3,\"ps\":\"qUfkdmwIYOsSSUqR54nbxlm4TVfh8eng8edl1sypdIrE-Ui0bI5vmwNC9XSHru0PSHhycCfJEzykWMzlMzW44Q\",\"us\":\"M7glmr-vE4YbYZ2sK7GHKof2daOTPBbGv_tJB-7JUcpeFigIoebjU5ttShwNyzY2JgZhPwhH_knIPnkA4GgvnQ\"}"
+    }
+   ],
+   "initiator_error": null,
+   "responder_error": "Trystero: peer identity verification failed",
+   "verified": {
+    "A": {
+     "peer_id": "izta8zhsZH7HVcLteLNl",
+     "user_id": "8oysJYYlxgfcFBn7jJOcpc"
+    }
+   }
+  },
+  {
+   "case": "no fingerprint in the remote description",
+   "app": "example.com/app",
+   "room": "lobby",
+   "initiator": {
+    "peer_id": "m7oEQitmWEQ4WW5aqhKp",
+    "user_id": "8Qc8kjJP0X70oY14zVW6rM",
+    "endpoint": "endpoint-a",
+    "user": "user-a",
+    "sdp_local": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n",
+    "sdp_remote": "v=0\r\n"
+   },
+   "responder": {
+    "peer_id": "izta8zhsZH7HVcLteLNl",
+    "user_id": "8oysJYYlxgfcFBn7jJOcpc",
+    "endpoint": "endpoint-b",
+    "user": "user-b",
+    "sdp_local": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint: sha-256 0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9:0A:1B:2C:3D:4E:5F:60:71:82:93:A4:B5:C6:D7:E8:F9 \r\n",
+    "sdp_remote": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 4F:2A:9C:11:00:7B:EE:31:58:AA:0D:6C:93:12:47:BF:C8:21:5E:70:66:D4:3A:91:0B:CF:28:7E:55:19:A3:F0\r\na=fingerprint:sha-1 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44\r\na=fingerprint:sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\r\n"
+   },
+   "nonces": [
+    "5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506",
+    "c0ffee00-1234-4abc-8def-0123456789ab"
+   ],
+   "messages": [],
+   "initiator_error": "Trystero: DTLS fingerprint missing",
+   "responder_error": "waits",
+   "verified": {}
+  }
+ ],
+ "handshake_frames": [
+  {
+   "case": "step 1",
+   "action": "@_hsdata",
+   "payload_json": "{\"__trystero_id\":1,\"n\":\"5a1f0c2e-8b3d-4e6f-9a70-b1c2d3e4f506\",\"dtls\":[\"sha-1 11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44\",\"sha-256 4f:2a:9c:11:00:7b:ee:31:58:aa:0d:6c:93:12:47:bf:c8:21:5e:70:66:d4:3a:91:0b:cf:28:7e:55:19:a3:f0\"],\"uid\":\"8Qc8kjJP0X70oY14zVW6rM\",\"pk\":\"kgjdezuSTcFwdzLPIGjzikPkN1RIbbVGZBGJKR_sNwc.bhgBbRP9SgX5Sk1wscy_a5LHAkt6PT4vavX1vSHk_Xc\",\"uk\":\"jvZjDhgPIgEdYwDOQsCb08EEkgBnKPNLJyapClNk4-k.QXtxS90uaruEu5CYnr-rgDhSZNDyHj_DQjjWJGcmPps\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 502,
+     "hex": "0310405f68736461746100000000000000000000000000000000000000000000000000007b225f5f747279737465726f5f6964223a312c226e223a2235613166306332652d386233642d346536662d396137302d623163326433653466353036222c2264746c73223a5b227368612d312031313a32323a33333a34343a35353a36363a37373a38383a39393a61613a62623a63633a64643a65653a66663a30303a31313a32323a33333a3434222c227368612d3235362034663a32613a39633a31313a30303a37623a65653a33313a35383a61613a30643a36633a39333a31323a34373a62663a63383a32313a35653a37303a36363a64343a33613a39313a30623a63663a32383a37653a35353a31393a61333a6630225d2c22756964223a22385163386b6a4a50305837306f5931347a565736724d222c22706b223a226b676a64657a755354634677647a4c5049476a7a696b506b4e315249626256475a42474a4b525f734e77632e626867426252503953675835536b31777363795f61354c48416b743650543476617658317653486b5f5863222c22756b223a226a765a6a44686750496745645977444f51734362303845456b67426e4b504e4c4a796170436c4e6b342d6b2e515874785339307561727545753543596e722d72674468535a4e4479486a5f44516a6a574a47636d507073227d"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "ready",
+   "action": "@_hsready",
+   "payload_json": "\"\"",
+   "frames": [
+    {
+     "from": "A",
+     "size": 36,
+     "hex": "0300405f6873726561647900000000000000000000000000000000000000000000000000"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "room full",
+   "action": "@_hsready",
+   "payload_json": "{\"ok\":false,\"err\":\"room full\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 66,
+     "hex": "0310405f68737265616479000000000000000000000000000000000000000000000000007b226f6b223a66616c73652c22657272223a22726f6f6d2066756c6c227d"
+    }
+   ],
+   "delivered": true
+  },
+  {
+   "case": "banned",
+   "action": "@_hsready",
+   "payload_json": "{\"ok\":false,\"err\":\"peer banned\",\"reason\":\"spam\"}",
+   "frames": [
+    {
+     "from": "A",
+     "size": 84,
+     "hex": "0310405f68737265616479000000000000000000000000000000000000000000000000007b226f6b223a66616c73652c22657272223a22706565722062616e6e6564222c22726561736f6e223a227370616d227d"
+    }
+   ],
+   "delivered": true
+  }
+ ],
+ "ping_frames": {
+  "action": "@_ping",
+  "request_id": "0b1c2d3e-4f50-4617-8899-aabbccddeeff",
+  "response": "",
+  "frames": [
+   {
+    "from": "A",
+    "size": 80,
+    "hex": "0300405f70696e670000000000000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d"
+   },
+   {
+    "from": "B",
+    "size": 80,
+    "hex": "0300405f726573706f6e736500000000000000000000000000000000000000000000002c7b2272223a2230623163326433652d346635302d343631372d383839392d616162626363646465656666227d"
+   }
+  ]
+ },
+ "identity_limits": {
+  "pub_key_records": 4096,
+  "signature_cache_entries": 8192,
+  "signature_cache_bytes": 2097152,
+  "signature_cache_payload_bytes": 4096,
+  "handshake_timeout_ms": 10000,
+  "buffered_handshake_messages": 16,
+  "handshake_nonce_min_chars": 16,
+  "hsdata_max_payload_bytes": 65536,
+  "hsready_max_payload_bytes": 131072
+ }
+}

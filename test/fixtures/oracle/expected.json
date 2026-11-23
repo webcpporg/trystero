@@ -1,0 +1,494 @@
+{
+    "event_messages": {
+        "secret_key": "ea25be8deb88b3e137d8e64800a8f1f323fdf2a5ec32e8d5f28fc5bafad693df",
+        "aux": "0b2845627f9cb9d6f3102d4a6784a1bedbf815324f6c89a6c3e0fd1a3754718e",
+        "created_at": 1759700000,
+        "events": [
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f",
+                "id": "5f62f6ad95b21def223138ceb6f082483211912df6adc7a7d5e09b1872a022da",
+                "message": "[\"EVENT\",{\"kind\":27537,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"5f62f6ad95b21def223138ceb6f082483211912df6adc7a7d5e09b1872a022da\",\"sig\":\"7b8c58e0daf260c6acc79b6455a126cf7a55ef9ceac3c5011f7436f967334dcac34634c949e482477ecbd6258286667d4c991b724f82e56d7585a56d81109e5d\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "quote \" backslash \\ both \\\" solidus / space   tilde ~",
+                "id": "484bfd2be609436d45f740791b9936e2cffaab24dba1689f956823e557557ccb",
+                "message": "[\"EVENT\",{\"kind\":27537,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"quote \\\" backslash \\\\ both \\\\\\\" solidus / space   tilde ~\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"484bfd2be609436d45f740791b9936e2cffaab24dba1689f956823e557557ccb\",\"sig\":\"071d4188d1fcee2fb4af1a0d5550b570d3dc996508f85c69055f3717cbc12717ff295a430f7d9586594f87ec875de8c6fa88fe10b676826a926e03a4dd6e37b1\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "line separator   paragraph separator   delete ",
+                "id": "c6ed4168c19d27b74b2248371feda643c6d926e62c88a42a5de5b946030d9f9c",
+                "message": "[\"EVENT\",{\"kind\":27537,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"line separator   paragraph separator   delete \",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"c6ed4168c19d27b74b2248371feda643c6d926e62c88a42a5de5b946030d9f9c\",\"sig\":\"98d78f5b966dd48d9cf7dbeaf1c19b087d78541d62f4946fc9c5ae3411ebfe9593535e1deda46e922e2051a9062b48aeef371c47ea87d9fe1c70bb5c4cab9065\"}]"
+            },
+            {
+                "topic": "585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v",
+                "content": "astral 🎉 𝄞, two bytes é  ߿, three ☕ ࠀ ￿",
+                "id": "bc2070739c362d6be6e2ab89a66d84412f459d7aa0f786a3b32785fe11560e78",
+                "message": "[\"EVENT\",{\"kind\":27537,\"tags\":[[\"x\",\"585q4w3ia403j31626l2p3k1p3kh6u2v2g5n4v\"]],\"created_at\":1759700000,\"content\":\"astral 🎉 𝄞, two bytes é  ߿, three ☕ ࠀ ￿\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"bc2070739c362d6be6e2ab89a66d84412f459d7aa0f786a3b32785fe11560e78\",\"sig\":\"494960b77cc8b52c024736acadddf33582ea36070155d93ed439be68f7e5db103a06ab47660a5c882587f05473e2280be160c12a4f47e7ffb82d5548464a8c1e\"}]"
+            },
+            {
+                "topic": "topic \u0000 \u001f \" \\      🎉",
+                "content": "{\"peerId\":\"abc\",\"nonce\":\"12345678\"}",
+                "id": "85af94110ce9b15832bfd9068dd48f72cd34c143e0284e9ad41db661e93e16a5",
+                "message": "[\"EVENT\",{\"kind\":27604,\"tags\":[[\"x\",\"topic \\u0000 \\u001f \\\" \\\\      🎉\"]],\"created_at\":1759700000,\"content\":\"{\\\"peerId\\\":\\\"abc\\\",\\\"nonce\\\":\\\"12345678\\\"}\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"85af94110ce9b15832bfd9068dd48f72cd34c143e0284e9ad41db661e93e16a5\",\"sig\":\"75a933375f57d3a4e1677b6463cd404bbfb649f1ee4b9337d9c3e53c20cfa75065dae4e29ffd48beeb5d996efd95af9c1b89002c70d6c046844bd5a2d3a43ec4\"}]"
+            },
+            {
+                "topic": "",
+                "content": "",
+                "id": "b3b52a52fdc022396fc44405ebf08bf1ada81fbc14be2fe7e5ea6f903f9664d7",
+                "message": "[\"EVENT\",{\"kind\":26261,\"tags\":[[\"x\",\"\"]],\"created_at\":1759700000,\"content\":\"\",\"pubkey\":\"162ce256bae9f15d702b9d933909fa9f31e93b38cf4bc8f62591026fd00259a5\",\"id\":\"b3b52a52fdc022396fc44405ebf08bf1ada81fbc14be2fe7e5ea6f903f9664d7\",\"sig\":\"dd00b9cd61eb66bb2da975ee7faf02972e9afdd6d5443c52a92e877aece0051f035d53b8d70bd563362967afc5b44f3c3912a4989351376812ba7a34c12833b8\"}]"
+            }
+        ]
+    },
+    "nostr_events": [
+        {
+            "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": 1759700000,
+            "kind": 28500,
+            "topic": "OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns",
+            "content": "{\"peerId\":\"abc\",\"nonce\":\"12345678\"}",
+            "id": "5bfd86a6da55234ea94d913caa855eb474b07f09d9710a2bab1d471d4b806f0e"
+        },
+        {
+            "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": 1759700000,
+            "kind": 28500,
+            "topic": "OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns",
+            "content": "quote \" backslash \\ newline \n tab \t unicode é ☕ 🎉 control \u0001",
+            "id": "2ecae57c4da4bd5f2fe0c5265f1ec8e2347653cc67591b4def58f673940f6059"
+        },
+        {
+            "pubkey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+            "created_at": 1759700000,
+            "kind": 28500,
+            "topic": "OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns",
+            "content": "",
+            "id": "56801788c27a326e68199a55b1b79331f948671f5a62c7ca02d8e8059d22865e"
+        }
+    ],
+    "signal_texts": [
+        {
+            "signal": {
+                "peerId": "\u0000\u0001\u001f",
+                "nonce": "\" \\      🎉"
+            },
+            "text": "{\"peerId\":\"\\u0000\\u0001\\u001f\",\"nonce\":\"\\\" \\\\      🎉\"}",
+            "read": null
+        },
+        {
+            "signal": {
+                "peerId": "\b\f\n\r\t\u000b",
+                "nonce": "n0nce"
+            },
+            "text": "{\"peerId\":\"\\b\\f\\n\\r\\t\\u000b\",\"nonce\":\"n0nce\"}",
+            "read": null
+        },
+        {
+            "signal": {
+                "peerId": "peerAAAAAAAAAAAAAAAA",
+                "offerId": "o",
+                "offer": "🎉\u0000𝄞 é"
+            },
+            "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"offer\":\"🎉\\u0000𝄞 é\"}",
+            "read": {
+                "peer_id": "peerAAAAAAAAAAAAAAAA",
+                "offer": "🎉\u0000𝄞 é",
+                "offer_id": "o"
+            }
+        },
+        {
+            "signal": {
+                "peerId": "peerAAAAAAAAAAAAAAAA",
+                "offerId": "o",
+                "candidate": "\u001f   \"\\"
+            },
+            "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":\"\\u001f   \\\"\\\\\"}",
+            "read": {
+                "peer_id": "peerAAAAAAAAAAAAAAAA",
+                "candidate": "\u001f   \"\\",
+                "offer_id": "o"
+            }
+        },
+        {
+            "signal": {
+                "peerId": "q\"\\\n",
+                "offerId": "o",
+                "answer": " \u0000"
+            },
+            "text": "{\"peerId\":\"q\\\"\\\\\\n\",\"offerId\":\"o\",\"answer\":\" \\u0000\"}",
+            "read": null
+        },
+        {
+            "signal": {
+                "peerId": "peerBBBBBBBBBBBBBBBB",
+                "offerId": "o",
+                "answer": "sealed "
+            },
+            "text": "{\"peerId\":\"peerBBBBBBBBBBBBBBBB\",\"offerId\":\"o\",\"answer\":\"sealed \"}",
+            "read": {
+                "peer_id": "peerBBBBBBBBBBBBBBBB",
+                "answer": "sealed ",
+                "offer_id": "o"
+            }
+        },
+        {
+            "signal": {
+                "peerId": "peerBBBBBBBBBBBBBBBB",
+                "offerId": "o",
+                "candidate": "  "
+            },
+            "text": "{\"peerId\":\"peerBBBBBBBBBBBBBBBB\",\"offerId\":\"o\",\"candidate\":\"  \"}",
+            "read": {
+                "peer_id": "peerBBBBBBBBBBBBBBBB",
+                "candidate": "  ",
+                "offer_id": "o"
+            }
+        }
+    ],
+    "duplicate_keys": {
+        "self_id": "oracleSelf0000000000",
+        "signals": [
+            {
+                "text": "{\"peerId\":\"peerBBBBBBBBBBBBBBBB\",\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"nonce\":\"n\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerBBBBBBBBBBBBBBBB\",\"peer\\u0049d\":\"peerAAAAAAAAAAAAAAAA\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"first\",\"offer\":\"first\",\"offerId\":\"last\",\"offer\":\"last\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "offer": "last",
+                    "offer_id": "last"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"offer\":\"\",\"offer\":\"sealed\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "offer": "sealed",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"offer\":\"sealed\",\"offer\":\"\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":1,\"candidate\":\"sealed\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "candidate": "sealed",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"answer\":\"sealed\",\"answer\":null}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"not an id\",\"offerId\":\"o\",\"answer\":\"sealed\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "answer": "sealed",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"nonce\":\"a\",\"nonce\":\"b\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"peerId\":\"\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"\",\"offerId\":\"o\",\"answer\":\"sealed\",\"peerId\":\"peerAAAAAAAAAAAAAAAA\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "answer": "sealed",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"peer\":\"x\",\"offerId\":\"o\",\"offer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"peer\":null,\"nonce\":\"n\"}",
+                "read": null
+            }
+        ],
+        "root_topic": "OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns",
+        "events": [
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"contentFirst00000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\",\"content\":\"{\\\"peerId\\\":\\\"contentLast000000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "contentLast000000000"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"escapedFirst00000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\",\"con\\u0074ent\":\"{\\\"peerId\\\":\\\"escapedLast000000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "escapedLast000000000"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"another-topic\"]],\"content\":\"{\\\"peerId\\\":\\\"rootTagsLast00000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\",\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]]}]",
+                "acted": "rootTagsLast00000000"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"rootTagsFirst0000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\",\"tags\":[[\"x\",\"another-topic\"]]}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":7,\"content\":\"{\\\"peerId\\\":\\\"textContentLast00000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "textContentLast00000"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"textContentFirst0000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\",\"content\":7}]",
+                "acted": null
+            }
+        ]
+    },
+    "signal_envelopes": {
+        "self_id": "oracleSelf0000000000",
+        "signals": [
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAA\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAAA\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAA-\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAé\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":5,\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":null,\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"offerId\":\"o\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"not an id\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"ooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":5,\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":null,\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"oé\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"answer\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"candidate\":\"sealed\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"\",\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":5,\"nonce\":\"n\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":\"ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀c\"}",
+                "read": null
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\",\"answer\":\"sealed\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "answer": "sealed",
+                    "offer_id": "oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"a_.~:!-Z9\",\"answer\":\"sealed\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "answer": "sealed",
+                    "offer_id": "a_.~:!-Z9"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "candidate": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"candidate\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA",
+                    "candidate": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+                    "offer_id": "o"
+                }
+            },
+            {
+                "text": "{\"peerId\":\"peerAAAAAAAAAAAAAAAA\",\"offerId\":\"o\",\"nonce\":\"n\"}",
+                "read": {
+                    "peer_id": "peerAAAAAAAAAAAAAAAA"
+                }
+            }
+        ],
+        "root_topic": "OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns",
+        "events": [
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envShort00000000000\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envNotAscii00000000é\\\",\\\"offerId\\\":\\\"o\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envSpace000000000000\\\",\\\"offerId\\\":\\\"not an id\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envLong0000000000000\\\",\\\"offerId\\\":\\\"ooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envNumber00000000000\\\",\\\"offerId\\\":5,\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envMissing0000000000\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": null
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envLongest0000000000\\\",\\\"offerId\\\":\\\"oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "envLongest0000000000"
+            },
+            {
+                "text": "[\"EVENT\",\"sub\",{\"tags\":[[\"x\",\"OteOXmT4_REZm4Lt7jSQVD5OVHgqpYvse6W5hmnx4Ns\"]],\"content\":\"{\\\"peerId\\\":\\\"envChars000000000000\\\",\\\"offerId\\\":\\\"a_.~:!-Z9\\\",\\\"answer\\\":\\\"x\\\"}\"}]",
+                "acted": "envChars000000000000"
+            }
+        ]
+    },
+    "answerer": {
+        "self_id": "5JuBmYeQ3ItAlXdP1Hs8",
+        "app_id": "my-app",
+        "room_id": "room-1",
+        "offer_sdp": "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=offer\r\n",
+        "answer_sdp": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n",
+        "candidate": "{\"candidate\":\"candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\"}",
+        "cases": [
+            {
+                "offer": "{\"peerId\":\"zzzzzzzzzzzzzzzzzzz1\",\"offerId\":\"o.~:!-_Az09\",\"offer\":\"ByZFZIOiweD_Hj1czCbhDWMyzQVIlzZ1SGFX75b2Wbs2bi0oo-qi82pwMzv2Ym4M-BnaI5WOKlxbYm70OA7XAfzZF68\"}",
+                "published": [
+                    {
+                        "topic": "aBpCgjuITmJIKuHsnl_kv5m-JTBugyy-R1sVilnwR8E",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"offerId\":\"o.~:!-_Az09\",\"answer\":\"ByZFZIOiweD_Hj1czCbhDWMyzQVIlTZzSGFX75b2Wbs2bi0oo-qi82pwMzv2bGYZ6g6lJPSx4zAGOLqObTea72E90G6Z\"}",
+                        "sealed": "ByZFZIOiweD_Hj1czCbhDWMyzQVIlTZzSGFX75b2Wbs2bi0oo-qi82pwMzv2bGYZ6g6lJPSx4zAGOLqObTea72E90G6Z",
+                        "plaintext": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n"
+                    },
+                    {
+                        "topic": "aBpCgjuITmJIKuHsnl_kv5m-JTBugyy-R1sVilnwR8E",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"offerId\":\"o.~:!-_Az09\",\"candidate\":\"ByZFZIOiweD_Hj1cwTmyYQc5mUwJ0nNlUgp6rrHCBP9mKH88ouSj_S4ZSWj5PDpYr13nG8xwOqbe-NGeZiVXYJ9IF0sfRJNff3KUi_MMAKSmw3e0dmw4MEIbX8s9Vd2Bpm_Dq1lmACeT_OUnT228nqwfNY3TiGPtrw7Qx1O8u69GHwSyc21W2_-z_9Tu53IeLrgvLFxr3rA\"}",
+                        "sealed": "ByZFZIOiweD_Hj1cwTmyYQc5mUwJ0nNlUgp6rrHCBP9mKH88ouSj_S4ZSWj5PDpYr13nG8xwOqbe-NGeZiVXYJ9IF0sfRJNff3KUi_MMAKSmw3e0dmw4MEIbX8s9Vd2Bpm_Dq1lmACeT_OUnT228nqwfNY3TiGPtrw7Qx1O8u69GHwSyc21W2_-z_9Tu53IeLrgvLFxr3rA",
+                        "plaintext": "{\"candidate\":\"candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\"}"
+                    }
+                ]
+            },
+            {
+                "offer": "{\"peerId\":\"zzzzzzzzzzzzzzzzzzz2\",\"offerId\":\"OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO\",\"offer\":\"ByZFZIOiweD_Hj1czCbhDWMyzQVIlzZ1SGFX75b2Wbs2bi0oo-qi82pwMzv2Ym4M-BnaI37Nf_D_fShG2dNdn5_aKiI\"}",
+                "published": [
+                    {
+                        "topic": "Ur_XL0y25p_rypqf7d6czhZAyZtP1TXJ3Do1iHR4HEA",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"offerId\":\"OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO\",\"answer\":\"ByZFZIOiweD_Hj1czCbhDWMyzQVIlTZzSGFX75b2Wbs2bi0oo-qi82pwMzv2bGYZ6g6lJPShY3mz7FjvZNNGnoV_YEhE\"}",
+                        "sealed": "ByZFZIOiweD_Hj1czCbhDWMyzQVIlTZzSGFX75b2Wbs2bi0oo-qi82pwMzv2bGYZ6g6lJPShY3mz7FjvZNNGnoV_YEhE",
+                        "plaintext": "v=0\r\no=- 3 4 IN IP4 127.0.0.1\r\ns=answer\r\n"
+                    },
+                    {
+                        "topic": "Ur_XL0y25p_rypqf7d6czhZAyZtP1TXJ3Do1iHR4HEA",
+                        "text": "{\"peerId\":\"5JuBmYeQ3ItAlXdP1Hs8\",\"offerId\":\"OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO\",\"candidate\":\"ByZFZIOiweD_Hj1cwTmyYQc5mUwJ0nNlUgp6rrHCBP9mKH88ouSj_S4ZSWj5PDpYr13nG8xwOqbe-NGeZiVXYJ9IF0sfRJNff3KUi_MMAKSmw3e0dmw4MEIbX8s9Vd2Bpm_Dq1lmACeT_OUnT228nqwfNY3TiGPtrw7Qx1O8u69GHwSyc21W2xVcEDUPR4ZhvTim36IJU4Y\"}",
+                        "sealed": "ByZFZIOiweD_Hj1cwTmyYQc5mUwJ0nNlUgp6rrHCBP9mKH88ouSj_S4ZSWj5PDpYr13nG8xwOqbe-NGeZiVXYJ9IF0sfRJNff3KUi_MMAKSmw3e0dmw4MEIbX8s9Vd2Bpm_Dq1lmACeT_OUnT228nqwfNY3TiGPtrw7Qx1O8u69GHwSyc21W2xVcEDUPR4ZhvTim36IJU4Y",
+                        "plaintext": "{\"candidate\":\"candidate:1 1 udp 2122260223 192.0.2.1 54400 typ host\",\"sdpMid\":\"0\",\"sdpMLineIndex\":0,\"usernameFragment\":\"uf\"}"
+                    }
+                ]
+            }
+        ]
+    },
+    "payload_texts": [
+        {
+            "text": "{\"b\":1,\"a\":2,\"10\":3,\"2\":4,\"-1\":5,\"01\":6,\"1.5\":7,\"4294967294\":8,\"4294967295\":9,\"0\":10}",
+            "written": "{\"0\":10,\"2\":4,\"10\":3,\"4294967294\":8,\"b\":1,\"a\":2,\"-1\":5,\"01\":6,\"1.5\":7,\"4294967295\":9}"
+        },
+        {
+            "text": "{\"z\":{\"y\":[1,{\"3\":true,\"x\":null,\"1\":false}],\"0\":\"\"},\"a\":[]}",
+            "written": "{\"z\":{\"0\":\"\",\"y\":[1,{\"1\":false,\"3\":true,\"x\":null}]},\"a\":[]}"
+        },
+        {
+            "text": "[0,-0,1,-1,100,1E3,1e+2,12e-1,0.1,1.5,123.45,0.30000000000000004,1e20,1e21,123e19,0.000001,1e-6,1e-7,2.5e-8]",
+            "written": "[0,0,1,-1,100,1000,100,1.2,0.1,1.5,123.45,0.30000000000000004,100000000000000000000,1e+21,1.23e+21,0.000001,0.000001,1e-7,2.5e-8]"
+        },
+        {
+            "text": "[1.5e300,-1.5e-300,5e-324,1.7976931348623157e308,9007199254740991,-9007199254740991,4294967296]",
+            "written": "[1.5e+300,-1.5e-300,5e-324,1.7976931348623157e+308,9007199254740991,-9007199254740991,4294967296]"
+        },
+        {
+            "text": "[\"\\u2028\\u0000\\u007f é 🎉\\\"\\\\/\",true,false,null,{}]",
+            "written": "[\" \\u0000 é 🎉\\\"\\\\/\",true,false,null,{}]"
+        }
+    ],
+    "payload_beyond_doubles": [
+        {
+            "text": "[9007199254740993,-9223372036854775808,0.1000000000000000055511151231257827,1e400]",
+            "written": "[9007199254740992,-9223372036854776000,0.1,null]"
+        }
+    ]
+}

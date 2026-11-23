@@ -20,9 +20,10 @@ namespace webcpp::trystero {
 /**
  * What an operation of the library completes with when it does not succeed.
  *
- * Each value is one of the errors Trystero rejects a promise with or reports to `onPeerError`,
- * as a code of @ref error_category rather than a message: an operation completes with it, and
- * `room::on_error` reports it with the peer it concerns.
+ * Each value is one of the errors Trystero rejects a promise with or reports to a room's
+ * `onError`, as a code of @ref error_category rather than a message: an operation completes with
+ * it, and `room::on_error` reports it in a @ref room_error, with the context Trystero gives it and
+ * `room_error_code_name` gives Trystero's name of a room error's code.
  *
  * @see "Rooms and actions", in the guide.
  */
@@ -44,17 +45,12 @@ enum class error {
     /** The data channel stopped draining while a transfer waited for it. */
     channel_stalled,
     /**
-     * A peer's signal or handshake used another password, or the peer sent a handshake message the
-     * protocol does not expect, Trystero's "incorrect password for overlapping room".
-     */
-    wrong_password,
-    /** A connected peer did not finish the handshake in time, Trystero's "handshake timed out". */
-    handshake_timed_out,
-    /**
-     * Reserved: nothing reports it today.
+     * A connected peer's handshake failed, 0.27.0's `handshake-failed` room error, which
+     * `room_error_code_name` names: the report's message is 0.27.0's reason, as "handshake timed
+     * out after 10000ms", and the peer is told to leave.
      *
-     * A handshake message of the wrong shape reports `wrong_password`, as Trystero's handshake
-     * does.
+     * A signal under another password is `decrypt_failed`: 0.27.0 keeps another password out by
+     * the sealing of its signals alone.
      */
     handshake_failed,
     /** The browser or the native stack refused an operation. */
@@ -66,8 +62,57 @@ enum class error {
     invalid_configuration,
     /** The app already holds a room of that id; a room is joined once per app. */
     already_joined,
-    /** The app already holds as many rooms as a peer accepts, 64 of them. */
-    too_many_rooms,
+    /**
+     * The room holds as many users as its `room_options::max_users` accepts, 0.27.0's "room full":
+     * reported by the room a full peer refused, with the refusing peer's id.
+     */
+    room_full,
+    /** The peer is banned from the room, 0.27.0's "peer banned". */
+    banned,
+    /** Every signaling relay failed, 0.27.0's `relay-failed` room error. */
+    relay_failed,
+    /** A peer's or the endpoint's identity could not be resolved, 0.27.0's `identity-failed`. */
+    identity_failed,
+    /** A plugin of the room failed to set up, 0.27.0's `plugin-failed`. */
+    plugin_failed,
+    /**
+     * A signal could not be opened: another room password, a corrupted text, or a plaintext that
+     * is not UTF-8, 0.27.0's `decrypt-failed`.
+     *
+     * A room reports it for an offer or an answer, at most
+     * once a minute per peer and stage, with the stage in the report and its message, as
+     * "failed to decrypt offer (incorrect password or corrupted signal)".
+     */
+    decrypt_failed,
+    /** The peer could not be connected after the SDP exchange, 0.27.0's `peer-connect-failed`. */
+    peer_connect_failed,
+    /** A peer reported an error, 0.27.0's `peer-error`. */
+    peer_error,
+    /** A listener that takes one at a time is already set, 0.27.0's "already registered". */
+    already_subscribed,
+    /** The target of a send is not connected, 0.27.0's "no active peer with id". */
+    not_connected,
+    /** An action was aborted by its caller, 0.27.0's "operation aborted". */
+    action_aborted,
+    /** The receiver of a request answered with a failure, 0.27.0's `rejected` action error. */
+    request_rejected,
+    /** A request was not answered in time, 0.27.0's "request timed out". */
+    request_timed_out,
+    /**
+     * The action's name was made the other kind of action first, a message action or a request
+     * action, 0.27.0's "action type cannot be redefined", which it throws.
+     */
+    action_redefined,
+    /**
+     * A text is not a user identity `import_user_identity` reads, 0.27.0's "invalid user identity
+     * key material; expected exported userKey or P-256 JWK", which `importUserIdentity` throws.
+     */
+    invalid_user_identity,
+    /**
+     * A room's `room_options::max_users` is 0 or above 2^53 - 1, 0.27.0's "maxUsers must be a
+     * positive safe integer", which `joinRoom` throws: `app::join` refuses it.
+     */
+    invalid_max_users,
 };
 
 /**
@@ -117,13 +162,29 @@ private:
             case error::transfer_rejected: return "the receiver rejected the transfer";
             case error::transfer_timed_out: return "the action transfer timed out";
             case error::channel_stalled: return "the data channel stopped draining";
-            case error::wrong_password: return "the peer uses another room password";
-            case error::handshake_timed_out: return "the handshake timed out";
-            case error::handshake_failed: return "the handshake failed";
+            case error::handshake_failed: return "handshake failed";
             case error::backend_failure: return "the WebRTC backend refused an operation";
             case error::invalid_configuration: return "the configuration is unusable";
             case error::already_joined: return "the app has already joined a room of that id";
-            case error::too_many_rooms: return "the app holds as many rooms as a peer accepts, 64";
+            case error::room_full: return "room full";
+            case error::banned: return "peer banned";
+            case error::relay_failed: return "all signaling relays failed";
+            case error::identity_failed: return "identity resolution failed";
+            case error::plugin_failed: return "plugin setup failed";
+            case error::decrypt_failed:
+                return "failed to decrypt offer or answer (incorrect password or corrupted signal)";
+            case error::peer_connect_failed:
+                return "could not connect to peer after exchanging SDP";
+            case error::peer_error: return "peer error";
+            case error::already_subscribed: return "handler already registered; unsubscribe first";
+            case error::not_connected: return "no active peer with this id";
+            case error::action_aborted: return "operation aborted";
+            case error::request_rejected: return "request rejected";
+            case error::request_timed_out: return "request timed out";
+            case error::action_redefined: return "action type cannot be redefined";
+            case error::invalid_user_identity:
+                return "invalid user identity key material; expected exported userKey or P-256 JWK";
+            case error::invalid_max_users: return "maxUsers must be a positive safe integer";
         }
         return "unknown webcpp.trystero error";
     }

@@ -27,8 +27,8 @@ rule native-threads ( properties * )
     }
 }
 local platform = <library>/webcpp/trystero//platform <conditional>@native-threads ;
-# A test of a part that parses no JSON, the timer, a relay's URL, a page's
-# calls or the sealer, links parts or platform-parts in place of the rooms:
+# A test of a part that parses no JSON, the timer, a relay's URL or a page's
+# calls, links parts or platform-parts in place of the rooms:
 # they leave out the rooms' Asyncify list, whose pattern names Boost.JSON's
 # parser, of which such a program has no function, and Binaryen warns of a
 # pattern that names none (build.jam).
@@ -44,8 +44,7 @@ local platform-part = -<library>/webcpp/trystero//trystero
 webcpp.headers-alone trystero : ../include
   : trystero.hpp trystero/*.hpp trystero/protocol/*.hpp trystero/detail/*.hpp ;
 webcpp.headers-alone trystero : ../include
-  : trystero/platform/backend.hpp trystero/platform/entropy.hpp
-    trystero/platform/sealer.hpp trystero/platform/websocket.hpp trystero/webrtc/*.hpp
+  : trystero/platform/backend.hpp trystero/platform/websocket.hpp trystero/webrtc/*.hpp
   : $(platform) ;
 webcpp.headers-alone trystero : ../include : trystero/platform/page.hpp
   : $(platform) : emscripten ;
@@ -61,32 +60,59 @@ webcpp.compile config_developer_defined : config_test.cpp
 webcpp.compile config_all_off : config_test.cpp
   : <define>WEBCPP_NO_EXCEPTIONS <define>WEBCPP_TEST_TRYSTERO_ALL_OFF ;
 
-# The protocol against what Trystero JS computed, which the original's oracle
-# wrote into fixtures/expected/expected.json, and whole rooms over the memory
-# backend of support/memory_backend.hpp: on both targets.
+# The protocol against what Trystero JS 0.27.0 computed, which the original's
+# oracle wrote into fixtures/oracle/expected.json, and whole rooms over the
+# memory backend of support/memory_backend.hpp: on both targets.
 # tag::both-targets[]
-webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/expected/expected.json ;
+webcpp.run protocol : protocol_test.cpp : <testing.input-file>fixtures/oracle/expected.json ;
+# The crypto layer of the port to Trystero 0.27.0 against the vectors
+# recorded from its own code (oracle/record_0_27.mjs).
+webcpp.run crypto_layer : crypto_layer_test.cpp
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
+# The PBKDF2 case of crypto_layer (600,000 iterations) is compiled only
+# where WEBCPP_TRYSTERO_TEST_SLOW_KDF is defined, which this target alone
+# defines, in a release build: the debug run of crypto_layer skips it by
+# construction, so this target runs it in every lane.
+webcpp.run crypto_layer_release : crypto_layer_test.cpp
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json <variant>release
+    <define>WEBCPP_TRYSTERO_TEST_SLOW_KDF ;
 # The signaling and the Nostr strategy alone: an answerer's signals against
 # Trystero's, and the bounds of the texts they read.
 webcpp.run signaling : signaling_test.cpp
-  : <testing.input-file>fixtures/expected/expected.json ;
-webcpp.run room : room_test.cpp ;
-# Rooms of one app that share one connection per remote peer; once as the
-# build asks, once without exceptions, on both targets; and, natively, once
-# with the standard libraries' checks, so that a kept frame that kicks during
-# a binding, or a waiter failed during a connection's end, fails at once when
-# it touches what it removed.
-webcpp.run shared : shared_test.cpp ;
-webcpp.run shared_no_exceptions : shared_test.cpp : <exception-handling>off ;
-webcpp.run shared_hardened : shared_test.cpp
+  : <testing.input-file>fixtures/oracle/expected.json ;
+# Whole rooms, whose transfers are checked frame by frame against those 0.27.0
+# sent (action_frames).
+webcpp.run room : room_test.cpp : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
+# The listeners of an event alone, as Trystero 0.27.0's emitter runs them.
+webcpp.run subscription : subscription_test.cpp ;
+# A room's users and their peers alone, as 0.27.0's room counts them.
+webcpp.run user_table : user_table_test.cpp ;
+# The memory backend's hooks, which the tests of rooms drive.
+webcpp.run memory_backend : memory_backend_test.cpp ;
+# One room's connection to one peer alone, over a memory pair: 0.27.0's
+# bounds on the frames kept before its room binds it, and on a frame after.
+webcpp.run peer_link : peer_link_test.cpp ;
+# Natively once more with the standard libraries' checks, so that a frame that
+# ends its link during the replay, or a waiter failed during the end, fails at
+# once when it touches what it removed.
+webcpp.run peer_link_hardened : peer_link_test.cpp
   : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
   : native ;
-# The memory backend's hooks, which the tests of shared connections drive.
-webcpp.run memory_backend : memory_backend_test.cpp ;
-# The shared connection alone, over a memory pair.
-webcpp.run connection : connection_test.cpp ;
+# A room's handshakes alone, 0.27.0's handshake manager: its phases, its 10 s
+# on the virtual clock, its 16 buffered messages and its ready frames.
+webcpp.run handshake_manager : handshake_manager_test.cpp ;
+# Natively once more with the standard libraries' checks, so that a callback
+# that clears its peer while the manager calls it fails at once when the
+# manager touches what it removed.
+webcpp.run handshake_manager_hardened : handshake_manager_test.cpp
+  : <define>_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE <define>_GLIBCXX_ASSERTIONS
+  : native ;
 # The state an app and its rooms share, alone, over the memory backend.
 webcpp.run app_impl : app_impl_test.cpp ;
+# An app's key records and verified signatures alone, against 0.27.0's
+# vectors: its bounds, its least recently used order, and a high S refused.
+webcpp.run identity_cache : identity_cache_test.cpp
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json ;
 # The timer over webcpp::asio's steady_timer, which the platform backend
 # makes: a wait cancelled, restarted or destroyed never fires.
 webcpp.run timer : timer_test.cpp : $(part) ;
@@ -94,8 +120,7 @@ webcpp.run timer : timer_test.cpp : $(part) ;
 
 # The platform backend's own tests, on each target that builds them. On both:
 # the backend itself (its own state in backend_config::memory, its clocks,
-# its randomness, its TLS context); its sealer, natively OpenSSL's AES-GCM, in
-# a page Web Crypto under node, against what Trystero JS sealed; relays it
+# its randomness, its PBKDF2 off the room's thread, its TLS context); relays it
 # cannot reach; and how a relay's URL is read. Natively, against
 # libdatachannel and in-process servers: the relays' WebSocket, built with the
 # standard libraries' own checks, libc++'s extensive hardening and
@@ -108,8 +133,6 @@ webcpp.run timer : timer_test.cpp : $(part) ;
 # libdatachannel throws, so the backend needs none.
 # tag::platform[]
 webcpp.run platform_backend : platform_backend_test.cpp : $(platform) ;
-webcpp.run platform_sealer : platform_sealer_test.cpp
-  : $(platform) <testing.input-file>fixtures/expected/expected.json ;
 webcpp.run platform_websocket_unreachable : platform_websocket_unreachable_test.cpp
   : $(platform) ;
 webcpp.run platform_websocket_url : platform_websocket_url_test.cpp : $(platform-part) ;
@@ -124,8 +147,6 @@ webcpp.run platform_peer_connection : platform_peer_connection_test.cpp
 webcpp.run platform_room : platform_room_test.cpp : $(platform) : native ;
 webcpp.run platform_backend_no_exceptions : platform_backend_test.cpp
   : $(platform) <exception-handling>off ;
-webcpp.run platform_sealer_no_exceptions : platform_sealer_test.cpp
-  : $(platform) <testing.input-file>fixtures/expected/expected.json <exception-handling>off ;
 webcpp.run platform_websocket_unreachable_no_exceptions : platform_websocket_unreachable_test.cpp
   : $(platform) <exception-handling>off ;
 webcpp.run platform_websocket_url_no_exceptions : platform_websocket_url_test.cpp
@@ -166,7 +187,9 @@ webcpp.run allocation : allocation_test.cpp : <toolset>emscripten:<linkflags>-sA
 # into main); in debug, now the deepest build, 2,344, 2,068 and 2,020.
 # tag::asyncify-release[]
 webcpp.run room_asyncify_release : room_test.cpp
-  : <webcpp-suspend>asyncify <variant>release : emscripten ;
+  : <testing.input-file>fixtures/expected/trystero-0.27.0.json <webcpp-suspend>asyncify
+    <variant>release
+  : emscripten ;
 webcpp.run app_impl_asyncify_release : app_impl_test.cpp
   : <webcpp-suspend>asyncify <variant>release : emscripten ;
 webcpp.run allocation_asyncify_release : allocation_test.cpp
@@ -199,25 +222,35 @@ webcpp.run platform_page_peer_connection : platform_page_peer_connection_test.cp
 # A page's program: main runs the io_context under a work guard, and the
 # page's calls into C++ only post to it.
 webcpp.run platform_page : platform_page_test.cpp : $(platform) : emscripten ;
-# A page's sealer allocates nothing outside the room's resource from the
-# start of a seal or an open to its completion: the global operator new and
-# the C library's allocation functions, replaced, count none.
-webcpp.run platform_page_sealer_allocation : platform_page_sealer_allocation_test.cpp
-  : $(platform-part) : emscripten ;
 # A relay's connection and each of its messages allocate outside the room's
 # resource exactly what the guide lists, no more and no fewer.
 webcpp.run platform_page_relay_allocation : platform_page_relay_allocation_test.cpp
   : $(platform) : emscripten ;
-# A page whose crypto misbehaves: its randomness and its sealer fail with
-# their errors, and no JavaScript exception enters WebAssembly.
-webcpp.run platform_page_sealer : platform_page_sealer_test.cpp : $(platform-part) : emscripten ;
 # A page_call's handler sees the page's value as it is when it runs; a
 # function the page kept reaches nothing once its page_call, or its
 # io_context, is destroyed; and a page_call outlives its io_context harmlessly.
 webcpp.run platform_page_call : platform_page_call_test.cpp : $(platform-part) : emscripten ;
-# A relay socket's handlers and a sealer's completions run outside the page's
-# events.
+# A relay socket's handlers and a derivation's completion run outside the
+# page's events.
 webcpp.run platform_page_handlers : platform_page_handlers_test.cpp : $(platform) : emscripten ;
+# The page's online and offline events, which an app's automatic relays
+# follow, reach the backend's watch after each event, and nothing once the
+# watch is destroyed.
+webcpp.run platform_page_connectivity : platform_page_connectivity_test.cpp
+  : $(platform) : emscripten ;
+# A page without the browser's generator: each room of an app that cannot make
+# its keys reports identity_failed, and no JavaScript exception enters
+# WebAssembly. Linked for node 19 or newer, Emscripten draws from
+# crypto.getRandomValues under node too, as in a page, where for older nodes it
+# would draw from node:crypto, which the test cannot take away.
+webcpp.run platform_page_entropy : platform_page_entropy_test.cpp
+  : $(platform) <linkflags>-sMIN_NODE_VERSION=190000 : emscripten ;
+# It runs only by name until webcpp::crypto guards its read: random_device's
+# read_entropy (crypto/detail/entropy.hpp) calls getentropy, whose Emscripten
+# implementation lets the exception of a missing or throwing
+# crypto.getRandomValues through, which terminates in the noexcept read
+# (measured with Emscripten 6.0.11). The guard is the crypto stream's.
+explicit platform_page_entropy ;
 # end::page[]
 
 # The same, built without exceptions, as a page's program may be: no
@@ -238,16 +271,13 @@ webcpp.run platform_page_peer_connection_no_exceptions : platform_page_peer_conn
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_no_exceptions : platform_page_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
-webcpp.run platform_page_sealer_allocation_no_exceptions
-  : platform_page_sealer_allocation_test.cpp
-  : $(platform-part) <exception-handling>off : emscripten ;
-webcpp.run platform_page_sealer_no_exceptions : platform_page_sealer_test.cpp
-  : $(platform-part) <exception-handling>off : emscripten ;
 webcpp.run platform_page_relay_allocation_no_exceptions : platform_page_relay_allocation_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 webcpp.run platform_page_call_no_exceptions : platform_page_call_test.cpp
   : $(platform-part) <exception-handling>off : emscripten ;
 webcpp.run platform_page_handlers_no_exceptions : platform_page_handlers_test.cpp
+  : $(platform) <exception-handling>off : emscripten ;
+webcpp.run platform_page_connectivity_no_exceptions : platform_page_connectivity_test.cpp
   : $(platform) <exception-handling>off : emscripten ;
 # end::no-exceptions[]
 

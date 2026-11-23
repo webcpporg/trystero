@@ -85,8 +85,8 @@ void join_room(chat& c, const val& form) {
         c.room->make_action<std::string_view>("chat"));
     c.outgoing =
         std::make_unique<trystero::action<std::string>>(c.room->make_action<std::string>("chat"));
-    c.room->on_peer_join([](std::string_view peer) { ui("peerJoined", peer); });
-    c.room->on_peer_leave([](std::string_view peer) { ui("peerLeft", peer); });
+    c.room->on_peer_join([](const trystero::peer_event& e) { ui("peerJoined", e.peer_id); });
+    c.room->on_peer_leave([](const trystero::peer_event& e) { ui("peerLeft", e.peer_id); });
     // A view of the received frame: the text goes from the frame straight into a JavaScript string.
     c.messages->on_message([](std::string_view text, const trystero::message_info& info) {
         ui("message", std::string_view(info.from), text, false);

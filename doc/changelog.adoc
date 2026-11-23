@@ -16,38 +16,41 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* *Breaking change:* Changed the wire to Trystero 0.27.0's: peers join after
+its signed ECDSA P-256 handshake, each room has its own connections, and
+signals 0.27.0 refuses are ignored.
+* Added 0.27.0's users and identities: `app_config::identity`,
+`create_user_identity`, `export_user_identity`, `import_user_identity`,
+`room::users()`, and `room_options::max_users`, whose refusal is
+`room_full`.
+* *Breaking change:* Removed `app_config::self_id`, `idle_timeout`,
+`room_options::handshake_timeout`, `app::max_rooms` and the errors
+`too_many_rooms`, `wrong_password` and `handshake_timed_out`; `error`'s later
+values moved.
+* *Breaking change:* Changed each `on_*` to return a `subscription`, errors
+to a `room_error`, `peers()` to a map of `peer_info`, and absent targets to
+`not_connected`.
+* *Breaking change:* Changed trystero's cryptography to webcpp::hash and
+webcpp::crypto, libsecp256k1 included, with no sealer in the backend and no
+`-sSECP256K1_ROOT`, and `backend::websocket::send` to return whether it
+queued.
 * *Breaking change:* Changed `native::` and `browser::` to one
-`platform::backend` (link `/webcpp/trystero//platform`), and a backend's
-`now_ms()` and `unix_seconds()` to `steady_now()` and `unix_now()`, of
-`std::chrono`.
-* *Breaking change:* Changed trystero's Asio to webcpp::asio; a page's `main`
-runs its `io_context` under a work guard, and calls in through
-`platform::page_call` of `platform/page.hpp`.
-* *Breaking change:* Changed JSON payloads to `webcpp::document::document`
-and `webcpp::document::pmr::document`, sent as `JSON.stringify` writes them,
-for `boost::json::value` and `json_resource`; `payload` has no copy
-assignment, and programs link Boost.Charconv too.
+`platform::backend` (link `/webcpp/trystero//platform`) over webcpp::asio,
+whose page's `main` runs its `io_context`, and the clocks to `steady_now()`
+and `unix_now()`.
+* *Breaking change:* Changed JSON payloads and `protocol::` to
+webcpp::document's documents, written as `JSON.stringify` writes them,
+bounded by `room_options::max_json_document_bytes`, and `app::join` to
+`+[[nodiscard]]+`.
 * *Breaking change:* Changed relays to verify TLS in any verify mode, drop
 binary messages, and refuse URLs a page reads otherwise and TLS contexts a
 page cannot honour.
-* *Breaking change:* Changed `protocol::` to take webcpp::document's values,
-removing `json::parse` and `make_id`; `append_string` returns its error, and
-`proposal::size` is a `std::uint64_t`.
-* *Breaking change:* Changed libsecp256k1 to `/third_party//secp256k1`, with
-`webcpp-secp256k1-tables` for its tables and no `-sSECP256K1_ROOT`, and
-`app::join` to `+[[nodiscard]]+`.
-* Fixed relays hiding a genuine Nostr event, slowing rooms with colliding ids
-or making them read 8 MiB refusals, rooms dropping or piling up simultaneous
+* Fixed relays hiding a genuine Nostr event or unreachable over IPv6, rooms
+with colliding ids reading 8 MiB refusals, 32-bit receivers misreading 4 GiB
 offers, and MSVC 14.52 builds.
-* Added `room_options::max_json_document_bytes` for a received JSON payload;
-every JSON text is read in the room's resource within bounds, and a self id
-not UTF-8 is replaced by a random one.
-* Fixed unreachable IPv6 relays, signals unlike Trystero's, 32-bit receivers
-misreading 4 GiB offers, pages ignoring failing `crypto.getRandomValues` or
-dropping early frames, unbound rooms after lost presence, and crossed-connection
-peer errors.
-* Changed the quick start to one native program, and added programs showing
-differences beside Trystero JS's output.
+* Changed the pages to the port to Trystero 0.27.0, the quick start to one
+native program, and added programs showing differences beside Trystero JS's
+output.
 // end::unreleased[]
 
 [#trystero-changelog-0-1-0]

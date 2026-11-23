@@ -172,9 +172,8 @@ int posix_memalign(void** out, std::size_t alignment, std::size_t size) {
 
 // Emscripten's select() is a poll() over an array of pollfd it callocs on every call
 // (system/lib/libc/musl/src/select/select.c), and Asio's reactor calls it on every wait of the
-// io_context, once in each seal and each open (measured): the C library's wait, not the sealer's.
-// This one keeps the array on the stack, as webcpp::asio's allocation test does, so that the count
-// sees the sealer's allocations.
+// io_context: the C library's wait, not the relay's. This one keeps the array on the stack, as
+// webcpp::asio's allocation test does, so that the count sees the relay's allocations.
 namespace {
 
 /** The poll() event `event` when `set` holds `fd`, else none. */

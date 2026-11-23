@@ -14,34 +14,47 @@ after it, so a comment of the code or of a test cites it by that anchor:
 `b2 libs/trystero/doc`, which builds this page, fails on a citation that
 names no anchor of it. The tests are those of <<trystero-testing>>.
 
-. [[trystero-invariant-1]]*The wire is Trystero 0.26.0's.* A {cpp} peer,
+. [[trystero-invariant-1]]*The wire is Trystero's.* A {cpp} peer,
 in the browser or native, and Trystero JS peers in one room join, exchange
 text, JSON and binary messages, files both ways with metadata, and pings,
-leave, and form a mesh, with either side offering. _Held by_ the `interop`
-lane, `interop_browser` on emscripten and `interop_native` natively, against
-Trystero 0.26.0 itself in headless Chrome.
+leave, and form a mesh, with either side offering; each verifies the
+other's signatures before it joins it, sees its peer and user ids, and
+refuses another password, a third user past `max_users` and a forged user
+signature. _Held by_ the `interop` lane, `interop_browser` on emscripten and
+`interop_native` natively, against Trystero 0.27.0 itself in headless
+Chrome.
 . [[trystero-invariant-2]]*Every protocol value equals Trystero JS's.*
-Topics, room tokens, the relay shuffle, sealed text, Nostr event ids, inline
-and chunked action frames, control frames, envelopes and presence are what
-Trystero's own functions compute from the same inputs, byte for byte. _Held
-by_ `protocol`, against the values the `oracle` lane has Trystero 0.26.0
-write, and by the `oracle` lane, which fails when Trystero would write
-other values than those committed; and by `platform_sealer`, natively and on
-emscripten, which opens what Trystero JS sealed with Web Crypto.
+Topics, ids, room keys, room auth tokens, the relay shuffle, sealed text,
+topic kinds, Nostr event ids, inline and chunked action frames and control
+frames, compact keys and the ids they derive, user key texts, the
+handshake's steps, transcript and ready frames, and ping frames are what
+Trystero 0.27.0's own functions compute from the same inputs, byte for byte,
+and 0.27.0 verifies the signatures it recorded. _Held by_ `crypto_layer` and
+`crypto_layer_release`,
+natively and on emscripten, against the vectors
+`test/oracle/record_0_27.mjs` recorded from 0.27.0's own code, sealed texts
+opened as 0.27.0 sealed them among them; by `protocol` and `signaling`,
+against the values Trystero 0.27.0 writes for the `oracle` lane, which fails
+when Trystero would write other values than those committed; and by the
+`oracle` lane's `generated-vectors`, which records the vectors again from
+the published packages.
 . [[trystero-invariant-3]]*A peer with another password never joins a
 protected {cpp} app's rooms.* Its initial signals do not open under the
-app's password, so it obtains no shared connection into that domain. Every
-room of that app uses the same immutable password. This promise concerns
-the {cpp} app's admission; an upstream JS page that mixes passwords retains
-its one-way handshake exposure (<<trystero-protocol-limitations>>). _Held
-by_ `room` (`the_same_password_joins_and_another_does_not`), `platform_room`
-(`another_password_never_joins`), and password-domain tests of `shared` and
-`interop`.
+room's keys, derived from the app's password, so it never connects, and
+the room reports `decrypt_failed`, at most once a minute per peer and stage.
+Every room of that app uses the same immutable password. _Held by_ `room`
+(`two_passwords_never_meet` and
+`decrypt_failed_is_reported_once_a_minute`), `platform_room`
+(`another_password_never_joins`), and the interop's `passwords` scenario,
+with either side offering.
 . [[trystero-invariant-4]]*A payload larger than a frame travels in chunks,
 both ways.* It is offered, accepted and sent in chunks of at most 16,370
-bytes, and arrives whole, from either peer. _Held by_ `room`
-(`large_payloads_travel_in_chunks_both_ways`, 100 KB each way), and the
-file transfers of the `interop` lane.
+bytes, or 65,522 on a connection that takes messages of 64 KiB, as 0.27.0
+sends them, and arrives whole, from either peer. _Held by_ `room`
+(`large_payloads_travel_in_chunks_both_ways`, 100 KB each way,
+`a_wide_link_sends_wide_chunks` and
+`a_wide_transfer_arrives_in_wide_chunks_in_any_order`), and the interop's
+`wide_transfers_both_ways` scenario, 1 MiB each way.
 . [[trystero-invariant-5]]*Every allocation of an app and its rooms goes through their
 resources,* but what <<trystero-allocation-outside>> lists: from its
 construction until its `io_context` has drained, neither the global
@@ -51,8 +64,9 @@ the `std::pmr` types and `webcpp::document::pmr::document`; over the
 platform backend's relays, natively a message adds nothing, and in a page
 each event of a relay's `WebSocket` adds embind's string of the event's
 type, two for a message.
-_Held by_ `allocation`, natively and on emscripten; for a page's sealer,
-`platform_page_sealer_allocation`; and for the relays,
+Natively OpenSSL's cipher context of each seal and open is outside, as
+listed, and counted. _Held by_ `allocation`, natively and on emscripten; and
+for the relays,
 `platform_websocket_allocation` natively and
 `platform_page_relay_allocation` in a page, which counts exactly what is
 listed.
@@ -66,12 +80,12 @@ container that has no network but the loopback (`docker run` with the
 network `none`).
 . [[trystero-invariant-7]]*A room refuses a replayed or reflected offer or
 answer.* A sealed offer or answer it made, or acted on, that comes back to it
-as a peer's changes nothing (<<trystero-protocol-replay>>). _Held by_ `room`
-(`a_replayed_answer_is_refused`, `a_replayed_offer_is_refused`,
-`a_reflected_offer_is_refused_as_an_answer`,
+as a peer's changes nothing (<<trystero-protocol-replay>>); one replayed or
+reflected as another kind, or for another offer, does not open, its AAD
+being another's. _Held by_ `room` (`a_replayed_answer_does_not_open`,
+`a_replayed_offer_is_refused`, `a_reflected_offer_is_refused_as_an_answer`,
 `a_reflected_offer_is_refused_as_an_offer` and
-`a_reflected_answer_is_refused_as_an_answer`), and the replay and
-reflection scenarios of the `interop` lane.
+`a_reflected_answer_does_not_open_as_an_answer`).
 . [[trystero-invariant-8]]*A relay that stops reading is dropped.* Once the
 text held unsent for it would pass 4 MiB, the connection is dropped, and
 reports one close, after which the room reconnects with its backoff, as it
@@ -85,15 +99,32 @@ session's queue does, which checks one close and no message after it; the
 reconnection by `room`
 (`a_relay_that_closes_at_once_is_tried_less_and_less_often`).
 
-. [[trystero-invariant-9]]*One connection per remote peer per app is shared
-by its rooms.* Each room keeps its own membership and actions on that
-connection. _Held by_ `shared`, cases 1 to 3, and the interop's first shared
-scenario.
+. [[trystero-invariant-9]]*Each room of an app has its own connection to
+each remote peer,* as each room of 0.27.0 has: its frames travel bare on
+it, no other room uses it, and a room keeps one connection per peer.
+_Held by_ `room` (`rooms_of_one_app_have_their_own_connections`,
+`a_room_keeps_one_connection_per_peer` and `frames_travel_bare`), and the
+interop lane, whose Trystero 0.27.0 pages read the {cpp} peer's frames.
 . [[trystero-invariant-10]]*A room's departure leaves the app's other rooms
-joined.* They continue sending over the same connection. _Held by_
-`shared`, case 8, and shared interop scenario 5, with either side leaving.
-. [[trystero-invariant-11]]*Different passwords share no {cpp} app
-connection or presence.* Protected rooms use a separate app with a
-distinct self id; a peer of a passwordless app gains no binding to that
-protected app by echoing tokens. _Held by_ the password-domain cases of
-`shared` and shared interop scenario 4.
+joined.* They keep their connections to the peer and go on sending, and the
+room that left negotiates nothing more. _Held by_ `room`
+(`leaving_one_room_keeps_the_other_rooms_connection` and
+`a_leaving_room_negotiates_nothing`).
+. [[trystero-invariant-11]]*A peer joins only once its signed handshake
+verified it.* Its endpoint key derives its id, its user key derives its
+user id, both signatures of the transcript verify, and the fingerprints it
+claims are those of the connection; a forged step, other fingerprints, or a
+handshake that does not complete in 10 s fail it, and the peer never joins.
+_Held by_ `room` (`peers_verify_each_other_and_join_with_their_user_ids`,
+`a_forged_step_fails_the_handshake`,
+`another_fingerprint_fails_the_handshake` and
+`a_handshake_that_never_completes_fails_after_10_s`), `handshake_manager`,
+and the interop's `a_forged_user_signature` and
+`js_verifies_cpp_signatures` scenarios.
+. [[trystero-invariant-12]]*A room holds at most `max_users` users.* A peer
+of a new user is refused once its handshake passed, and its room reports
+`room_full`; a peer of a user present is admitted. _Held by_ `room`
+(`a_full_room_refuses_a_new_user`,
+`another_peer_of_a_present_user_is_admitted` and
+`concurrent_admissions_respect_the_limit`), and the interop's
+`max_users_both_ways` scenario.

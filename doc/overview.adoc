@@ -14,27 +14,34 @@ https://github.com/nostr-protocol/nips/blob/master/01.md[Nostr] relays,
 exchange the WebRTC offer and answer through them, and from then on talk
 over the connection the browser or the network stack established.
 
-It ports the protocol of https://github.com/dmotz/trystero[Trystero] 0.26.0,
-and keeps its wire byte for byte. A room joined from {cpp} and the same room
-joined from Trystero's JavaScript are one room: the peers see each other, and
-an action sent from one side arrives on the other.
+It ports the protocol of https://github.com/dmotz/trystero[Trystero] 0.27.0,
+and keeps its wire byte for byte: a room joined from {cpp} and the same room
+joined from Trystero's JavaScript are one room. The peers verify each
+other's identities with Trystero's signed handshake, see each other, and an
+action sent from one side arrives on the other.
 
 The library provides:
 
-* `room`, which joins a room of an application over Nostr relays, reports
-  the peers that join and leave, measures round trips, and leaves with
-  Trystero's farewell;
+* `room`, which joins a room of an application over Nostr relays, admits
+  each peer once its signed handshake verified its endpoint and its user,
+  holds at most `max_users` users, reports the peers and users that join
+  and leave, and the problems it handled, to listeners that each return a
+  subscription, measures round trips, and leaves with Trystero's farewell;
 * `action<T>`, a named channel of messages: text, JSON
   (webcpp::document's), binary, or any of the three, with optional JSON
-  metadata, of any size, sent inline or in chunks with backpressure;
-* one immutable password per app, part of every room's sealed signaling
-  key and challenge handshake; separate passwords use separate apps and ids;
+  metadata, of any size, sent inline or in chunks with backpressure, to
+  peers or users, with a receive gate and progress; and
+  `request_action<T, R>`, whose requests a peer answers;
+* one immutable password per app, from which every room derives its keys
+  off the room's thread; separate passwords use separate apps and ids;
 * every asynchronous operation as an Asio initiating function, so it
   completes with a callback, `webcpp::asio::use_awaitable`,
   `webcpp::asio::deferred` or any other completion token of webcpp::asio,
   which natively is Boost.Asio itself;
 * an `app` per program in one application and password domain, with one
-  identity and one connection per remote peer shared by its rooms;
+  endpoint identity, its peer id, and one user identity, ephemeral or a
+  `user_identity` the program creates, exports and imports as 0.27.0 does;
+  each of its rooms negotiates its own connection to each remote peer;
 * a resource for the app and an optional resource for each room, which
   receive their allocations (<<trystero-allocation>>);
 * a backend interface that separates the room from the platform, and the
@@ -58,9 +65,9 @@ out. The backend is a header of its own, beside a page's:
   libdatachannel and in a page over its `RTCPeerConnection` and
   `RTCDataChannel`; webcpp::beast for the relays' WebSockets, natively
   Boost.Beast's and in a page its `WebSocket`, their URLs read with
-  Boost.URL; webcpp::asio's timers; and per target the sealer and the
-  randomness, natively OpenSSL's AES-GCM and `RAND_bytes`, in a page
-  `crypto.subtle` and `crypto.getRandomValues` (<<trystero-platform>>)
+  Boost.URL; webcpp::asio's timers; webcpp::crypto's `random_device`; and
+  the PBKDF2 of a room's password, webcpp::hash's, natively on a thread of
+  its own and in a page through `crypto.subtle` (<<trystero-platform>>)
 
 | `<webcpp/trystero/platform/page.hpp>`
 | emscripten
@@ -80,17 +87,18 @@ on both. Every name is in the namespace `webcpp::trystero`.
   Container (its `pmr` base class), Endian, Hash2, System and Unordered for
   the rooms; URL for the platform backend's relays, and Beast for them
   natively.
-* webcpp::document for every JSON text, webcpp::asio, and webcpp::webrtc
-  and webcpp::beast for the platform backend's WebRTC and relays
-  (<<trystero-building>>).
-* https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, with its
-  `schnorrsig` and `extrakeys` modules, for the BIP-340 signatures of Nostr
-  events: every room needs it. webcpp builds it from its pinned
-  source, `/third_party//secp256k1`.
-* In the browser: Emscripten 6.0.11, the version webcpp pins, a page
-  served from a secure context (https, or http on `localhost`), where
-  `crypto.subtle` exists, and a program whose `main` runs its `io_context`
-  (<<trystero-platform-run>>).
+* webcpp::document for every JSON text, webcpp::asio, webcpp::hash for the
+  digests, HMAC, HKDF and PBKDF2 of the room keys, webcpp::crypto for
+  AES-256-GCM, randomness, the ECDSA P-256 signatures of identities and
+  handshakes, over BearSSL, and the BIP-340 signatures of Nostr events, over
+  https://github.com/bitcoin-core/secp256k1[libsecp256k1] 0.8.0, both of
+  which webcpp builds from their pinned sources, and webcpp::webrtc and
+  webcpp::beast
+  for the platform backend's WebRTC and relays (<<trystero-building>>).
+* In the browser: Emscripten 6.0.11, the version webcpp pins, and a program
+  whose `main` runs its `io_context` (<<trystero-platform-run>>); a room
+  with a password also needs a page served from a secure context (https,
+  or http on `localhost`), where `crypto.subtle` exists for its PBKDF2.
 * Natively:
   https://github.com/paullouisageneau/libdatachannel[libdatachannel] 0.24.6,
   through webcpp::webrtc, and OpenSSL 3.

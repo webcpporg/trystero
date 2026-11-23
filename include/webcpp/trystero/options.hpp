@@ -11,13 +11,14 @@
 
 #include <webcpp/trystero/backend.hpp>
 #include <webcpp/trystero/detail/log.hpp>
+#include <webcpp/trystero/identity.hpp>
 
 #include <webcpp/document/parse.hpp>
 
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,7 +28,10 @@ namespace webcpp::trystero {
 
 /**
  * What an app is made with: the part of Trystero's `joinRoom` configuration that every room of
- * the app shares, its peer id among it, and the one connection per remote peer its rooms share.
+ * the app shares.
+ *
+ * It names no peer id: 0.27.0 has no custom `peerId`, and the app derives its own from the P-256
+ * endpoint key it makes (`app::self_id`).
  *
  * The app copies every part of it into `memory`. It is move-only, as its `log` is: pass it moved,
  * or build it in place with designated initializers.
@@ -36,20 +40,12 @@ struct app_config {
     /** The application's id, Trystero's `appId`: rooms of different apps never meet. */
     std::pmr::string app_id = {};
     /**
-     * This program's id in every room of the app, Trystero's `selfId`; empty means 20 random
-     * characters, drawn once for the app.
-     *
-     * Other peers ignore an id longer than `protocol::max_peer_id_bytes` (64): the app replaces
-     * one with 20 random characters, and reports it with `error::invalid_configuration`.
-     */
-    std::pmr::string self_id = {};
-    /**
      * The password shared by every room of this app, Trystero's `password`.
      *
      * The app copies it into its resource and keeps it unchanged. Different passwords require
-     * separate apps with distinct peer ids, so a connection authenticated in one domain cannot
-     * be reused in another. Empty means a passwordless domain. Signals are still sealed with the
-     * app and room ids, and the room handshake then has no password challenge.
+     * separate apps with distinct peer ids. Empty means a passwordless domain, whose signals are
+     * still sealed with the app and room ids. A peer of another password never connects: the
+     * sealing of the signals alone keeps it out, as in 0.27.0, which has no password challenge.
      */
     std::pmr::string password = {};
     /**
@@ -72,12 +68,16 @@ struct app_config {
      */
     std::pmr::vector<backend::ice_server> ice_servers = {};
     /**
-     * How long a connection with no room bound to it after a departure stays open, Trystero's
-     * `sharedPeerIdleMs`; 0 closes it at once.
+     * The user this app's rooms present, Trystero's `identity` given a user identity: one made
+     * with @ref create_user_identity or imported with @ref import_user_identity, whose resource
+     * must outlive the app, which keeps a copy; rooms report it as
+     * `identity_persistence::imported`, 0.27.0's `'custom'`.
      *
-     * A negative value is replaced with 0, and reported with `error::invalid_configuration`.
+     * Absent, the app makes an ephemeral user identity of its own, 0.27.0's `'none'`, in `memory`,
+     * lost with the app: there is no store the port keeps a user in, as 0.27.0's `'local'` keeps
+     * it in IndexedDB (design D15). Several apps given one identity are one user's endpoints.
      */
-    std::chrono::milliseconds idle_timeout{123'333};
+    std::optional<user_identity> identity = {};
     /**
      * Where the app's and its rooms' diagnostics go: called with a category ("app", "nostr",
      * "signal", "webrtc", "room" or "action") and a sentence; empty means none, and then no text
@@ -87,9 +87,8 @@ struct app_config {
      */
     detail::logger::sink log = {};
     /**
-     * The resource every allocation of the app goes through: its state, its connections, the peer
-     * connections and data channels its rooms' negotiations make, the frames received on them, the
-     * sentences of its log; not null.
+     * The resource every allocation of the app goes through: its state, its rooms' keys and the
+     * sentences of its log, and each room's whose `room_options::memory` is null; not null.
      *
      * What libdatachannel, OpenSSL and the browser's JavaScript allocate stays theirs. The app uses
      * the resource from its executor only, so it need not be thread-safe when that executor runs
@@ -108,13 +107,14 @@ struct app_config {
 /**
  * What a room of an app is joined with: the part of Trystero's `joinRoom` configuration that is
  * the room's own.
+ *
+ * It has no handshake timeout: 0.27.0 removed `handshakeTimeoutMs`, and a peer has 10 s, its
+ * default, to finish the handshake.
  */
 struct room_options {
-    /**
-     * How long a connected peer has to finish the handshake before it is dropped, Trystero's
-     * `handshakeTimeoutMs`.
-     */
-    std::chrono::milliseconds handshake_timeout{10'000};
+    /** The largest `max_users` a room takes, JavaScript's `Number.MAX_SAFE_INTEGER`, 2^53 - 1. */
+    static constexpr std::uint64_t max_users_limit = (std::uint64_t{1} << 53U) - 1;
+
     /**
      * The most bytes the room reserves at once for the transfers it receives, across peers,
      * Trystero's `maxReceiveBytes`.
@@ -132,17 +132,50 @@ struct room_options {
      */
     std::uint64_t max_json_document_bytes = webcpp::document::parse_options().max_document_bytes;
     /**
-     * The resource every allocation of the room goes through: its state, bindings, negotiations,
-     * relays, actions, sent frames, transfers and JSON.
+     * The most users the room holds, its own user included, Trystero's `maxUsers`; empty means no
+     * bound.
+     *
+     * `app::join` refuses 0 and a value above @ref max_users_limit with
+     * `error::invalid_max_users`, as 0.27.0's `joinRoom` throws on a value that is not a positive
+     * safe integer.
+     *
+     * The room counts users, not peers, by the user ids their handshakes verified: another peer of
+     * a user already in the room is admitted when it is full. A peer of a new user is refused once
+     * its handshake has passed, with a ready frame saying "room full", which its room reports as
+     * `error::room_full`; the room then does not connect to that peer again while it stays full.
+     */
+    std::optional<std::size_t> max_users = {};
+    /**
+     * The resource every allocation of the room goes through: its state, negotiations, peer
+     * connections and data channels, the frames sent and received on them, relays, actions,
+     * transfers and JSON.
      *
      * Null means the app's resource.
      *
      * It must outlive the room, every value it hands out and every operation it leaves pending: on
      * Asio, until its io_context has run out of the room's work or has been destroyed; in the
-     * browser, until its pending promises have settled. Received frames and shared connections use
-     * the app's resource.
+     * browser, until its pending promises have settled.
      */
     std::pmr::memory_resource* memory = nullptr;
+};
+
+/**
+ * How the relays of an app's rooms connect, Trystero's `RelayConnectivity`, which
+ * `app::set_relay_connectivity` sets for one app.
+ */
+enum class relay_connectivity {
+    /** Connected: a relay closed is reconnected, Trystero's `'online'`. */
+    online,
+    /** Held closed: every relay socket is closed, and none is opened or reconnected until the app
+     * is online again, Trystero's `'offline'`. */
+    offline,
+    /** Following the page, Trystero's `'auto'`, the default: offline from the page's `offline`
+     * event until its `online` event; natively, where no such event exists, online.
+     *
+     * Tip: unlike 0.27.0, which also reconnects the relays when the page becomes visible again
+     * (its `visibilitychange` listener), the port follows only the `online` and `offline` events.
+     */
+    automatic,
 };
 
 /**

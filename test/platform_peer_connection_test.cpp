@@ -12,7 +12,7 @@
 // and holds at most its runtime's `max_peer_connections` at once.
 
 #include <webcpp/trystero/platform/backend.hpp>
-#include <webcpp/trystero/protocol/envelope.hpp>
+#include <webcpp/trystero/protocol/action_wire.hpp>
 #include <webcpp/trystero/protocol/signal.hpp>
 #include <webcpp/trystero/webrtc/data_channel.hpp>
 #include <webcpp/trystero/webrtc/peer_connection.hpp>
@@ -60,8 +60,12 @@ namespace {
 
 constexpr const char* loopback = "127.0.0.1";
 
+/** The wall-clock ceiling of a wait for something that must happen: a hang guard, far above any
+ * loaded run, never what a case measures. */
+constexpr std::chrono::milliseconds hang_guard = 120s;
+
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 10s) {
+               std::chrono::milliseconds limit = hang_guard) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: libdatachannel's threads post the connections' events to it
@@ -101,9 +105,9 @@ struct pair {
                   const executor_wrapper& wrap = {})
         : offerer(made(trystero::webrtc::peer_connection::make(
               program_runtime(runtime), wrap ? wrap(io.get_executor()) : io.get_executor(), {},
-              loopback, factory, offer_memory))),
+              loopback, offer_memory))),
           answerer(made(trystero::webrtc::peer_connection::make(
-              program_runtime(runtime), io.get_executor(), {}, loopback, factory,
+              program_runtime(runtime), io.get_executor(), {}, loopback,
               std::pmr::get_default_resource()))) {}
 
     pair(const pair&) = delete;
@@ -314,7 +318,7 @@ struct queued_pair : pair {
         require(BOOST_TEST(until([&] { return offer_open && answer_open; })));
     }
 
-    bool until(const std::function<bool()>& done, std::chrono::milliseconds limit = 10s) {
+    bool until(const std::function<bool()>& done, std::chrono::milliseconds limit = hang_guard) {
         return run_until(
             io,
             [&] {
@@ -346,18 +350,21 @@ void two_connections_open_a_data_channel_and_exchange_bytes() {
     BOOST_TEST(p.answer_end->is_open());
     const backend::bytes hello{1, 2, 3, 250};
     p.offer_end->send(hello);
-    // One byte more than any room frame is dropped before it is read; the largest one arrives.
-    p.answer_end->send(backend::bytes(protocol::max_room_frame_bytes + 1, 6));
-    p.answer_end->send(backend::bytes(protocol::max_room_frame_bytes, 7));
+    // The largest frame arrives.
+    p.answer_end->send(backend::bytes(protocol::max_bulk_frame_bytes, 7));
     if (!BOOST_TEST(run_until(
             p.io, [&] { return p.at_answerer.size() == 1 && p.at_offerer.size() == 1; }))) {
         return;
     }
     BOOST_TEST_ALL_EQ(p.at_answerer.front().begin(), p.at_answerer.front().end(), hello.begin(),
                       hello.end());
-    BOOST_TEST_EQ(p.at_offerer.size(), 1U);
-    BOOST_TEST_EQ(p.at_offerer.front().size(), protocol::max_room_frame_bytes);
+    BOOST_TEST_EQ(p.at_offerer.front().size(), protocol::max_bulk_frame_bytes);
     BOOST_TEST_LE(p.offer_end->buffered_amount(), backend::data_channel::low_threshold);
+    // One byte more than any frame reaches no handler and closes the channel, as 0.27.0's
+    // failData closes it; the other end sees the close.
+    p.answer_end->send(backend::bytes(protocol::max_bulk_frame_bytes + 1, 6));
+    BOOST_TEST(run_until(p.io, [&] { return !p.offer_end->is_open() && p.answer_closes == 1; }));
+    BOOST_TEST_EQ(p.at_offerer.size(), 1U);
     // Every handler ran on the executor, never on libdatachannel's threads.
     BOOST_TEST(!p.off_thread);
 }
@@ -373,7 +380,7 @@ void closing_one_end_is_seen_by_the_other() {
     BOOST_TEST(!p.off_thread);
 }
 
-// Presence can reach the native executor before the posted open event hands a channel over
+// A frame can reach the native executor before the posted open event hands a channel over
 // from signaling. Installing the receiver afterwards must deliver those frames in order.
 void messages_wait_for_the_receiver_during_handoff() {
     queued_pair p;
@@ -460,11 +467,17 @@ void a_pending_queue_overflow_closes_the_channel() {
     for (std::uint8_t i = 0; i < 65; ++i) {
         p.answer_end->send(backend::bytes{i});
     }
-    require(BOOST_TEST(p.until([&] { return closed; }, 5s)));
+    require(BOOST_TEST(p.until([&] { return closed; }, hang_guard)));
     BOOST_TEST(!p.offer_end->is_open());
 }
 
-void pending_messages_expire_without_a_receiver() {
+// A frame kept for a receiver is at most 0.27.0's maxRoomFrameBytes, 17 KiB, as the room's link
+// keeps before its room binds it: one byte more closes the channel, as the link would end on it.
+// A frame of that size is kept, with no time bound of its own.
+void a_pending_frame_past_the_room_frame_bound_closes_the_channel() {
+    namespace webrtc = trystero::webrtc;
+    BOOST_TEST_EQ(webrtc::data_channel::max_pending_frame_bytes, std::size_t{17} * 1024);
+    BOOST_TEST_EQ(webrtc::data_channel::max_pending_frames, 64U);
     queued_pair p;
     p.open();
     require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
@@ -475,10 +488,49 @@ void pending_messages_expire_without_a_receiver() {
         .close = [&] { closed = true; },
         .buffered_amount_low = {},
     });
-    const auto started = std::chrono::steady_clock::now();
-    p.answer_end->send(backend::bytes{1});
-    require(BOOST_TEST(p.until([&] { return closed; }, 12s)));
-    BOOST_TEST(std::chrono::steady_clock::now() - started >= 10s);
+    p.answer_end->send(backend::bytes(webrtc::data_channel::max_pending_frame_bytes, 1));
+    p.receive(1);
+    BOOST_TEST(p.offer_end->is_open());
+    p.answer_end->send(backend::bytes(webrtc::data_channel::max_pending_frame_bytes + 1, 2));
+    require(BOOST_TEST(p.until([&] { return closed; })));
+    BOOST_TEST(!p.offer_end->is_open());
+    BOOST_TEST_EQ(p.kept(), 0U);
+}
+
+// The connection's largest message is webcpp::webrtc's max_message_size(): nothing before a
+// remote description, then 256 KiB on both ends (libdatachannel's announcement and webcpp::webrtc's
+// bound), a peer that takes wide chunks. It is what the channel sends: a wide chunk arrives whole,
+// a message of exactly that size is taken, and one byte more is refused, which closes the channel
+// and reports the close, so that a transfer never waits on a chunk that was not sent.
+void max_message_size_is_what_the_channel_sends() {
+    pair p;
+    BOOST_TEST(!p.offerer->max_message_size().has_value());
+    BOOST_TEST(!p.answerer->max_message_size().has_value());
+    p.connect();
+    require(BOOST_TEST(run_until(p.io, [&] { return p.offer_open && p.answer_open; })));
+    const std::optional<std::size_t> expected = std::size_t{256} * 1024;
+    BOOST_TEST(p.offerer->max_message_size() == expected);
+    BOOST_TEST(p.answerer->max_message_size() == expected);
+
+    p.offer_end->send(backend::bytes(protocol::max_bulk_frame_bytes, 3));
+    require(BOOST_TEST(run_until(p.io, [&] { return p.at_answerer.size() == 1; })));
+    BOOST_TEST_EQ(p.at_answerer.front().size(), protocol::max_bulk_frame_bytes);
+
+    std::size_t offer_closes = 0;
+    p.offer_end->set_handlers({
+        .open = {},
+        .message = {},
+        .close = [&] { ++offer_closes; },
+        .buffered_amount_low = {},
+    });
+    // Taken: the channel stays open (the offerer then closes it, since no frame is that long).
+    p.answer_end->send(backend::bytes(*expected, 4));
+    BOOST_TEST(p.answer_end->is_open());
+    // Refused: the channel closes at once, and both ends report it.
+    p.offer_end->send(backend::bytes(*expected + 1, 5));
+    BOOST_TEST(!p.offer_end->is_open());
+    require(BOOST_TEST(run_until(p.io, [&] { return offer_closes == 1 && p.answer_closes == 1; })));
+    BOOST_TEST_EQ(p.at_answerer.size(), 1U);
 }
 
 void a_receiver_can_close_and_destroy_its_channel_during_pending_delivery() {
@@ -608,7 +660,7 @@ std::string padded(std::string_view json, std::size_t size) {
     return out;
 }
 
-// A remote candidate of protocol::max_sealed_candidate_bytes, a host candidate's JSON with spaces
+// A remote candidate of protocol::max_sealed_candidate_chars, a host candidate's JSON with spaces
 // before its closing brace, is added once an offer is the connection's remote description; one
 // byte longer fails with error::backend_failure before it is read.
 void a_candidate_past_its_bound_fails() {
@@ -638,7 +690,7 @@ void a_candidate_past_its_bound_fails() {
     const std::string candidate =
         R"({"candidate":"candidate:1 1 UDP 2122317823 127.0.0.1 9 typ host","sdpMid":")" + mid +
         R"("})";
-    constexpr std::size_t bound = protocol::max_sealed_candidate_bytes;
+    constexpr std::size_t bound = protocol::max_sealed_candidate_chars;
     std::vector<backend::error_code> results;
     answerer->add_ice_candidate(padded(candidate, bound),
                                 [&](backend::error_code ec) { results.push_back(ec); });
@@ -762,6 +814,7 @@ struct mixed_pair {
     std::optional<webcpp::webrtc::data_channel> sender;
     std::shared_ptr<backend::data_channel> channel;
     std::vector<backend::bytes> received;
+    std::size_t closes = 0;  // the closes the backend's channel reported
     bool negotiated = false;
     std::vector<std::string> to_remote;
     std::vector<std::string> to_local;
@@ -869,7 +922,7 @@ struct mixed_pair {
         channel->set_handlers({
             .open = {},
             .message = [this](backend::bytes frame) { received.push_back(std::move(frame)); },
-            .close = {},
+            .close = [this] { ++closes; },
             .buffered_amount_low = {},
         });
         local->set_local_description(
@@ -885,9 +938,9 @@ struct mixed_pair {
 };
 
 // A peer may send what is no frame: a text message, which a data channel of webcpp::webrtc
-// delivers as text, is dropped, and the frames around it arrive. The remote peer is
-// webcpp::webrtc's own, which sends text.
-void a_text_message_is_dropped_and_the_frames_around_it_arrive() {
+// delivers as text, closes the channel, as 0.27.0's failData closes it; the frame before it
+// arrives, and nothing after it. The remote peer is webcpp::webrtc's own, which sends text.
+void a_text_message_closes_the_channel() {
     mixed_pair p;
     p.connect();
     const std::vector<std::uint8_t> before{1, 2, 3};
@@ -895,12 +948,10 @@ void a_text_message_is_dropped_and_the_frames_around_it_arrive() {
     BOOST_TEST(!p.sender->send(asio::buffer(before)));
     BOOST_TEST(!p.sender->send_text("1e300"));
     BOOST_TEST(!p.sender->send(asio::buffer(after)));
-    require(BOOST_TEST(run_until(p.io, [&] { return p.received.size() == 2; })));
+    require(BOOST_TEST(run_until(p.io, [&] { return p.closes == 1; })));
+    BOOST_TEST(!p.channel->is_open());
+    require(BOOST_TEST_EQ(p.received.size(), 1U));
     BOOST_TEST_ALL_EQ(p.received[0].begin(), p.received[0].end(), before.begin(), before.end());
-    BOOST_TEST_ALL_EQ(p.received[1].begin(), p.received[1].end(), after.begin(), after.end());
-    // Nothing more arrives: the text was dropped, not delivered late.
-    run_until(p.io, [] { return false; }, 200ms);
-    BOOST_TEST_EQ(p.received.size(), 2U);
 }
 
 }  // namespace
@@ -911,7 +962,8 @@ int main() {
     messages_wait_for_the_receiver_during_handoff();
     a_full_pending_queue_drains_in_order_and_uses_replacement_handlers();
     a_pending_queue_overflow_closes_the_channel();
-    pending_messages_expire_without_a_receiver();
+    a_pending_frame_past_the_room_frame_bound_closes_the_channel();
+    max_message_size_is_what_the_channel_sends();
     a_receiver_can_close_and_destroy_its_channel_during_pending_delivery();
     a_malformed_candidate_fails_without_throwing();
     a_candidate_past_its_bound_fails();
@@ -919,7 +971,7 @@ int main() {
     the_backend_makes_at_most_its_budget_in_a_minute();
     the_runtime_holds_at_most_its_cap_at_once();
     a_url_libdatachannel_cannot_parse_is_left_out();
-    a_text_message_is_dropped_and_the_frames_around_it_arrive();
+    a_text_message_closes_the_channel();
     pending_frames_and_delivery_use_the_channels_resource();
     return boost::report_errors();
 }

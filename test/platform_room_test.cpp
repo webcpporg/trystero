@@ -5,12 +5,16 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // Tests whole rooms over the platform backend natively: real WebRTC through libdatachannel, AES-GCM
-// through OpenSSL, webcpp::asio's timers. Only the relays are the memory ones of
-// support/memory_backend.hpp, and the backend binds every connection to 127.0.0.1, so the loopback
-// is the only network needed.
+// through webcpp::crypto's OpenSSL, a password's PBKDF2 on the backend's thread, webcpp::asio's
+// timers. Only the relays are the memory ones of support/memory_backend.hpp, and the backend binds
+// every connection to 127.0.0.1, so the loopback is the only network needed. A room with a
+// password announces once its PBKDF2 of 600,000 iterations completed, seconds in a debug build on
+// a loaded machine: its waits are hang guards of `derivation_bound`, never what the case measures.
 
 #include <webcpp/trystero/app.hpp>
+#include <webcpp/trystero/error.hpp>
 #include <webcpp/trystero/platform/backend.hpp>
+#include <webcpp/trystero/protocol/topics.hpp>
 #include <webcpp/trystero/room.hpp>
 
 #include <webcpp/document/document.hpp>
@@ -42,6 +46,9 @@ namespace {
 
 constexpr const char* relay_url = "wss://relay.test";
 
+/** How long a case waits, at most, for what follows the PBKDF2 of its rooms' password. */
+constexpr std::chrono::milliseconds derivation_bound = 120s;
+
 /** The platform backend bound to the loopback, with the memory relays instead of the network's. */
 class native_over_memory_relays : public trystero::platform::backend {
 public:
@@ -67,16 +74,24 @@ struct fixture {
     fixture() { relays.relay(relay_url); }
 };
 
-trystero::app_config app_config(std::string_view self_id, std::string_view password = {}) {
+/** The configuration of a test's app, whose endpoint key `make_app` gives it. */
+trystero::app_config app_config(std::string_view password = {}) {
     trystero::app_config c;
     c.app_id = "webcpp-trystero-native-tests";
     c.relay_urls = {relay_url};
     // Nothing answers there: with every connection bound to 127.0.0.1, the loopback's host
     // candidate is the only one, and it is enough.
     c.ice_servers = {{.urls = {"stun:127.0.0.1:9"}, .username = {}, .credential = {}}};
-    c.self_id = self_id;
     c.password = password;
     return c;
+}
+
+/** An app whose endpoint key is named `label` (its scalar the label's SHA-256), through the
+ * detail seam the library keeps for its own tests, so that its peer id is known. */
+trystero::app make_app(trystero::app::executor_type ex, trystero::backend::factory& backend,
+                       std::string_view label, std::string_view password = {}) {
+    return trystero::detail::app_access::make(std::move(ex), backend, app_config(password),
+                                              trystero::protocol::sha256(label));
 }
 
 /** Joins `room_id`, which must succeed: a failure ends the test. */
@@ -88,7 +103,7 @@ trystero::room join(trystero::app& a, std::string_view room_id,
 }
 
 bool run_until(asio::io_context& io, const std::function<bool()>& done,
-               std::chrono::milliseconds limit = 15s) {
+               std::chrono::milliseconds limit = derivation_bound) {
     const auto end = std::chrono::steady_clock::now() + limit;
     while (!done() && std::chrono::steady_clock::now() < end) {
         io.run_for(10ms);  // lint-run: libdatachannel's threads post the connections' events to it
@@ -101,11 +116,10 @@ bool run_until(asio::io_context& io, const std::function<bool()>& done,
 
 void native_rooms_join_and_exchange_every_format() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend,
-                        app_config("AAAAAAAAAAAAAAAAAAAA", "s3cret"));
+    // Labels name the keys only: whichever peer's id is the lower offers, and either works here.
+    auto a_app = make_app(f.io.get_executor(), f.backend, "exchange-a", "s3cret");
     auto a = join(a_app, "lobby");
-    trystero::app z_app(f.io.get_executor(), f.backend,
-                        app_config("zzzzzzzzzzzzzzzzzzzz", "s3cret"));
+    auto z_app = make_app(f.io.get_executor(), f.backend, "exchange-z", "s3cret");
     auto z = join(z_app, "lobby");
     std::string text;
     std::optional<webcpp::document::document> json;
@@ -120,8 +134,9 @@ void native_rooms_join_and_exchange_every_format() {
             file = std::move(v);
             metadata = info.metadata;
         });
-    if (!BOOST_TEST(
-            run_until(f.io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; }))) {
+    if (!BOOST_TEST(run_until(
+            f.io, [&] { return a.peers().size() == 1 && z.peers().size() == 1; },
+            derivation_bound))) {
         return;
     }
 
@@ -160,31 +175,32 @@ void native_rooms_join_and_exchange_every_format() {
 
 void another_password_never_joins() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend,
-                        app_config("BBBBBBBBBBBBBBBBBBBB", "s3cret"));
+    auto a_app = make_app(f.io.get_executor(), f.backend, "BBBBBBBBBBBBBBBBBBBB", "s3cret");
     const auto a = join(a_app, "private");
-    trystero::app b_app(f.io.get_executor(), f.backend,
-                        app_config("CCCCCCCCCCCCCCCCCCCC", "guess"));
+    auto b_app = make_app(f.io.get_executor(), f.backend, "CCCCCCCCCCCCCCCCCCCC", "guess");
+    // The labels were chosen for the ids they derive: A's is the lower, so A offers.
+    webcpp::test::require(BOOST_TEST_LT(a_app.self_id(), b_app.self_id()));
     auto b = join(b_app, "private");
     std::vector<boost::system::error_code> errors;
-    b.on_error([&](std::string_view, boost::system::error_code ec, std::string_view) {
-        errors.push_back(ec);
-    });
-    run_until(f.io, [] { return false; }, 2s);
+    b.on_error([&](const trystero::room_error& e) { errors.push_back(e.code); });
+    // Once both derived their keys, A offers, and B cannot open the offer.
+    BOOST_TEST(run_until(f.io, [&] { return !errors.empty(); }, derivation_bound));
     BOOST_TEST(a.peers().empty());
     BOOST_TEST(b.peers().empty());
-    BOOST_TEST(!errors.empty());
+    for (const auto& ec : errors) {
+        BOOST_TEST(ec == trystero::error::decrypt_failed);
+    }
 }
 
 void leaving_is_seen_over_a_real_connection() {
     fixture f;
-    trystero::app a_app(f.io.get_executor(), f.backend, app_config("DDDDDDDDDDDDDDDDDDDD"));
+    auto a_app = make_app(f.io.get_executor(), f.backend, "DDDDDDDDDDDDDDDDDDDD");
     auto a = join(a_app, "leave");
     std::vector<std::string> left;
-    a.on_peer_leave([&](std::string_view p) { left.emplace_back(p); });
+    a.on_peer_leave([&](const trystero::peer_event& e) { left.emplace_back(e.peer_id); });
     {
         // The leaver's app goes with its room, as a program that leaves for good ends it.
-        trystero::app b_app(f.io.get_executor(), f.backend, app_config("EEEEEEEEEEEEEEEEEEEE"));
+        auto b_app = make_app(f.io.get_executor(), f.backend, "EEEEEEEEEEEEEEEEEEEE");
         auto b = join(b_app, "leave");
         if (!BOOST_TEST(run_until(f.io, [&] { return a.peers().size() == 1; }))) {
             return;

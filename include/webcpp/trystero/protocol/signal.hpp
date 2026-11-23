@@ -9,12 +9,14 @@
 
 #include <webcpp/trystero/config.hpp>
 
+#include <webcpp/trystero/protocol/ids.hpp>
 #include <webcpp/trystero/protocol/json.hpp>
+#include <webcpp/trystero/protocol/seal.hpp>
 #include <webcpp/trystero/protocol/text.hpp>
 #include <webcpp/trystero/protocol/topics.hpp>
 
-#include <array>
-#include <charconv>
+#include <algorithm>
+#include <cstddef>
 #include <memory_resource>
 #include <optional>
 #include <string>
@@ -23,153 +25,78 @@
 namespace webcpp::trystero::protocol {
 
 /**
- * The longest peer id a room accepts in a signal, in bytes; a signal with a longer one is
- * ignored.
+ * The longest offer id a signal may carry, in characters: 0.27.0's `maxSignalOfferIdChars`.
  *
- * Every id Trystero makes is 20 characters (`selfId`, @ref peer_id_size); the bound leaves room for
- * an application's own ids and keeps a flood of long ids from costing more than a short one.
+ * Trystero's own are @ref offer_id_size; @ref is_signal_offer_id is the whole rule.
  */
-inline constexpr std::size_t max_peer_id_bytes = 64;
-
-/** The size of the IV Trystero's `encrypt` draws for AES-GCM: 16 bytes, not the usual 12. */
-inline constexpr std::size_t seal_iv_size = 16;
+inline constexpr std::size_t max_offer_id_chars = 64;
 
 /**
- * The longest text a plaintext seals to, as @ref format_sealed writes it.
+ * The longest sealed offer or answer a signal may carry, in UTF-16 code units as JavaScript counts
+ * a string's length: 0.27.0's `maxSignalSdpChars`.
  *
- * The IV's bytes in decimal and commas, "$", and the ciphertext with its 16-byte tag in base64.
- *
- * @param plaintext The plaintext's size, in bytes.
- * @return The size of the longest sealed text, in bytes, whatever the IV.
+ * A sealed text is ASCII, one byte a unit.
  */
-constexpr std::size_t sealed_size(std::size_t plaintext) {
-    return (seal_iv_size * 4) - 1 + 1 + (((plaintext + 16 + 2) / 3) * 4);
-}
-
-/** The longest offer id a signal may carry, in bytes; Trystero's are @ref offer_id_size. */
-inline constexpr std::size_t max_offer_id_bytes = 64;
+inline constexpr std::size_t max_sealed_description_chars = std::size_t{64} * 1024;
 
 /**
- * The longest sealed offer or answer a signal may carry, in bytes.
+ * The longest sealed candidate a signal may carry, in UTF-16 code units as JavaScript counts a
+ * string's length: 0.27.0's `maxSignalCandidateChars`.
  *
- * A data channel's SDP is a few KiB, with every candidate gathered in it a few more. Trystero
- * bounds none; this one bounds what a negotiation copies and keeps, and refuses no SDP a browser
- * writes for a data channel.
- */
-inline constexpr std::size_t max_sealed_description_bytes = std::size_t{64} * 1024;
-
-/**
- * The longest sealed candidate a signal may carry, in bytes.
+ * A sealed text is ASCII, one byte a unit.
  *
- * Trystero drops a candidate whose plaintext is longer than 8192 bytes
- * (`maxRemoteCandidateSdpLength`), and every candidate up to that size, sealed, fits.
+ * It holds a candidate's JSON of up to 3044 bytes, sealed by @ref seal; 0.27.0 sends a longer one
+ * as it is, and its receivers, as a room, ignore the signal.
  */
-inline constexpr std::size_t max_sealed_candidate_bytes = std::size_t{16} * 1024;
-static_assert(sealed_size(8192) <= max_sealed_candidate_bytes);
+inline constexpr std::size_t max_sealed_candidate_chars = 4096;
+static_assert(sealed_size(3044) == max_sealed_candidate_chars);
+static_assert(sealed_size(3045) > max_sealed_candidate_chars);
 
 /**
  * The longest signal a room reads, in bytes: a longer one is dropped before it is read.
  *
  * The longest signal measured is an answer, 762 bytes, among Trystero JS in Chrome and both
  * backends, which trickle their candidates. The bound is the longest signal the bounds of its
- * fields admit, a sealed offer or answer of @ref max_sealed_description_bytes with the longest ids,
- * and 1 KiB to spare, so that it refuses no signal they accept.
+ * fields admit, a sealed offer or answer of @ref max_sealed_description_chars with the longest ids,
+ * and 1 KiB to spare, so that it refuses no signal Trystero writes.
+ *
+ * Tip: 0.27.0 parses a text of up to 128 Ki characters (`maxSignalMessageChars`). A room drops a
+ * longer text than this bound unread, where 0.27.0 parses it; only members Trystero never writes,
+ * or a sealed text that is not ASCII and so never opens, make one. The smaller bound bounds what a
+ * relay has a room parse.
  */
-inline constexpr std::size_t max_parsed_signal_bytes = max_sealed_description_bytes + 1024;
-// The 64 bytes hold the 53 of the keys and the punctuation of an answer from a passive room.
-static_assert(max_sealed_description_bytes + max_peer_id_bytes + max_offer_id_bytes + 64 <=
+inline constexpr std::size_t max_parsed_signal_bytes = max_sealed_description_chars + 1024;
+// The 64 bytes hold the keys and the punctuation of an offer or an answer, 38 at most.
+static_assert(max_sealed_description_chars + peer_id_size + max_offer_id_chars + 64 <=
                   max_parsed_signal_bytes,
               "the longest signal the bounds of its fields admit is read");
 
 /**
- * The longest message of the password handshake a room reads, in bytes: a longer one fails the
- * handshake, as a message of the wrong shape does.
+ * Whether a text is a peer id a signal may carry, 0.27.0's `isValidSignalPeerId`: @ref peer_id_size
+ * characters of @ref base62_alphabet (`^[0-9A-Za-z]{20}$`).
  *
- * Trystero's are at most 99 bytes, `{"__trystero_pw":"response","h":"<64 hexadecimal digits>"}`;
- * the bound is ten times that.
+ * @param id The text.
+ * @return Whether it is one.
  */
-inline constexpr std::size_t max_handshake_bytes = 1024;
-
-/**
- * The raw AES-GCM key of a room, what Trystero's `genKey` imports: the SHA-256 of
- * "<password>:<app>:<room>".
- *
- * @param password The password used for this room, shared by its app; empty means none.
- * @param app_id The application's id.
- * @param room_id The room's id.
- * @return The AES-256 key.
- */
-inline std::array<std::uint8_t, 32> seal_key(std::string_view password, std::string_view app_id,
-                                             std::string_view room_id) {
-    return sha256_of({password, ":", app_id, ":", room_id});
-}
-
-/** A sealed signal's parts, as @ref parse_sealed reads them. */
-struct sealed_parts {
-    /** The IV, 16 bytes in what Trystero writes. */
-    bytes iv;
-    /** The ciphertext, followed by its 16-byte tag. */
-    bytes ciphertext;
-};
-
-/**
- * The text form of a sealed signal, what Trystero's `encrypt` returns: the IV's bytes in decimal
- * joined by commas, "$", the ciphertext in base64.
- *
- * @param iv The IV.
- * @param ciphertext The ciphertext with its tag, as `crypto.subtle.encrypt` returns it.
- * @param memory The resource the text is allocated in.
- * @return The text.
- */
-inline std::pmr::string format_sealed(
-    std::span<const std::uint8_t> iv, std::span<const std::uint8_t> ciphertext,
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    std::pmr::string out(memory);
-    out.reserve((iv.size() * 4) + 1 + ((ciphertext.size() + 2) / 3 * 4));
-    for (std::size_t i = 0; i < iv.size(); ++i) {
-        if (i != 0) {
-            out += ',';
-        }
-        json::append_integer(out, iv[i]);
-    }
-    out += '$';
-    append_base64(out, ciphertext);
-    return out;
+[[nodiscard]] constexpr bool is_signal_peer_id(std::string_view id) noexcept {
+    return id.size() == peer_id_size && std::ranges::all_of(id, [](char c) {
+               return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+           });
 }
 
 /**
- * The parts of a sealed signal's text, as Trystero's `decrypt` splits it.
+ * Whether a text is an offer id a signal may carry, 0.27.0's `isValidSignalOfferId`: 1 to
+ * @ref max_offer_id_chars characters, each a letter or a digit of ASCII or one of `_.~:!-`
+ * (`^[0-9A-Za-z_.~:!-]{1,64}$`).
  *
- * @param text The text.
- * @param memory The resource the parts are allocated in.
- * @return The parts, or nothing when the text has no "$", an IV byte that is not a decimal number
- * up to 255, or a ciphertext that is not base64.
+ * @param id The text.
+ * @return Whether it is one.
  */
-inline std::optional<sealed_parts> parse_sealed(
-    std::string_view text, std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    const auto dollar = text.find('$');
-    if (dollar == std::string_view::npos) {
-        return std::nullopt;
-    }
-    sealed_parts out{.iv = bytes(memory), .ciphertext = bytes(memory)};
-    for (std::string_view ivs = text.substr(0, dollar); !ivs.empty();) {
-        const auto comma = ivs.find(',');
-        const auto item = ivs.substr(0, comma);
-        // A byte: from_chars refuses a number above 255 as out of range.
-        std::uint8_t value = 0;
-        const auto [end, ec] = std::from_chars(item.data(), item.data() + item.size(), value);
-        if (ec != std::errc{} || end != item.data() + item.size()) {
-            return std::nullopt;
-        }
-        out.iv.push_back(value);
-        ivs = comma == std::string_view::npos ? std::string_view{} : ivs.substr(comma + 1);
-    }
-    auto ciphertext = base64_decode(text.substr(dollar + 1), memory);
-    if (!ciphertext) {
-        return std::nullopt;
-    }
-    out.ciphertext = std::move(*ciphertext);
-    return out;
+[[nodiscard]] constexpr bool is_signal_offer_id(std::string_view id) noexcept {
+    return !id.empty() && id.size() <= max_offer_id_chars && std::ranges::all_of(id, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+               std::string_view("_.~:!-").find(c) != std::string_view::npos;
+    });
 }
 
 /**
@@ -182,9 +109,12 @@ inline std::optional<sealed_parts> parse_sealed(
  * @see "The protocol", in the guide.
  */
 struct signal_message {
-    /** The sender's id, `peerId`: 1 to @ref max_peer_id_bytes bytes. */
+    /** The sender's id, `peerId`, one for which @ref is_signal_peer_id holds. */
     std::string_view peer_id = {};
-    /** The offer the message belongs to, `offerId`; empty in an announcement. */
+    /**
+     * The offer the message belongs to, `offerId`, one for which @ref is_signal_offer_id holds;
+     * empty in an announcement that carries none.
+     */
     std::string_view offer_id = {};
     /** The sealed SDP of an offer, `offer`. */
     std::string_view offer = {};
@@ -192,19 +122,6 @@ struct signal_message {
     std::string_view answer = {};
     /** A sealed ICE candidate, `candidate`. */
     std::string_view candidate = {};
-    /**
-     * Whether the sender's room is passive, `passive`: a Trystero room joined with `passive`
-     * announces only once it has seen a peer that is not passive.
-     */
-    bool passive = false;
-    /**
-     * Whether the sender answers the offer, which places `offerId` in the text.
-     *
-     * Trystero's answerer writes `offerId` after its answer or candidate, its offerer before its
-     * offer or candidate. Written only; a reader leaves it false, the order being no part of the
-     * meaning.
-     */
-    bool answering = false;
 
     /**
      * Whether the message is an announcement.
@@ -217,17 +134,19 @@ struct signal_message {
 };
 
 /**
- * The message a parsed signaling payload holds, as views into its document.
+ * The message a parsed signaling payload holds, as views into its document, read as 0.27.0's
+ * `parseSignalEnvelope` reads it: what it refuses, a room ignores.
  *
  * A key written twice is read as JavaScript reads it, the last value, which the parse keeps.
  *
  * @param document The root of the parsed payload, whose document the caller keeps alive and
  * unchanged while it reads the views.
- * @return The message, or nothing when Trystero would ignore it (not an object, one with a member
- * `peer`, no peer id, or an offer, answer or candidate that is not a non-empty string), or when a
- * field is longer than its bound: the peer id than @ref max_peer_id_bytes, the offer id than
- * @ref max_offer_id_bytes, an offer or answer than @ref max_sealed_description_bytes, a candidate
- * than @ref max_sealed_candidate_bytes.
+ * @return The message, or nothing when 0.27.0 refuses it or acts on no peer: not an object; one
+ * with a member `peer`; no `peerId`, or one for which @ref is_signal_peer_id does not hold; an
+ * `offerId` for which @ref is_signal_offer_id does not hold (a value that is no string included),
+ * or none with an offer, answer or candidate; an offer, answer or candidate that is not a non-empty
+ * string, an offer or answer longer than @ref max_sealed_description_chars, a candidate longer than
+ * @ref max_sealed_candidate_chars.
  */
 inline std::optional<signal_message> read_signal(const json::const_value& document) {
     // Trystero ignores a text that names a member `peer`, which its own rooms keep for a peer
@@ -236,37 +155,51 @@ inline std::optional<signal_message> read_signal(const json::const_value& docume
         return std::nullopt;
     }
     signal_message out;
-    const auto text = [&document](std::string_view key, std::string_view& into,
-                                  bool must_be_nonempty) {
+    bool content = false;
+    // An offer, answer or candidate, when present, is a non-empty string within its bound, counted
+    // in UTF-16 code units as JavaScript's length counts it.
+    const auto sealed = [&document, &content](std::string_view key, std::string_view& into,
+                                              std::size_t bound) {
         const json::const_value v = document[key];
         if (v.is_undefined()) {
             return true;
         }
-        if (!v.is_string() || (must_be_nonempty && json::text_of(v).empty())) {
-            return !must_be_nonempty;
+        content = true;
+        const auto units = v.length();
+        if (!v.is_string() || !units || *units == 0 || *units > bound) {
+            return false;
         }
         into = json::text_of(v);
         return true;
     };
-    if (!text("offer", out.offer, true) || !text("answer", out.answer, true) ||
-        !text("candidate", out.candidate, true)) {
+    if (!sealed("offer", out.offer, max_sealed_description_chars) ||
+        !sealed("answer", out.answer, max_sealed_description_chars) ||
+        !sealed("candidate", out.candidate, max_sealed_candidate_chars)) {
         return std::nullopt;
     }
-    text("peerId", out.peer_id, false);
-    text("offerId", out.offer_id, false);
-    out.passive = document["passive"].value_or(false);
-    if (out.peer_id.empty() || out.peer_id.size() > max_peer_id_bytes ||
-        out.offer_id.size() > max_offer_id_bytes ||
-        out.offer.size() > max_sealed_description_bytes ||
-        out.answer.size() > max_sealed_description_bytes ||
-        out.candidate.size() > max_sealed_candidate_bytes) {
+    // A peer id that is not one refuses the signal, and so does none, on which 0.27.0 acts no
+    // further. An offer id, when present, or when the signal carries an offer, answer or
+    // candidate, is one: JSON holds no `undefined`, so a member `offerId` of any other value
+    // refuses.
+    const json::const_value peer_id = document["peerId"];
+    const json::const_value offer_id = document["offerId"];
+    if (!peer_id.is_string() || !is_signal_peer_id(json::text_of(peer_id))) {
         return std::nullopt;
+    }
+    out.peer_id = json::text_of(peer_id);
+    if (content || !offer_id.is_undefined()) {
+        if (!offer_id.is_string() || !is_signal_offer_id(json::text_of(offer_id))) {
+            return std::nullopt;
+        }
+        out.offer_id = json::text_of(offer_id);
     }
     return out;
 }
 
 /**
- * The JSON text of a message, with its members in Trystero's order and the empty ones left out.
+ * The JSON text of a message, as 0.27.0's signal handler writes it: `peerId`, then `offerId`, then
+ * the one of `offer`, `answer` and `candidate` it carries, the empty ones left out, and `nonce`
+ * last, as the Nostr strategy adds it to an announcement.
  *
  * @param m The message.
  * @param nonce A random text, which makes repeated announcements distinct events; empty for none.
@@ -291,40 +224,13 @@ inline std::pmr::string write_signal(
         json::detail::append_utf8(out, value);
     };
     field("peerId", m.peer_id);
-    if (!m.answering) {
-        field("offerId", m.offer_id);
-    }
+    field("offerId", m.offer_id);
     field("offer", m.offer);
     field("answer", m.answer);
     field("candidate", m.candidate);
-    if (m.answering) {
-        field("offerId", m.offer_id);
-    }
-    if (m.passive) {
-        json::append_key(out, "passive");
-        out += "true";
-    }
     field("nonce", nonce);
     out += '}';
     return out;
-}
-
-/**
- * The password handshake's proof, Trystero's `hashChallenge`: the hexadecimal SHA-256 of
- * "<challenge>:<password>:<app>:<room>".
- *
- * @param challenge The challenge the other peer sent.
- * @param password The password used for this room, shared by its app.
- * @param app_id The application's id.
- * @param room_id The room's id.
- * @param memory The resource the proof is allocated in.
- * @return The proof, 64 hexadecimal digits.
- */
-inline std::pmr::string handshake_proof(
-    std::string_view challenge, std::string_view password, std::string_view app_id,
-    std::string_view room_id,
-    std::pmr::memory_resource* memory = std::pmr::get_default_resource()) {
-    return to_hex(sha256_of({challenge, ":", password, ":", app_id, ":", room_id}), memory);
 }
 
 }  // namespace webcpp::trystero::protocol

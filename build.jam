@@ -11,13 +11,18 @@
 
 project /webcpp/trystero ;
 
-# libsecp256k1 (every room) is webcpp's build of it, /third_party//secp256k1:
-# v0.8.0 from the submodule third_party/libs/secp256k1, with the tables the
-# feature webcpp-secp256k1-tables chooses (small on emscripten, large natively;
+# Hashes are webcpp::hash's and the ciphers, MACs and keys of every room
+# webcpp::crypto's: the endpoint and user keys and their ECDSA signatures are
+# its P-256, /webcpp/crypto//p256-default, BearSSL on every target. Its
+# secp256k1 backend, /webcpp/crypto//secp256k1-default,
+# is webcpp's build of libsecp256k1 (v0.8.0 from the submodule
+# third_party/libs/secp256k1), with the tables the feature
+# webcpp-secp256k1-tables chooses (small on emscripten, large natively;
 # CODING-GUIDELINES.md chapter 5). WebRTC is webcpp::webrtc's, whose native
 # libdatachannel and its OpenSSL are pinned source dependencies, built
 # together for the consumer's B2 variant.
 import errors ;
+import feature ;
 
 # The platform backend's own dependencies, checked only when a target that
 # uses it is built: natively its WebRTC, libdatachannel's through
@@ -47,14 +52,34 @@ rule platform-dependencies ( properties * )
 #
 # trystero is parts and that list. parts, the same headers and dependencies
 # without it, is for a program of a part that parses no JSON, as trystero's
-# tests of the timer, a relay's URL, a page's calls and the sealer are
-# (test/Jamfile): such a program has none of the parser's functions, and
-# Binaryen warns of a pattern of the list that names none.
+# tests of the timer, a relay's URL and a page's calls are (test/Jamfile):
+# such a program has none of the parser's functions, and Binaryen warns of a
+# pattern of the list that names none.
 path-constant WEBCPP_TRYSTERO_ROOT : . ;
+
+# The rooms' AES-GCM: webcpp::crypto's default for the target,
+# /webcpp/crypto//gcm-default, except in the reference (doc/Jamfile), where it
+# is BearSSL, Emscripten's default. The reference reads the headers for
+# Emscripten's target with a native toolset, whose gcm-default is OpenSSL,
+# which webcpp::crypto refuses on Emscripten. The feature is incidental, since
+# it changes no object a dependency builds, and propagated, so that the rooms
+# see it.
+feature.feature webcpp-trystero-reference : on : optional incidental propagated ;
+rule rooms-gcm ( properties * )
+{
+    if <webcpp-trystero-reference>on in $(properties)
+    {
+        return <library>/third_party//bearssl ;
+    }
+    return <library>/webcpp/crypto//gcm-default ;
+}
+
 # tag::trystero[]
 alias parts : :
   : : <include>include <library>/boost//headers <library>/webcpp/document//document
-  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/third_party//secp256k1 ;
+  <library>/webcpp/config//config <library>/webcpp/asio//asio <library>/webcpp/hash//hash
+  <library>/webcpp/crypto//crypto <conditional>@rooms-gcm
+  <library>/webcpp/crypto//secp256k1-default <library>/webcpp/crypto//p256-default ;
 alias trystero : : : : <library>parts
   <toolset>emscripten,<webcpp-suspend>asyncify:<linkflags>"-sASYNCIFY_REMOVE=@\"$(WEBCPP_TRYSTERO_ROOT)/asyncify-remove.json\""
   ;
